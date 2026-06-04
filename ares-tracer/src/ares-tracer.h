@@ -1,7 +1,7 @@
 #ifndef __ARES_TRACER_H
 #define __ARES_TRACER_H
 
-#define TASK_COMM_LEN	 64
+#define TASK_COMM_LEN	 32
 #define MAX_FILENAME_LEN 256
 
 struct event {

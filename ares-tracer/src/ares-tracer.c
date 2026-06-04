@@ -190,7 +190,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
     // Print event information
-    printf("%-8s %-64s %-7d %-7d %s\n", ts, e->comm, e->pid, e->ppid, e->filename);
+    printf("%-8s %-32s %-7d %-7d %s\n", ts, e->comm, e->pid, e->ppid, e->filename);
 
     return 0;
 }
@@ -278,7 +278,7 @@ int main(int argc, char **argv)
 		goto cleanup;
     }
 
-    printf("%-8s %-64s %-7s %-7s %s\n", "TIME", "COMM", "PID", "PPID", "?");
+    printf("%-8s %-32s %-7s %-7s %s\n", "TIME", "COMM", "PID", "PPID", "?");
     while (!exiting) {
         err = ring_buffer__poll(events_rb, 100 /* timeout, ms */);
         if (err == -EINTR) {

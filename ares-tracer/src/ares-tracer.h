@@ -2,14 +2,15 @@
 #define __ARES_TRACER_H
 
 #define TASK_COMM_LEN	 32
-#define MAX_FILENAME_LEN 256
+#define NUM_ARGS 8
 
 struct event {
     int pid;
     int tid;
     int ppid;
+    bool exit_event;
     char comm[TASK_COMM_LEN];
-	char filename[MAX_FILENAME_LEN];
+    unsigned long args[NUM_ARGS];
     // FEATURE: Add arguments later
     // FEATURE: Add retval later
 };

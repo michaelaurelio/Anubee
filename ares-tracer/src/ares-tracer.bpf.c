@@ -12,7 +12,7 @@ struct {
 } events_rb SEC(".maps");
 
 SEC("uprobe")
-int BPF_KPROBE(uprobe_open)
+int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8)
 {
     // Initializations stuff
     struct task_struct *task;
@@ -29,6 +29,7 @@ int BPF_KPROBE(uprobe_open)
     if (!e)
         return 0;
 
+
     // Fill event data
     task = (struct task_struct *)bpf_get_current_task();
 
@@ -36,6 +37,16 @@ int BPF_KPROBE(uprobe_open)
     e->tid = tid;
     e->ppid = BPF_CORE_READ(task, real_parent, tgid);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    e->exit_event = false;
+
+    e->args[0] = a1;
+    e->args[1] = a2;
+    e->args[2] = a3;
+    e->args[3] = a4;
+    e->args[4] = a5;
+    e->args[5] = a6;
+    e->args[6] = a7;
+    e->args[7] = a8;
 
     bpf_ringbuf_submit(e, 0);
     return 0;

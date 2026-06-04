@@ -197,11 +197,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         e->ppid, 
         e->exit_event ? "EXIT" : "EXEC"
     );
-    printf("     args:");
+    printf("     args:\n");
     for (int i = 0; i < NUM_ARGS; i++) {
-        printf(" [%d]0x%lx", i, e->args[i]);
+        if (e->is_str[i]) {
+            printf("        [%d] \"%s\"\n", i, e->strings[i]);
+        } else {
+            printf("        [%d] 0x%lx\n", i, e->args[i]);
+        }
     }
-    printf("\n");
 
     return 0;
 }

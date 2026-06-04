@@ -1,7 +1,8 @@
 #ifndef __ARES_TRACER_H
 #define __ARES_TRACER_H
 
-#define TASK_COMM_LEN	 32
+#define TASK_COMM_LEN 32
+#define MAX_STR_LEN 128
 #define NUM_ARGS 8
 
 struct event {
@@ -11,7 +12,9 @@ struct event {
     bool exit_event;
     char comm[TASK_COMM_LEN];
     unsigned long args[NUM_ARGS];
-    // FEATURE: Add arguments later
+    __u8 is_str[NUM_ARGS];
+    char strings[NUM_ARGS][MAX_STR_LEN];
+    // FEATURE: Add BETTER arguments later
     // FEATURE: Add retval later
 };
 

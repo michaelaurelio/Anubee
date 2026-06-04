@@ -8,10 +8,12 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <bpf/libbpf.h>
+#include "ares-tracer.h"
 #include "ares-tracer.skel.h"
 
 
@@ -174,6 +176,26 @@ module_t modules[512];
 symbol_t symbols[4096];
 
 
+// Handle events from ring buffer 
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+    const struct event *e = data;
+    struct tm *tm;
+	char ts[32];
+	time_t t;
+
+    // Get current time
+    time(&t);
+	tm = localtime(&t);
+	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+    // Print event information
+    printf("%-8s %-64s %-7d %-7d %s\n", ts, e->comm, e->pid, e->ppid, e->filename);
+
+    return 0;
+}
+
+
 // TEMP VALUES PLS REMOVE nanti
 // #define TARGET_LIB "/apex/com.android.runtime/lib64/bionic/libc.so"
 #define TARGET_LIB "libc.so"
@@ -184,9 +206,9 @@ symbol_t symbols[4096];
 int main(int argc, char **argv)
 {
     // Boilerplate setup
+    struct ring_buffer *events_rb = NULL;
     struct ares_tracer_bpf *skel;
     int err = 0;
-    // LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -240,23 +262,39 @@ int main(int argc, char **argv)
     }
 
 
-    // Attaches BPF skeleton
+    // Attaches BPF skeleton (if later add auto-attach)
     // err = uprobe_bpf__attach(skel);
     // if (err) {
     //     fprintf(stderr, "Failed to auto-attach BPF skeleton: %d\n", err);
     //     goto cleanup;
     // }
-    printf("Tracing open() | cat /sys/kernel/debug/tracing/trace_pipe\n");
+    
 
-
-    // Boilerplate closing
-    for (;;) {
-        if (exiting) 
-            goto cleanup;
-        pause();
+    // Set up ring buffer polling
+    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, NULL, NULL);
+    if (!events_rb) {
+        err = -1;
+		fprintf(stderr, "Failed to create ring buffer\n");
+		goto cleanup;
     }
 
+    printf("%-8s %-64s %-7s %-7s %s\n", "TIME", "COMM", "PID", "PPID", "?");
+    while (!exiting) {
+        err = ring_buffer__poll(events_rb, 100 /* timeout, ms */);
+        if (err == -EINTR) {
+            err = 0;
+            break;
+        }
+        if (err < 0) {
+            printf("Error polling ring buffer: %d\n", err);
+            break;
+        }
+    }
+
+
+    // Cleanup
     cleanup:
+        ring_buffer__free(events_rb);
         ares_tracer_bpf__destroy(skel);
-        return -err;
+        return err < 0 ? -err : 0;
 }

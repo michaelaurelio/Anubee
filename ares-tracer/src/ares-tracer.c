@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <libelf.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,12 +26,15 @@ static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
     { "pid", 'p', "PID[,PID...]", 0, "Process ID(s) to inspect" },
+    { "library", 'l', "PATH / LIBNAME", 0, "Target library to trace (path, name)" },
     { 0 }
 };
 
 struct args {
     pid_t pids[64];
     int pid_count;
+    char lib_patterns[32][256];
+    int lib_pattern_count;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -46,6 +50,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             }
             break;
         }
+
+        case 'l':
+            if (args->lib_pattern_count < 32) {
+                strncpy(args->lib_patterns[args->lib_pattern_count++], arg, sizeof(args->lib_patterns[0]) - 1);
+            }
+            break;
 
         // No arguments case
         case ARGP_KEY_END:
@@ -77,6 +87,30 @@ static volatile bool exiting = false;
 static void sig_handler(int sig)
 {
     exiting = true;
+}
+
+
+// Check library pattern match
+regex_t lib_re[32];
+bool lib_has_slash[32];
+
+static bool lib_matches(const char *full_path, regex_t *re, bool *has_slash, int count)
+{
+    if (count == 0) return true;
+    const char *target;
+
+    for (int i = 0; i < count; i++) {
+        if (has_slash[i]) {
+            target = full_path;
+        } else {
+            target = strrchr(full_path, '/');
+            target = target ? target + 1 : full_path;
+        }
+        if (regexec(&re[i], target, 0, NULL, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 
@@ -211,8 +245,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 
 // TEMP VALUES PLS REMOVE nanti
-// #define TARGET_LIB "/apex/com.android.runtime/lib64/bionic/libc.so"
-#define TARGET_LIB "libc.so"
 #define TARGET_FUNC "open"
 
 
@@ -221,14 +253,14 @@ int main(int argc, char **argv)
 {
     // Boilerplate setup
     struct ring_buffer *events_rb = NULL;
-    struct ares_tracer_bpf *skel;
+    struct ares_tracer_bpf *skel = NULL;
     int err = 0;
 
     libbpf_set_print(libbpf_print_fn);
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
-
+    
 
     // Argument parsing
     struct args args = {
@@ -237,11 +269,25 @@ int main(int argc, char **argv)
     argp_parse(&argp, argc, argv, 0, NULL, &args);
 
 
+    // Prepare regex for libpattern matching
+    int lib_re_count = 0;
+    for (int i = 0; i < args.lib_pattern_count; i++) {
+        lib_has_slash[i] = strchr(args.lib_patterns[i], '/') != NULL;
+        if (regcomp(&lib_re[i], args.lib_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "Invalid regex pattern: %s\n", args.lib_patterns[i]);
+            err = -1;
+            goto cleanup;
+        }
+        lib_re_count++;
+    }
+
+
     // Open and load BPF skeleton
     skel = ares_tracer_bpf__open_and_load();
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
-        return 1;
+        err = 1;
+        goto cleanup;
     }
 
 
@@ -250,8 +296,8 @@ int main(int argc, char **argv)
         printf("Resolving symbols for PID %d...\n", args.pids[i]);
         int number_modules = parse_maps(args.pids[i], modules, 512);
         for (int j = 0; j < number_modules; j++) {
-            if (strstr(modules[j].path, TARGET_LIB) == NULL)
-                continue;   // TEMP: Only resolve libc.so / TARGET_LIB
+            if (lib_matches(modules[j].path, lib_re, lib_has_slash, args.lib_pattern_count) == false)
+                continue; 
             
             int number_symbols = parse_symbols(modules[j].path, symbols, 4096);
             for (int k = 0; k < number_symbols; k++) {
@@ -274,14 +320,6 @@ int main(int argc, char **argv)
             }
         }
     }
-
-
-    // Attaches BPF skeleton (if later add auto-attach)
-    // err = uprobe_bpf__attach(skel);
-    // if (err) {
-    //     fprintf(stderr, "Failed to auto-attach BPF skeleton: %d\n", err);
-    //     goto cleanup;
-    // }
     
 
     // Set up ring buffer polling
@@ -310,5 +348,9 @@ int main(int argc, char **argv)
     cleanup:
         ring_buffer__free(events_rb);
         ares_tracer_bpf__destroy(skel);
+
+        for (int i = 0; i < lib_re_count; i++)
+            regfree(&lib_re[i]);
+
         return err < 0 ? -err : 0;
 }

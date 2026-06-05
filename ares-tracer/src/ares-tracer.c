@@ -140,11 +140,16 @@ static bool func_matches(const char *func_name, regex_t *re, int count)
 
 // /proc/PID/maps parser module for symbol resolution
 typedef struct {
-    unsigned long base;
-    char path[256];
-} module_t;
+    pid_t pid;
+    char mod_path[256];
+    char func_name[256];
+    unsigned long offset;
+} probe_target_t;
 
-static int parse_maps(pid_t pid, module_t *modules, int max_modules)
+int mod_re_count = 0;
+int func_re_count = 0;
+
+static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
@@ -158,80 +163,65 @@ static int parse_maps(pid_t pid, module_t *modules, int max_modules)
     int count = 0;
 
     // Read /proc/PID/maps line by line then parse
-    while (fgets(line, sizeof(line), f) && count < max_modules) {
-        unsigned long start, end;
+    while (fgets(line, sizeof(line), f) && count < max_targets) {
         char perms[5], path[256] = "";
 
-        if (sscanf(line, "%lx-%lx %4s %*x %*s %*d %255s", &start, &end, perms, path) < 3)
-            continue;
-
+        if (sscanf(line, "%*x-%*x %4s %*x %*s %*d %255s", perms, path) < 1) continue;
         if (path[0] != '/') continue;
         if (!strchr(perms, 'x')) continue; 
+        if (!mod_matches(path, mod_re, mod_has_slash, mod_re_count)) continue;
 
-        modules[count].base = start;
-        strncpy(modules[count].path, path, sizeof(modules[count].path) - 1);
-        count++;
-    }
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) continue;
+
+        Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+        if (!elf){
+            close(fd);
+            continue;
+        }
+
+        Elf_Scn *scn = NULL;
+
+        // Basically iterate over ELF sections
+        while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_targets) {
+            GElf_Shdr shdr;
+            gelf_getshdr(scn, &shdr); // Get section header + section info
+
+            // Only proceed if section is SHT_SYMTAB or SHT_DYNSYM (for symbols)
+            if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+            if (shdr.sh_entsize == 0) continue;
+
+            Elf_Data *data = elf_getdata(scn, NULL);
+            int num_symbols = shdr.sh_size / shdr.sh_entsize;
+
+            for (int i = 0; i < num_symbols && count < max_targets; i++) {
+                GElf_Sym sym;
+                gelf_getsym(data, i, &sym);
+
+                if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue; // Only get functions
+                if (sym.st_value == 0) continue;                      // Skip undefined symbols
+                
+                const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
+                if (!name || name[0] == '\0') continue;
+                if (!func_matches(name, func_re, func_re_count)) continue;
+
+                targets[count].pid = pid;
+                strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
+                strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1); 
+                targets[count].offset = (unsigned long)sym.st_value; // IMPORTANT: Basically the offset of function in the shared library
+                count++;
+            }
+        }
+        elf_end(elf);
+        close(fd);
+    }   
 
     fclose(f);
     return count;
 }
 
-typedef struct {
-    char name[256];
-    unsigned long st_value; // ELF vaddr (offset for .so)
-} symbol_t;
-
-static int parse_symbols(const char *path, symbol_t *symbols, int max_symbols)
-{
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
-
-    elf_version(EV_CURRENT); 
-    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
-    if (!elf){
-        close(fd);
-        return 0;
-    }
-
-    int count = 0;
-    Elf_Scn *scn = NULL;
-
-    // Basically iterate over ELF sections
-    while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_symbols) {
-        GElf_Shdr shdr;
-        gelf_getshdr(scn, &shdr); // Get section header + section info
-
-        // Only proceed if section is SHT_SYMTAB or SHT_DYNSYM (for symbols)
-        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
-        if (shdr.sh_entsize == 0) continue;
-
-        Elf_Data *data = elf_getdata(scn, NULL);
-        int num_symbols = shdr.sh_size / shdr.sh_entsize;
-
-        for (int i = 0; i < num_symbols && count < max_symbols; i++) {
-            GElf_Sym sym;
-            gelf_getsym(data, i, &sym);
-
-            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue; // Only get functions
-            if (sym.st_value == 0) continue;                      // Skip undefined symbols
-
-            const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
-            if (!name || name[0] == '\0') continue;
-
-            strncpy(symbols[count].name, name, sizeof(symbols[count].name) - 1); 
-            symbols[count].st_value = (unsigned long)sym.st_value; // IMPORTANT: Basically the offset of function in the shared library
-            count++;
-        }
-    }
-
-    elf_end(elf);
-    close(fd);
-    return count;
-}
-
-module_t modules[512];
-symbol_t symbols[4096];
+probe_target_t probe_targets[4096];
+int probe_target_count = 0;
 
 
 // Handle events from ring buffer 
@@ -275,9 +265,6 @@ int main(int argc, char **argv)
     struct ring_buffer *events_rb = NULL;
     struct ares_tracer_bpf *skel = NULL;
     int err = 0;
-
-    int mod_re_count = 0;
-    int func_re_count = 0;
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -323,31 +310,41 @@ int main(int argc, char **argv)
 
 
     // Find and resolve symbols 
+    elf_version(EV_CURRENT); 
     for (int i = 0; i < args.pid_count; i++) {
-        printf("Resolving symbols for PID %d...\n", args.pids[i]);
-        int number_modules = parse_maps(args.pids[i], modules, 512);
-        for (int j = 0; j < number_modules; j++) {
-            if (mod_matches(modules[j].path, mod_re, mod_has_slash, args.mod_pattern_count) == false)
-                continue; 
-            int number_symbols = parse_symbols(modules[j].path, symbols, 4096);
-            for (int k = 0; k < number_symbols; k++) {
-                if (func_matches(symbols[k].name, func_re, func_re_count)) {
-                    printf("[+] Found %s at offset 0x%lx in %s\n", symbols[k].name, symbols[k].st_value, modules[j].path);
-                    skel->links.uprobe_open = bpf_program__attach_uprobe(
-                        skel->progs.uprobe_open,
-                        false, // uprobe, set true for uretprobe 
-                        args.pids[i],
-                        modules[j].path,
-                        symbols[k].st_value
-                    );
+        printf("Resolving targets for PID %d\n", args.pids[i]);
+        int resolved = resolve_targets(
+            args.pids[i],
+            probe_targets + probe_target_count,
+            sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
+        );
+        if (resolved > 0) probe_target_count += resolved;
+    }
 
-                    if (!skel->links.uprobe_open) {
-                        err = -errno;
-                        fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-                        goto cleanup;
-                    }
-                }
-            }
+    if (probe_target_count == 0) {
+        fprintf(stderr, "No trace targets found\n");
+        err = -1;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < probe_target_count; i++) {
+        printf("Attaching uprobe to %s in %s at offset 0x%lx\n", 
+            probe_targets[i].func_name, 
+            probe_targets[i].mod_path, 
+            probe_targets[i].offset
+        );
+        skel->links.uprobe_open = bpf_program__attach_uprobe(
+            skel->progs.uprobe_open, 
+            false, 
+            probe_targets[i].pid, 
+            probe_targets[i].mod_path, 
+            probe_targets[i].offset
+        );
+
+        if (!skel->links.uprobe_open) {
+            fprintf(stderr, "Failed to attach uprobe to %s in %s\n", probe_targets[i].func_name, probe_targets[i].mod_path);
+            err = -1;
+            goto cleanup;
         }
     }
     

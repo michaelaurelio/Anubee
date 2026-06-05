@@ -106,6 +106,13 @@ regex_t mod_re[32];
 bool mod_has_slash[32];
 regex_t func_re[32];
 
+typedef struct {
+    pid_t pid;
+    char mod_path[256];
+    char func_name[256];
+    unsigned long offset;
+} probe_target_t;
+
 static bool mod_matches(const char *full_path, regex_t *re, bool *has_slash, int count)
 {
     if (count == 0) return true;
@@ -137,15 +144,18 @@ static bool func_matches(const char *func_name, regex_t *re, int count)
     return false;
 }
 
+static bool is_duplicate(probe_target_t *targets, int count, pid_t pid, const char *mod_path, unsigned long offset)
+{
+    for (int i = 0; i < count; i++) {
+        if (targets[i].pid == pid && targets[i].offset == offset && strcmp(targets[i].mod_path, mod_path) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
-// /proc/PID/maps parser module for symbol resolution
-typedef struct {
-    pid_t pid;
-    char mod_path[256];
-    char func_name[256];
-    unsigned long offset;
-} probe_target_t;
 
+// /proc/PID/maps parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
 
@@ -205,11 +215,13 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                 if (!name || name[0] == '\0') continue;
                 if (!func_matches(name, func_re, func_re_count)) continue;
 
-                targets[count].pid = pid;
-                strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
-                strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1); 
-                targets[count].offset = (unsigned long)sym.st_value; // IMPORTANT: Basically the offset of function in the shared library
-                count++;
+                if (!is_duplicate(targets, count, pid, path, (unsigned long)sym.st_value)) {
+                    targets[count].pid = pid;
+                    strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
+                    strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1); 
+                    targets[count].offset = (unsigned long)sym.st_value; // IMPORTANT: Basically the offset of function in the shared library
+                    count++;
+                }
             }
         }
         elf_end(elf);

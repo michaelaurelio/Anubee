@@ -13,9 +13,10 @@
 //   2. Loads + attaches the BPF programs and installs the UID *before* the app
 //      is (re)launched, so tracing is armed from the app's first syscall.
 //   3. force-stops then launches the package via the native am/cmd tools.
-//   4. Builds the process's executable module map purely from uprobe_mmap /
-//      uprobe_munmap events — it never reads /proc/<pid>/maps. The moment the
-//      target library is mapped, its range is pushed into the BPF filter.
+//   4. Arms the in-kernel library filter from uprobe_mmap events (event-driven,
+//      race-free): the moment the target library is mapped, its range is pushed
+//      into the BPF filter. Backtrace symbolization (every frame, all libs) is
+//      handled separately in symbolize.c via /proc/<pid>/maps + each ELF .dynsym.
 //   5. Prints each filtered syscall (name + raw args + symbolized backtrace).
 //
 // Intended to run as root from a plain `adb shell` on a rooted device.
@@ -38,6 +39,7 @@
 
 #include "heimdall.h"
 #include "heimdall.skel.h"
+#include "symbolize.h"
 
 extern char **environ;
 
@@ -65,6 +67,10 @@ static const char *g_lib;
 static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static volatile sig_atomic_t exiting;
+
+static unsigned long long g_next_id = 1;       // monotonic per-syscall id
+static FILE *g_json;                            // JSON output stream, or NULL
+static unsigned long long g_json_count;         // objects written so far
 
 static void on_sigint(int s) { (void)s; exiting = 1; }
 
@@ -150,79 +156,10 @@ static int resolve_component(const char *pkg, char *out, size_t outsz)
 	return out[0] ? 0 : -1;
 }
 
-// ---- event-driven module map (no /proc/<pid>/maps) -----------------------
-
-struct module {
-	__u32 tgid;
-	__u64 start, end, pgoff;
-	char  name[HEIMDALL_MAX_NAME];
-};
-
-static struct module *g_mods;
-static size_t g_nmods, g_cap;
-
-static void mod_add(__u32 tgid, __u64 start, __u64 end, __u64 pgoff, const char *name)
-{
-	for (size_t i = 0; i < g_nmods; i++)
-		if (g_mods[i].tgid == tgid && g_mods[i].start == start) {
-			g_mods[i].end = end;                  // refresh in place
-			return;
-		}
-
-	if (g_nmods == g_cap) {
-		size_t ncap = g_cap ? g_cap * 2 : 256;
-		struct module *p = realloc(g_mods, ncap * sizeof(*p));
-		if (!p)
-			return;
-		g_mods = p;
-		g_cap = ncap;
-	}
-
-	struct module *m = &g_mods[g_nmods++];
-	m->tgid = tgid;
-	m->start = start;
-	m->end = end;
-	m->pgoff = pgoff;
-	snprintf(m->name, sizeof(m->name), "%s", name);
-}
-
-static void mod_remove_range(__u32 tgid, __u64 start, __u64 end)
-{
-	for (size_t i = 0; i < g_nmods; ) {
-		struct module *m = &g_mods[i];
-		if (m->tgid == tgid && m->start < end && m->end > start)
-			*m = g_mods[--g_nmods];               // swap-remove
-		else
-			i++;
-	}
-}
-
-// Lowest start among segments of the same file in this process = load base.
-static __u64 mod_base(__u32 tgid, const char *name)
-{
-	__u64 lo = ~0ULL;
-	for (size_t i = 0; i < g_nmods; i++)
-		if (g_mods[i].tgid == tgid && !strcmp(g_mods[i].name, name) && g_mods[i].start < lo)
-			lo = g_mods[i].start;
-	return (lo == ~0ULL) ? 0 : lo;
-}
-
-static void resolve(__u32 tgid, __u64 addr, char *out, size_t outsz)
-{
-	for (size_t i = 0; i < g_nmods; i++) {
-		struct module *m = &g_mods[i];
-		if (m->tgid == tgid && addr >= m->start && addr < m->end) {
-			__u64 base = mod_base(tgid, m->name);
-			snprintf(out, outsz, "%s+0x%llx", m->name,
-				 (unsigned long long)(addr - base));
-			return;
-		}
-	}
-	// Unknown => mapped before tracing started (zygote-inherited libc/libart)
-	// or an anonymous/JIT region. We deliberately do not fall back to
-	// /proc/<pid>/maps.
-	snprintf(out, outsz, "0x%llx", (unsigned long long)addr);
-}
+// Symbolization (every frame: target lib + libc + others) is delegated to
+// symbolize.c, which reads /proc/<pid>/maps for module ranges/paths and parses
+// each ELF's .dynsym. We use sym_resolve() wherever we render a backtrace. The
+// in-kernel filter below remains purely event-driven.
 
 // ---- target library -> BPF filter ----------------------------------------
 
@@ -251,25 +188,216 @@ static void push_lib_range(__u32 tgid, __u64 start, __u64 end)
 		       lr.count, lr.count == 1 ? "" : "s");
 }
 
+// ---- string-argument types -----------------------------------------------
+
+// Which of args[0..3] are a const char* (path/string), per syscall. Bit i set
+// => args[i] is a string. arm64 uses the generic syscall ABI, so the legacy
+// open/stat/... numbers don't exist — only the *at variants do.
+#define A0 (1u << 0)
+#define A1 (1u << 1)
+#define A2 (1u << 2)
+#define A3 (1u << 3)
+
+static const struct { long nr; unsigned char mask; } g_str_args[] = {
+#ifdef __NR_openat
+	{ __NR_openat, A1 },
+#endif
+#ifdef __NR_openat2
+	{ __NR_openat2, A1 },
+#endif
+#ifdef __NR_name_to_handle_at
+	{ __NR_name_to_handle_at, A1 },
+#endif
+#ifdef __NR_readlinkat
+	{ __NR_readlinkat, A1 },
+#endif
+#ifdef __NR_newfstatat
+	{ __NR_newfstatat, A1 },
+#endif
+#ifdef __NR_statx
+	{ __NR_statx, A1 },
+#endif
+#ifdef __NR_faccessat
+	{ __NR_faccessat, A1 },
+#endif
+#ifdef __NR_faccessat2
+	{ __NR_faccessat2, A1 },
+#endif
+#ifdef __NR_fchmodat
+	{ __NR_fchmodat, A1 },
+#endif
+#ifdef __NR_fchownat
+	{ __NR_fchownat, A1 },
+#endif
+#ifdef __NR_unlinkat
+	{ __NR_unlinkat, A1 },
+#endif
+#ifdef __NR_mkdirat
+	{ __NR_mkdirat, A1 },
+#endif
+#ifdef __NR_mknodat
+	{ __NR_mknodat, A1 },
+#endif
+#ifdef __NR_utimensat
+	{ __NR_utimensat, A1 },
+#endif
+#ifdef __NR_renameat
+	{ __NR_renameat, A1 | A3 },
+#endif
+#ifdef __NR_renameat2
+	{ __NR_renameat2, A1 | A3 },
+#endif
+#ifdef __NR_linkat
+	{ __NR_linkat, A1 | A3 },
+#endif
+#ifdef __NR_symlinkat
+	{ __NR_symlinkat, A0 | A2 },
+#endif
+#ifdef __NR_execve
+	{ __NR_execve, A0 },
+#endif
+#ifdef __NR_execveat
+	{ __NR_execveat, A1 },
+#endif
+#ifdef __NR_chdir
+	{ __NR_chdir, A0 },
+#endif
+#ifdef __NR_chroot
+	{ __NR_chroot, A0 },
+#endif
+#ifdef __NR_truncate
+	{ __NR_truncate, A0 },
+#endif
+#ifdef __NR_statfs
+	{ __NR_statfs, A0 },
+#endif
+#ifdef __NR_getxattr
+	{ __NR_getxattr, A0 | A1 },
+#endif
+#ifdef __NR_lgetxattr
+	{ __NR_lgetxattr, A0 | A1 },
+#endif
+#ifdef __NR_setxattr
+	{ __NR_setxattr, A0 | A1 },
+#endif
+#ifdef __NR_mount
+	{ __NR_mount, A0 | A1 | A2 },
+#endif
+#ifdef __NR_umount2
+	{ __NR_umount2, A0 },
+#endif
+#ifdef __NR_pivot_root
+	{ __NR_pivot_root, A0 | A1 },
+#endif
+};
+
+// Mirror the table into the kernel arg_types map so the hook knows which
+// arguments to dereference. Must be done before the app is launched.
+static void install_arg_types(int fd)
+{
+	for (size_t i = 0; i < sizeof(g_str_args) / sizeof(g_str_args[0]); i++) {
+		__u32 k = (__u32)g_str_args[i].nr;
+		__u8 v = g_str_args[i].mask;
+		if (k < 512)
+			bpf_map_update_elem(fd, &k, &v, BPF_ANY);
+	}
+}
+
+static const char *arg_string(const struct heimdall_syscall_event *e, int i)
+{
+	if (i < HEIMDALL_STR_SLOTS && (e->str_present & (1u << i)))
+		return e->str[i];
+	return NULL;
+}
+
+// ---- JSON export ---------------------------------------------------------
+
+static void json_puts_escaped(FILE *f, const char *s)
+{
+	for (; *s; s++) {
+		unsigned char c = (unsigned char)*s;
+		switch (c) {
+		case '"':  fputs("\\\"", f); break;
+		case '\\': fputs("\\\\", f); break;
+		case '\n': fputs("\\n", f);  break;
+		case '\r': fputs("\\r", f);  break;
+		case '\t': fputs("\\t", f);  break;
+		default:
+			if (c < 0x20)
+				fprintf(f, "\\u%04x", c);
+			else
+				fputc(c, f);
+		}
+	}
+}
+
+static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id)
+{
+	FILE *f = g_json;
+	fprintf(f, "%s\n  {", g_json_count++ ? "," : "");
+	fprintf(f, "\"id\":%llu,\"pid\":%u,\"tid\":%u,\"syscall_nr\":%llu,\"syscall\":\"%s\",",
+		id, e->h.pid, e->h.tid, (unsigned long long)e->nr, sysname(e->nr));
+
+	fprintf(f, "\"args\":[");
+	for (int i = 0; i < HEIMDALL_SYSCALL_NARGS; i++)
+		fprintf(f, "%s\"0x%llx\"", i ? "," : "", (unsigned long long)e->args[i]);
+	fprintf(f, "],\"string_args\":{");
+	for (int i = 0, first = 1; i < HEIMDALL_STR_SLOTS; i++) {
+		const char *s = arg_string(e, i);
+		if (!s)
+			continue;
+		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		first = 0;
+		json_puts_escaped(f, s);
+		fputc('"', f);
+	}
+	fprintf(f, "},\"backtrace\":[");
+
+	int n = e->stack_sz / (int)sizeof(__u64);
+	char sym[320];
+	for (int i = 0, first = 1; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
+		if (e->stack[i] == 0)
+			break;
+		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+		fprintf(f, "%s{\"frame\":%d,\"addr\":\"0x%llx\",\"symbol\":\"",
+			first ? "" : ",", i, (unsigned long long)e->stack[i]);
+		first = 0;
+		json_puts_escaped(f, sym);
+		fputs("\"}", f);
+	}
+	fputs("]}", f);
+}
+
 // ---- ring buffer handling ------------------------------------------------
 
 static void handle_syscall(const struct heimdall_syscall_event *e)
 {
-	printf("==> [%u/%u] %s(0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx)\n",
-	       e->h.pid, e->h.tid, sysname(e->nr),
-	       (unsigned long long)e->args[0], (unsigned long long)e->args[1],
-	       (unsigned long long)e->args[2], (unsigned long long)e->args[3],
-	       (unsigned long long)e->args[4], (unsigned long long)e->args[5]);
+	unsigned long long id = g_next_id++;
+
+	printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
+	for (int i = 0; i < HEIMDALL_SYSCALL_NARGS; i++) {
+		const char *s = arg_string(e, i);
+		if (i)
+			printf(", ");
+		if (s)
+			printf("\"%s\"", s);
+		else
+			printf("0x%llx", (unsigned long long)e->args[i]);
+	}
+	printf(")\n");
 
 	int n = e->stack_sz / (int)sizeof(__u64);
 	char sym[320];
 	for (int i = 0; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
 		if (e->stack[i] == 0)
 			break;
-		resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
 		printf("      #%-2d %s\n", i, sym);
 	}
 	fflush(stdout);
+
+	if (g_json)
+		json_emit(e, id);
 }
 
 static int handle_event(void *ctx, void *data, size_t sz)
@@ -284,7 +412,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
 		if (sz < sizeof(struct heimdall_map_event))
 			return 0;
 		const struct heimdall_map_event *m = data;
-		mod_add(m->h.pid, m->start, m->end, m->pgoff, m->name);
 		if (g_verbose)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
@@ -297,7 +424,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 		if (sz < sizeof(struct heimdall_unmap_event))
 			return 0;
 		const struct heimdall_unmap_event *u = data;
-		mod_remove_range(u->h.pid, u->start, u->end);
+		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
 		break;
 	}
 	case HEIMDALL_EV_SYSCALL:
@@ -318,19 +445,43 @@ static int libbpf_quiet(enum libbpf_print_level level, const char *fmt, va_list 
 	return vfprintf(stderr, fmt, args);
 }
 
+static void usage(const char *argv0)
+{
+	fprintf(stderr,
+		"usage: %s [-o out.json] [-v] <package> <lib-substring> [activity]\n"
+		"  -o, --json <file>   export captured syscalls to a JSON file\n"
+		"  -v, --verbose       also log every executable mapping\n"
+		"  e.g. %s -o trace.json com.example.app librasp.so\n",
+		argv0, argv0);
+}
+
 int main(int argc, char **argv)
 {
-	if (argc < 3) {
-		fprintf(stderr,
-			"usage: %s <package> <lib-substring> [activity]\n"
-			"  e.g. %s com.example.app librasp.so\n",
-			argv[0], argv[0]);
+	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
+	const char *json_path = getenv("HEIMDALL_JSON");
+
+	int ai = 1;
+	for (; ai < argc; ai++) {
+		if (!strcmp(argv[ai], "-o") || !strcmp(argv[ai], "--json")) {
+			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
+			json_path = argv[++ai];
+		} else if (!strcmp(argv[ai], "-v") || !strcmp(argv[ai], "--verbose")) {
+			g_verbose = 1;
+		} else if (argv[ai][0] == '-') {
+			fprintf(stderr, "unknown option: %s\n", argv[ai]);
+			usage(argv[0]);
+			return 1;
+		} else {
+			break;
+		}
+	}
+	if (argc - ai < 2) {
+		usage(argv[0]);
 		return 1;
 	}
-	g_pkg = argv[1];
-	g_lib = argv[2];
-	const char *activity = (argc > 3) ? argv[3] : NULL;
-	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
+	g_pkg = argv[ai];
+	g_lib = argv[ai + 1];
+	const char *activity = (argc - ai > 2) ? argv[ai + 2] : NULL;
 
 	int uid = resolve_uid(g_pkg);
 	if (uid < 0) {
@@ -349,7 +500,19 @@ int main(int argc, char **argv)
 
 	g_lib_ranges_fd = bpf_map__fd(skel->maps.lib_ranges);
 
-	// Arm the UID filter BEFORE the app is launched.
+	if (json_path) {
+		g_json = fopen(json_path, "w");
+		if (!g_json) {
+			fprintf(stderr, "cannot open '%s': %s\n", json_path, strerror(errno));
+			goto out;
+		}
+		fputc('[', g_json);
+	}
+
+	// Tell the hook which syscall args are strings, and arm the UID filter —
+	// both BEFORE the app is launched so the very first syscalls are decoded.
+	install_arg_types(bpf_map__fd(skel->maps.arg_types));
+
 	__u32 key = 0, vuid = (__u32)uid;
 	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
 		fprintf(stderr, "failed to set target uid: %s\n", strerror(errno));
@@ -399,7 +562,12 @@ int main(int argc, char **argv)
 out_rb:
 	ring_buffer__free(rb);
 out:
+	if (g_json) {
+		fputs("\n]\n", g_json);
+		fclose(g_json);
+		printf("wrote %llu syscall record%s to %s\n",
+		       g_json_count, g_json_count == 1 ? "" : "s", json_path);
+	}
 	heimdall__destroy(skel);
-	free(g_mods);
 	return 0;
 }

@@ -63,6 +63,17 @@ struct {
 	__type(value, struct heimdall_lib_ranges);
 } lib_ranges SEC(".maps");
 
+// Per-syscall mask of which of args[0..3] are const char * (a string). Indexed
+// by syscall number; filled by the loader from a built-in table. Used to decide
+// which arguments to dereference and copy at entry.
+#define ARG_TYPES_MAX 512
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, ARG_TYPES_MAX);
+	__type(key, __u32);
+	__type(value, __u8);
+} arg_types SEC(".maps");
+
 // ---- helpers -------------------------------------------------------------
 
 static __always_inline int uid_matches(void)
@@ -143,8 +154,28 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->args[4] = BPF_CORE_READ(user_regs, regs[4]);
 	e->args[5] = BPF_CORE_READ(user_regs, regs[5]);
 	e->stack_sz = (__s32)sz;
-	e->_pad2 = 0;
 	__builtin_memcpy(e->stack, stack, sizeof(e->stack));
+
+	// Resolve string arguments. Look up which of args[0..3] are char* for this
+	// syscall and copy the pointed-to string out of the caller's memory. The
+	// loop is unrolled so each e->str[i] is a constant offset (verifier-safe).
+	e->str_present = 0;
+	__u32 nr32 = (__u32)e->nr;
+	__u8 *maskp = (nr32 < ARG_TYPES_MAX) ? bpf_map_lookup_elem(&arg_types, &nr32) : NULL;
+	__u8 mask = maskp ? *maskp : 0;
+	if (mask) {
+		#pragma clang loop unroll(full)
+		for (int i = 0; i < HEIMDALL_STR_SLOTS; i++) {
+			if (!((mask >> i) & 1))
+				continue;
+			long r = bpf_probe_read_user_str(e->str[i], HEIMDALL_STR_MAX,
+							 (const void *)e->args[i]);
+			if (r > 0)
+				e->str_present |= (1u << i);
+			else
+				e->str[i][0] = '\0';
+		}
+	}
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;

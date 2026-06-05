@@ -12,6 +12,12 @@
 #define HEIMDALL_SYSCALL_NARGS   6
 #define HEIMDALL_MAX_NAME        64
 
+/* Inline capture of string (const char *) arguments. We resolve at most the
+ * first HEIMDALL_STR_SLOTS args (covers every path-taking syscall), each up to
+ * HEIMDALL_STR_MAX bytes, read from the caller's memory at syscall entry. */
+#define HEIMDALL_STR_SLOTS       4
+#define HEIMDALL_STR_MAX         256
+
 /* Linux VMA flag (not always macro-defined in vmlinux.h). */
 #ifndef HEIMDALL_VM_EXEC
 #define HEIMDALL_VM_EXEC 0x00000004UL
@@ -32,14 +38,15 @@ struct heimdall_hdr {
 	__u32 _pad;
 };
 
-/* Entry-only syscall record: number + raw args + user backtrace. */
+/* Entry-only syscall record: number + raw args + resolved string args + stack. */
 struct heimdall_syscall_event {
 	struct heimdall_hdr h;
 	__u64 nr;
 	__u64 args[HEIMDALL_SYSCALL_NARGS];
 	__s32 stack_sz;                              /* bytes valid in stack[] */
-	__u32 _pad2;
+	__u32 str_present;                           /* bit i set => str[i] is valid */
 	__u64 stack[HEIMDALL_MAX_STACK_DEPTH];       /* user return addresses */
+	char  str[HEIMDALL_STR_SLOTS][HEIMDALL_STR_MAX]; /* string value of args[i] */
 };
 
 /* An executable, file-backed mapping just appeared (from uprobe_mmap). */

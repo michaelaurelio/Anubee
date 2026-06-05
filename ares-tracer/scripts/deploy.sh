@@ -2,7 +2,7 @@
 # Push ares-tracer to a connected Android device via adb.
 set -euo pipefail
 
-ARES_DIR="$(cd "$(dirname "$0")" && pwd)"
+ARES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="$ARES_DIR/bin/ares-tracer-aarch64"
 DEVICE_PATH="/data/local/tmp/ares-tracer"
 

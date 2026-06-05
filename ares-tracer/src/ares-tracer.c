@@ -145,8 +145,8 @@ static int parse_symbols(const char *path, symbol_t *symbols, int max_symbols)
         gelf_getshdr(scn, &shdr); // Get section header + section info
 
         // Only proceed if section is SHT_SYMTAB or SHT_DYNSYM (for symbols)
-        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM)
-            continue;
+        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+        if (shdr.sh_entsize == 0) continue;
 
         Elf_Data *data = elf_getdata(scn, NULL);
         int num_symbols = shdr.sh_size / shdr.sh_entsize;

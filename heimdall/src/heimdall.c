@@ -60,6 +60,21 @@ static const char *sysname(unsigned long long nr)
 	return buf;
 }
 
+// Per-syscall argument count (arm64 ABI), so we print only the real arguments
+// instead of leftover register values. Unknown syscalls show all 6.
+static const struct { long nr; int count; } g_argc[] = {
+#include "syscall_argc.h"
+};
+static const int g_nargc = (int)(sizeof(g_argc) / sizeof(g_argc[0]));
+
+static int arg_count(unsigned long long nr)
+{
+	for (int i = 0; i < g_nargc; i++)
+		if ((unsigned long long)g_argc[i].nr == nr)
+			return g_argc[i].count;
+	return HEIMDALL_SYSCALL_NARGS;
+}
+
 // ---- globals -------------------------------------------------------------
 
 static const char *g_pkg;
@@ -310,6 +325,206 @@ static const char *arg_string(const struct heimdall_syscall_event *e, int i)
 	return NULL;
 }
 
+// ---- file-descriptor arguments -------------------------------------------
+
+// Which args are a file descriptor (or *at dirfd) per syscall: bit i => args[i]
+// is an fd. Resolved to a path at print time via /proc/<pid>/fd/<n>.
+#define A4 (1u << 4)
+
+static const struct { long nr; unsigned char mask; } g_fd_args[] = {
+#ifdef __NR_read
+	{ __NR_read, A0 },
+#endif
+#ifdef __NR_write
+	{ __NR_write, A0 },
+#endif
+#ifdef __NR_pread64
+	{ __NR_pread64, A0 },
+#endif
+#ifdef __NR_pwrite64
+	{ __NR_pwrite64, A0 },
+#endif
+#ifdef __NR_readv
+	{ __NR_readv, A0 },
+#endif
+#ifdef __NR_writev
+	{ __NR_writev, A0 },
+#endif
+#ifdef __NR_close
+	{ __NR_close, A0 },
+#endif
+#ifdef __NR_fstat
+	{ __NR_fstat, A0 },
+#endif
+#ifdef __NR_fstatfs
+	{ __NR_fstatfs, A0 },
+#endif
+#ifdef __NR_lseek
+	{ __NR_lseek, A0 },
+#endif
+#ifdef __NR_fsync
+	{ __NR_fsync, A0 },
+#endif
+#ifdef __NR_fdatasync
+	{ __NR_fdatasync, A0 },
+#endif
+#ifdef __NR_ftruncate
+	{ __NR_ftruncate, A0 },
+#endif
+#ifdef __NR_fcntl
+	{ __NR_fcntl, A0 },
+#endif
+#ifdef __NR_ioctl
+	{ __NR_ioctl, A0 },
+#endif
+#ifdef __NR_getdents64
+	{ __NR_getdents64, A0 },
+#endif
+#ifdef __NR_flock
+	{ __NR_flock, A0 },
+#endif
+#ifdef __NR_fchdir
+	{ __NR_fchdir, A0 },
+#endif
+#ifdef __NR_fchmod
+	{ __NR_fchmod, A0 },
+#endif
+#ifdef __NR_fchown
+	{ __NR_fchown, A0 },
+#endif
+#ifdef __NR_dup
+	{ __NR_dup, A0 },
+#endif
+#ifdef __NR_dup3
+	{ __NR_dup3, A0 },
+#endif
+#ifdef __NR_sendto
+	{ __NR_sendto, A0 },
+#endif
+#ifdef __NR_recvfrom
+	{ __NR_recvfrom, A0 },
+#endif
+#ifdef __NR_sendmsg
+	{ __NR_sendmsg, A0 },
+#endif
+#ifdef __NR_recvmsg
+	{ __NR_recvmsg, A0 },
+#endif
+#ifdef __NR_connect
+	{ __NR_connect, A0 },
+#endif
+#ifdef __NR_getsockopt
+	{ __NR_getsockopt, A0 },
+#endif
+#ifdef __NR_setsockopt
+	{ __NR_setsockopt, A0 },
+#endif
+#ifdef __NR_epoll_ctl
+	{ __NR_epoll_ctl, A0 | A4 },
+#endif
+#ifdef __NR_mmap
+	{ __NR_mmap, A4 },
+#endif
+	// *at family: arg0 is the dirfd.
+#ifdef __NR_openat
+	{ __NR_openat, A0 },
+#endif
+#ifdef __NR_openat2
+	{ __NR_openat2, A0 },
+#endif
+#ifdef __NR_newfstatat
+	{ __NR_newfstatat, A0 },
+#endif
+#ifdef __NR_readlinkat
+	{ __NR_readlinkat, A0 },
+#endif
+#ifdef __NR_faccessat
+	{ __NR_faccessat, A0 },
+#endif
+#ifdef __NR_faccessat2
+	{ __NR_faccessat2, A0 },
+#endif
+#ifdef __NR_fchmodat
+	{ __NR_fchmodat, A0 },
+#endif
+#ifdef __NR_fchownat
+	{ __NR_fchownat, A0 },
+#endif
+#ifdef __NR_unlinkat
+	{ __NR_unlinkat, A0 },
+#endif
+#ifdef __NR_mkdirat
+	{ __NR_mkdirat, A0 },
+#endif
+#ifdef __NR_utimensat
+	{ __NR_utimensat, A0 },
+#endif
+#ifdef __NR_statx
+	{ __NR_statx, A0 },
+#endif
+#ifdef __NR_name_to_handle_at
+	{ __NR_name_to_handle_at, A0 },
+#endif
+#ifdef __NR_execveat
+	{ __NR_execveat, A0 },
+#endif
+};
+
+static unsigned arg_fd_mask(unsigned long long nr)
+{
+	for (size_t i = 0; i < sizeof(g_fd_args) / sizeof(g_fd_args[0]); i++)
+		if ((unsigned long long)g_fd_args[i].nr == nr)
+			return g_fd_args[i].mask;
+	return 0;
+}
+
+// Render an fd value: "AT_FDCWD", "fd=199 </proc/self/maps>", or "fd=5".
+static void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
+{
+	int fd = (int)val;
+	if (fd == -100) {                       // AT_FDCWD
+		snprintf(out, outsz, "AT_FDCWD");
+		return;
+	}
+	if (fd < 0) {
+		snprintf(out, outsz, "%d", fd);
+		return;
+	}
+	char p[64], tgt[256];
+	snprintf(p, sizeof(p), "/proc/%d/fd/%d", pid, fd);
+	ssize_t k = readlink(p, tgt, sizeof(tgt) - 1);
+	if (k > 0) {
+		tgt[k] = '\0';
+		snprintf(out, outsz, "fd=%d <%s>", fd, tgt);
+	} else {
+		snprintf(out, outsz, "fd=%d", fd);
+	}
+}
+
+// Render argument i of a syscall: string > fd > raw hex.
+static void render_arg(const struct heimdall_syscall_event *e, int i, char *out, size_t outsz)
+{
+	const char *s = arg_string(e, i);
+	if (s) {
+		snprintf(out, outsz, "\"%s\"", s);
+		return;
+	}
+	if (arg_fd_mask(e->nr) & (1u << i)) {
+		render_fd((int)e->h.pid, e->args[i], out, outsz);
+		return;
+	}
+	snprintf(out, outsz, "0x%llx", (unsigned long long)e->args[i]);
+}
+
+// Render a syscall return value: decimal, with errno name for small negatives.
+static void render_ret(long long ret, char *out, size_t outsz)
+{
+	if (ret < 0 && ret >= -4095)
+		snprintf(out, outsz, "%lld (%s)", ret, strerror((int)-ret));
+	else
+		snprintf(out, outsz, "%lld", ret);
+}
+
 // ---- JSON export ---------------------------------------------------------
 
 static void json_puts_escaped(FILE *f, const char *s)
@@ -331,17 +546,26 @@ static void json_puts_escaped(FILE *f, const char *s)
 	}
 }
 
-static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id)
+static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id,
+		      int has_ret, long long ret)
 {
 	FILE *f = g_json;
 	fprintf(f, "%s\n  {", g_json_count++ ? "," : "");
 	fprintf(f, "\"id\":%llu,\"pid\":%u,\"tid\":%u,\"syscall_nr\":%llu,\"syscall\":\"%s\",",
 		id, e->h.pid, e->h.tid, (unsigned long long)e->nr, sysname(e->nr));
 
+	int nargs = arg_count(e->nr);
 	fprintf(f, "\"args\":[");
-	for (int i = 0; i < HEIMDALL_SYSCALL_NARGS; i++)
+	for (int i = 0; i < nargs; i++)
 		fprintf(f, "%s\"0x%llx\"", i ? "," : "", (unsigned long long)e->args[i]);
-	fprintf(f, "],\"string_args\":{");
+	fprintf(f, "],");
+
+	if (has_ret)
+		fprintf(f, "\"retval\":%lld,", ret);
+	else
+		fprintf(f, "\"retval\":null,");
+
+	fprintf(f, "\"string_args\":{");
 	for (int i = 0, first = 1; i < HEIMDALL_STR_SLOTS; i++) {
 		const char *s = arg_string(e, i);
 		if (!s)
@@ -349,6 +573,18 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
 		first = 0;
 		json_puts_escaped(f, s);
+		fputc('"', f);
+	}
+	fprintf(f, "},\"fd_args\":{");
+	unsigned fdm = arg_fd_mask(e->nr);
+	for (int i = 0, first = 1; i < HEIMDALL_SYSCALL_NARGS; i++) {
+		if (!(fdm & (1u << i)))
+			continue;
+		char fdbuf[320];
+		render_fd((int)e->h.pid, e->args[i], fdbuf, sizeof(fdbuf));
+		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		first = 0;
+		json_puts_escaped(f, fdbuf);
 		fputc('"', f);
 	}
 	fprintf(f, "},\"backtrace\":[");
@@ -368,21 +604,82 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 	fputs("]}", f);
 }
 
+// ---- entry/return pairing ------------------------------------------------
+//
+// The entry line is printed immediately (live), but the JSON record is held
+// until its return arrives so it can carry the retval. Entries are paired with
+// returns by tid (syscalls are serialized per thread). An entry whose return is
+// never seen (interrupted, or stopped while blocked) is flushed without a retval.
+
+struct pend_entry {
+	int used;
+	__u32 tid;
+	unsigned long long id;
+	struct heimdall_syscall_event ev;
+};
+
+static struct pend_entry *g_pend;
+static size_t g_pend_n, g_pend_cap;
+
+static struct pend_entry *pend_find(__u32 tid)
+{
+	for (size_t i = 0; i < g_pend_n; i++)
+		if (g_pend[i].used && g_pend[i].tid == tid)
+			return &g_pend[i];
+	return NULL;
+}
+
+static void pend_store(const struct heimdall_syscall_event *e, unsigned long long id)
+{
+	struct pend_entry *p = pend_find(e->h.tid);
+	if (p) {
+		if (g_json)                     // previous syscall on this tid never returned
+			json_emit(&p->ev, p->id, 0, 0);
+	} else {
+		for (size_t i = 0; i < g_pend_n; i++)
+			if (!g_pend[i].used) { p = &g_pend[i]; break; }
+		if (!p) {
+			if (g_pend_n == g_pend_cap) {
+				size_t nc = g_pend_cap ? g_pend_cap * 2 : 64;
+				struct pend_entry *np = realloc(g_pend, nc * sizeof(*np));
+				if (!np)
+					return;
+				g_pend = np;
+				g_pend_cap = nc;
+			}
+			p = &g_pend[g_pend_n++];
+		}
+	}
+	p->used = 1;
+	p->tid = e->h.tid;
+	p->id = id;
+	p->ev = *e;
+}
+
+static void pend_flush_all(void)
+{
+	for (size_t i = 0; i < g_pend_n; i++)
+		if (g_pend[i].used) {
+			if (g_json)
+				json_emit(&g_pend[i].ev, g_pend[i].id, 0, 0);
+			g_pend[i].used = 0;
+		}
+}
+
 // ---- ring buffer handling ------------------------------------------------
 
 static void handle_syscall(const struct heimdall_syscall_event *e)
 {
 	unsigned long long id = g_next_id++;
 
+	char arg[320];
+	int nargs = arg_count(e->nr);
 	printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
-	for (int i = 0; i < HEIMDALL_SYSCALL_NARGS; i++) {
-		const char *s = arg_string(e, i);
+	for (int i = 0; i < nargs; i++) {
 		if (i)
 			printf(", ");
-		if (s)
-			printf("\"%s\"", s);
-		else
-			printf("0x%llx", (unsigned long long)e->args[i]);
+		render_arg(e, i, arg, sizeof(arg));
+		fputs(arg, stdout);
 	}
 	printf(")\n");
 
@@ -396,8 +693,21 @@ static void handle_syscall(const struct heimdall_syscall_event *e)
 	}
 	fflush(stdout);
 
+	pend_store(e, id);          // JSON emitted once the return value arrives
+}
+
+static void handle_return(const struct heimdall_return_event *r)
+{
+	struct pend_entry *p = pend_find(r->h.tid);
+	if (!p)
+		return;
+	char rb[160];
+	render_ret(r->retval, rb, sizeof(rb));
+	printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr), rb);
+	fflush(stdout);
 	if (g_json)
-		json_emit(e, id);
+		json_emit(&p->ev, p->id, 1, r->retval);
+	p->used = 0;
 }
 
 static int handle_event(void *ctx, void *data, size_t sz)
@@ -432,6 +742,11 @@ static int handle_event(void *ctx, void *data, size_t sz)
 			return 0;
 		handle_syscall(data);
 		break;
+	case HEIMDALL_EV_RETURN:
+		if (sz < sizeof(struct heimdall_return_event))
+			return 0;
+		handle_return(data);
+		break;
 	}
 	return 0;
 }
@@ -443,6 +758,45 @@ static int libbpf_quiet(enum libbpf_print_level level, const char *fmt, va_list 
 	if (level == LIBBPF_DEBUG && !getenv("HEIMDALL_DEBUG"))
 		return 0;
 	return vfprintf(stderr, fmt, args);
+}
+
+// Syscalls we attach classic kretprobes to for return values. Focused on the
+// file / proc / memory / process calls relevant to RASP analysis. Most are
+// non-blocking, so the default per-function kretprobe maxactive suffices;
+// heavily-blocking calls (futex/poll/epoll/nanosleep) are deliberately omitted
+// to avoid silently dropping returns. Entry events are captured regardless.
+static const char *g_ret_syscalls[] = {
+	"openat", "openat2", "close", "read", "write", "pread64", "pwrite64",
+	"readv", "writev", "lseek", "fstat", "newfstatat", "statx", "statfs", "fstatfs",
+	"faccessat", "faccessat2", "readlinkat", "unlinkat", "mkdirat",
+	"renameat2", "mknodat", "fchmodat", "fchownat", "symlinkat", "linkat",
+	"getdents64", "fchdir", "getcwd", "name_to_handle_at",
+	"fcntl", "ioctl", "dup", "dup3", "pipe2", "eventfd2", "memfd_create",
+	"mmap", "munmap", "mprotect", "madvise", "mremap", "mlock", "msync",
+	"prctl", "ptrace", "process_vm_readv", "process_vm_writev",
+	"socket", "connect", "bind", "sendto", "recvfrom", "getsockopt", "setsockopt",
+	"getsockname", "execve", "execveat", "clone", "clone3", "kill", "tgkill",
+	"getrandom",
+};
+
+// Attach the return-value program as a classic kretprobe to each syscall above.
+// Returns the count that attached. Links are intentionally left to the process
+// lifetime (detached on exit). Missing functions on this ABI are skipped quietly.
+static int attach_return_probes(struct heimdall *skel)
+{
+	libbpf_print_fn_t prev = libbpf_set_print(NULL);    // hush per-function misses
+	int n = 0;
+	for (size_t i = 0; i < sizeof(g_ret_syscalls) / sizeof(g_ret_syscalls[0]); i++) {
+		char fn[64];
+		snprintf(fn, sizeof(fn), "__arm64_sys_%s", g_ret_syscalls[i]);
+		struct bpf_link *l =
+			bpf_program__attach_kprobe(skel->progs.on_sys_exit, true /* retprobe */, fn);
+		if (!l || libbpf_get_error(l))
+			continue;
+		n++;
+	}
+	libbpf_set_print(prev);
+	return n;
 }
 
 static void usage(const char *argv0)
@@ -519,10 +873,21 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
+	// We attach the return probe ourselves (classic kretprobes, per function),
+	// so disable its autoattach.
+	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
+
 	if (heimdall__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
 	}
+
+	int nret = attach_return_probes(skel);
+	if (nret == 0)
+		fprintf(stderr, "warning: no return-value probes attached; "
+				"continuing without return values\n");
+	else
+		printf("return-value probes attached to %d syscalls\n", nret);
 
 	struct ring_buffer *rb =
 		ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
@@ -562,12 +927,14 @@ int main(int argc, char **argv)
 out_rb:
 	ring_buffer__free(rb);
 out:
+	pend_flush_all();                       // emit any entries whose return we never saw
 	if (g_json) {
 		fputs("\n]\n", g_json);
 		fclose(g_json);
 		printf("wrote %llu syscall record%s to %s\n",
 		       g_json_count, g_json_count == 1 ? "" : "s", json_path);
 	}
+	free(g_pend);
 	heimdall__destroy(skel);
 	return 0;
 }

@@ -74,6 +74,16 @@ struct {
 	__type(value, __u8);
 } arg_types SEC(".maps");
 
+// Threads (keyed by tid) with an in-flight syscall we emitted at entry and want
+// the return value for. Set at do_el0_svc entry, consumed at __arm64_sys_*
+// return. Bounded by live thread count.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, __u64);
+} pending SEC(".maps");
+
 // ---- helpers -------------------------------------------------------------
 
 static __always_inline int uid_matches(void)
@@ -146,7 +156,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h.tid  = (__u32)id;
 	e->h._pad = 0;
 
-	e->nr      = BPF_CORE_READ(user_regs, regs[8]);
+	__u64 nr = BPF_CORE_READ(user_regs, regs[8]);
+	e->nr      = nr;
 	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
 	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
 	e->args[2] = BPF_CORE_READ(user_regs, regs[2]);
@@ -176,6 +187,46 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 				e->str[i][0] = '\0';
 		}
 	}
+
+	bpf_ringbuf_submit(e, 0);
+
+	// Mark this thread so the return probe knows to emit this syscall's result.
+	__u32 tid32 = (__u32)id;
+	bpf_map_update_elem(&pending, &tid32, &nr, BPF_ANY);
+	return 0;
+}
+
+// ---- syscall return ------------------------------------------------------
+//
+// One classic kretprobe program, attached by the loader to a curated list of
+// __arm64_sys_* implementation functions (kretprobe.multi/fprobe needs the
+// ftrace function tracer, which many Android kernels omit — no
+// available_filter_functions). Attaching per-function keeps each function's
+// kretprobe instance pool independent, so it avoids the maxactive exhaustion a
+// kretprobe on the shared do_el0_svc dispatcher would hit. Gated by the per-tid
+// `pending` flag so we only emit returns for syscalls we kept. The SEC target is
+// just a placeholder; the loader disables autoattach and attaches the real list.
+
+SEC("kretprobe/__arm64_sys_openat")
+int BPF_KRETPROBE(on_sys_exit, long ret)
+{
+	__u64 id  = bpf_get_current_pid_tgid();
+	__u32 tid = (__u32)id;
+
+	__u64 *p = bpf_map_lookup_elem(&pending, &tid);
+	if (!p)
+		return 0;
+	bpf_map_delete_elem(&pending, &tid);
+
+	struct heimdall_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+
+	e->h.type = HEIMDALL_EV_RETURN;
+	e->h.pid  = id >> 32;
+	e->h.tid  = tid;
+	e->h._pad = 0;
+	e->retval = ret;
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;

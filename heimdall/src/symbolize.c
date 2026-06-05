@@ -118,8 +118,10 @@ static struct mapping *find_mapping(struct procmaps *pm, uint64_t addr)
 }
 
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
+// Also returns the base mapping's [start,end), used to reach the file via
+// /proc/<pid>/map_files when its path is deleted/anonymous.
 static void module_base(struct procmaps *pm, struct mapping *hit,
-			uint64_t *load_base, uint64_t *elf_off)
+			uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
 {
 	size_t i = (size_t)(hit - pm->m);
 	while (i > 0 &&
@@ -128,6 +130,7 @@ static void module_base(struct procmaps *pm, struct mapping *hit,
 		i--;
 	*load_base = pm->m[i].start;
 	*elf_off = pm->m[i].off;
+	*base_end = pm->m[i].end;
 }
 
 // ---- .dynsym -------------------------------------------------------------
@@ -170,14 +173,39 @@ static int pread_all(int fd, void *buf, size_t n, off_t off)
 	return 0;
 }
 
-// Parse the .dynsym/.dynstr of the ELF at `elf_off` inside `path`.
-static void parse_dynsym(struct dynsym *ds)
+// Open the backing file. For a normal library this is just the path. For a
+// library the target deleted from disk after mapping (a common anti-analysis
+// trick — the path shows as ".../lib.so (deleted)"), the on-disk open fails, so
+// we reach the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
+static int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
+{
+	char real[MAX_PATH_LEN];
+	snprintf(real, sizeof(real), "%s", path);
+	char *del = strstr(real, " (deleted)");
+	if (del)
+		*del = '\0';
+
+	int fd = open(real, O_RDONLY | O_CLOEXEC);
+	if (fd >= 0)
+		return fd;
+
+	if (pid > 0) {
+		char mf[96];
+		snprintf(mf, sizeof(mf), "/proc/%d/map_files/%llx-%llx",
+			 pid, (unsigned long long)vstart, (unsigned long long)vend);
+		fd = open(mf, O_RDONLY | O_CLOEXEC);
+	}
+	return fd;
+}
+
+// Parse the .dynsym/.dynstr of the ELF at `elf_off` inside the module.
+static void parse_dynsym(struct dynsym *ds, int pid, uint64_t vstart, uint64_t vend)
 {
 	ds->ok = 0;
 	if (ds->path[0] == '\0' || ds->path[0] == '[')
 		return;
 
-	int fd = open(ds->path, O_RDONLY | O_CLOEXEC);
+	int fd = open_module_file(ds->path, pid, vstart, vend);
 	if (fd < 0)
 		return;
 
@@ -248,7 +276,8 @@ done:
 	close(fd);
 }
 
-static struct dynsym *dynsym_get(const char *path, uint64_t elf_off)
+static struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
+				 int pid, uint64_t vstart, uint64_t vend)
 {
 	for (size_t i = 0; i < g_nds; i++)
 		if (g_ds[i].elf_off == elf_off && !strcmp(g_ds[i].path, path))
@@ -262,11 +291,13 @@ static struct dynsym *dynsym_get(const char *path, uint64_t elf_off)
 	memset(ds, 0, sizeof(*ds));
 	snprintf(ds->path, sizeof(ds->path), "%s", path);
 	ds->elf_off = elf_off;
-	parse_dynsym(ds);
+	parse_dynsym(ds, pid, vstart, vend);
 	return ds;
 }
 
-// Nearest symbol whose value <= vaddr. Returns name + delta, or NULL.
+// Nearest symbol whose value <= vaddr. Returns name + delta, or NULL when the
+// address falls outside any symbol (so we show a bare offset instead of
+// mislabelling it with the previous exported symbol).
 static const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta)
 {
 	if (!ds || !ds->ok || ds->ns == 0)
@@ -284,10 +315,12 @@ static const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta
 		return NULL;
 	struct sym *s = &ds->s[lo - 1];
 	uint64_t d = vaddr - s->value;
-	if (s->size && d >= s->size && d > 0x4000)
-		return NULL;                     // well past the symbol, likely a gap
-	if (d > 0x100000)
-		return NULL;                     // sanity bound for size-0 symbols
+	if (s->size) {
+		if (d >= s->size)
+			return NULL;             // past the function => unexported code
+	} else if (d > 0x1000) {
+		return NULL;                     // size-less label: only a small slack
+	}
 	*delta = d;
 	return ds->str + s->name_off;
 }
@@ -298,6 +331,15 @@ static const char *basename_of(const char *p)
 {
 	const char *b = strrchr(p, '/');
 	return b ? b + 1 : p;
+}
+
+// Display name: basename with a trailing " (deleted)" stripped.
+static void display_name(const char *path, char *buf, size_t n)
+{
+	snprintf(buf, n, "%s", basename_of(path));
+	char *del = strstr(buf, " (deleted)");
+	if (del)
+		*del = '\0';
 }
 
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
@@ -313,17 +355,38 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 		read_proc_maps(pm);             // a library may have loaded since
 		hit = find_mapping(pm, (uint64_t)addr);
 	}
-	if (!hit || hit->path[0] == '\0' || hit->path[0] == '[') {
-		snprintf(out, outsz, "0x%llx", addr);
+	if (!hit) {
+		// Not in any mapping: stale frame, or a bad frame-pointer unwind.
+		snprintf(out, outsz, "0x%llx [unmapped]", addr);
 		return;
 	}
 
-	uint64_t load_base, elf_off;
-	module_base(pm, hit, &load_base, &elf_off);
-	uint64_t vaddr = (uint64_t)addr - load_base;
-	const char *base = basename_of(hit->path);
+	uint64_t load_base, elf_off, base_end;
+	module_base(pm, hit, &load_base, &elf_off, &base_end);
 
-	struct dynsym *ds = dynsym_get(hit->path, elf_off);
+	// Anonymous executable memory with no name: JIT cache, a packer/obfuscator
+	// or RASP-allocated code region, a thread stack, etc. Not ELF-backed, so no
+	// symbol — but say so explicitly rather than printing a bare address.
+	if (hit->path[0] == '\0') {
+		snprintf(out, outsz, "[anon]+0x%llx",
+			 (unsigned long long)((uint64_t)addr - hit->start));
+		return;
+	}
+
+	char base[MAX_PATH_LEN];
+	display_name(hit->path, base, sizeof(base));
+	uint64_t vaddr = (uint64_t)addr - load_base;
+
+	// Kernel-named anonymous regions ("[anon:scudo:primary]", "[stack]", ...)
+	// aren't openable as ELF — show the region name + offset so its nature is
+	// visible. (A deleted/renamed real library still has '/' first and is
+	// recovered below via /proc/<pid>/map_files.)
+	if (hit->path[0] == '[') {
+		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
+		return;
+	}
+
+	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, load_base, base_end);
 	uint64_t delta = 0;
 	const char *name = sym_lookup(ds, vaddr, &delta);
 	if (name) {

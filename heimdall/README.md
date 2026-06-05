@@ -30,12 +30,16 @@ Two problems with "launch the app, then start tracing":
 - **Filter:** at entry, if the target lib's ranges are known for this process,
   capture the user stack with `bpf_get_stack` and keep the event only if a frame
   lands inside one of those ranges (`lib_ranges`, a per-tgid map).
-- **Module map:** `uprobe_mmap`/`uprobe_munmap` emit map/unmap events for executable
-  file mappings; the loader maintains ranges and symbolizes frames as
-  `basename+0x<offset-from-load-base>`.
-
-Entry-only (number + args + stack). A kretprobe on `do_el0_svc` is exhausted by
-system-wide syscall traffic, so return values aren't captured.
+- **Module map:** `uprobe_mmap`/`uprobe_munmap` events arm the in-kernel library
+  filter; backtrace symbolization is handled separately (see *Symbolization*).
+- **Return values:** classic **kretprobes** attached to a curated list of
+  `__arm64_sys_*` functions (file/proc/memory/process syscalls), gated by a
+  per-tid flag set at entry. Per-function kretprobes keep their instance pools
+  independent, avoiding the `maxactive` exhaustion a kretprobe on the shared
+  `do_el0_svc` dispatcher would hit (every thread blocked in a syscall holds a
+  slot). `kretprobe.multi` is intentionally *not* used: it relies on fprobe / the
+  ftrace function tracer (`available_filter_functions`), which many Android
+  kernels are built without. Best-effort — entry events are captured regardless.
 
 ## Build (on your host — not on the device)
 
@@ -86,33 +90,44 @@ usage: heimdall [-o out.json] [-v] <package> <lib-substring> [activity]
 
 ### Console output
 
-Each captured syscall gets a monotonic **id**; string (path) arguments are
-resolved inline:
+Each syscall gets a monotonic **id**. The entry line (`==>`) prints only the
+syscall's **real arguments** (per a built-in arm64 arg-count table — no trailing
+register garbage), with string (path) args and fd args resolved inline; a `<==`
+line prints the **return value** when the call completes (paired by id):
 
 ```
-==> #42 [12903/12903] openat(0xffffff9c, "/proc/self/maps", 0x80000)
+==> #42 [12903/12903] openat(AT_FDCWD, "/proc/self/maps", 0x80000)
       #0  libc.so!openat+0x8
       #1  libc.so!fopen+0x54
       #2  librasp.so!scan_maps+0x178
-      #3  librasp.so!init_protection+0x44
-      #4  libc.so!__pthread_start+0x2c
+      #3  libc.so!__pthread_start+0x2c
+<== #42 openat = 199
+==> #43 [12903/12903] read(fd=199 </proc/self/maps>, 0x71db5032c0, 0x400)
+      #0  libc.so!read+0x8
+      ...
+<== #43 read = 1024
 ```
 
 Frames resolve across **all** libraries (target + libc + linker + …) to
-`lib!function+0xdelta`, so you can see a custom native function calling into
-libc. Frames with no matching symbol show `lib+0xvaddr`; frames in anonymous/JIT
-regions show the raw address.
+`lib!function+0xdelta`. Frames with no matching symbol show `lib+0xvaddr`.
+Non-ELF executable memory is labelled by region rather than printed as a bare
+address: `[anon]+0x..` (unnamed — JIT/packer/RASP-allocated code), `[anon:..]+0x..`
+or `jit-cache+0x..` (named/ART), `0x.. [unmapped]` (not in `/proc/maps` — usually
+a broken frame-pointer unwind). Errors decode the errno:
+`<== #51 openat = -2 (No such file or directory)`.
 
 ### JSON output (`-o`)
 
-A single JSON array; each element is one syscall:
+A single JSON array; each element is one syscall, emitted when its return
+arrives (so `retval` is populated; `null` if the return was never observed):
 
 ```json
 {
   "id": 42, "pid": 12903, "tid": 12903,
-  "syscall_nr": 56, "syscall": "openat",
+  "syscall_nr": 56, "syscall": "openat", "retval": 199,
   "args": ["0xffffff9c", "0x7c1e3a40", "0x80000", "0x0", "0x0", "0x0"],
-  "string_args": { "1": "/data/app/.../lib/arm64/librasp.so" },
+  "string_args": { "1": "/proc/self/maps" },
+  "fd_args": { "0": "AT_FDCWD" },
   "backtrace": [
     { "frame": 0, "addr": "0x7c1d2a1c", "symbol": "librasp.so!scan_maps+0x178" }
   ]
@@ -144,6 +159,15 @@ resolved.
 - **String args:** only args 0–3, capped at 256 bytes, and only for syscalls in
   the built-in `const char *` table. Non-path string/buffer args (e.g. `write`
   buffers, `connect` sockaddrs) are shown as raw pointers.
+- **Return values** are paired to entries by tid (syscalls are serialized per
+  thread) and only for syscalls in the curated kretprobe list (see *How it
+  works*); others print without a `<==`. The JSON record is emitted when the
+  return arrives, so a syscall still blocked when you stop tracing — or one not in
+  the list — is flushed with `"retval": null`. Heavily-blocking calls
+  (futex/poll/epoll/nanosleep) are omitted to avoid dropped returns.
+- **fd resolution** is best-effort via `readlink(/proc/<pid>/fd/<n>)` at print
+  time; a descriptor closed by then shows as `fd=<n>` without a path. `AT_FDCWD`
+  is shown by name. Covers the common fd/`*at`-dirfd syscalls.
 - **64-bit only.** Compat (32-bit) syscalls go through `do_el0_svc_compat`, not hooked.
 - **Symbolization reads `/proc/<pid>/maps`** (lazily, cached, display-only) plus
   each ELF's `.dynsym` — this is how zygote-inherited libraries (libc, libart, the
@@ -154,5 +178,11 @@ resolved.
   - Libraries mapped directly out of an APK (`base.apk` with a file offset) are
     grouped by contiguous run; oddly-laid-out APKs may mis-base. Plain `.so`
     files are exact.
+  - A library the target **deleted from disk after mapping** (`... (deleted)`,
+    a common anti-analysis trick) is recovered through
+    `/proc/<pid>/map_files/<start>-<end>`, so its `.dynsym` still resolves.
+  - A symbol is only attributed if the address lies within `[st_value, +st_size)`;
+    otherwise the frame shows `lib+0xvaddr` rather than mislabelling it with the
+    nearest exported symbol. Unexported/`static` functions therefore show `+off`.
 - **Per-UID.** All processes of the app's UID are traced (main + `:child`), keyed
   by tgid so ranges don't collide.

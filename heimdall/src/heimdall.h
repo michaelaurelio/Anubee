@@ -27,6 +27,7 @@ enum heimdall_event_type {
 	HEIMDALL_EV_SYSCALL = 1,
 	HEIMDALL_EV_MAP     = 2,
 	HEIMDALL_EV_UNMAP   = 3,
+	HEIMDALL_EV_RETURN  = 4,
 };
 
 /* Common 16-byte header at the front of every ring-buffer record. `pid` is the
@@ -67,6 +68,13 @@ struct heimdall_unmap_event {
 	struct heimdall_hdr h;
 	__u64 start;
 	__u64 end;
+};
+
+/* Return value of a previously-emitted syscall, paired by tid (from the
+ * kretprobe.multi on __arm64_sys_*). */
+struct heimdall_return_event {
+	struct heimdall_hdr h;
+	__s64 retval;
 };
 
 /* Per-process set of executable ranges belonging to the target library, kept in

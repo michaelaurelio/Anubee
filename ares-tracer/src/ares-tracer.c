@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/types.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
 #include "ares-tracer.h"
@@ -244,7 +245,7 @@ static bool is_duplicate(probe_target_t *targets, int count, pid_t pid, const ch
 }
 
 
-// /proc/PID/maps parser module for target resolution
+// Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
 
@@ -326,35 +327,180 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 probe_target_t probe_targets[4096];
 struct bpf_link *probe_links[4096];
 int probe_target_count = 0;
+struct ares_tracer_bpf *skel = NULL;
 
 
 // Handle events from ring buffer 
+static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, size_t outsz)
+{
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    FILE *f = fopen(maps_path, "r"); 
+    if (!f) {
+        perror("fopen");
+        return -1;
+    }
+
+    // Read /proc/PID/maps line by line then parse
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char perms[5], path[256] = "";
+        unsigned long long start_addr;
+
+        if (sscanf(line, "%llx-%*x %4s %*x %*s %*d %255s", &start_addr, perms, path) < 1) continue;
+        
+        if (start_addr == start) {
+            strncpy(out, path, outsz - 1);
+            out[outsz - 1] = '\0';
+            
+            fclose(f);
+            return 0;
+        }
+    }   
+
+    fclose(f);
+    return -1;
+}
+
+static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t *targets, int max_targets)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf){
+        close(fd);
+        return -1;
+    }
+
+    int count = 0;
+    Elf_Scn *scn = NULL;
+
+    // Basically iterate over ELF sections
+    while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_targets) {
+        GElf_Shdr shdr;
+        if (!gelf_getshdr(scn, &shdr)) continue; // Get section header + section info
+        
+        // Only proceed if section is SHT_SYMTAB or SHT_DYNSYM (for symbols)
+        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+        if (shdr.sh_entsize == 0) continue;
+
+        Elf_Data *data = elf_getdata(scn, NULL);
+        if (!data) continue;
+
+        int num_symbols = shdr.sh_size / shdr.sh_entsize;
+
+        for (int i = 0; i < num_symbols && count < max_targets; i++) {
+            GElf_Sym sym;
+            gelf_getsym(data, i, &sym);
+
+            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue; // Only get functions
+            if (sym.st_value == 0) continue;                      // Skip undefined symbols
+            
+            const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
+            if (!name || name[0] == '\0') continue;
+            if (!func_matches(name, func_re, func_re_count)) continue;
+
+            if (!is_duplicate(probe_targets, probe_target_count + count, pid, path, (unsigned long)sym.st_value)) {
+                targets[count].pid = pid;
+                strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
+                strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1); 
+                targets[count].offset = (unsigned long)sym.st_value; // IMPORTANT: Basically the offset of function in the shared library
+                count++;
+            }
+        }
+    }
+    elf_end(elf);
+    close(fd);
+
+    return count;
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-    const struct event *e = data;
-    struct tm *tm;
-	char ts[32];
-	time_t t;
+    const struct event_header *header = data;
+    if (data_sz < sizeof(*header)) return 0;
 
     // Get current time
+    struct tm *tm;
+    char ts[32];
+    time_t t;
     time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    tm = localtime(&t);
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-    // Print event information
-    printf("%-8s %-32s %-7d %-7d %s\n", 
-        ts, 
-        e->comm, 
-        e->pid, 
-        e->ppid, 
-        e->exit_event ? "EXIT" : "EXEC"
-    );
-    printf("     args:\n");
-    for (int i = 0; i < NUM_ARGS; i++) {
-        if (e->is_str[i]) {
-            printf("        [%d] \"%s\"\n", i, e->strings[i]);
-        } else {
-            printf("        [%d] 0x%lx\n", i, e->args[i]);
+    if (header->type == ARES_EVENT_MAP) {
+        printf("MAP EVENT\n");
+        const struct map_event *e = data;
+        if (data_sz < sizeof(*e)) 
+            return 0;
+
+        if (!mod_matches(e->name, mod_re, mod_has_slash, mod_re_count)) 
+            return 0;
+
+        // Get full path from /proc/PID/maps based on start addreess
+        char path[256];
+        if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) != 0)
+            return 0;
+
+        // Resolve targets based on path
+        int prev_count = probe_target_count;
+        int max_targets = sizeof(probe_targets) / sizeof(probe_targets[0]) - prev_count;
+        int resolved = resolve_targets_for_file(header->pid, path, probe_targets + prev_count, max_targets);
+
+        if (resolved <= 0)
+            return 0;
+
+        probe_target_count += resolved;
+
+        // Atach uprobes for newly resolved targets
+        for (int i = prev_count; i < probe_target_count; i++) {
+            printf("Attaching uprobe -> %s!%s offset: 0x%lx\n", 
+                probe_targets[i].mod_path, 
+                probe_targets[i].func_name, 
+                probe_targets[i].offset
+            );
+            printf("%-8s %-7d %-7s %s!%s\n", 
+                ts, 
+                e->h.pid, 
+                "",
+                e->name, 
+                probe_targets[i].func_name
+            );
+            probe_links[i] = bpf_program__attach_uprobe(
+                skel->progs.uprobe_open, 
+                false, 
+                -1, 
+                probe_targets[i].mod_path, 
+                probe_targets[i].offset
+            );
+    
+            if (!probe_links[i]) {
+                fprintf(stderr, "Failed to attach uprobe to %s!%s\n", probe_targets[i].mod_path, probe_targets[i].func_name);
+            }
+        }
+
+        return 0;
+    } 
+
+    if (header->type == ARES_EVENT_CALL) {
+        const struct event *e = data;
+
+        // Print event information
+        printf("%-8s %-7d %-7d %-32s %s\n", 
+            ts, 
+            e->h.pid, 
+            e->ppid, 
+            e->comm, 
+            "CALL"
+        );
+        printf("     args:\n");
+        for (int i = 0; i < NUM_ARGS; i++) {
+            if (e->is_str[i]) {
+                printf("        [%d] \"%s\"\n", i, e->strings[i]);
+            } else {
+                printf("        [%d] 0x%lx\n", i, e->args[i]);
+            }
         }
     }
 
@@ -367,7 +513,6 @@ int main(int argc, char **argv)
 {
     // Boilerplate setup
     struct ring_buffer *events_rb = NULL;
-    struct ares_tracer_bpf *skel = NULL;
     int err = 0;
     int uid = -1;
 
@@ -427,8 +572,8 @@ int main(int argc, char **argv)
 
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
+    elf_version(EV_CURRENT); 
     if (args.pid_count > 0) {
-        elf_version(EV_CURRENT); 
         for (int i = 0; i < args.pid_count; i++) {
             printf("Resolving targets for PID %d\n", args.pids[i]);
             int resolved = resolve_targets(
@@ -474,6 +619,12 @@ int main(int argc, char **argv)
         if (resolve_component(args.package_name, package_activity, sizeof(package_activity)) != 0) {
             fprintf(stderr, "Failed to resolve component for package %s\n", args.package_name);
             err = -1;
+            goto cleanup;
+        }
+
+        __u32 key = 0, vuid = (__u32)uid;
+        if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+            fprintf(stderr, "Failed to set target UID: %s\n", strerror(errno));
             goto cleanup;
         }
 

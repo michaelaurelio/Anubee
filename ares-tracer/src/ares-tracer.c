@@ -213,6 +213,7 @@ typedef struct {
     char mod_path[256];
     char func_name[256];
     unsigned long offset;
+    __u64 runtime_entry_addr;
 } probe_target_t;
 
 static bool mod_matches(const char *full_path, regex_t *re, bool *has_slash, int count)
@@ -366,8 +367,48 @@ int probe_target_count = 0;
 struct ares_tracer_bpf *skel = NULL;
 static pid_t g_zygote_pid = -1;
 
+static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid)
+{
+    for (int i = 0; i < probe_target_count; i++) {
+        if (probe_targets[i].runtime_entry_addr == entry_addr)
+            return &probe_targets[i];
+    }
 
-// Handle events from ring buffer 
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    FILE *f = fopen(maps_path, "r");
+    if (!f) return NULL;
+
+    char line[512];
+    probe_target_t *result = NULL;
+
+    while (fgets(line, sizeof(line), f) && !result) {
+        unsigned long long start, end, pgoff;
+        char perms[5], path[256] = "";
+
+        if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
+                   &start, &end, perms, &pgoff, path) < 4) continue;
+        if (entry_addr < start || entry_addr >= end) continue;
+        if (!strchr(perms, 'x') || path[0] != '/') continue;
+
+        unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
+
+        for (int i = 0; i < probe_target_count; i++) {
+            if (probe_targets[i].offset == file_offset &&
+                strcmp(probe_targets[i].mod_path, path) == 0) {
+                probe_targets[i].runtime_entry_addr = entry_addr;
+                result = &probe_targets[i];
+                break;
+            }
+        }
+    }
+
+    fclose(f);
+    return result;
+}
+
+
+// Handle events from ring buffer
 static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, size_t outsz)
 {
     char maps_path[64];
@@ -565,14 +606,22 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     if (header->type == ARES_EVENT_CALL) {
         const struct event *e = data;
 
-        printf(" [event] > CALL : %-8s %-7d %-7d %-32s\n",
-            ts, e->h.pid, e->ppid, e->comm);
-        printf(" [event]   | args:\n");
+        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid);
+        if (target) {
+            const char *bname = strrchr(target->mod_path, '/');
+            bname = bname ? bname + 1 : target->mod_path;
+            printf(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx\n",
+                ts, e->h.pid, e->ppid, bname, target->func_name, target->offset);
+        } else {
+            printf(" [event] > [CALL] %s PID:%d PPID:%d %s\n",
+                ts, e->h.pid, e->ppid, e->comm);
+        }
+
         for (int i = 0; i < NUM_ARGS; i++) {
             if (e->is_str[i]) {
-                printf(" [event]   | [%d] \"%s\"\n", i, e->strings[i]);
+                printf(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
             } else {
-                printf(" [event]   | [%d] 0x%lx\n", i, e->args[i]);
+                printf(" [event]   | args[%d] 0x%lx\n", i, e->args[i]);
             }
         }
     }

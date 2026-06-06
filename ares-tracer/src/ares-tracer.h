@@ -29,6 +29,7 @@ struct event_header {
 // Event for native function calls
 struct event {
     struct event_header h;
+    __u64 entry_addr;
     int ppid;
     bool exit_event;
     char comm[TASK_COMM_LEN];

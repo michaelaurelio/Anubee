@@ -77,6 +77,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     e->h.pid = pid;
     e->h.tid = tid;
 	e->h._pad = 0;
+    e->entry_addr = (__u64)PT_REGS_IP(ctx);
     e->ppid = BPF_CORE_READ(task, real_parent, tgid);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     e->exit_event = false;

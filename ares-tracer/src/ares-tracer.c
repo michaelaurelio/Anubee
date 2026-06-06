@@ -435,12 +435,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e)) 
             return 0;
 
-        if (!mod_matches(e->name, mod_re, mod_has_slash, mod_re_count)) 
-            return 0;
-
         // Get full path from /proc/PID/maps based on start addreess
         char path[256];
         if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) != 0)
+        return 0;
+            
+        if (!mod_matches(e->name, mod_re, mod_has_slash, mod_re_count)) 
             return 0;
 
         // Resolve targets based on path
@@ -562,7 +562,7 @@ int main(int argc, char **argv)
     }
 
 
-    // Open and load BPF skeleton
+    // Open, load, attach BPF skeleton
     skel = ares_tracer_bpf__open_and_load();
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
@@ -570,9 +570,24 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    bpf_program__set_autoattach(skel->progs.uprobe_open, false);
+    err = ares_tracer_bpf__attach(skel);
+    if (err) {
+        fprintf(stderr, "Failed to attach BPF programs (is uprobe_mmap in /proc/kallsyms?)\n");
+        goto cleanup;
+    }
+    elf_version(EV_CURRENT); 
+
+    // Set up ring buffer 
+    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, NULL, NULL);
+    if (!events_rb) {
+        err = -1;
+		fprintf(stderr, "Failed to create ring buffer\n");
+		goto cleanup;
+    }
+
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
-    elf_version(EV_CURRENT); 
     if (args.pid_count > 0) {
         for (int i = 0; i < args.pid_count; i++) {
             printf("Resolving targets for PID %d\n", args.pids[i]);
@@ -637,14 +652,7 @@ int main(int argc, char **argv)
     }
     
 
-    // Set up ring buffer polling
-    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, NULL, NULL);
-    if (!events_rb) {
-        err = -1;
-		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup_rb;
-    }
-
+    // Set up ring buffer polling 
     printf("%-8s %-32s %-7s %-7s %s\n", "TIME", "COMM", "PID", "PPID", "?");
     while (!exiting) {
         err = ring_buffer__poll(events_rb, 100 /* timeout, ms */);
@@ -659,20 +667,16 @@ int main(int argc, char **argv)
     }
 
 
-    // ---- Cleanup mechanisms ----
-    // Cleanup when ring buffer is initialized
-    cleanup_rb:
-        ring_buffer__free(events_rb);
-        goto cleanup;
-
-    // Cleanup for general cases
+    // Cleanup mechanism
     cleanup:
-        ares_tracer_bpf__destroy(skel);
+        ring_buffer__free(events_rb);
 
         for (int i = 0; i < probe_target_count; i++) 
             if (probe_links[i]) bpf_link__destroy(probe_links[i]);
         for (int i = 0; i < mod_re_count; i++) regfree(&mod_re[i]);
         for (int i = 0; i < func_re_count; i++) regfree(&func_re[i]);
+
+        ares_tracer_bpf__destroy(skel);
 
         return err < 0 ? -err : 0;
 }

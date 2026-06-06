@@ -799,65 +799,87 @@ int main(int argc, char **argv)
     
     // Zygote fork handling for pre-loaded libraries
     bool zygote_fork_done = (g_zygote_pid < 0);
-    pid_t pending_child_pid = -1;
+    pid_t pending_children[64];
+    int pending_children_count = 0;
+    bool preload_scan_done = false;
 
     while (!exiting) {
         if (!zygote_fork_done) {
             int wstatus;
             pid_t wpid = waitpid(-1, &wstatus, WNOHANG | __WALL);
 
-            if (wpid > 0 && WIFSTOPPED(wstatus)) {
-                int ptrace_event = wstatus >> 16;
+            if (wpid > 0) {
+                int pending_idx = -1;
+                for (int j = 0; j < pending_children_count; j++) {
+                    if (pending_children[j] == wpid) { pending_idx = j; break; }
+                }
 
-                if (wpid == g_zygote_pid && ptrace_event == PTRACE_EVENT_FORK) {
-                    unsigned long child_pid_long = 0;
-                    ptrace(PTRACE_GETEVENTMSG, g_zygote_pid, NULL, &child_pid_long);
-                    pending_child_pid = (pid_t)child_pid_long;
-                    printf("[zygote] > forked app PID %d, waiting for child stop...\n", pending_child_pid);
-                    ptrace(PTRACE_CONT, g_zygote_pid, NULL, NULL);
-
-                } else if (pending_child_pid > 0 && wpid == pending_child_pid) {
-                    if (WIFEXITED(wstatus))
-                        fprintf(stderr, "[zygote] > child %d exited before scan (code %d)\n",
-                            wpid, WEXITSTATUS(wstatus));
-                    else if (WIFSIGNALED(wstatus))
-                        fprintf(stderr, "[zygote] > child %d killed by signal %d before scan\n",
-                            wpid, WTERMSIG(wstatus));
-                    else if (verbose)
-                        fprintf(stderr, "[zygote] > child %d stopped (sig %d) - starting map scan\n",
-                            wpid, WSTOPSIG(wstatus));
-
-                    printf("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
-                    int prev = probe_target_count;
-                    int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-                    int resolved = resolve_targets(wpid, probe_targets + prev, max);
-                    printf("[zygote] > resolve_targets -> %d symbols\n", resolved);
-                    if (resolved > 0) {
-                        probe_target_count += resolved;
-                        for (int i = prev; i < probe_target_count && !exiting; i++) {
-                            const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                            bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                            printf("[uprobe] > %s!%s @ 0x%lx\n",
-                                bname, probe_targets[i].func_name, probe_targets[i].offset);
-                            probe_links[i] = bpf_program__attach_uprobe(
-                                skel->progs.uprobe_open, false, -1,
-                                probe_targets[i].mod_path, probe_targets[i].offset);
-                            if (!probe_links[i])
-                                fprintf(stderr, "[uprobe] > FAILED: %s!%s\n",
-                                    bname, probe_targets[i].func_name);
-                        }
-                        printf("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
+                if (WIFEXITED(wstatus) || WIFSIGNALED(wstatus)) {
+                    if (pending_idx >= 0) {
+                        if (WIFEXITED(wstatus))
+                            fprintf(stderr, "[zygote] > child %d exited before scan (code %d)\n",
+                                wpid, WEXITSTATUS(wstatus));
+                        else
+                            fprintf(stderr, "[zygote] > child %d killed before scan (sig %d)\n",
+                                wpid, WTERMSIG(wstatus));
+                        pending_children[pending_idx] = pending_children[--pending_children_count];
                     }
 
-                    if (verbose) fprintf(stderr, "[zygote]   | scan done, releasing child\n");
-                    ptrace(PTRACE_DETACH, wpid, NULL, NULL);
-                    ptrace(PTRACE_DETACH, g_zygote_pid, NULL, NULL);
-                    g_zygote_pid = -1;
-                    pending_child_pid = -1;
-                    zygote_fork_done = true;
+                } else if (WIFSTOPPED(wstatus)) {
+                    int ptrace_event = wstatus >> 16;
 
-                } else {
-                    ptrace(PTRACE_CONT, wpid, NULL, NULL);
+                    if (wpid == g_zygote_pid && ptrace_event == PTRACE_EVENT_FORK) {
+                        unsigned long child_pid_long = 0;
+                        ptrace(PTRACE_GETEVENTMSG, g_zygote_pid, NULL, &child_pid_long);
+                        pid_t new_child = (pid_t)child_pid_long;
+                        printf("[zygote] > forked PID %d\n", new_child);
+                        if (!preload_scan_done && pending_children_count < 64)
+                            pending_children[pending_children_count++] = new_child;
+                        ptrace(PTRACE_CONT, g_zygote_pid, NULL, NULL);
+
+                    } else if (pending_idx >= 0) {
+                        if (!preload_scan_done) {
+                            if (verbose)
+                                fprintf(stderr, "[zygote] > child %d stopped - scanning\n", wpid);
+                            printf("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
+                            int prev = probe_target_count;
+                            int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
+                            int resolved = resolve_targets(wpid, probe_targets + prev, max);
+                            printf("[zygote] > resolve_targets -> %d symbols\n", resolved);
+                            if (resolved > 0) {
+                                probe_target_count += resolved;
+                                for (int i = prev; i < probe_target_count && !exiting; i++) {
+                                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
+                                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
+                                    printf("[uprobe] > %s!%s @ 0x%lx\n",
+                                        bname, probe_targets[i].func_name, probe_targets[i].offset);
+                                    probe_links[i] = bpf_program__attach_uprobe(
+                                        skel->progs.uprobe_open, false, -1,
+                                        probe_targets[i].mod_path, probe_targets[i].offset);
+                                    if (!probe_links[i])
+                                        fprintf(stderr, "[uprobe] > FAILED: %s!%s\n",
+                                            bname, probe_targets[i].func_name);
+                                }
+                                printf("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
+                            }
+                            preload_scan_done = true;
+                        }
+
+                        if (verbose) fprintf(stderr, "[zygote]   | releasing child %d\n", wpid);
+                        pending_children[pending_idx] = pending_children[--pending_children_count];
+                        ptrace(PTRACE_DETACH, wpid, NULL, NULL);
+
+                        if (pending_children_count == 0) {
+                            if (ptrace(PTRACE_INTERRUPT, g_zygote_pid, NULL, NULL) == 0)
+                                waitpid(g_zygote_pid, NULL, __WALL);
+                            ptrace(PTRACE_DETACH, g_zygote_pid, NULL, NULL);
+                            g_zygote_pid = -1;
+                            zygote_fork_done = true;
+                        }
+
+                    } else {
+                        ptrace(PTRACE_CONT, wpid, NULL, NULL);
+                    }
                 }
             }
         }
@@ -870,8 +892,11 @@ int main(int argc, char **argv)
 
     // Cleanup mechanism
     cleanup:
-        if (g_zygote_pid > 0)
+        if (g_zygote_pid > 0) {
+            if (ptrace(PTRACE_INTERRUPT, g_zygote_pid, NULL, NULL) == 0)
+                waitpid(g_zygote_pid, NULL, __WALL);
             ptrace(PTRACE_DETACH, g_zygote_pid, NULL, NULL);
+        }
         ring_buffer__free(events_rb);
 
         for (int i = 0; i < probe_target_count; i++) 

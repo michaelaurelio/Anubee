@@ -168,21 +168,28 @@ int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start
 	if (file == NULL)
 		return 0;
 
-    // Reserve ring buffer slot
+	__u64 vm_flags = BPF_CORE_READ(vma, vm_flags);
+	if (!(vm_flags & ARES_VM_EXEC))
+		return 0;
+
 	struct map_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
 	if (!e)
-        return 0;
-    __builtin_memset(e, 0, sizeof(*e));
+		return 0;
+	__builtin_memset(e, 0, sizeof(*e));
 
-	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-    pid_t tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-
+	__u64 id = bpf_get_current_pid_tgid();
 	e->h.type = ARES_EVENT_UNMAP;
-	e->h.pid  = pid;
-	e->h.tid  = tid;
+	e->h.pid  = id >> 32;
+	e->h.tid  = (__u32)id;
 	e->h._pad = 0;
 	e->start  = start;
 	e->end    = end;
+
+	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+	e->name[0] = '\0';
+	if (name != NULL)
+		bpf_probe_read_kernel_str(e->name, sizeof(e->name), name);
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;

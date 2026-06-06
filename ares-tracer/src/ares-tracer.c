@@ -603,6 +603,36 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
 
+    if (header->type == ARES_EVENT_UNMAP) {
+        const struct map_event *e = data;
+        if (data_sz < sizeof(*e))
+            return 0;
+
+        if (verbose) fprintf(stderr, " [event]   | UNMAP: %s\n", e->name);
+
+        int removed = 0;
+        for (int i = probe_target_count - 1; i >= 0; i--) {
+            const char *bname = strrchr(probe_targets[i].mod_path, '/');
+            bname = bname ? bname + 1 : probe_targets[i].mod_path;
+            if (strcmp(bname, e->name) != 0)
+                continue;
+
+            if (probe_links[i])
+                bpf_link__destroy(probe_links[i]);
+
+            probe_targets[i] = probe_targets[probe_target_count - 1];
+            probe_links[i]   = probe_links[probe_target_count - 1];
+            probe_links[probe_target_count - 1] = NULL;
+            probe_target_count--;
+            removed++;
+        }
+
+        if (removed > 0)
+            printf(" [unmap] > %s (%d probes removed)\n", e->name, removed);
+
+        return 0;
+    }
+
     if (header->type == ARES_EVENT_CALL) {
         const struct event *e = data;
 

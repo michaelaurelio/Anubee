@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Runs inside the cross-compile container. Workspace is mounted at /workspace.
+# Runs inside the cross-compile container. ares-tracer/ is mounted at /workspace.
 set -euo pipefail
 
-SRC_DIR=/workspace/ares-tracer/src
-LIBBPF_SRC=/workspace/libbpf-bootstrap/libbpf/src
-LIBBPF_UAPI=/workspace/libbpf-bootstrap/libbpf/include/uapi
-LIBBPF_DIST=/workspace/libbpf-bootstrap/libbpf/dist-android
-VMLINUX_DIR=/workspace/libbpf-bootstrap/vmlinux.h/include/arm64
-EXAMPLES_OUTPUT=/workspace/libbpf-bootstrap/examples/c/.output
+SRC_DIR=/workspace/src
+LIBBPF_SRC=/workspace/vendor/libbpf/src
+LIBBPF_UAPI=/workspace/vendor/libbpf/include/uapi
+LIBBPF_DIST=/workspace/vendor/libbpf/dist-android
+VMLINUX_DIR=/workspace/include
 
 cd "$SRC_DIR"
 
@@ -29,8 +28,7 @@ CLANG_SYS_INC=$(clang -v -E - </dev/null 2>&1 | \
 clang -g -O2 \
     --target=bpf \
     -D__TARGET_ARCH_arm64 \
-    -I"$EXAMPLES_OUTPUT" \
-    -I"$LIBBPF_SRC" \
+    -I"$LIBBPF_DIST/usr/include" \
     -I"$LIBBPF_UAPI" \
     -I"$VMLINUX_DIR" \
     $CLANG_SYS_INC \

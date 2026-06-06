@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ARES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="$(cd "$ARES_DIR/.." && pwd)"
 SRC_DIR="$ARES_DIR/src"
 BIN_DIR="$ARES_DIR/bin"
 IMAGE="ebpf-cross-arm64-ares"
@@ -18,9 +17,9 @@ mkdir -p "$BIN_DIR"
 echo ""
 echo "=== Cross-compiling ares-tracer for aarch64 ==="
 docker run --rm \
-    -v "$WORKSPACE:/workspace" \
+    -v "$ARES_DIR:/workspace" \
     "$IMAGE" \
-    bash /workspace/ares-tracer/misc/build-inner.sh
+    bash /workspace/misc/build-inner.sh
 
 mv -f "$SRC_DIR/ares-tracer-aarch64" "$BIN_DIR/ares-tracer-aarch64"
 

@@ -11,12 +11,16 @@
 #include <stdbool.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>      
+#include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <bpf/libbpf.h>
 
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
+
+extern char **environ;
 
 
 // Argument parser module using argp.h
@@ -27,6 +31,7 @@ static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
     { "pid", 'p', "PID[,PID...]", 0, "Process ID(s) to inspect" },
+    { "package", 'P', "PACKAGE", 0, "Package to spawn" },
     { "include-module", 'I', "MODULE", 0, "Target module to trace (path, name)" },
     { "include", 'i', "FUNCTION", 0, "Target function to trace (regex)" },
     { 0 }
@@ -35,6 +40,7 @@ static const struct argp_option options[] = {
 struct args {
     pid_t pids[64];
     int pid_count;
+    char package_name[256];
     char mod_patterns[32][256];
     int mod_pattern_count;
     char func_patterns[32][256];
@@ -55,6 +61,11 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
         }
 
+        case 'P':
+            strncpy(args->package_name, arg, sizeof(args->package_name) - 1);
+            args->package_name[sizeof(args->package_name) - 1] = '\0';
+            break;
+
         case 'I':
             if (args->mod_pattern_count < 32) {
                 strncpy(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]) - 1);
@@ -69,7 +80,9 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         // No arguments case
         case ARGP_KEY_END:
-            if (args->pid_count == 0)
+            if (args->pid_count > 0 && args->package_name[0] != '\0')
+                argp_error(state, "cannot use -p and -P together");
+            if (args->pid_count == 0 && args->package_name[0] == '\0')
                 argp_usage(state);
             break;
         
@@ -81,6 +94,82 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 }
 
 static const struct argp argp = { options, parse_opts, args_doc, doc };
+
+
+// Application UID resolver 
+static int sh_exec(const char *cmd, char *out, size_t outsz)
+{
+    int pipefd[2] = { -1, -1 };
+	if (out != NULL) {
+		out[0] = '\0';
+		if (pipe(pipefd) != 0)
+			return -1;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		if (out != NULL) { close(pipefd[0]); close(pipefd[1]); }
+		return -1;
+	}
+
+    if (pid == 0) {
+		if (out != NULL) {
+			dup2(pipefd[1], STDOUT_FILENO);
+			close(pipefd[0]);
+			close(pipefd[1]);
+		} else {
+			int devnull = open("/dev/null", O_WRONLY);
+			if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); close(devnull); }
+		}
+		char *argv[] = { (char *)"sh", (char *)"-c", (char *)cmd, NULL };
+		execve("/system/bin/sh", argv, environ);
+		_exit(127);
+	}
+
+    if (out != NULL) {
+		close(pipefd[1]);
+		size_t off = 0;
+		ssize_t n;
+		while (off + 1 < outsz && (n = read(pipefd[0], out + off, outsz - 1 - off)) > 0)
+			off += (size_t)n;
+		out[off] = '\0';
+		close(pipefd[0]);
+	}
+
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	return status;
+}
+
+static int resolve_uid(const char *pkg)
+{
+	const char *roots[] = { "/data/data/%s", "/data/user/0/%s", "/data/user_de/0/%s" };
+	for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+		char path[256];
+		snprintf(path, sizeof(path), roots[i], pkg);
+		struct stat st;
+		if (stat(path, &st) == 0)
+			return (int)st.st_uid;
+	}
+	return -1;
+}
+
+static int resolve_component(const char *pkg, char *out, size_t outsz)
+{
+	char cmd[256], buf[1024];
+	snprintf(cmd, sizeof(cmd), "cmd package resolve-activity --brief %s", pkg);
+	if (sh_exec(cmd, buf, sizeof(buf)) < 0)
+		return -1;
+
+	out[0] = '\0';
+	char *save = NULL;
+	for (char *line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+		if (strchr(line, '/') && strstr(line, pkg))     // Get the last "pkg/..." line
+			snprintf(out, outsz, "%s", line);
+	}
+	return out[0] ? 0 : -1;
+}
 
 
 // eBPF debug print
@@ -195,13 +284,15 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
         // Basically iterate over ELF sections
         while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_targets) {
             GElf_Shdr shdr;
-            gelf_getshdr(scn, &shdr); // Get section header + section info
-
+            if (!gelf_getshdr(scn, &shdr)) continue; // Get section header + section info
+            
             // Only proceed if section is SHT_SYMTAB or SHT_DYNSYM (for symbols)
             if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
             if (shdr.sh_entsize == 0) continue;
 
             Elf_Data *data = elf_getdata(scn, NULL);
+            if (!data) continue;
+
             int num_symbols = shdr.sh_size / shdr.sh_entsize;
 
             for (int i = 0; i < num_symbols && count < max_targets; i++) {
@@ -233,6 +324,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 }
 
 probe_target_t probe_targets[4096];
+struct bpf_link *probe_links[4096];
 int probe_target_count = 0;
 
 
@@ -277,6 +369,7 @@ int main(int argc, char **argv)
     struct ring_buffer *events_rb = NULL;
     struct ares_tracer_bpf *skel = NULL;
     int err = 0;
+    int uid = -1;
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -289,6 +382,18 @@ int main(int argc, char **argv)
         .pid_count = 0,
     };
     argp_parse(&argp, argc, argv, 0, NULL, &args);
+
+
+    // Resolve application UID (if spawn mode)
+    if (args.package_name[0] != '\0') {
+        uid = resolve_uid(args.package_name);
+        if (uid < 0) {
+            fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
+            err = -1;
+            goto cleanup;
+        }
+        printf("%s -> UID %d\n", args.package_name, uid);
+    }
 
 
     // Prepare regex for pattern matching
@@ -321,40 +426,60 @@ int main(int argc, char **argv)
     }
 
 
-    // Find and resolve symbols 
-    elf_version(EV_CURRENT); 
-    for (int i = 0; i < args.pid_count; i++) {
-        printf("Resolving targets for PID %d\n", args.pids[i]);
-        int resolved = resolve_targets(
-            args.pids[i],
-            probe_targets + probe_target_count,
-            sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
-        );
-        if (resolved > 0) probe_target_count += resolved;
-    }
+    // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
+    if (args.pid_count > 0) {
+        elf_version(EV_CURRENT); 
+        for (int i = 0; i < args.pid_count; i++) {
+            printf("Resolving targets for PID %d\n", args.pids[i]);
+            int resolved = resolve_targets(
+                args.pids[i],
+                probe_targets + probe_target_count,
+                sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
+            );
+            if (resolved > 0) probe_target_count += resolved;
+        }
+    
+        if (probe_target_count == 0) {
+            fprintf(stderr, "No trace targets found\n");
+            err = -1;
+            goto cleanup;
+        }
+    
+        for (int i = 0; i < probe_target_count; i++) {
+            printf("Attaching uprobe to %s in %s at offset 0x%lx\n", 
+                probe_targets[i].func_name, 
+                probe_targets[i].mod_path, 
+                probe_targets[i].offset
+            );
+            probe_links[i] = bpf_program__attach_uprobe(
+                skel->progs.uprobe_open, 
+                false, 
+                probe_targets[i].pid, 
+                probe_targets[i].mod_path, 
+                probe_targets[i].offset
+            );
+    
+            if (!probe_links[i]) {
+                fprintf(stderr, "Failed to attach uprobe to %s in %s\n", probe_targets[i].func_name, probe_targets[i].mod_path);
+                err = -1;
+                goto cleanup;
+            }
+        }
+    } else {
+        char cmd[512], package_activity[256];
+        snprintf(cmd, sizeof(cmd), "am force-stop %s", args.package_name);
+        sh_exec(cmd, NULL, 0);
 
-    if (probe_target_count == 0) {
-        fprintf(stderr, "No trace targets found\n");
-        err = -1;
-        goto cleanup;
-    }
+        // Add manual activity specification if needed
+        if (resolve_component(args.package_name, package_activity, sizeof(package_activity)) != 0) {
+            fprintf(stderr, "Failed to resolve component for package %s\n", args.package_name);
+            err = -1;
+            goto cleanup;
+        }
 
-    for (int i = 0; i < probe_target_count; i++) {
-        printf("Attaching uprobe to %s in %s at offset 0x%lx\n", 
-            probe_targets[i].func_name, 
-            probe_targets[i].mod_path, 
-            probe_targets[i].offset
-        );
-        skel->links.uprobe_open = bpf_program__attach_uprobe(
-            skel->progs.uprobe_open, 
-            false, 
-            probe_targets[i].pid, 
-            probe_targets[i].mod_path, 
-            probe_targets[i].offset
-        );
-
-        if (!skel->links.uprobe_open) {
-            fprintf(stderr, "Failed to attach uprobe to %s in %s\n", probe_targets[i].func_name, probe_targets[i].mod_path);
+        snprintf(cmd, sizeof(cmd), "am start -n %s", package_activity);
+        if (sh_exec(cmd, NULL, 0) != 0) {
+            fprintf(stderr, "Failed to start package %s\n", args.package_name);
             err = -1;
             goto cleanup;
         }
@@ -366,7 +491,7 @@ int main(int argc, char **argv)
     if (!events_rb) {
         err = -1;
 		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup;
+		goto cleanup_rb;
     }
 
     printf("%-8s %-32s %-7s %-7s %s\n", "TIME", "COMM", "PID", "PPID", "?");
@@ -383,11 +508,18 @@ int main(int argc, char **argv)
     }
 
 
-    // Cleanup
-    cleanup:
+    // ---- Cleanup mechanisms ----
+    // Cleanup when ring buffer is initialized
+    cleanup_rb:
         ring_buffer__free(events_rb);
+        goto cleanup;
+
+    // Cleanup for general cases
+    cleanup:
         ares_tracer_bpf__destroy(skel);
 
+        for (int i = 0; i < probe_target_count; i++) 
+            if (probe_links[i]) bpf_link__destroy(probe_links[i]);
         for (int i = 0; i < mod_re_count; i++) regfree(&mod_re[i]);
         for (int i = 0; i < func_re_count; i++) regfree(&func_re[i]);
 

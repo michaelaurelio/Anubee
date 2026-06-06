@@ -20,7 +20,7 @@ static __always_inline bool is_user_ptr(unsigned long val)
 }
 
 
-// 
+// Function entry handler to attach uprobe
 SEC("uprobe")
 int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8)
 {

@@ -165,6 +165,24 @@ static int resolve_uid(const char *pkg)
 	return -1;
 }
 
+static int get_pid_uid(pid_t pid)
+{
+	char path[64], line[128];
+	snprintf(path, sizeof(path), "/proc/%d/status", pid);
+	FILE *f = fopen(path, "r");
+	if (!f) return -1;
+	int uid = -1;
+	while (fgets(line, sizeof(line), f)) {
+		unsigned int ruid;
+		if (sscanf(line, "Uid:\t%u", &ruid) == 1) {
+			uid = (int)ruid;
+			break;
+		}
+	}
+	fclose(f);
+	return uid;
+}
+
 static int resolve_component(const char *pkg, char *out, size_t outsz)
 {
 	char cmd[256], buf[1024];
@@ -247,16 +265,19 @@ static bool func_matches(const char *func_name, regex_t *re, int count)
     return false;
 }
 
-static bool is_duplicate(probe_target_t *targets, int count, pid_t pid, const char *mod_path, unsigned long offset)
+static bool is_duplicate(probe_target_t *targets, int count, const char *mod_path, unsigned long offset)
 {
     for (int i = 0; i < count; i++) {
-        if (targets[i].pid == pid && targets[i].offset == offset && strcmp(targets[i].mod_path, mod_path) == 0) {
+        if (targets[i].offset == offset && strcmp(targets[i].mod_path, mod_path) == 0) {
             return true;
         }
     }
     return false;
 }
 
+
+probe_target_t probe_targets[4096];
+int probe_target_count = 0;
 
 // Parser module for target resolution
 int mod_re_count = 0;
@@ -341,7 +362,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                 if (verbose) fprintf(stderr, " [match] > %s!%s @ 0x%lx\n",
                     path, name, (unsigned long)sym.st_value);
 
-                if (!is_duplicate(targets, count, pid, path, (unsigned long)sym.st_value)) {
+                if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                     targets[count].pid = pid;
                     strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
                     strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
@@ -361,11 +382,20 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
     return count;
 }
 
-probe_target_t probe_targets[4096];
 struct bpf_link *probe_links[4096];
-int probe_target_count = 0;
 struct ares_tracer_bpf *skel = NULL;
 static pid_t g_zygote_pid = -1;
+
+typedef struct {
+    pid_t         pid;
+    __u64         addr;
+    char          mod[128];
+    unsigned long offset;
+} caller_cache_entry_t;
+
+#define CALLER_CACHE_SIZE 256
+static caller_cache_entry_t caller_cache[CALLER_CACHE_SIZE];
+static int caller_cache_count = 0;
 
 static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid)
 {
@@ -425,7 +455,7 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
         char perms[5], path[256] = "";
         unsigned long long start_addr;
 
-        if (sscanf(line, "%llx-%*x %4s %*x %*s %*d %255s", &start_addr, perms, path) < 1) continue;
+        if (sscanf(line, "%llx-%*x %4s %*x %*s %*d %255s", &start_addr, perms, path) < 2) continue;
         
         if (start_addr == start) {
             strncpy(out, path, outsz - 1);
@@ -438,6 +468,70 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
 
     fclose(f);
     return -1;
+}
+
+static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned long *offset_out)
+{
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    FILE *f = fopen(maps_path, "r");
+    if (!f) return -1;
+
+    char line[512];
+    int found = -1;
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long long start, end, pgoff;
+        char perms[5], path[256] = "";
+        if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
+                   &start, &end, perms, &pgoff, path) < 4) continue;
+        if (addr < (__u64)start || addr >= (__u64)end) continue;
+
+        unsigned long file_offset = (unsigned long)(addr - start) + (unsigned long)pgoff;
+        if (path[0] != '\0' && path[0] != '[') {
+            const char *bname = strrchr(path, '/');
+            strncpy(mod_out, bname ? bname + 1 : path, mod_sz - 1);
+            mod_out[mod_sz - 1] = '\0';
+        } else {
+            strncpy(mod_out, path[0] ? path : "[anon]", mod_sz - 1);
+            mod_out[mod_sz - 1] = '\0';
+        }
+        *offset_out = file_offset;
+        found = 0;
+        break;
+    }
+    fclose(f);
+    return found;
+}
+
+static int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned long *offset_out)
+{
+    for (int i = 0; i < caller_cache_count; i++) {
+        if (caller_cache[i].pid == pid && caller_cache[i].addr == addr) {
+            strncpy(mod_out, caller_cache[i].mod, mod_sz - 1);
+            mod_out[mod_sz - 1] = '\0';
+            *offset_out = caller_cache[i].offset;
+            return 0;
+        }
+    }
+
+    char mod[128] = "";
+    unsigned long offset = 0;
+    if (resolve_addr_to_module(pid, addr, mod, sizeof(mod), &offset) != 0)
+        return -1;
+
+    if (caller_cache_count < CALLER_CACHE_SIZE) {
+        caller_cache_entry_t *e = &caller_cache[caller_cache_count++];
+        e->pid    = pid;
+        e->addr   = addr;
+        e->offset = offset;
+        strncpy(e->mod, mod, sizeof(e->mod) - 1);
+        e->mod[sizeof(e->mod) - 1] = '\0';
+    }
+
+    strncpy(mod_out, mod, mod_sz - 1);
+    mod_out[mod_sz - 1] = '\0';
+    *offset_out = offset;
+    return 0;
 }
 
 static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t *targets, int max_targets)
@@ -488,7 +582,7 @@ static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t 
             if (verbose) fprintf(stderr, " [match] > %s!%s @ 0x%lx\n",
                 path, name, (unsigned long)sym.st_value);
 
-            if (!is_duplicate(probe_targets, probe_target_count + count, pid, path, (unsigned long)sym.st_value)) {
+            if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                 targets[count].pid = pid;
                 strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
                 strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
@@ -647,6 +741,25 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 ts, e->h.pid, e->ppid, e->comm);
         }
 
+        if (e->caller_addr) {
+            char caller_mod[128] = "";
+            unsigned long caller_off = 0;
+            if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
+                printf(" [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
+            else
+                printf(" [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
+        }
+
+        for (__u32 i = 2; i < e->stack_depth; i++) {
+            if (!e->call_stack[i]) break;
+            char frame_mod[128] = "";
+            unsigned long frame_off = 0;
+            if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                printf(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+            else
+                printf(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+        }
+
         for (int i = 0; i < NUM_ARGS; i++) {
             if (e->is_str[i]) {
                 printf(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
@@ -757,6 +870,21 @@ int main(int argc, char **argv)
             err = -1;
             goto cleanup;
         }
+
+        __u8 one = 1;
+        for (int i = 0; i < args.pid_count; i++) {
+            int pid_uid = get_pid_uid(args.pids[i]);
+            if (pid_uid <= 0) {
+                fprintf(stderr, " [probe] > could not resolve UID for PID %d\n", args.pids[i]);
+                continue;
+            }
+            __u32 vuid = (__u32)pid_uid;
+            if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
+                fprintf(stderr, " [probe] > failed to set target UID %d: %s\n", pid_uid, strerror(errno));
+                goto cleanup;
+            }
+            printf(" [probe] > PID %d UID %d\n", args.pids[i], pid_uid);
+        }
     
         for (int i = 0; i < probe_target_count && !exiting; i++) {
             const char *bname = strrchr(probe_targets[i].mod_path, '/');
@@ -811,9 +939,10 @@ int main(int argc, char **argv)
             goto cleanup;
         }
 
-        // Update target UID for BPF program (filtering)
-        __u32 key = 0, vuid = (__u32)uid;
-        if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+        // Update target UIDs for BPF program (filtering)
+        __u8 one = 1;
+        __u32 vuid = (__u32)uid;
+        if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
             fprintf(stderr, " [spawn] > failed to set target UID: %s\n", strerror(errno));
             goto cleanup;
         }

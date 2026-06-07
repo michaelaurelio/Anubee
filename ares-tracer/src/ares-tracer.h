@@ -3,7 +3,8 @@
 
 #define TASK_COMM_LEN 32
 #define MAX_STR_LEN 128
-#define NUM_ARGS 8
+#define NUM_ARGS    8
+#define STACK_DEPTH 16
 
 #define ARES_VM_EXEC 0x00000004UL // Linux VMA flag for executable mappings
 
@@ -30,12 +31,15 @@ struct event_header {
 struct event {
     struct event_header h;
     __u64 entry_addr;
+    __u64 caller_addr;    // x30 (LR) at function entry (immediate caller's return address)
     int ppid;
     bool exit_event;
     char comm[TASK_COMM_LEN];
     unsigned long args[NUM_ARGS];
     __u8 is_str[NUM_ARGS];
     char strings[NUM_ARGS][MAX_STR_LEN];
+    __u64 call_stack[STACK_DEPTH]; // bpf_get_stack result; [0]=current PC, [1]=immediate caller
+    __u32 stack_depth;             // valid entries in call_stack; 0 if bpf_get_stack failed/unavailable
     // FEATURE: Add BETTER arguments later
     // FEATURE: Add retval later
 };

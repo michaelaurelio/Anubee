@@ -39,6 +39,7 @@ static const struct argp_option options[] = {
     { "include-module", 'I', "MODULE", 0, "Target module to trace (path, name)" },
     { "include", 'i', "FUNCTION", 0, "Target function to trace (regex)" },
     { "verbose", 'v', NULL, 0, "Verbose debug output (modules scanned, symbols matched)" },
+    { "list-libs", 'L', NULL, 0, "Library detection mode: list loaded/unloaded libs, no uprobe attachment" },
     { 0 }
 };
 
@@ -51,6 +52,7 @@ struct args {
     char func_patterns[32][256];
     int func_pattern_count;
     bool verbose;
+    bool list_libs;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -86,6 +88,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'v':
             args->verbose = true;
+            break;
+
+        case 'L':
+            args->list_libs = true;
             break;
 
         // No arguments case
@@ -283,6 +289,7 @@ int probe_target_count = 0;
 int mod_re_count = 0;
 int func_re_count = 0;
 static bool verbose = false;
+static bool list_libs = false;
 
 static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 {
@@ -670,6 +677,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (!mod_matches(path, mod_re, mod_has_slash, mod_re_count))
             return 0;
 
+        if (list_libs) {
+            printf("   [map] > %s\n", path);
+            return 0;
+        }
+
         // Resolve targets based on path
         int prev_count = probe_target_count;
         int max_targets = sizeof(probe_targets) / sizeof(probe_targets[0]) - prev_count;
@@ -704,6 +716,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         if (verbose) fprintf(stderr, " [event]   | UNMAP: %s\n", e->name);
 
+        if (list_libs) return 0;
+
         int removed = 0;
         for (int i = probe_target_count - 1; i >= 0; i--) {
             const char *bname = strrchr(probe_targets[i].mod_path, '/');
@@ -728,6 +742,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
 
     if (header->type == ARES_EVENT_CALL) {
+        if (list_libs) return 0;
         const struct event *e = data;
 
         if (data_sz < sizeof(*e)) return 0;
@@ -796,7 +811,9 @@ int main(int argc, char **argv)
     };
     argp_parse(&argp, argc, argv, 0, NULL, &args);
     verbose = args.verbose;
+    list_libs = args.list_libs;
     if (verbose) fprintf(stderr, "  [verb] > mode ON\n");
+    if (list_libs) printf("  [info] > library detection mode\n");
 
 
     // Resolve application UID (if spawn mode)
@@ -858,20 +875,22 @@ int main(int argc, char **argv)
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
     if (args.pid_count > 0) {
-        for (int i = 0; i < args.pid_count; i++) {
-            printf(" [probe] > resolving targets for PID %d\n", args.pids[i]);
-            int resolved = resolve_targets(
-                args.pids[i],
-                probe_targets + probe_target_count,
-                sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
-            );
-            if (resolved > 0) probe_target_count += resolved;
-        }
-    
-        if (probe_target_count == 0) {
-            fprintf(stderr, " [probe] > no trace targets found\n");
-            err = -1;
-            goto cleanup;
+        if (!list_libs) {
+            for (int i = 0; i < args.pid_count; i++) {
+                printf(" [probe] > resolving targets for PID %d\n", args.pids[i]);
+                int resolved = resolve_targets(
+                    args.pids[i],
+                    probe_targets + probe_target_count,
+                    sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
+                );
+                if (resolved > 0) probe_target_count += resolved;
+            }
+
+            if (probe_target_count == 0) {
+                fprintf(stderr, " [probe] > no trace targets found\n");
+                err = -1;
+                goto cleanup;
+            }
         }
 
         __u8 one = 1;
@@ -888,23 +907,25 @@ int main(int argc, char **argv)
             }
             printf(" [probe] > PID %d UID %d\n", args.pids[i], pid_uid);
         }
-    
-        for (int i = 0; i < probe_target_count && !exiting; i++) {
-            const char *bname = strrchr(probe_targets[i].mod_path, '/');
-            bname = bname ? bname + 1 : probe_targets[i].mod_path;
-            printf("[uprobe] > %s!%s @ 0x%lx\n",
-                bname, probe_targets[i].func_name, probe_targets[i].offset);
-            probe_links[i] = bpf_program__attach_uprobe(
-                skel->progs.uprobe_open,
-                false,
-                probe_targets[i].pid,
-                probe_targets[i].mod_path,
-                probe_targets[i].offset
-            );
-            if (!probe_links[i]) {
-                fprintf(stderr, "[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
-                err = -1;
-                goto cleanup;
+
+        if (!list_libs) {
+            for (int i = 0; i < probe_target_count && !exiting; i++) {
+                const char *bname = strrchr(probe_targets[i].mod_path, '/');
+                bname = bname ? bname + 1 : probe_targets[i].mod_path;
+                printf("[uprobe] > %s!%s @ 0x%lx\n",
+                    bname, probe_targets[i].func_name, probe_targets[i].offset);
+                probe_links[i] = bpf_program__attach_uprobe(
+                    skel->progs.uprobe_open,
+                    false,
+                    probe_targets[i].pid,
+                    probe_targets[i].mod_path,
+                    probe_targets[i].offset
+                );
+                if (!probe_links[i]) {
+                    fprintf(stderr, "[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
+                    err = -1;
+                    goto cleanup;
+                }
             }
         }
     } else {
@@ -1001,28 +1022,30 @@ int main(int argc, char **argv)
 
                     } else if (pending_idx >= 0) {
                         if (!preload_scan_done) {
-                            if (verbose)
-                                fprintf(stderr, "[zygote] > child %d stopped - scanning\n", wpid);
-                            printf("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
-                            int prev = probe_target_count;
-                            int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-                            int resolved = resolve_targets(wpid, probe_targets + prev, max);
-                            printf("[zygote] > resolve_targets -> %d symbols\n", resolved);
-                            if (resolved > 0) {
-                                probe_target_count += resolved;
-                                for (int i = prev; i < probe_target_count && !exiting; i++) {
-                                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                                    printf("[uprobe] > %s!%s @ 0x%lx\n",
-                                        bname, probe_targets[i].func_name, probe_targets[i].offset);
-                                    probe_links[i] = bpf_program__attach_uprobe(
-                                        skel->progs.uprobe_open, false, -1,
-                                        probe_targets[i].mod_path, probe_targets[i].offset);
-                                    if (!probe_links[i])
-                                        fprintf(stderr, "[uprobe] > FAILED: %s!%s\n",
-                                            bname, probe_targets[i].func_name);
+                            if (!list_libs) {
+                                if (verbose)
+                                    fprintf(stderr, "[zygote] > child %d stopped - scanning\n", wpid);
+                                printf("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
+                                int prev = probe_target_count;
+                                int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
+                                int resolved = resolve_targets(wpid, probe_targets + prev, max);
+                                printf("[zygote] > resolve_targets -> %d symbols\n", resolved);
+                                if (resolved > 0) {
+                                    probe_target_count += resolved;
+                                    for (int i = prev; i < probe_target_count && !exiting; i++) {
+                                        const char *bname = strrchr(probe_targets[i].mod_path, '/');
+                                        bname = bname ? bname + 1 : probe_targets[i].mod_path;
+                                        printf("[uprobe] > %s!%s @ 0x%lx\n",
+                                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                                        probe_links[i] = bpf_program__attach_uprobe(
+                                            skel->progs.uprobe_open, false, -1,
+                                            probe_targets[i].mod_path, probe_targets[i].offset);
+                                        if (!probe_links[i])
+                                            fprintf(stderr, "[uprobe] > FAILED: %s!%s\n",
+                                                bname, probe_targets[i].func_name);
+                                    }
+                                    printf("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
                                 }
-                                printf("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
                             }
                             preload_scan_done = true;
                         }

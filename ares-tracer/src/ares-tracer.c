@@ -730,6 +730,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     if (header->type == ARES_EVENT_CALL) {
         const struct event *e = data;
 
+        if (data_sz < sizeof(*e)) return 0;
+
         probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid);
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
@@ -737,8 +739,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             printf(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx\n",
                 ts, e->h.pid, e->ppid, bname, target->func_name, target->offset);
         } else {
-            printf(" [event] > [CALL] %s PID:%d PPID:%d %s\n",
-                ts, e->h.pid, e->ppid, e->comm);
+            printf(" [event] > [CALL] %s PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
+                ts, e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
+            return 0;
         }
 
         if (e->caller_addr) {

@@ -860,11 +860,21 @@ static int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, un
     return 0;
 }
 
-static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t *targets, int max_targets)
+static int resolve_targets_for_file(pid_t pid, const char *path,
+                                     unsigned long map_start, unsigned long map_end,
+                                     probe_target_t *targets, int max_targets)
 {
     if (verbose) err_print("  [scan] > %s (map event)\n", path);
 
     int fd = open(path, O_RDONLY);
+    if (fd < 0 && map_start && map_end) {
+        char map_files[80];
+        snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
+                 pid, map_start, map_end);
+        fd = open(map_files, O_RDONLY);
+        if (fd >= 0 && verbose)
+            err_print("  [scan] > opened via map_files (file deleted from fs)\n");
+    }
     if (fd < 0) {
         if (verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
         return -1;
@@ -1178,7 +1188,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (mod_matched && mod_re_count > 0) {
             int prev_count = probe_target_count;
             int max_targets = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev_count;
-            int resolved = resolve_targets_for_file(header->pid, path, probe_targets + prev_count, max_targets);
+            int resolved = resolve_targets_for_file(header->pid, path,
+                                                     (unsigned long)e->start, (unsigned long)e->end,
+                                                     probe_targets + prev_count, max_targets);
 
             if (resolved > 0) {
                 probe_target_count += resolved;
@@ -1197,6 +1209,18 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                         probe_links[i] = bpf_program__attach_uprobe(
                             skel->progs.uprobe_open, false, -1,
                             probe_targets[i].mod_path, probe_targets[i].offset);
+
+                        if (!probe_links[i]) {
+                            char map_files[80];
+                            snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
+                                     header->pid, (unsigned long)e->start, (unsigned long)e->end);
+                            probe_links[i] = bpf_program__attach_uprobe(
+                                skel->progs.uprobe_open, false, -1,
+                                map_files, probe_targets[i].offset);
+                            if (probe_links[i])
+                                out_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
+                                          bname, probe_targets[i].func_name);
+                        }
 
                         if (!probe_links[i])
                             err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);

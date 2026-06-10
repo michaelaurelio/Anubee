@@ -14,7 +14,9 @@ frida-strace's in-kernel stack-filter design, but standalone and on-device.
   backtrace misses it.
 - **Capture-all:** `heimdall -a <package>` — every syscall of the app's UID, from
   its first one. A firehose (a user backtrace is taken on *every* syscall), so
-  expect high event volume; pair it with `-o trace.json`.
+  expect high event volume; pair it with `-o trace.json`. If the ring buffer
+  fills, dropped events are counted and reported at exit
+  (`warning: N event(s) dropped …`) so you know whether the trace is complete.
 
 ## Why it's different from a naive strace
 
@@ -94,18 +96,25 @@ setenforce 0
 ```
 
 ```
-usage: heimdall [-o out.json] [-v] [-a] [-s list|-x list] <package> [lib-substring] [activity]
+usage: heimdall [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]
   -a, --all           capture ALL syscalls of the app (no library filter)
   -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)
   -x, --exclude list  all syscalls except these (comma-separated names)
-  -o, --json <file>   export captured syscalls to a JSON file
+  -o, --json <file>   export captured syscalls to a JSON file (implies -q)
+  -b, --bufsize MB    ring buffer size in MB (default 4; rounded up to a power of 2)
+  -q, --quiet         suppress per-event console output (much faster under load)
   -v, --verbose       also log every executable mapping
 ```
 
 `-s`/`-x` restrict **which syscalls** are kept and combine with either mode (the
 in-kernel check runs before the stack walk, so excluded syscalls are nearly free
-— handy to tame the capture-all firehose). (`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`,
-`HEIMDALL_DEBUG`, `HEIMDALL_ALL` env vars mirror the flags.)
+— handy to tame the capture-all firehose).
+
+**Throughput / dropped events.** Per-event console rendering (printing,
+symbolization, fd readlinks) is the main drain-path cost, so `-o` enables `-q`
+automatically; add `-q` yourself for fast non-JSON runs. If you still see drops,
+raise the buffer with `-b` (e.g. `-b 64`). (`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`,
+`HEIMDALL_DEBUG`, `HEIMDALL_ALL`, `HEIMDALL_QUIET` env vars mirror the flags.)
 
 ### Console output
 

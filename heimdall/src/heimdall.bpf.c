@@ -54,6 +54,15 @@ struct {
 	__uint(max_entries, 1 << 22);                 // 4 MB
 } events SEC(".maps");
 
+// Count of events dropped because the ring buffer was full. Per-CPU so the hot
+// path needs no atomics; the loader sums across CPUs.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} dropped SEC(".maps");
+
 // Single-slot: the app UID to trace, installed by the loader before launch.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -101,6 +110,14 @@ struct {
 } pending SEC(".maps");
 
 // ---- helpers -------------------------------------------------------------
+
+static __always_inline void bump_dropped(void)
+{
+	__u32 k = 0;
+	__u64 *c = bpf_map_lookup_elem(&dropped, &k);
+	if (c)
+		(*c)++;
+}
 
 static __always_inline int uid_matches(void)
 {
@@ -184,8 +201,10 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	}
 
 	struct heimdall_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	e->h.type = HEIMDALL_EV_SYSCALL;
 	e->h.pid  = tgid;
@@ -259,8 +278,10 @@ int BPF_KRETPROBE(on_sys_exit, long ret)
 	bpf_map_delete_elem(&pending, &tid);
 
 	struct heimdall_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	e->h.type = HEIMDALL_EV_RETURN;
 	e->h.pid  = id >> 32;
@@ -291,8 +312,10 @@ int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
 	__u64 id = bpf_get_current_pid_tgid();
 
 	struct heimdall_map_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	e->h.type = HEIMDALL_EV_MAP;
 	e->h.pid  = id >> 32;
@@ -337,8 +360,10 @@ int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start
 	__u64 id = bpf_get_current_pid_tgid();
 
 	struct heimdall_unmap_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	e->h.type = HEIMDALL_EV_UNMAP;
 	e->h.pid  = id >> 32;

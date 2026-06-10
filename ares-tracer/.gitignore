@@ -1,2 +1,4 @@
 *.o
 *.skel.h
+debug/
+specs/

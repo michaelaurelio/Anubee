@@ -1145,14 +1145,21 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
                 char map_files[80];
                 snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
                          pid, map_start, map_end);
-                probe_links[idx] = bpf_program__attach_uprobe(
-                    skel->progs.uprobe_open, false, uprobe_pid, map_files, tgt.offset);
-                if (probe_links[idx])
-                    out_print(" [spec] > attached via map_files (file deleted): %s!%s\n",
+                if (access(map_files, F_OK) == 0) {
+                    probe_links[idx] = bpf_program__attach_uprobe(
+                        skel->progs.uprobe_open, false, uprobe_pid, map_files, tgt.offset);
+                    if (probe_links[idx])
+                        out_print(" [spec] > attached via map_files (file deleted): %s!%s\n",
+                                  bname, label);
+                    else
+                        err_print(" [spec] > FAILED: %s!%s\n", bname, label);
+                } else {
+                    out_print(" [spec] > MISSED: %s!%s (mapping gone before attach)\n",
                               bname, label);
-            }
-            if (!probe_links[idx])
+                }
+            } else if (!probe_links[idx]) {
                 err_print(" [spec] > FAILED: %s!%s\n", bname, label);
+            }
         }
     }
 }
@@ -1230,16 +1237,20 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                             char map_files[80];
                             snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
                                      header->pid, (unsigned long)e->start, (unsigned long)e->end);
-                            probe_links[i] = bpf_program__attach_uprobe(
-                                skel->progs.uprobe_open, false, -1,
-                                map_files, probe_targets[i].offset);
-                            if (probe_links[i])
-                                out_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
+                            if (access(map_files, F_OK) == 0) {
+                                probe_links[i] = bpf_program__attach_uprobe(
+                                    skel->progs.uprobe_open, false, -1,
+                                    map_files, probe_targets[i].offset);
+                                if (probe_links[i])
+                                    out_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
+                                              bname, probe_targets[i].func_name);
+                                else
+                                    err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
+                            } else {
+                                out_print("[uprobe] > MISSED: %s!%s (mapping gone before attach)\n",
                                           bname, probe_targets[i].func_name);
+                            }
                         }
-
-                        if (!probe_links[i])
-                            err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
                     }
                 }
             }

@@ -117,13 +117,20 @@ static const char *g_pkg;
 static const char *g_lib;
 static int g_lib_ranges_fd = -1;
 static int g_verbose;
+static int g_quiet;                             // suppress per-event console output
 static volatile sig_atomic_t exiting;
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
 static unsigned long long g_json_count;         // objects written so far
 
-static void on_sigint(int s) { (void)s; exiting = 1; }
+static void on_sigint(int s)
+{
+	(void)s;
+	if (exiting)            // second Ctrl+C: force quit even if stuck in a write()
+		_exit(130);
+	exiting = 1;
+}
 
 // ---- running Android tools (no libc system(): /bin/sh is absent) ---------
 
@@ -722,26 +729,31 @@ static void handle_syscall(const struct heimdall_syscall_event *e)
 {
 	unsigned long long id = g_next_id++;
 
-	char arg[320];
-	int nargs = arg_count(e->nr);
-	printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
-	for (int i = 0; i < nargs; i++) {
-		if (i)
-			printf(", ");
-		render_arg(e, i, arg, sizeof(arg));
-		fputs(arg, stdout);
-	}
-	printf(")\n");
+	// In quiet mode skip all console rendering (printing + symbolization + fd
+	// readlinks): the heavy work that limits drain throughput. The JSON record
+	// is still produced (and symbolized) once the return arrives.
+	if (!g_quiet) {
+		char arg[320];
+		int nargs = arg_count(e->nr);
+		printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
+		for (int i = 0; i < nargs; i++) {
+			if (i)
+				printf(", ");
+			render_arg(e, i, arg, sizeof(arg));
+			fputs(arg, stdout);
+		}
+		printf(")\n");
 
-	int n = e->stack_sz / (int)sizeof(__u64);
-	char sym[320];
-	for (int i = 0; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
-		if (e->stack[i] == 0)
-			break;
-		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
-		printf("      #%-2d %s\n", i, sym);
+		int n = e->stack_sz / (int)sizeof(__u64);
+		char sym[320];
+		for (int i = 0; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
+			if (e->stack[i] == 0)
+				break;
+			sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+			printf("      #%-2d %s\n", i, sym);
+		}
+		fflush(stdout);
 	}
-	fflush(stdout);
 
 	pend_store(e, id);          // JSON emitted once the return value arrives
 }
@@ -751,10 +763,12 @@ static void handle_return(const struct heimdall_return_event *r)
 	struct pend_entry *p = pend_find(r->h.tid);
 	if (!p)
 		return;
-	char rb[160];
-	render_ret(r->retval, rb, sizeof(rb));
-	printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr), rb);
-	fflush(stdout);
+	if (!g_quiet) {
+		char rb[160];
+		render_ret(r->retval, rb, sizeof(rb));
+		printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr), rb);
+		fflush(stdout);
+	}
 	if (g_json)
 		json_emit(&p->ev, p->id, 1, r->retval);
 	p->used = 0;
@@ -763,6 +777,10 @@ static void handle_return(const struct heimdall_return_event *r)
 static int handle_event(void *ctx, void *data, size_t sz)
 {
 	(void)ctx;
+	// On Ctrl+C, abort the ring-buffer drain promptly instead of finishing the
+	// whole backlog: a negative return makes ring_buffer__poll bail out.
+	if (exiting)
+		return -1;
 	if (sz < sizeof(struct heimdall_hdr))
 		return 0;
 	const struct heimdall_hdr *h = data;
@@ -849,14 +867,34 @@ static int attach_return_probes(struct heimdall *skel)
 	return n;
 }
 
+// Sum the per-CPU dropped-event counters.
+static unsigned long long read_dropped(int fd)
+{
+	int ncpu = libbpf_num_possible_cpus();
+	if (ncpu < 1)
+		ncpu = 1;
+	__u64 *vals = calloc(ncpu, sizeof(__u64));
+	if (!vals)
+		return 0;
+	__u32 k = 0;
+	unsigned long long total = 0;
+	if (bpf_map_lookup_elem(fd, &k, vals) == 0)
+		for (int i = 0; i < ncpu; i++)
+			total += vals[i];
+	free(vals);
+	return total;
+}
+
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] [-a] [-s list|-x list] <package> [lib-substring] [activity]\n"
+		"usage: %s [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
 		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
 		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
 		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
-		"  -o, --json <file>   export captured syscalls to a JSON file\n"
+		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
+		"  -b, --bufsize MB    ring buffer size in MB (default 4; rounded up to a power of 2)\n"
+		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
 		"\n"
 		"  By default a <lib-substring> is required and only syscalls whose backtrace\n"
@@ -870,10 +908,12 @@ static void usage(const char *argv0)
 int main(int argc, char **argv)
 {
 	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
+	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
 	const char *json_path = getenv("HEIMDALL_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
+	int bufmb = 4;                           // ring buffer size (MB)
 
 	int ai = 1;
 	for (; ai < argc; ai++) {
@@ -882,6 +922,12 @@ int main(int argc, char **argv)
 			json_path = argv[++ai];
 		} else if (!strcmp(argv[ai], "-v") || !strcmp(argv[ai], "--verbose")) {
 			g_verbose = 1;
+		} else if (!strcmp(argv[ai], "-q") || !strcmp(argv[ai], "--quiet")) {
+			g_quiet = 1;
+		} else if (!strcmp(argv[ai], "-b") || !strcmp(argv[ai], "--bufsize")) {
+			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
+			bufmb = atoi(argv[++ai]);
+			if (bufmb < 1) { fprintf(stderr, "bufsize must be >= 1 MB\n"); return 1; }
 		} else if (!strcmp(argv[ai], "-a") || !strcmp(argv[ai], "--all")) {
 			capture_all = 1;
 		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
@@ -932,6 +978,18 @@ int main(int argc, char **argv)
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
 
+	// Writing JSON => suppress the slow per-event console rendering by default.
+	if (json_path)
+		g_quiet = 1;
+
+	// Round the requested ring buffer size up to a power of two (a ringbuf
+	// requirement).
+	size_t bufbytes = (size_t)bufmb << 20;
+	size_t p2 = 1;
+	while (p2 < bufbytes)
+		p2 <<= 1;
+	bufbytes = p2;
+
 	libbpf_set_print(libbpf_quiet);
 
 	struct heimdall *skel = heimdall__open();
@@ -941,11 +999,13 @@ int main(int argc, char **argv)
 	}
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
+	bpf_map__set_max_entries(skel->maps.events, bufbytes);
 	if (heimdall__load(skel)) {
 		fprintf(stderr, "load failed (run as root? SELinux permissive?)\n");
 		heimdall__destroy(skel);
 		return 1;
 	}
+	printf("ring buffer: %zu MB%s\n", bufbytes >> 20, g_quiet ? ", console output suppressed" : "");
 
 	if (syscall_mode) {
 		int nf = install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), syscall_list);
@@ -1022,11 +1082,32 @@ int main(int argc, char **argv)
 		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", uid);
 	else
 		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
+
+	int dropfd = bpf_map__fd(skel->maps.dropped);
+	unsigned long long last_drops = 0;
+	int ticks = 0;
 	while (!exiting) {
 		int err = ring_buffer__poll(rb, 200 /* ms */);
 		if (err < 0 && err != -EINTR)
 			break;
+		// Surface drops live (~every second) so they're visible during the run
+		// and not lost if heimdall is hard-killed before the exit summary.
+		if (++ticks >= 5) {
+			ticks = 0;
+			unsigned long long d = read_dropped(dropfd);
+			if (d > last_drops) {
+				fprintf(stderr, "[drops] %llu event(s) dropped so far (ring buffer full)\n", d);
+				last_drops = d;
+			}
+		}
 	}
+
+	// Always report the final tally, so "no message" never means "didn't check".
+	unsigned long long drops = read_dropped(dropfd);
+	if (drops)
+		fprintf(stderr, "%llu event(s) dropped (ring buffer full) — trace is incomplete\n", drops);
+	else
+		fprintf(stderr, "no events dropped\n");
 
 out_rb:
 	ring_buffer__free(rb);

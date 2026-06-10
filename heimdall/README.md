@@ -1,9 +1,20 @@
 # heimdall
 
-An eBPF/CO-RE syscall tracer for a single Android app, **filtered by native-library
-call origin**: a syscall is reported only when the issuing thread's user backtrace
-passes through a chosen `.so` (e.g. a RASP / anti-tamper library). Inspired by
+An eBPF/CO-RE syscall tracer for a single Android app. By default it is **filtered
+by native-library call origin** — a syscall is reported only when the issuing
+thread's user backtrace passes through a chosen `.so` (e.g. a RASP / anti-tamper
+library) — but with `-a` it captures **all** of the app's syscalls. Inspired by
 frida-strace's in-kernel stack-filter design, but standalone and on-device.
+
+## Two capture modes
+
+- **Library-filtered (default):** `heimdall <package> <lib-substring>` — only
+  syscalls originating from that library. Cheap: the in-kernel hook skips the
+  stack walk entirely until the library is mapped, and drops any syscall whose
+  backtrace misses it.
+- **Capture-all:** `heimdall -a <package>` — every syscall of the app's UID, from
+  its first one. A firehose (a user backtrace is taken on *every* syscall), so
+  expect high event volume; pair it with `-o trace.json`.
 
 ## Why it's different from a naive strace
 
@@ -78,15 +89,23 @@ setenforce 0
 /data/local/tmp/heimdall com.example.app librasp.so
 /data/local/tmp/heimdall -o /data/local/tmp/trace.json com.example.app librasp.so
 /data/local/tmp/heimdall com.example.app libguard.so com.example.app.MainActivity
+/data/local/tmp/heimdall -a -o /data/local/tmp/all.json com.example.app   # capture everything
+/data/local/tmp/heimdall -a -s openat,read,close,newfstatat com.example.app   # only these syscalls
 ```
 
 ```
-usage: heimdall [-o out.json] [-v] <package> <lib-substring> [activity]
+usage: heimdall [-o out.json] [-v] [-a] [-s list|-x list] <package> [lib-substring] [activity]
+  -a, --all           capture ALL syscalls of the app (no library filter)
+  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)
+  -x, --exclude list  all syscalls except these (comma-separated names)
   -o, --json <file>   export captured syscalls to a JSON file
   -v, --verbose       also log every executable mapping
 ```
 
-(`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`, `HEIMDALL_DEBUG` env vars mirror the flags.)
+`-s`/`-x` restrict **which syscalls** are kept and combine with either mode (the
+in-kernel check runs before the stack walk, so excluded syscalls are nearly free
+— handy to tame the capture-all firehose). (`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`,
+`HEIMDALL_DEBUG`, `HEIMDALL_ALL` env vars mirror the flags.)
 
 ### Console output
 
@@ -96,7 +115,7 @@ register garbage), with string (path) args and fd args resolved inline; a `<==`
 line prints the **return value** when the call completes (paired by id):
 
 ```
-==> #42 [12903/12903] openat(AT_FDCWD, "/proc/self/maps", 0x80000)
+==> #42 [12903/12903] openat(AT_FDCWD, "/proc/self/maps", O_RDONLY|O_CLOEXEC)
       #0  libc.so!openat+0x8
       #1  libc.so!fopen+0x54
       #2  librasp.so!scan_maps+0x178
@@ -107,6 +126,9 @@ line prints the **return value** when the call completes (paired by id):
       ...
 <== #43 read = 1024
 ```
+
+Flag / enum arguments are decoded (`O_RDONLY|O_CLOEXEC`, `PROT_READ|PROT_WRITE`,
+`MAP_PRIVATE|MAP_ANONYMOUS`, `PR_GET_DUMPABLE`, `AF_INET`, `SIGKILL`, …).
 
 Frames resolve across **all** libraries (target + libc + linker + …) to
 `lib!function+0xdelta`. Frames with no matching symbol show `lib+0xvaddr`.
@@ -128,11 +150,31 @@ arrives (so `retval` is populated; `null` if the return was never observed):
   "args": ["0xffffff9c", "0x7c1e3a40", "0x80000", "0x0", "0x0", "0x0"],
   "string_args": { "1": "/proc/self/maps" },
   "fd_args": { "0": "AT_FDCWD" },
+  "decoded_args": { "2": "O_RDONLY|O_CLOEXEC" },
   "backtrace": [
     { "frame": 0, "addr": "0x7c1d2a1c", "symbol": "librasp.so!scan_maps+0x178" }
   ]
 }
 ```
+
+### Loop folding (`tools/heimdall-fold.py`)
+
+A standalone post-processor that detects **loops in the syscall sequence** and
+folds them, so a 500-iteration scan reads as one entry. It runs **per thread**
+(the live stream interleaves threads), tokenizes each syscall by **name + call
+stack**, and folds maximal *tandem runs* (a block repeated `k>=2` consecutive
+times) smallest-period-first, to a fixpoint — which also discovers **nested**
+loops. Original event ids are kept on every loop, so nothing is lost.
+
+```sh
+tools/heimdall-fold.py trace.json                 # text summary (hot loops + folded timeline)
+tools/heimdall-fold.py trace.json --json folded.json
+# tunables: --min-reps K  --max-period N  --callsite-frames N  --no-nesting
+```
+
+Output JSON: a `loops` registry (`{id, period, body, occurrences, iterations_total}`,
+where a nested body item is `{loop, iterations}`) plus a per-thread `timeline`
+that replaces each run with `{ "loop": "L4", "iterations": 2, "event_ids": [...] }`.
 
 ### How syscalls are identified, and string-arg resolution
 

@@ -39,6 +39,14 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+// Set by the loader before load. 0 = only emit syscalls whose user stack passes
+// through the target library; 1 = emit every syscall of the traced UID.
+const volatile int capture_all = 0;
+
+// Per-syscall allow/deny filter. 0 = off, 1 = allowlist (only flagged nrs),
+// 2 = denylist (all except flagged). The flagged set lives in syscall_filter.
+const volatile int syscall_filter_mode = 0;
+
 // ---- maps ----------------------------------------------------------------
 
 struct {
@@ -74,6 +82,14 @@ struct {
 	__type(value, __u8);
 } arg_types SEC(".maps");
 
+// Per-syscall-number flag for the allow/deny filter (see syscall_filter_mode).
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, ARG_TYPES_MAX);
+	__type(key, __u32);
+	__type(value, __u8);
+} syscall_filter SEC(".maps");
+
 // Threads (keyed by tid) with an in-flight syscall we emitted at entry and want
 // the return value for. Set at do_el0_svc entry, consumed at __arm64_sys_*
 // return. Bounded by live thread count.
@@ -93,6 +109,20 @@ static __always_inline int uid_matches(void)
 	if (!want || *want == 0)
 		return 0;
 	return (__u32)bpf_get_current_uid_gid() == *want;
+}
+
+// Apply the optional per-syscall allow/deny filter. Cheap — runs before the
+// stack walk so unwanted syscalls cost almost nothing.
+static __always_inline int syscall_wanted(__u64 nr)
+{
+	if (syscall_filter_mode == 0)
+		return 1;
+	__u32 k = (__u32)nr;
+	if (k >= ARG_TYPES_MAX)
+		return syscall_filter_mode == 2;       // out of range: kept only by denylist
+	__u8 *v = bpf_map_lookup_elem(&syscall_filter, &k);
+	__u8 flagged = v ? *v : 0;
+	return (syscall_filter_mode == 1) ? flagged : !flagged;
 }
 
 // Returns 1 if any captured user return address lands in a target range. Both
@@ -128,24 +158,30 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	if (!uid_matches())
 		return 0;
 
+	__u64 nr = BPF_CORE_READ(user_regs, regs[8]);
+	if (!syscall_wanted(nr))
+		return 0;
+
 	__u64 id   = bpf_get_current_pid_tgid();
 	__u32 tgid = id >> 32;
 
-	// No target-library range for this process yet => the library isn't
-	// mapped, so nothing can have originated from it. Skip before paying for
-	// a stack walk.
+	// Library-filter mode: with no target-library range for this process yet
+	// the library isn't mapped, so nothing can have originated from it — skip
+	// before paying for a stack walk. Capture-all mode keeps every syscall.
 	struct heimdall_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
-	if (!lr || lr->count == 0)
+	if (!capture_all && (!lr || lr->count == 0))
 		return 0;
 
 	__u64 stack[MAX_STACK_DEPTH];
 	long sz = bpf_get_stack(ctx, stack, sizeof(stack), BPF_F_USER_STACK);
-	if (sz <= 0)
-		return 0;
-	int n = sz / (int)sizeof(__u64);
+	int n = sz > 0 ? sz / (int)sizeof(__u64) : 0;
 
-	if (!stack_hits(lr, stack, n))
-		return 0;
+	if (!capture_all) {
+		if (sz <= 0)
+			return 0;
+		if (!stack_hits(lr, stack, n))
+			return 0;
+	}
 
 	struct heimdall_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e)
@@ -156,7 +192,6 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h.tid  = (__u32)id;
 	e->h._pad = 0;
 
-	__u64 nr = BPF_CORE_READ(user_regs, regs[8]);
 	e->nr      = nr;
 	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
 	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
@@ -164,8 +199,13 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->args[3] = BPF_CORE_READ(user_regs, regs[3]);
 	e->args[4] = BPF_CORE_READ(user_regs, regs[4]);
 	e->args[5] = BPF_CORE_READ(user_regs, regs[5]);
-	e->stack_sz = (__s32)sz;
-	__builtin_memcpy(e->stack, stack, sizeof(e->stack));
+	if (sz > 0) {
+		e->stack_sz = (__s32)sz;
+		__builtin_memcpy(e->stack, stack, sizeof(e->stack));
+	} else {
+		e->stack_sz = 0;
+		__builtin_memset(e->stack, 0, sizeof(e->stack));
+	}
 
 	// Resolve string arguments. Look up which of args[0..3] are char* for this
 	// syscall and copy the pointed-to string out of the caller's memory. The

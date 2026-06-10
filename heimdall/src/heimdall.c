@@ -40,6 +40,7 @@
 #include "heimdall.h"
 #include "heimdall.skel.h"
 #include "symbolize.h"
+#include "flags.h"
 
 extern char **environ;
 
@@ -73,6 +74,41 @@ static int arg_count(unsigned long long nr)
 		if ((unsigned long long)g_argc[i].nr == nr)
 			return g_argc[i].count;
 	return HEIMDALL_SYSCALL_NARGS;
+}
+
+// Syscall name -> number (reverse of the generated table), or -1 if unknown.
+static long sysnr(const char *name)
+{
+	for (int i = 0; i < g_nsys; i++)
+		if (!strcmp(g_sys[i].name, name))
+			return g_sys[i].nr;
+	return -1;
+}
+
+// Flag each comma-separated syscall name in `list` in the syscall_filter map.
+// Returns the count flagged; warns on unknown names.
+static int install_syscall_filter(int fd, const char *list)
+{
+	char buf[1024];
+	snprintf(buf, sizeof(buf), "%s", list);
+	int count = 0;
+	char *save = NULL;
+	for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+		while (*tok == ' ')
+			tok++;
+		if (!*tok)
+			continue;
+		long nr = sysnr(tok);
+		if (nr < 0 || nr >= 512) {
+			fprintf(stderr, "warning: unknown syscall '%s' (ignored)\n", tok);
+			continue;
+		}
+		__u32 k = (__u32)nr;
+		__u8 v = 1;
+		bpf_map_update_elem(fd, &k, &v, BPF_ANY);
+		count++;
+	}
+	return count;
 }
 
 // ---- globals -------------------------------------------------------------
@@ -501,7 +537,7 @@ static void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
 	}
 }
 
-// Render argument i of a syscall: string > fd > raw hex.
+// Render argument i of a syscall: string > fd > decoded flags/enum > raw hex.
 static void render_arg(const struct heimdall_syscall_event *e, int i, char *out, size_t outsz)
 {
 	const char *s = arg_string(e, i);
@@ -513,6 +549,8 @@ static void render_arg(const struct heimdall_syscall_event *e, int i, char *out,
 		render_fd((int)e->h.pid, e->args[i], out, outsz);
 		return;
 	}
+	if (flags_decode_arg((long)e->nr, i, e->args[i], out, outsz))
+		return;
 	snprintf(out, outsz, "0x%llx", (unsigned long long)e->args[i]);
 }
 
@@ -585,6 +623,18 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
 		first = 0;
 		json_puts_escaped(f, fdbuf);
+		fputc('"', f);
+	}
+	fprintf(f, "},\"decoded_args\":{");
+	for (int i = 0, first = 1; i < nargs; i++) {
+		char dec[256];
+		if (arg_string(e, i) || (arg_fd_mask(e->nr) & (1u << i)))
+			continue;                       // already in string_args / fd_args
+		if (!flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec)))
+			continue;
+		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		first = 0;
+		json_puts_escaped(f, dec);
 		fputc('"', f);
 	}
 	fprintf(f, "},\"backtrace\":[");
@@ -802,17 +852,28 @@ static int attach_return_probes(struct heimdall *skel)
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] <package> <lib-substring> [activity]\n"
+		"usage: %s [-o out.json] [-v] [-a] [-s list|-x list] <package> [lib-substring] [activity]\n"
+		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
+		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
+		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
 		"  -o, --json <file>   export captured syscalls to a JSON file\n"
 		"  -v, --verbose       also log every executable mapping\n"
-		"  e.g. %s -o trace.json com.example.app librasp.so\n",
-		argv0, argv0);
+		"\n"
+		"  By default a <lib-substring> is required and only syscalls whose backtrace\n"
+		"  passes through that library are recorded. With -a it is optional/ignored.\n"
+		"  -s/-x further restrict which syscalls are kept (works in either mode).\n"
+		"  e.g. %s com.example.app librasp.so\n"
+		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n",
+		argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
 {
 	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
+	int capture_all = getenv("HEIMDALL_ALL") != NULL;
 	const char *json_path = getenv("HEIMDALL_JSON");
+	const char *syscall_list = NULL;
+	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
 
 	int ai = 1;
 	for (; ai < argc; ai++) {
@@ -821,6 +882,22 @@ int main(int argc, char **argv)
 			json_path = argv[++ai];
 		} else if (!strcmp(argv[ai], "-v") || !strcmp(argv[ai], "--verbose")) {
 			g_verbose = 1;
+		} else if (!strcmp(argv[ai], "-a") || !strcmp(argv[ai], "--all")) {
+			capture_all = 1;
+		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
+			if (ai + 1 >= argc || syscall_mode == 2) {
+				fprintf(stderr, "use either -s or -x, not both\n");
+				usage(argv[0]); return 1;
+			}
+			syscall_list = argv[++ai];
+			syscall_mode = 1;
+		} else if (!strcmp(argv[ai], "-x") || !strcmp(argv[ai], "--exclude")) {
+			if (ai + 1 >= argc || syscall_mode == 1) {
+				fprintf(stderr, "use either -s or -x, not both\n");
+				usage(argv[0]); return 1;
+			}
+			syscall_list = argv[++ai];
+			syscall_mode = 2;
 		} else if (argv[ai][0] == '-') {
 			fprintf(stderr, "unknown option: %s\n", argv[ai]);
 			usage(argv[0]);
@@ -829,27 +906,51 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
-	if (argc - ai < 2) {
+	// Need <package>, plus <lib-substring> unless capturing all.
+	int npos = argc - ai;
+	if (npos < 1 || (!capture_all && npos < 2)) {
 		usage(argv[0]);
 		return 1;
 	}
 	g_pkg = argv[ai];
-	g_lib = argv[ai + 1];
-	const char *activity = (argc - ai > 2) ? argv[ai + 2] : NULL;
+	const char *activity;
+	if (capture_all) {
+		g_lib = "";                          // no library filter
+		activity = (npos > 1) ? argv[ai + 1] : NULL;
+	} else {
+		g_lib = argv[ai + 1];
+		activity = (npos > 2) ? argv[ai + 2] : NULL;
+	}
 
 	int uid = resolve_uid(g_pkg);
 	if (uid < 0) {
 		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
 		return 1;
 	}
-	printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
+	if (capture_all)
+		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
+	else
+		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
 
 	libbpf_set_print(libbpf_quiet);
 
-	struct heimdall *skel = heimdall__open_and_load();
+	struct heimdall *skel = heimdall__open();
 	if (!skel) {
-		fprintf(stderr, "open_and_load failed (run as root? SELinux permissive?)\n");
+		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
+	}
+	skel->rodata->capture_all = capture_all;
+	skel->rodata->syscall_filter_mode = syscall_mode;
+	if (heimdall__load(skel)) {
+		fprintf(stderr, "load failed (run as root? SELinux permissive?)\n");
+		heimdall__destroy(skel);
+		return 1;
+	}
+
+	if (syscall_mode) {
+		int nf = install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), syscall_list);
+		printf("syscall filter: %s %d syscall(s)\n",
+		       syscall_mode == 1 ? "only" : "excluding", nf);
 	}
 
 	g_lib_ranges_fd = bpf_map__fd(skel->maps.lib_ranges);
@@ -917,7 +1018,10 @@ int main(int argc, char **argv)
 	}
 
 	signal(SIGINT, on_sigint);
-	printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
+	if (capture_all)
+		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", uid);
+	else
+		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
 	while (!exiting) {
 		int err = ring_buffer__poll(rb, 200 /* ms */);
 		if (err < 0 && err != -EINTR)

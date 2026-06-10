@@ -421,6 +421,25 @@ int probe_target_count = 0;
 static probe_target_t retired_targets[4096];
 static int retired_count;
 
+// APK-embedded .so resolution
+#define APK_CACHE_MAX  8
+#define APK_SO_MAX    256
+
+typedef struct {
+    char     name[128];
+    uint32_t data_start;
+    uint32_t size;
+} apk_so_entry_t;
+
+typedef struct {
+    char          path[256];
+    apk_so_entry_t entries[APK_SO_MAX];
+    int           count;
+} apk_cache_t;
+
+static apk_cache_t apk_cache[APK_CACHE_MAX];
+static int         apk_cache_count;
+
 // Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
@@ -651,6 +670,118 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
     return -1;
 }
 
+static apk_cache_t *apk_cache_get(const char *apk_path)
+{
+    for (int i = 0; i < apk_cache_count; i++)
+        if (strcmp(apk_cache[i].path, apk_path) == 0)
+            return &apk_cache[i];
+    if (apk_cache_count >= APK_CACHE_MAX) return NULL;
+
+    int fd = open(apk_path, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    off_t fsize = lseek(fd, 0, SEEK_END);
+    if (fsize < 22) { close(fd); return NULL; }
+
+    // Find EOCD (End of Central Directory): usually at fsize-22, no ZIP comment
+    uint8_t buf[22];
+    off_t eocd_off = -1;
+    lseek(fd, fsize - 22, SEEK_SET);
+    if (read(fd, buf, 22) == 22 &&
+        buf[0]==0x50 && buf[1]==0x4b && buf[2]==0x05 && buf[3]==0x06) {
+        eocd_off = fsize - 22;
+    } else {
+        off_t limit = fsize - 22 - 65535;
+        if (limit < 0) limit = 0;
+        for (off_t p = fsize - 23; p >= limit; p--) {
+            lseek(fd, p, SEEK_SET);
+            if (read(fd, buf, 4) != 4) break;
+            if (buf[0]==0x50 && buf[1]==0x4b && buf[2]==0x05 && buf[3]==0x06) {
+                lseek(fd, p, SEEK_SET);
+                if (read(fd, buf, 22) == 22) { eocd_off = p; break; }
+            }
+        }
+    }
+    if (eocd_off < 0) { close(fd); return NULL; }
+
+#define LE16(b,o) ((uint16_t)((b)[(o)] | ((unsigned)(b)[(o)+1]<<8)))
+#define LE32(b,o) ((uint32_t)((b)[(o)] | ((unsigned)(b)[(o)+1]<<8) | ((unsigned)(b)[(o)+2]<<16) | ((unsigned)(b)[(o)+3]<<24)))
+
+    uint32_t cd_off      = LE32(buf, 16);
+    uint16_t num_entries = LE16(buf, 10);
+
+    apk_cache_t *c = &apk_cache[apk_cache_count];
+    strncpy(c->path, apk_path, sizeof(c->path) - 1);
+    c->count = 0;
+
+    lseek(fd, cd_off, SEEK_SET);
+    uint8_t cde[46];
+    char fname[256];
+
+    for (int i = 0; i < num_entries && c->count < APK_SO_MAX; i++) {
+        if (read(fd, cde, 46) != 46) break;
+        if (cde[0]!=0x50 || cde[1]!=0x4b || cde[2]!=0x01 || cde[3]!=0x02) break;
+
+        uint16_t method      = LE16(cde, 10);
+        uint32_t comp_size   = LE32(cde, 20);
+        uint16_t fname_len   = LE16(cde, 28);
+        uint16_t extra_len   = LE16(cde, 30);
+        uint16_t comment_len = LE16(cde, 32);
+        uint32_t lhdr_off    = LE32(cde, 42);
+
+        uint16_t rlen = fname_len < 255 ? fname_len : 255;
+        ssize_t  n    = read(fd, fname, rlen);
+        if (n < 0) break;
+        fname[n] = '\0';
+        lseek(fd, (fname_len - rlen) + extra_len + comment_len, SEEK_CUR);
+
+        // Only stored (uncompressed) .so files under lib/
+        if (method != 0) continue;
+        if (strncmp(fname, "lib/", 4) != 0) continue;
+        const char *base = strrchr(fname, '/');
+        base = base ? base + 1 : fname;
+        size_t blen = strlen(base);
+        if (blen < 4 || strcmp(base + blen - 3, ".so") != 0) continue;
+
+        // Read local file header for actual extra field length (may differ from CD)
+        off_t cur = lseek(fd, 0, SEEK_CUR);
+        uint8_t lfh[30];
+        lseek(fd, lhdr_off, SEEK_SET);
+        if (read(fd, lfh, 30) == 30 &&
+            lfh[0]==0x50 && lfh[1]==0x4b && lfh[2]==0x03 && lfh[3]==0x04) {
+            uint32_t data_start = lhdr_off + 30 + LE16(lfh,26) + LE16(lfh,28);
+            apk_so_entry_t *e = &c->entries[c->count++];
+            strncpy(e->name, base, sizeof(e->name) - 1);
+            e->data_start = data_start;
+            e->size       = comp_size;
+        }
+        lseek(fd, cur, SEEK_SET);
+    }
+#undef LE16
+#undef LE32
+
+    close(fd);
+    apk_cache_count++;
+    return c;
+}
+
+static bool apk_resolve_offset(const char *apk_path, unsigned long apk_offset,
+                                char *so_out, size_t so_sz, unsigned long *so_off_out)
+{
+    apk_cache_t *c = apk_cache_get(apk_path);
+    if (!c) return false;
+    for (int i = 0; i < c->count; i++) {
+        apk_so_entry_t *e = &c->entries[i];
+        if (apk_offset >= e->data_start && apk_offset < e->data_start + e->size) {
+            strncpy(so_out, e->name, so_sz - 1);
+            so_out[so_sz - 1] = '\0';
+            *so_off_out = apk_offset - e->data_start;
+            return true;
+        }
+    }
+    return false;
+}
+
 static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned long *offset_out)
 {
     char maps_path[64];
@@ -677,6 +808,20 @@ static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t m
             mod_out[mod_sz - 1] = '\0';
         }
         *offset_out = file_offset;
+
+        // If the mapping is inside an APK, resolve to the embedded .so
+        size_t plen = strlen(path);
+        if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0) {
+            char so_name[128];
+            unsigned long so_off;
+            if (apk_resolve_offset(path, file_offset, so_name, sizeof(so_name), &so_off)) {
+                const char *apk_base = strrchr(path, '/');
+                apk_base = apk_base ? apk_base + 1 : path;
+                snprintf(mod_out, mod_sz, "%s -> %s", apk_base, so_name);
+                *offset_out = so_off;
+            }
+        }
+
         found = 0;
         break;
     }
@@ -1013,7 +1158,19 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
         if (list_libs) {
-            if (mod_matched) out_print("   [map] > %s\n", path);
+            if (mod_matched) {
+                size_t plen = strlen(path);
+                if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0) {
+                    char so_name[128];
+                    unsigned long so_off;
+                    if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
+                        out_print("   [map] > %s -> %s\n", path, so_name);
+                    else
+                        out_print("   [map] > %s\n", path);
+                } else {
+                    out_print("   [map] > %s\n", path);
+                }
+            }
             return 0;
         }
 

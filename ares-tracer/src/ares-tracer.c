@@ -418,6 +418,9 @@ static bool is_duplicate(probe_target_t *targets, int count, const char *mod_pat
 probe_target_t probe_targets[4096];
 int probe_target_count = 0;
 
+static probe_target_t retired_targets[4096];
+static int retired_count;
+
 // Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
@@ -556,46 +559,53 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     FILE *f = fopen(maps_path, "r");
-    if (!f) return NULL;
-
-    char line[512];
     probe_target_t *result = NULL;
 
-    while (fgets(line, sizeof(line), f) && !result) {
-        unsigned long long start, end, pgoff;
-        char perms[5], path[256] = "";
+    if (f) {
+        char line[512];
+        while (fgets(line, sizeof(line), f) && !result) {
+            unsigned long long start, end, pgoff;
+            char perms[5], path[256] = "";
 
-        if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
-                   &start, &end, perms, &pgoff, path) < 4) continue;
-        if (entry_addr < start || entry_addr >= end) continue;
-        if (!strchr(perms, 'x') || path[0] != '/') continue;
+            if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
+                       &start, &end, perms, &pgoff, path) < 4) continue;
+            if (entry_addr < start || entry_addr >= end) continue;
+            if (!strchr(perms, 'x') || path[0] != '/') continue;
 
-        unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
+            unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
 
-        for (int i = 0; i < probe_target_count; i++) {
-            if (probe_targets[i].offset == file_offset &&
-                strcmp(probe_targets[i].mod_path, path) == 0) {
-                probe_targets[i].runtime_entry_addr = entry_addr;
-                result = &probe_targets[i];
-                break;
+            for (int i = 0; i < probe_target_count; i++) {
+                if (probe_targets[i].offset == file_offset &&
+                    strcmp(probe_targets[i].mod_path, path) == 0) {
+                    probe_targets[i].runtime_entry_addr = entry_addr;
+                    result = &probe_targets[i];
+                    break;
+                }
             }
         }
+        fclose(f);
     }
 
-    fclose(f);
-
-    // Fallback: if the process is dead and /proc/maps was unreadable, use the
-    // lower-12-bit invariant. ASLR keeps the base page-aligned (multiple of 0x1000),
-    // so (base + file_offset) & 0xFFF == file_offset & 0xFFF always holds.
-    // If exactly one probe_target has a matching lower 12 bits, that's our function.
+    // Fallback: use the lower-12-bit invariant. ASLR keeps the base page-aligned
+    // (multiple of 0x1000), so (base + file_offset) & 0xFFF == file_offset & 0xFFF
+    // always holds. Search both active and retired targets (retired = removed by UNMAP
+    // but may still have in-flight events). Two entries with the same lower 12 bits
+    // but different offset+mod_path = ambiguous, skip.
     if (!result) {
         unsigned long low12 = (unsigned long)(entry_addr & 0xFFF);
         probe_target_t *candidate = NULL;
         bool ambiguous = false;
-        for (int i = 0; i < probe_target_count; i++) {
-            if ((probe_targets[i].offset & 0xFFF) == low12) {
-                if (candidate) { ambiguous = true; break; }
-                candidate = &probe_targets[i];
+        for (int pass = 0; pass < 2 && !ambiguous; pass++) {
+            probe_target_t *arr = (pass == 0) ? probe_targets : retired_targets;
+            int cnt = (pass == 0) ? probe_target_count : retired_count;
+            for (int i = 0; i < cnt && !ambiguous; i++) {
+                if ((arr[i].offset & 0xFFF) != low12) continue;
+                if (!candidate) {
+                    candidate = &arr[i];
+                } else if (arr[i].offset != candidate->offset ||
+                           strcmp(arr[i].mod_path, candidate->mod_path) != 0) {
+                    ambiguous = true;
+                }
             }
         }
         if (candidate && !ambiguous) {
@@ -1064,6 +1074,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             if (probe_links[i])
                 bpf_link__destroy(probe_links[i]);
 
+            if (retired_count < 4096)
+                retired_targets[retired_count++] = probe_targets[i];
+
             probe_targets[i] = probe_targets[probe_target_count - 1];
             probe_links[i]   = probe_links[probe_target_count - 1];
             probe_links[probe_target_count - 1] = NULL;
@@ -1434,6 +1447,15 @@ int main(int argc, char **argv)
 
                     } else if (pending_idx >= 0) {
                         if (!preload_scan_done) {
+                            uid_t child_uid = get_pid_uid(wpid);
+                            if (child_uid != (uid_t)uid) {
+                                if (verbose)
+                                    err_print("[zygote] > child %d is UID %d (not target %d), skipping\n",
+                                              wpid, child_uid, uid);
+                                ptrace(PTRACE_DETACH, wpid, NULL, NULL);
+                                pending_children[pending_idx] = pending_children[--pending_children_count];
+                                continue;
+                            }
                             if (!list_libs && mod_re_count > 0) {
                                 if (verbose)
                                     err_print("[zygote] > child %d stopped - scanning\n", wpid);

@@ -6,7 +6,7 @@ ARES_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="$ARES_DIR/bin/ares-tracer-aarch64"
 DEVICE_PATH="/data/local/tmp/ares-tracer"
 SPECS_DIR="$ARES_DIR/specs"
-DEVICE_SPECS_PATH="/data/local/tmp/ares-tracer-specs"
+DEVICE_SPECS_PATH="/data/local/tmp/specs"
 
 if [ ! -f "$BINARY" ]; then
     echo "Binary not found: $BINARY" >&2

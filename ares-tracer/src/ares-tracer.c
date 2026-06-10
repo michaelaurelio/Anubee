@@ -544,8 +544,10 @@ typedef struct {
 static caller_cache_entry_t caller_cache[CALLER_CACHE_SIZE];
 static int caller_cache_count = 0;
 
-static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid)
+static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
 {
+    *used_fallback = false;
+
     for (int i = 0; i < probe_target_count; i++) {
         if (probe_targets[i].runtime_entry_addr == entry_addr)
             return &probe_targets[i];
@@ -581,6 +583,28 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid)
     }
 
     fclose(f);
+
+    // Fallback: if the process is dead and /proc/maps was unreadable, use the
+    // lower-12-bit invariant. ASLR keeps the base page-aligned (multiple of 0x1000),
+    // so (base + file_offset) & 0xFFF == file_offset & 0xFFF always holds.
+    // If exactly one probe_target has a matching lower 12 bits, that's our function.
+    if (!result) {
+        unsigned long low12 = (unsigned long)(entry_addr & 0xFFF);
+        probe_target_t *candidate = NULL;
+        bool ambiguous = false;
+        for (int i = 0; i < probe_target_count; i++) {
+            if ((probe_targets[i].offset & 0xFFF) == low12) {
+                if (candidate) { ambiguous = true; break; }
+                candidate = &probe_targets[i];
+            }
+        }
+        if (candidate && !ambiguous) {
+            candidate->runtime_entry_addr = entry_addr;
+            *used_fallback = true;
+            result = candidate;
+        }
+    }
+
     return result;
 }
 
@@ -1059,12 +1083,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         if (data_sz < sizeof(*e)) return 0;
 
-        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid);
+        bool used_fallback = false;
+        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
             bname = bname ? bname + 1 : target->mod_path;
-            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx\n",
-                ts, e->h.pid, e->ppid, bname, target->func_name, target->offset);
+            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
+                ts, e->h.pid, e->ppid, bname, target->func_name, target->offset,
+                used_fallback ? " (resolved from known offset)" : "");
         } else {
             out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
                 ts, e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);

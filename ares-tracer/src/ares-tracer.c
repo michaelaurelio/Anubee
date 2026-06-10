@@ -626,7 +626,7 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     FILE *f = fopen(maps_path, "r");
     if (!f) {
-        err_print("  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
+        if (verbose) err_print("  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
         return -1;
     }
 

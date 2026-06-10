@@ -99,6 +99,15 @@ struct {
 	__type(value, __u8);
 } syscall_filter SEC(".maps");
 
+// Per-syscall: 1-based index of the sockaddr* argument (0 = none). Filled by the
+// loader for connect/bind/sendto; the addrlen is the following argument.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, ARG_TYPES_MAX);
+	__type(key, __u32);
+	__type(value, __u8);
+} sock_args SEC(".maps");
+
 // Threads (keyed by tid) with an in-flight syscall we emitted at entry and want
 // the return value for. Set at do_el0_svc entry, consumed at __arm64_sys_*
 // return. Bounded by live thread count.
@@ -244,6 +253,21 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 				e->str_present |= (1u << i);
 			else
 				e->str[i][0] = '\0';
+		}
+	}
+
+	// Capture the sockaddr for connect/bind/sendto. sock_args[nr] holds the
+	// 1-based index of the sockaddr* arg; the addrlen is the next arg.
+	e->sock_len = 0;
+	__u8 *sap = (nr32 < ARG_TYPES_MAX) ? bpf_map_lookup_elem(&sock_args, &nr32) : NULL;
+	__u8 sidx = sap ? *sap : 0;
+	if (sidx >= 1 && sidx <= HEIMDALL_SYSCALL_NARGS - 1) {
+		const void *ptr = (const void *)e->args[sidx - 1];
+		__u64 alen = e->args[sidx];
+		if (ptr && alen) {
+			__u32 cnt = alen < HEIMDALL_SOCK_MAX ? (__u32)alen : HEIMDALL_SOCK_MAX;
+			if (bpf_probe_read_user(e->sock, cnt, ptr) == 0)
+				e->sock_len = cnt;
 		}
 	}
 

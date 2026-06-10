@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <fnmatch.h>
 #include <sys/ptrace.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -63,7 +64,8 @@ struct args {
     bool resolve_syms;
     char custom_specs[64][512];
     int custom_spec_count;
-    char spec_file[256];
+    char spec_files[8][256];
+    int spec_file_count;
     char output_file[256];
     bool cold_launch;
 };
@@ -117,7 +119,8 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'F':
-            strncpy(args->spec_file, arg, sizeof(args->spec_file) - 1);
+            if (args->spec_file_count < 8)
+                strncpy(args->spec_files[args->spec_file_count++], arg, 255);
             break;
 
         case 'o':
@@ -978,6 +981,8 @@ static bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char
         return strstr(path, spec->mod) != NULL;
     const char *bname = strrchr(path, '/');
     bname = bname ? bname + 1 : path;
+    if (strchr(spec->mod, '*') || strchr(spec->mod, '?'))
+        return fnmatch(spec->mod, bname, 0) == 0;
     return strcmp(bname, spec->mod) == 0;
 }
 
@@ -1101,7 +1106,8 @@ static int resolve_custom_spec_for_path(pid_t pid, const char *path,
     return found;
 }
 
-static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprobe_pid)
+static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprobe_pid,
+                                         unsigned long map_start, unsigned long map_end)
 {
     if (list_libs) return;
 
@@ -1132,11 +1138,21 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
         if (resolve_syms) {
             out_print("  [sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
         } else {
-            out_print("[uprobe] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+            out_print(" [spec] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
             probe_links[idx] = bpf_program__attach_uprobe(
                 skel->progs.uprobe_open, false, uprobe_pid, path, tgt.offset);
+            if (!probe_links[idx] && map_start && map_end) {
+                char map_files[80];
+                snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
+                         pid, map_start, map_end);
+                probe_links[idx] = bpf_program__attach_uprobe(
+                    skel->progs.uprobe_open, false, uprobe_pid, map_files, tgt.offset);
+                if (probe_links[idx])
+                    out_print(" [spec] > attached via map_files (file deleted): %s!%s\n",
+                              bname, label);
+            }
             if (!probe_links[idx])
-                err_print("[uprobe] > FAILED: %s!%s\n", bname, label);
+                err_print(" [spec] > FAILED: %s!%s\n", bname, label);
         }
     }
 }
@@ -1231,7 +1247,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         // Custom spec resolution (independent of -I/-i filter)
         if (custom_probe_spec_count > 0)
-            apply_custom_specs_for_file(header->pid, path, -1);
+            apply_custom_specs_for_file(header->pid, path, -1,
+                                        (unsigned long)e->start, (unsigned long)e->end);
 
         return 0;
     }
@@ -1407,11 +1424,11 @@ int main(int argc, char **argv)
             custom_probe_spec_count++;
     }
 
-    // Parse custom probe specs from -F spec file
-    if (args.spec_file[0] != '\0') {
-        FILE *sf = fopen(args.spec_file, "r");
+    // Parse custom probe specs from -F spec files
+    for (int fi = 0; fi < args.spec_file_count; fi++) {
+        FILE *sf = fopen(args.spec_files[fi], "r");
         if (!sf) {
-            err_print("   [err] > cannot open spec file '%s': %s\n", args.spec_file, strerror(errno));
+            err_print("   [err] > cannot open spec file '%s': %s\n", args.spec_files[fi], strerror(errno));
             err = -1;
             goto cleanup;
         }
@@ -1526,7 +1543,7 @@ int main(int argc, char **argv)
                     if (sscanf(mline, "%*x-%*x %4s %*x %*s %*d %255s", perms, mpath) < 1) continue;
                     if (mpath[0] != '/') continue;
                     if (!strchr(perms, 'x')) continue;
-                    apply_custom_specs_for_file(args.pids[p], mpath, args.pids[p]);
+                    apply_custom_specs_for_file(args.pids[p], mpath, args.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1680,7 +1697,7 @@ int main(int argc, char **argv)
                                         if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
                                         if (cpath[0] != '/') continue;
                                         if (!strchr(cperms, 'x')) continue;
-                                        apply_custom_specs_for_file(wpid, cpath, -1);
+                                        apply_custom_specs_for_file(wpid, cpath, -1, 0, 0);
                                     }
                                     fclose(cf);
                                 }

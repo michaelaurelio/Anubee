@@ -34,6 +34,7 @@
 #include <sys/wait.h>
 #include <sys/syscall.h>            // __NR_* for the generated table
 #include <linux/types.h>
+#include <arpa/inet.h>              // inet_ntop / ntohs for sockaddr decode
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
@@ -522,6 +523,91 @@ static unsigned arg_fd_mask(unsigned long long nr)
 	return 0;
 }
 
+// ---- sockaddr arguments --------------------------------------------------
+
+// Which arg holds a sockaddr* (the addrlen is the next arg). connect/bind take
+// it at arg1; sendto at arg4. recvfrom/accept fill it at return, so not here.
+static const struct { long nr; int arg; } g_sock_args[] = {
+#ifdef __NR_connect
+	{ __NR_connect, 1 },
+#endif
+#ifdef __NR_bind
+	{ __NR_bind, 1 },
+#endif
+#ifdef __NR_sendto
+	{ __NR_sendto, 4 },
+#endif
+};
+
+static int arg_sock_index(unsigned long long nr)
+{
+	for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++)
+		if ((unsigned long long)g_sock_args[i].nr == nr)
+			return g_sock_args[i].arg;
+	return -1;
+}
+
+// Mirror the table into the BPF sock_args map (1-based index; 0 = none).
+static void install_sock_args(int fd)
+{
+	for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++) {
+		__u32 k = (__u32)g_sock_args[i].nr;
+		__u8 v = (__u8)(g_sock_args[i].arg + 1);
+		if (k < 512)
+			bpf_map_update_elem(fd, &k, &v, BPF_ANY);
+	}
+}
+
+// Decode a raw sockaddr (family + port + addr) to "ip:port" / "[ip6]:port" /
+// "unix:/path". Returns 1 on success.
+static int decode_sockaddr(const __u8 *sa, __u32 len, char *out, size_t outsz)
+{
+	if (len < 2)
+		return 0;
+	unsigned short fam;
+	memcpy(&fam, sa, 2);                     // sa_family is host byte order
+	if (fam == AF_INET && len >= 8) {
+		unsigned short port;
+		memcpy(&port, sa + 2, 2);
+		char ip[INET_ADDRSTRLEN];
+		if (!inet_ntop(AF_INET, sa + 4, ip, sizeof(ip)))
+			return 0;
+		snprintf(out, outsz, "%s:%u", ip, ntohs(port));
+		return 1;
+	}
+	if (fam == AF_INET6 && len >= 24) {
+		unsigned short port;
+		memcpy(&port, sa + 2, 2);
+		char ip[INET6_ADDRSTRLEN];
+		if (!inet_ntop(AF_INET6, sa + 8, ip, sizeof(ip)))   // skip family+port+flowinfo
+			return 0;
+		snprintf(out, outsz, "[%s]:%u", ip, ntohs(port));
+		return 1;
+	}
+	if (fam == AF_UNIX) {
+		const char *path = (const char *)(sa + 2);
+		__u32 plen = len - 2;
+		if (plen == 0) {
+			snprintf(out, outsz, "unix:<unnamed>");
+		} else if (path[0] == '\0') {           // abstract namespace
+			char buf[HEIMDALL_SOCK_MAX];
+			__u32 m = plen - 1 < sizeof(buf) - 1 ? plen - 1 : (__u32)sizeof(buf) - 1;
+			memcpy(buf, path + 1, m);
+			buf[m] = '\0';
+			snprintf(out, outsz, "unix:@%s", buf);
+		} else {
+			char buf[HEIMDALL_SOCK_MAX];
+			__u32 m = plen < sizeof(buf) ? plen : (__u32)sizeof(buf) - 1;
+			memcpy(buf, path, m);
+			buf[m < sizeof(buf) ? m : sizeof(buf) - 1] = '\0';
+			snprintf(out, outsz, "unix:%s", buf);
+		}
+		return 1;
+	}
+	snprintf(out, outsz, "family=%u", fam);
+	return 1;
+}
+
 // Render an fd value: "AT_FDCWD", "fd=199 </proc/self/maps>", or "fd=5".
 static void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
 {
@@ -557,6 +643,9 @@ static void render_arg(const struct heimdall_syscall_event *e, int i, char *out,
 		render_fd((int)e->h.pid, e->args[i], out, outsz);
 		return;
 	}
+	if (i == arg_sock_index(e->nr) && e->sock_len > 0 &&
+	    decode_sockaddr(e->sock, e->sock_len, out, outsz))
+		return;
 	if (flags_decode_arg((long)e->nr, i, e->args[i], out, outsz))
 		return;
 	snprintf(out, outsz, "0x%llx", (unsigned long long)e->args[i]);
@@ -649,7 +738,17 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		json_puts_escaped(f, dec);
 		fputc('"', f);
 	}
-	fprintf(f, "},\"backtrace\":[");
+	fprintf(f, "},");
+
+	if (e->sock_len > 0) {
+		char sockbuf[128];
+		if (decode_sockaddr(e->sock, e->sock_len, sockbuf, sizeof(sockbuf))) {
+			fprintf(f, "\"sock_addr\":\"");
+			json_puts_escaped(f, sockbuf);
+			fprintf(f, "\",");
+		}
+	}
+	fprintf(f, "\"backtrace\":[");
 
 	int n = e->stack_sz / (int)sizeof(__u64);
 	char sym[320];
@@ -1047,6 +1146,7 @@ int main(int argc, char **argv)
 	// Tell the hook which syscall args are strings, and arm the UID filter —
 	// both BEFORE the app is launched so the very first syscalls are decoded.
 	install_arg_types(bpf_map__fd(skel->maps.arg_types));
+	install_sock_args(bpf_map__fd(skel->maps.sock_args));
 
 	__u32 key = 0, vuid = (__u32)uid;
 	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {

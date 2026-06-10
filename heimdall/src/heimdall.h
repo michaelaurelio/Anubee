@@ -18,6 +18,10 @@
 #define HEIMDALL_STR_SLOTS       4
 #define HEIMDALL_STR_MAX         256
 
+/* Raw sockaddr captured at entry for connect/bind/sendto (family + port + addr,
+ * or a unix path prefix), decoded to ip:port in userspace. */
+#define HEIMDALL_SOCK_MAX        64
+
 /* Linux VMA flag (not always macro-defined in vmlinux.h). */
 #ifndef HEIMDALL_VM_EXEC
 #define HEIMDALL_VM_EXEC 0x00000004UL
@@ -48,6 +52,8 @@ struct heimdall_syscall_event {
 	__u32 str_present;                           /* bit i set => str[i] is valid */
 	__u64 stack[HEIMDALL_MAX_STACK_DEPTH];       /* user return addresses */
 	char  str[HEIMDALL_STR_SLOTS][HEIMDALL_STR_MAX]; /* string value of args[i] */
+	__u32 sock_len;                              /* bytes valid in sock[], 0 = none */
+	__u8  sock[HEIMDALL_SOCK_MAX];               /* raw sockaddr (connect/bind/sendto) */
 };
 
 /* An executable, file-backed mapping just appeared (from uprobe_mmap). */

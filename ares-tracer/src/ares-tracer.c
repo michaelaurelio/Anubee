@@ -26,6 +26,8 @@
 
 extern char **environ;
 
+#define ARG_STR 0
+#define ARG_VAL 1
 
 // Argument parser module using argp.h
 const char *argp_program_version = "ares-tracer 1.0";
@@ -40,6 +42,11 @@ static const struct argp_option options[] = {
     { "include", 'i', "FUNCTION", 0, "Target function to trace (regex)" },
     { "verbose", 'v', NULL, 0, "Verbose debug output (modules scanned, symbols matched)" },
     { "list-libs", 'L', NULL, 0, "Library detection mode: list loaded/unloaded libs, no uprobe attachment" },
+    { "resolve-syms", 'S', NULL, 0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment" },
+    { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
+    { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
+    { "output", 'o', "FILE", 0, "Export all output to CSV file" },
+    { "cold-launch", 'C', NULL, 0, "Spawn mode: skip preload scan, attach uprobes via MAP events only (avoids early BRK detection)" },
     { 0 }
 };
 
@@ -53,6 +60,12 @@ struct args {
     int func_pattern_count;
     bool verbose;
     bool list_libs;
+    bool resolve_syms;
+    char custom_specs[64][512];
+    int custom_spec_count;
+    char spec_file[256];
+    char output_file[256];
+    bool cold_launch;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -92,6 +105,27 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'L':
             args->list_libs = true;
+            break;
+
+        case 'S':
+            args->resolve_syms = true;
+            break;
+
+        case 'e':
+            if (args->custom_spec_count < 64)
+                strncpy(args->custom_specs[args->custom_spec_count++], arg, 511);
+            break;
+
+        case 'F':
+            strncpy(args->spec_file, arg, sizeof(args->spec_file) - 1);
+            break;
+
+        case 'o':
+            strncpy(args->output_file, arg, sizeof(args->output_file) - 1);
+            break;
+
+        case 'C':
+            args->cold_launch = true;
             break;
 
         // No arguments case
@@ -227,6 +261,95 @@ static void sig_handler(int sig)
 }
 
 
+// CSV output and print wrappers
+static FILE *g_csv = NULL;
+
+static void csv_write(const char *stream, const char *buf)
+{
+    char msg[4096];
+    strncpy(msg, buf, sizeof(msg) - 1);
+    msg[sizeof(msg) - 1] = '\0';
+    size_t len = strlen(msg);
+    while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
+        msg[--len] = '\0';
+    if (len == 0) return;
+
+    char tag[32] = "";
+    const char *p = msg;
+    while (*p == ' ') p++;
+    if (*p == '[') {
+        const char *end = strchr(p + 1, ']');
+        if (end) {
+            size_t tlen = (size_t)(end - p - 1);
+            if (tlen < sizeof(tag)) { memcpy(tag, p + 1, tlen); tag[tlen] = '\0'; }
+        }
+    }
+
+    time_t t; time(&t);
+    struct tm *tmi = localtime(&t);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%H:%M:%S", tmi);
+
+    fprintf(g_csv, "%s,%s,%s,\"", ts, stream, tag);
+    for (const char *c = msg; *c; c++) {
+        if (*c == '"') fputc('"', g_csv);
+        fputc(*c, g_csv);
+    }
+    fputs("\"\n", g_csv);
+    fflush(g_csv);
+}
+
+static void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void out_print(const char *fmt, ...)
+{
+    va_list ap1, ap2;
+    va_start(ap1, fmt);
+    va_copy(ap2, ap1);
+    vprintf(fmt, ap1);
+    va_end(ap1);
+    if (g_csv) {
+        char buf[4096];
+        vsnprintf(buf, sizeof(buf), fmt, ap2);
+        csv_write("out", buf);
+    }
+    va_end(ap2);
+}
+
+static void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void err_print(const char *fmt, ...)
+{
+    va_list ap1, ap2;
+    va_start(ap1, fmt);
+    va_copy(ap2, ap1);
+    FILE *se = stderr;
+    vfprintf(se, fmt, ap1);
+    va_end(ap1);
+    if (g_csv) {
+        char buf[4096];
+        vsnprintf(buf, sizeof(buf), fmt, ap2);
+        csv_write("err", buf);
+    }
+    va_end(ap2);
+}
+
+static int csv_open(const char *path)
+{
+    g_csv = fopen(path, "w");
+    if (!g_csv) {
+        err_print("   [err] > cannot open CSV output '%s': %s\n", path, strerror(errno));
+        return -1;
+    }
+    fputs("timestamp,stream,tag,message\n", g_csv);
+    fflush(g_csv);
+    return 0;
+}
+
+static void csv_close(void)
+{
+    if (g_csv) { fclose(g_csv); g_csv = NULL; }
+}
+
+
 // Check module and function pattern match
 regex_t mod_re[32];
 bool mod_has_slash[32];
@@ -238,7 +361,17 @@ typedef struct {
     char func_name[256];
     unsigned long offset;
     __u64 runtime_entry_addr;
+    int arg_count;       // -1 = use BPF heuristic; 0-8 = typed
+    uint8_t arg_types[8];
 } probe_target_t;
+
+typedef struct {
+    char mod[256];
+    char func[256];
+    unsigned long offset; // 0 = resolve from symbol name
+    int arg_count;
+    uint8_t arg_types[8];
+} custom_probe_spec_t;
 
 static bool mod_matches(const char *full_path, regex_t *re, bool *has_slash, int count)
 {
@@ -290,17 +423,22 @@ int mod_re_count = 0;
 int func_re_count = 0;
 static bool verbose = false;
 static bool list_libs = false;
+static bool resolve_syms = false;
+static bool cold_launch = false;
+
+custom_probe_spec_t custom_probe_specs[64];
+int custom_probe_spec_count = 0;
 
 static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
 
-    if (verbose) fprintf(stderr, "  [scan] > opening %s\n", maps_path);
+    if (verbose) err_print("  [scan] > opening %s\n", maps_path);
 
     FILE *f = fopen(maps_path, "r");
     if (!f) {
-        fprintf(stderr, "  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
+        err_print("  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
         return -1;
     }
 
@@ -315,26 +453,26 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
         if (path[0] != '/') continue;
         if (!strchr(perms, 'x')) continue;
 
-        if (verbose) fprintf(stderr, "  [maps] > rx[%d]: %s\n", n_rx, path);
+        if (verbose) err_print("  [maps] > rx[%d]: %s\n", n_rx, path);
         n_rx++;
 
         if (!mod_matches(path, mod_re, mod_has_slash, mod_re_count)) {
-            if (verbose) fprintf(stderr, "  [maps]   | skip (no -I match)\n");
+            if (verbose) err_print("  [maps]   | skip (no -I match)\n");
             continue;
         }
-        if (verbose) fprintf(stderr, "  [maps]   | match! opening ELF...\n");
+        if (verbose) err_print("  [maps]   | match! opening ELF...\n");
         n_matched++;
 
         int fd = open(path, O_RDONLY);
         if (fd < 0) {
-            if (verbose) fprintf(stderr, "  [scan] > skip (open failed: %s)\n", strerror(errno));
+            if (verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
             continue;
         }
-        if (verbose) fprintf(stderr, "  [maps]   | ELF fd=%d, parsing sections...\n", fd);
+        if (verbose) err_print("  [maps]   | ELF fd=%d, parsing sections...\n", fd);
 
         Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
         if (!elf) {
-            if (verbose) fprintf(stderr, "  [scan]   | skip (not a valid ELF)\n");
+            if (verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
             close(fd);
             continue;
         }
@@ -352,7 +490,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
             if (!data) continue;
 
             int num_symbols = shdr.sh_size / shdr.sh_entsize;
-            if (verbose) fprintf(stderr, "  [scan]   | %s: %d symbols\n",
+            if (verbose) err_print("  [scan]   | %s: %d symbols\n",
                 shdr.sh_type == SHT_SYMTAB ? "SHT_SYMTAB" : "SHT_DYNSYM", num_symbols);
 
             for (int i = 0; i < num_symbols && count < max_targets; i++) {
@@ -366,7 +504,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                 if (!name || name[0] == '\0') continue;
                 if (!func_matches(name, func_re, func_re_count)) continue;
 
-                if (verbose) fprintf(stderr, " [match] > %s!%s @ 0x%lx\n",
+                if (verbose) err_print(" [match] > %s!%s @ 0x%lx\n",
                     path, name, (unsigned long)sym.st_value);
 
                 if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
@@ -374,16 +512,18 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                     strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
                     strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
                     targets[count].offset = (unsigned long)sym.st_value;
+                    targets[count].arg_count = -1;
+                    memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                     count++;
                 }
             }
         }
         elf_end(elf);
         close(fd);
-        if (verbose) fprintf(stderr, "  [maps]   | ELF done, symbols so far: %d\n", count);
+        if (verbose) err_print("  [maps]   | ELF done, symbols so far: %d\n", count);
     }
 
-    if (verbose) fprintf(stderr, "  [scan] > done: %d rx entries, %d matched, %d found\n",
+    if (verbose) err_print("  [scan] > done: %d rx entries, %d matched, %d found\n",
         n_rx, n_matched, count);
     fclose(f);
     return count;
@@ -452,7 +592,7 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
     FILE *f = fopen(maps_path, "r");
     if (!f) {
-        fprintf(stderr, "  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
+        err_print("  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
         return -1;
     }
 
@@ -543,17 +683,17 @@ static int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, un
 
 static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t *targets, int max_targets)
 {
-    if (verbose) fprintf(stderr, "  [scan] > %s (map event)\n", path);
+    if (verbose) err_print("  [scan] > %s (map event)\n", path);
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        if (verbose) fprintf(stderr, "  [scan] > skip (open failed: %s)\n", strerror(errno));
+        if (verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
         return -1;
     }
 
     Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
     if (!elf) {
-        if (verbose) fprintf(stderr, "  [scan]   | skip (not a valid ELF)\n");
+        if (verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
         close(fd);
         return -1;
     }
@@ -572,7 +712,7 @@ static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t 
         if (!data) continue;
 
         int num_symbols = shdr.sh_size / shdr.sh_entsize;
-        if (verbose) fprintf(stderr, "  [scan]   | %s: %d symbols\n",
+        if (verbose) err_print("  [scan]   | %s: %d symbols\n",
             shdr.sh_type == SHT_SYMTAB ? "SHT_SYMTAB" : "SHT_DYNSYM", num_symbols);
 
         for (int i = 0; i < num_symbols && count < max_targets; i++) {
@@ -586,7 +726,7 @@ static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t 
             if (!name || name[0] == '\0') continue;
             if (!func_matches(name, func_re, func_re_count)) continue;
 
-            if (verbose) fprintf(stderr, " [match] > %s!%s @ 0x%lx\n",
+            if (verbose) err_print(" [match] > %s!%s @ 0x%lx\n",
                 path, name, (unsigned long)sym.st_value);
 
             if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
@@ -594,6 +734,8 @@ static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t 
                 strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
                 strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
                 targets[count].offset = (unsigned long)sym.st_value;
+                targets[count].arg_count = -1;
+                memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                 count++;
             }
         }
@@ -604,32 +746,23 @@ static int resolve_targets_for_file(pid_t pid, const char *path, probe_target_t 
     return count;
 }
 
+
 static pid_t find_zygote_pid(void)
 {
     DIR *dir = opendir("/proc");
     if (!dir) return -1;
-
     struct dirent *ent;
     pid_t result = -1;
     while ((ent = readdir(dir)) != NULL) {
-        if (!isdigit((unsigned char)ent->d_name[0])) 
-            continue;
-
+        if (!isdigit((unsigned char)ent->d_name[0])) continue;
         pid_t pid = (pid_t)atoi(ent->d_name);
-
         char path[64], cmdline[64];
         snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-
         int fd = open(path, O_RDONLY);
-        if (fd < 0) 
-            continue;
-
+        if (fd < 0) continue;
         ssize_t n = read(fd, cmdline, sizeof(cmdline) - 1);
         close(fd);
-
-        if (n <= 0)
-            continue;
-
+        if (n <= 0) continue;
         cmdline[n] = '\0';
         if (strcmp(cmdline, "zygote64") == 0 || strcmp(cmdline, "zygote") == 0) {
             result = pid;
@@ -643,11 +776,180 @@ static pid_t find_zygote_pid(void)
 static int seize_zygote(pid_t pid)
 {
     if (ptrace(PTRACE_SEIZE, pid, NULL, (void *)(long)PTRACE_O_TRACEFORK) != 0) {
-        fprintf(stderr, "[zygote] > ptrace SEIZE failed: %s\n", strerror(errno));
+        err_print("[zygote] > ptrace SEIZE failed: %s\n", strerror(errno));
         return -1;
     }
-    printf("[zygote] > seized PID %d\n", pid);
+    out_print("[zygote] > seized PID %d\n", pid);
     return 0;
+}
+
+static bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path)
+{
+    if (strchr(spec->mod, '/'))
+        return strstr(path, spec->mod) != NULL;
+    const char *bname = strrchr(path, '/');
+    bname = bname ? bname + 1 : path;
+    return strcmp(bname, spec->mod) == 0;
+}
+
+static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->arg_count = -1;
+
+    char buf[512];
+    strncpy(buf, input, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *paren = strchr(buf, '(');
+    if (paren) {
+        *paren = '\0';
+        char *close = strchr(paren + 1, ')');
+        if (!close) {
+            err_print("   [err] > malformed spec (unclosed '('): %s\n", input);
+            return -1;
+        }
+        *close = '\0';
+        out->arg_count = 0;
+        char *save = NULL;
+        for (char *tok = strtok_r(paren + 1, ",", &save);
+             tok && out->arg_count < 8;
+             tok = strtok_r(NULL, ",", &save)) {
+            while (*tok == ' ') tok++;
+            if (*tok == 'S' || *tok == 's')
+                out->arg_types[out->arg_count++] = ARG_STR;
+            else if (*tok == 'V' || *tok == 'v')
+                out->arg_types[out->arg_count++] = ARG_VAL;
+            else {
+                err_print("   [err] > unknown arg type '%c' in spec: %s\n", *tok, input);
+                return -1;
+            }
+        }
+    }
+
+    char *bang = strchr(buf, '!');
+    if (bang) {
+        *bang = '\0';
+        strncpy(out->mod, buf, sizeof(out->mod) - 1);
+        char *at = strchr(bang + 1, '@');
+        if (at) {
+            *at = '\0';
+            strncpy(out->func, bang + 1, sizeof(out->func) - 1);
+            out->offset = strtoul(at + 1, NULL, 0);
+        } else {
+            strncpy(out->func, bang + 1, sizeof(out->func) - 1);
+        }
+    } else {
+        char *at = strchr(buf, '@');
+        if (!at) {
+            err_print("   [err] > invalid spec (need '!' or '@'): %s\n", input);
+            return -1;
+        }
+        *at = '\0';
+        strncpy(out->mod, buf, sizeof(out->mod) - 1);
+        out->offset = strtoul(at + 1, NULL, 0);
+    }
+
+    if (out->mod[0] == '\0') {
+        err_print("   [err] > empty module in spec: %s\n", input);
+        return -1;
+    }
+    if (out->func[0] == '\0' && out->offset == 0) {
+        err_print("   [err] > spec needs function name or offset: %s\n", input);
+        return -1;
+    }
+    return 0;
+}
+
+static int resolve_custom_spec_for_path(pid_t pid, const char *path,
+                                         const custom_probe_spec_t *spec,
+                                         probe_target_t *out)
+{
+    out->pid = pid;
+    strncpy(out->mod_path, path, sizeof(out->mod_path) - 1);
+    out->mod_path[sizeof(out->mod_path) - 1] = '\0';
+    strncpy(out->func_name, spec->func, sizeof(out->func_name) - 1);
+    out->func_name[sizeof(out->func_name) - 1] = '\0';
+    out->runtime_entry_addr = 0;
+    out->arg_count = spec->arg_count;
+    memcpy(out->arg_types, spec->arg_types, sizeof(spec->arg_types));
+
+    if (spec->offset > 0) {
+        out->offset = spec->offset;
+        return 0;
+    }
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf) { close(fd); return -1; }
+
+    int found = -1;
+    Elf_Scn *scn = NULL;
+    while ((scn = elf_nextscn(elf, scn)) != NULL && found < 0) {
+        GElf_Shdr shdr;
+        if (!gelf_getshdr(scn, &shdr)) continue;
+        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+        if (shdr.sh_entsize == 0) continue;
+        Elf_Data *data = elf_getdata(scn, NULL);
+        if (!data) continue;
+        int num = shdr.sh_size / shdr.sh_entsize;
+        for (int i = 0; i < num && found < 0; i++) {
+            GElf_Sym sym;
+            gelf_getsym(data, i, &sym);
+            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue;
+            if (sym.st_value == 0) continue;
+            const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
+            if (name && strcmp(name, spec->func) == 0) {
+                out->offset = (unsigned long)sym.st_value;
+                found = 0;
+            }
+        }
+    }
+    elf_end(elf);
+    close(fd);
+    return found;
+}
+
+static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprobe_pid)
+{
+    if (list_libs) return;
+
+    int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0]));
+    for (int s = 0; s < custom_probe_spec_count && probe_target_count < max; s++) {
+        const custom_probe_spec_t *spec = &custom_probe_specs[s];
+        if (!custom_spec_matches_path(spec, path)) continue;
+
+        probe_target_t tgt;
+        if (resolve_custom_spec_for_path(pid, path, spec, &tgt) != 0) {
+            if (verbose) err_print("   [err] > custom spec: could not resolve %s!%s in %s\n",
+                spec->mod, spec->func[0] ? spec->func : "?", path);
+            continue;
+        }
+
+        if (is_duplicate(probe_targets, probe_target_count, path, tgt.offset))
+            continue;
+
+        int idx = probe_target_count;
+        probe_targets[idx] = tgt;
+        probe_links[idx] = NULL;
+        probe_target_count++;
+
+        const char *bname = strrchr(path, '/');
+        bname = bname ? bname + 1 : path;
+        const char *label = tgt.func_name[0] ? tgt.func_name : "?";
+
+        if (resolve_syms) {
+            out_print("  [sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+        } else {
+            out_print("[uprobe] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+            probe_links[idx] = bpf_program__attach_uprobe(
+                skel->progs.uprobe_open, false, uprobe_pid, path, tgt.offset);
+            if (!probe_links[idx])
+                err_print("[uprobe] > FAILED: %s!%s\n", bname, label);
+        }
+    }
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
@@ -668,43 +970,53 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e)) 
             return 0;
         
-        if (verbose) fprintf(stderr, " [event]   | MMAP : %s\n", e->name);
+        if (verbose) err_print(" [event]   | MMAP : %s\n", e->name);
         // Get full path from /proc/PID/maps based on start addreess
         char path[256];
         if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) != 0)
             return 0;
 
-        if (!mod_matches(path, mod_re, mod_has_slash, mod_re_count))
-            return 0;
+        bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
         if (list_libs) {
-            printf("   [map] > %s\n", path);
+            if (mod_matched) out_print("   [map] > %s\n", path);
             return 0;
         }
 
-        // Resolve targets based on path
-        int prev_count = probe_target_count;
-        int max_targets = sizeof(probe_targets) / sizeof(probe_targets[0]) - prev_count;
-        int resolved = resolve_targets_for_file(header->pid, path, probe_targets + prev_count, max_targets);
+        // Normal symbol resolution (filtered by -I/-i; skipped when no -I given)
+        if (mod_matched && mod_re_count > 0) {
+            int prev_count = probe_target_count;
+            int max_targets = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev_count;
+            int resolved = resolve_targets_for_file(header->pid, path, probe_targets + prev_count, max_targets);
 
-        if (resolved <= 0)
-            return 0;
+            if (resolved > 0) {
+                probe_target_count += resolved;
 
-        probe_target_count += resolved;
+                for (int i = prev_count; i < probe_target_count && !exiting; i++) {
+                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
+                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
 
-        for (int i = prev_count; i < probe_target_count && !exiting; i++) {
-            const char *bname = strrchr(probe_targets[i].mod_path, '/');
-            bname = bname ? bname + 1 : probe_targets[i].mod_path;
-            printf("[uprobe] > %s!%s @ 0x%lx\n",
-                bname, probe_targets[i].func_name, probe_targets[i].offset);
+                    if (resolve_syms) {
+                        out_print("  [sym] > %s!%s @ 0x%lx\n",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                    } else {
+                        out_print("[uprobe] > %s!%s @ 0x%lx\n",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset);
 
-            probe_links[i] = bpf_program__attach_uprobe(
-                skel->progs.uprobe_open, false, -1,
-                probe_targets[i].mod_path, probe_targets[i].offset);
+                        probe_links[i] = bpf_program__attach_uprobe(
+                            skel->progs.uprobe_open, false, -1,
+                            probe_targets[i].mod_path, probe_targets[i].offset);
 
-            if (!probe_links[i])
-                fprintf(stderr, "[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
+                        if (!probe_links[i])
+                            err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
+                    }
+                }
+            }
         }
+
+        // Custom spec resolution (independent of -I/-i filter)
+        if (custom_probe_spec_count > 0)
+            apply_custom_specs_for_file(header->pid, path, -1);
 
         return 0;
     }
@@ -714,7 +1026,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (verbose) fprintf(stderr, " [event]   | UNMAP: %s\n", e->name);
+        if (verbose) err_print(" [event]   | UNMAP: %s\n", e->name);
 
         if (list_libs) return 0;
 
@@ -735,14 +1047,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             removed++;
         }
 
-        if (removed > 0)
-            printf(" [unmap] > %s (%d probes removed)\n", e->name, removed);
+        if (removed > 0 && !resolve_syms)
+            out_print(" [unmap] > %s (%d probes removed)\n", e->name, removed);
 
         return 0;
     }
 
     if (header->type == ARES_EVENT_CALL) {
-        if (list_libs) return 0;
+        if (list_libs || resolve_syms) return 0;
         const struct event *e = data;
 
         if (data_sz < sizeof(*e)) return 0;
@@ -751,10 +1063,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
             bname = bname ? bname + 1 : target->mod_path;
-            printf(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx\n",
+            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx\n",
                 ts, e->h.pid, e->ppid, bname, target->func_name, target->offset);
         } else {
-            printf(" [event] > [CALL] %s PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
+            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
                 ts, e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
             return 0;
         }
@@ -763,9 +1075,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             char caller_mod[128] = "";
             unsigned long caller_off = 0;
             if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
-                printf(" [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
+                out_print(" [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
             else
-                printf(" [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
+                out_print(" [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
         }
 
         for (__u32 i = 2; i < e->stack_depth; i++) {
@@ -773,16 +1085,28 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             char frame_mod[128] = "";
             unsigned long frame_off = 0;
             if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                printf(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
             else
-                printf(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+                out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
         }
 
-        for (int i = 0; i < NUM_ARGS; i++) {
-            if (e->is_str[i]) {
-                printf(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
-            } else {
-                printf(" [event]   | args[%d] 0x%lx\n", i, e->args[i]);
+        if (target->arg_count >= 0) {
+            for (int i = 0; i < target->arg_count; i++) {
+                if (target->arg_types[i] == ARG_STR) {
+                    if (e->is_str[i])
+                        out_print(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                    else
+                        out_print(" [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
+                } else {
+                    out_print(" [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                }
+            }
+        } else {
+            for (int i = 0; i < NUM_ARGS; i++) {
+                if (e->is_str[i])
+                    out_print(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                else
+                    out_print(" [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
             }
         }
     }
@@ -812,19 +1136,27 @@ int main(int argc, char **argv)
     argp_parse(&argp, argc, argv, 0, NULL, &args);
     verbose = args.verbose;
     list_libs = args.list_libs;
-    if (verbose) fprintf(stderr, "  [verb] > mode ON\n");
-    if (list_libs) printf("  [info] > library detection mode\n");
+    resolve_syms = args.resolve_syms;
+    cold_launch = args.cold_launch;
+
+    if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
+        return 1;
+    }
+
+    if (verbose) err_print("  [verb] > mode ON\n");
+    if (list_libs) out_print("  [info] > library detection mode\n");
+    if (resolve_syms) out_print("  [info] > symbol resolution mode\n");
 
 
     // Resolve application UID (if spawn mode)
     if (args.package_name[0] != '\0') {
         uid = resolve_uid(args.package_name);
         if (uid < 0) {
-            fprintf(stderr, " [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
+            err_print(" [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
             err = -1;
             goto cleanup;
         }
-        printf(" [spawn] > %s UID %d\n", args.package_name, uid);
+        out_print(" [spawn] > %s UID %d\n", args.package_name, uid);
     }
 
 
@@ -832,7 +1164,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < args.mod_pattern_count; i++) {
         mod_has_slash[i] = strchr(args.mod_patterns[i], '/') != NULL;
         if (regcomp(&mod_re[i], args.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "   [err] > invalid regex pattern: %s\n", args.mod_patterns[i]);
+            err_print("   [err] > invalid regex pattern: %s\n", args.mod_patterns[i]);
             err = -1;
             goto cleanup;
         }
@@ -841,7 +1173,7 @@ int main(int argc, char **argv)
     
     for (int i = 0; i < args.func_pattern_count; i++) {
         if (regcomp(&func_re[i], args.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "   [err] > invalid regex pattern: %s\n", args.func_patterns[i]);
+            err_print("   [err] > invalid regex pattern: %s\n", args.func_patterns[i]);
             err = -1;
             goto cleanup;
         }
@@ -849,10 +1181,36 @@ int main(int argc, char **argv)
     }
 
 
+    // Parse custom probe specs from -e flags
+    for (int i = 0; i < args.custom_spec_count; i++) {
+        if (parse_custom_probe_spec(args.custom_specs[i], &custom_probe_specs[custom_probe_spec_count]) == 0)
+            custom_probe_spec_count++;
+    }
+
+    // Parse custom probe specs from -F spec file
+    if (args.spec_file[0] != '\0') {
+        FILE *sf = fopen(args.spec_file, "r");
+        if (!sf) {
+            err_print("   [err] > cannot open spec file '%s': %s\n", args.spec_file, strerror(errno));
+            err = -1;
+            goto cleanup;
+        }
+        char sline[512];
+        while (fgets(sline, sizeof(sline), sf) && custom_probe_spec_count < 64) {
+            char *end = sline + strlen(sline) - 1;
+            while (end >= sline && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t')) *end-- = '\0';
+            if (sline[0] == '\0' || sline[0] == '#') continue;
+            if (parse_custom_probe_spec(sline, &custom_probe_specs[custom_probe_spec_count]) == 0)
+                custom_probe_spec_count++;
+        }
+        fclose(sf);
+    }
+
+
     // Open, load, attach BPF skeleton
     skel = ares_tracer_bpf__open_and_load();
     if (!skel) {
-        fprintf(stderr, "   [bpf] > failed to load skeleton\n");
+        err_print("   [bpf] > failed to load skeleton\n");
         err = 1;
         goto cleanup;
     }
@@ -860,7 +1218,7 @@ int main(int argc, char **argv)
     bpf_program__set_autoattach(skel->progs.uprobe_open, false);
     err = ares_tracer_bpf__attach(skel);
     if (err) {
-        fprintf(stderr, "   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
+        err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
         goto cleanup;
     }
     elf_version(EV_CURRENT);
@@ -868,16 +1226,16 @@ int main(int argc, char **argv)
     events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, NULL, NULL);
     if (!events_rb) {
         err = -1;
-        fprintf(stderr, "    [rb] > failed to create ring buffer\n");
+        err_print("    [rb] > failed to create ring buffer\n");
         goto cleanup;
     }
 
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
     if (args.pid_count > 0) {
-        if (!list_libs) {
+        if (!list_libs && mod_re_count > 0) {
             for (int i = 0; i < args.pid_count; i++) {
-                printf(" [probe] > resolving targets for PID %d\n", args.pids[i]);
+                out_print(" [probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
                     args.pids[i],
                     probe_targets + probe_target_count,
@@ -886,8 +1244,8 @@ int main(int argc, char **argv)
                 if (resolved > 0) probe_target_count += resolved;
             }
 
-            if (probe_target_count == 0) {
-                fprintf(stderr, " [probe] > no trace targets found\n");
+            if (probe_target_count == 0 && !resolve_syms && custom_probe_spec_count == 0) {
+                err_print(" [probe] > no trace targets found\n");
                 err = -1;
                 goto cleanup;
             }
@@ -897,57 +1255,84 @@ int main(int argc, char **argv)
         for (int i = 0; i < args.pid_count; i++) {
             int pid_uid = get_pid_uid(args.pids[i]);
             if (pid_uid <= 0) {
-                fprintf(stderr, " [probe] > could not resolve UID for PID %d\n", args.pids[i]);
+                err_print(" [probe] > could not resolve UID for PID %d\n", args.pids[i]);
                 continue;
             }
             __u32 vuid = (__u32)pid_uid;
             if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-                fprintf(stderr, " [probe] > failed to set target UID %d: %s\n", pid_uid, strerror(errno));
+                err_print(" [probe] > failed to set target UID %d: %s\n", pid_uid, strerror(errno));
                 goto cleanup;
             }
-            printf(" [probe] > PID %d UID %d\n", args.pids[i], pid_uid);
+            out_print(" [probe] > PID %d UID %d\n", args.pids[i], pid_uid);
         }
 
-        if (!list_libs) {
+        if (!list_libs && mod_re_count > 0) {
             for (int i = 0; i < probe_target_count && !exiting; i++) {
                 const char *bname = strrchr(probe_targets[i].mod_path, '/');
                 bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                printf("[uprobe] > %s!%s @ 0x%lx\n",
-                    bname, probe_targets[i].func_name, probe_targets[i].offset);
-                probe_links[i] = bpf_program__attach_uprobe(
-                    skel->progs.uprobe_open,
-                    false,
-                    probe_targets[i].pid,
-                    probe_targets[i].mod_path,
-                    probe_targets[i].offset
-                );
-                if (!probe_links[i]) {
-                    fprintf(stderr, "[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
-                    err = -1;
-                    goto cleanup;
+
+                if (resolve_syms) {
+                    out_print("  [sym] > %s!%s @ 0x%lx\n",
+                        bname, probe_targets[i].func_name, probe_targets[i].offset);
+                } else {
+                    out_print("[uprobe] > %s!%s @ 0x%lx\n",
+                        bname, probe_targets[i].func_name, probe_targets[i].offset);
+                    probe_links[i] = bpf_program__attach_uprobe(
+                        skel->progs.uprobe_open,
+                        false,
+                        probe_targets[i].pid,
+                        probe_targets[i].mod_path,
+                        probe_targets[i].offset
+                    );
+                    if (!probe_links[i]) {
+                        err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
+                        err = -1;
+                        goto cleanup;
+                    }
                 }
+            }
+        }
+
+        // Apply custom probe specs for each PID
+        if (custom_probe_spec_count > 0) {
+            for (int p = 0; p < args.pid_count; p++) {
+                char maps_path[64];
+                snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", args.pids[p]);
+                FILE *mf = fopen(maps_path, "r");
+                if (!mf) continue;
+                char mline[512];
+                while (fgets(mline, sizeof(mline), mf)) {
+                    char perms[5], mpath[256] = "";
+                    if (sscanf(mline, "%*x-%*x %4s %*x %*s %*d %255s", perms, mpath) < 1) continue;
+                    if (mpath[0] != '/') continue;
+                    if (!strchr(perms, 'x')) continue;
+                    apply_custom_specs_for_file(args.pids[p], mpath, args.pids[p]);
+                }
+                fclose(mf);
             }
         }
     } else {
         char cmd[512], package_activity[256];
 
-        // Find Zygote PID and seize for ptrace
-        g_zygote_pid = find_zygote_pid();
-        if (g_zygote_pid < 0) {
-            fprintf(stderr, "[zygote] > failed to find Zygote PID\n");
-            err = -1;
-            goto cleanup;
-        }
-        if (seize_zygote(g_zygote_pid) != 0) {
-            err = -1;
-            goto cleanup;
+        if (!cold_launch) {
+            // V1: seize zygote so we can scan the forked child's pre-loaded maps
+            g_zygote_pid = find_zygote_pid();
+            if (g_zygote_pid < 0) {
+                err_print("[zygote] > failed to find Zygote PID\n");
+                err = -1;
+                goto cleanup;
+            }
+            if (seize_zygote(g_zygote_pid) != 0) {
+                err = -1;
+                goto cleanup;
+            }
         }
 
         // Force stop the package first
         snprintf(cmd, sizeof(cmd), "am force-stop %s", args.package_name);
         sh_exec(cmd, NULL, 0);
 
-        // Make sure package is bye bye
+        // Make sure package is gone
         snprintf(cmd, sizeof(cmd), "pidof %s", args.package_name);
         for (int i = 0; i < 30; i++) {
             char pid_buf[32] = "";
@@ -958,7 +1343,7 @@ int main(int argc, char **argv)
 
         // Resolve main activity
         if (resolve_component(args.package_name, package_activity, sizeof(package_activity)) != 0) {
-            fprintf(stderr, " [spawn] > failed to resolve component for %s\n", args.package_name);
+            err_print(" [spawn] > failed to resolve component for %s\n", args.package_name);
             err = -1;
             goto cleanup;
         }
@@ -967,21 +1352,22 @@ int main(int argc, char **argv)
         __u8 one = 1;
         __u32 vuid = (__u32)uid;
         if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-            fprintf(stderr, " [spawn] > failed to set target UID: %s\n", strerror(errno));
+            err_print(" [spawn] > failed to set target UID: %s\n", strerror(errno));
             goto cleanup;
         }
 
-        // Start package
+        out_print(" [spawn] > launching %s%s\n", args.package_name,
+                  cold_launch ? " (cold)" : "");
         snprintf(cmd, sizeof(cmd), "am start -S -n %s", package_activity);
         if (sh_exec(cmd, NULL, 0) != 0) {
-            fprintf(stderr, " [spawn] > failed to start %s\n", args.package_name);
+            err_print(" [spawn] > failed to start %s\n", args.package_name);
             err = -1;
             goto cleanup;
         }
     }
-    
-    // Zygote fork handling for pre-loaded libraries
-    bool zygote_fork_done = (g_zygote_pid < 0);
+
+    // Zygote fork handling for pre-loaded libraries (V1 only, skipped in cold launch)
+    bool zygote_fork_done = cold_launch || (g_zygote_pid < 0);
     pid_t pending_children[64];
     int pending_children_count = 0;
     bool preload_scan_done = false;
@@ -1000,10 +1386,10 @@ int main(int argc, char **argv)
                 if (WIFEXITED(wstatus) || WIFSIGNALED(wstatus)) {
                     if (pending_idx >= 0) {
                         if (WIFEXITED(wstatus))
-                            fprintf(stderr, "[zygote] > child %d exited before scan (code %d)\n",
+                            err_print("[zygote] > child %d exited before scan (code %d)\n",
                                 wpid, WEXITSTATUS(wstatus));
                         else
-                            fprintf(stderr, "[zygote] > child %d killed before scan (sig %d)\n",
+                            err_print("[zygote] > child %d killed before scan (sig %d)\n",
                                 wpid, WTERMSIG(wstatus));
                         pending_children[pending_idx] = pending_children[--pending_children_count];
                     }
@@ -1015,42 +1401,65 @@ int main(int argc, char **argv)
                         unsigned long child_pid_long = 0;
                         ptrace(PTRACE_GETEVENTMSG, g_zygote_pid, NULL, &child_pid_long);
                         pid_t new_child = (pid_t)child_pid_long;
-                        printf("[zygote] > forked PID %d\n", new_child);
+                        out_print("[zygote] > forked PID %d\n", new_child);
                         if (!preload_scan_done && pending_children_count < 64)
                             pending_children[pending_children_count++] = new_child;
                         ptrace(PTRACE_CONT, g_zygote_pid, NULL, NULL);
 
                     } else if (pending_idx >= 0) {
                         if (!preload_scan_done) {
-                            if (!list_libs) {
+                            if (!list_libs && mod_re_count > 0) {
                                 if (verbose)
-                                    fprintf(stderr, "[zygote] > child %d stopped - scanning\n", wpid);
-                                printf("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
+                                    err_print("[zygote] > child %d stopped - scanning\n", wpid);
+                                out_print("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
                                 int prev = probe_target_count;
                                 int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
                                 int resolved = resolve_targets(wpid, probe_targets + prev, max);
-                                printf("[zygote] > resolve_targets -> %d symbols\n", resolved);
+                                out_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
                                 if (resolved > 0) {
                                     probe_target_count += resolved;
                                     for (int i = prev; i < probe_target_count && !exiting; i++) {
                                         const char *bname = strrchr(probe_targets[i].mod_path, '/');
                                         bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                                        printf("[uprobe] > %s!%s @ 0x%lx\n",
-                                            bname, probe_targets[i].func_name, probe_targets[i].offset);
-                                        probe_links[i] = bpf_program__attach_uprobe(
-                                            skel->progs.uprobe_open, false, -1,
-                                            probe_targets[i].mod_path, probe_targets[i].offset);
-                                        if (!probe_links[i])
-                                            fprintf(stderr, "[uprobe] > FAILED: %s!%s\n",
-                                                bname, probe_targets[i].func_name);
+                                        if (resolve_syms) {
+                                            out_print("  [sym] > %s!%s @ 0x%lx\n",
+                                                bname, probe_targets[i].func_name, probe_targets[i].offset);
+                                        } else {
+                                            out_print("[uprobe] > %s!%s @ 0x%lx\n",
+                                                bname, probe_targets[i].func_name, probe_targets[i].offset);
+                                            probe_links[i] = bpf_program__attach_uprobe(
+                                                skel->progs.uprobe_open, false, -1,
+                                                probe_targets[i].mod_path, probe_targets[i].offset);
+                                            if (!probe_links[i])
+                                                err_print("[uprobe] > FAILED: %s!%s\n",
+                                                    bname, probe_targets[i].func_name);
+                                        }
                                     }
-                                    printf("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
+                                    if (!resolve_syms)
+                                        out_print("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
+                                }
+                            }
+
+                            if (!list_libs && custom_probe_spec_count > 0) {
+                                char cmaps[64];
+                                snprintf(cmaps, sizeof(cmaps), "/proc/%d/maps", wpid);
+                                FILE *cf = fopen(cmaps, "r");
+                                if (cf) {
+                                    char cline[512];
+                                    while (fgets(cline, sizeof(cline), cf)) {
+                                        char cperms[5], cpath[256] = "";
+                                        if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
+                                        if (cpath[0] != '/') continue;
+                                        if (!strchr(cperms, 'x')) continue;
+                                        apply_custom_specs_for_file(wpid, cpath, -1);
+                                    }
+                                    fclose(cf);
                                 }
                             }
                             preload_scan_done = true;
                         }
 
-                        if (verbose) fprintf(stderr, "[zygote]   | releasing child %d\n", wpid);
+                        if (verbose) err_print("[zygote]   | releasing child %d\n", wpid);
                         pending_children[pending_idx] = pending_children[--pending_children_count];
                         ptrace(PTRACE_DETACH, wpid, NULL, NULL);
 
@@ -1071,7 +1480,7 @@ int main(int argc, char **argv)
 
         err = ring_buffer__poll(events_rb, 50);
         if (err == -EINTR) { err = 0; break; }
-        if (err < 0) { fprintf(stderr, "   [err] > ring buffer poll error: %d\n", err); break; }
+        if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
     }
 
 
@@ -1090,6 +1499,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < func_re_count; i++) regfree(&func_re[i]);
 
         ares_tracer_bpf__destroy(skel);
+        csv_close();
 
         return err < 0 ? -err : 0;
 }

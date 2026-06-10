@@ -22,17 +22,26 @@ import sys
 # ---- loading -------------------------------------------------------------
 
 def load_trace(path):
-    """Accept either a single JSON array or JSONL (one record per line)."""
+    """Accept either a single JSON array or JSONL (one record per line).
+    Malformed lines (e.g. a truncated final record after a hard-kill) are
+    skipped with a warning, so a crash-interrupted JSONL trace still loads."""
     with open(path, "r") as f:
         data = f.read()
     s = data.lstrip()
     if s.startswith("["):
         return json.loads(s)
-    out = []
+    out, skipped = [], 0
     for line in data.splitlines():
         line = line.strip().rstrip(",")
-        if line and line not in ("[", "]"):
+        if not line or line in ("[", "]"):
+            continue
+        try:
             out.append(json.loads(line))
+        except json.JSONDecodeError:
+            skipped += 1
+    if skipped:
+        print("warning: skipped %d malformed line(s) (truncated trace?)" % skipped,
+              file=sys.stderr)
     return out
 
 

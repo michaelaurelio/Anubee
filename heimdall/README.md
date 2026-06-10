@@ -101,10 +101,19 @@ usage: heimdall [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package>
   -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)
   -x, --exclude list  all syscalls except these (comma-separated names)
   -o, --json <file>   export captured syscalls to a JSON file (implies -q)
+  -J, --jsonl         write JSON Lines (one record/line; crash-safe, streamable)
   -b, --bufsize MB    ring buffer size in MB (default 4; rounded up to a power of 2)
   -q, --quiet         suppress per-event console output (much faster under load)
   -v, --verbose       also log every executable mapping
 ```
+
+**Output format.** Default `-o` writes a single JSON array (only valid after a
+clean exit). For long/firehose captures prefer **JSON Lines** (`-J`, or just name
+the file `.jsonl`): one record per line, flushed ~once a second, so a hard-kill /
+reboot / second-Ctrl+C leaves a file that's still valid up to the last second —
+you lose at most a few records, not the whole trace. Same per-event cost as the
+array form (both stream to a block-buffered file). `heimdall-fold.py` reads either
+and tolerates a truncated final line.
 
 `-s`/`-x` restrict **which syscalls** are kept and combine with either mode (the
 in-kernel check runs before the stack walk, so excluded syscalls are nearly free

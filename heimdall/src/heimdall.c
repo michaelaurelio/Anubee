@@ -123,6 +123,7 @@ static volatile sig_atomic_t exiting;
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
 static unsigned long long g_json_count;         // objects written so far
+static int g_jsonl;                             // 1 = JSON Lines (one record/line)
 
 static void on_sigint(int s)
 {
@@ -595,7 +596,11 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		      int has_ret, long long ret)
 {
 	FILE *f = g_json;
-	fprintf(f, "%s\n  {", g_json_count++ ? "," : "");
+	if (g_jsonl)
+		fputc('{', f);                  // one self-contained object per line
+	else
+		fprintf(f, "%s\n  {", g_json_count ? "," : "");
+	g_json_count++;
 	fprintf(f, "\"id\":%llu,\"pid\":%u,\"tid\":%u,\"syscall_nr\":%llu,\"syscall\":\"%s\",",
 		id, e->h.pid, e->h.tid, (unsigned long long)e->nr, sysname(e->nr));
 
@@ -658,7 +663,7 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		json_puts_escaped(f, sym);
 		fputs("\"}", f);
 	}
-	fputs("]}", f);
+	fputs(g_jsonl ? "]}\n" : "]}", f);
 }
 
 // ---- entry/return pairing ------------------------------------------------
@@ -867,6 +872,12 @@ static int attach_return_probes(struct heimdall *skel)
 	return n;
 }
 
+static int ends_with(const char *s, const char *suf)
+{
+	size_t ls = strlen(s), lf = strlen(suf);
+	return ls >= lf && !strcmp(s + ls - lf, suf);
+}
+
 // Sum the per-CPU dropped-event counters.
 static unsigned long long read_dropped(int fd)
 {
@@ -893,6 +904,8 @@ static void usage(const char *argv0)
 		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
 		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
 		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
+		"  -J, --jsonl         write JSON Lines (one record/line; crash-safe, streamable).\n"
+		"                      Auto-enabled when -o ends in .jsonl\n"
 		"  -b, --bufsize MB    ring buffer size in MB (default 4; rounded up to a power of 2)\n"
 		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
@@ -909,6 +922,7 @@ int main(int argc, char **argv)
 {
 	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
 	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
+	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
 	const char *json_path = getenv("HEIMDALL_JSON");
 	const char *syscall_list = NULL;
@@ -924,6 +938,8 @@ int main(int argc, char **argv)
 			g_verbose = 1;
 		} else if (!strcmp(argv[ai], "-q") || !strcmp(argv[ai], "--quiet")) {
 			g_quiet = 1;
+		} else if (!strcmp(argv[ai], "-J") || !strcmp(argv[ai], "--jsonl")) {
+			g_jsonl = 1;
 		} else if (!strcmp(argv[ai], "-b") || !strcmp(argv[ai], "--bufsize")) {
 			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
 			bufmb = atoi(argv[++ai]);
@@ -981,6 +997,9 @@ int main(int argc, char **argv)
 	// Writing JSON => suppress the slow per-event console rendering by default.
 	if (json_path)
 		g_quiet = 1;
+	// A .jsonl output path implies JSON Lines framing.
+	if (json_path && ends_with(json_path, ".jsonl"))
+		g_jsonl = 1;
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement).
@@ -1021,7 +1040,8 @@ int main(int argc, char **argv)
 			fprintf(stderr, "cannot open '%s': %s\n", json_path, strerror(errno));
 			goto out;
 		}
-		fputc('[', g_json);
+		if (!g_jsonl)
+			fputc('[', g_json);     // JSONL needs no array framing
 	}
 
 	// Tell the hook which syscall args are strings, and arm the UID filter —
@@ -1090,10 +1110,13 @@ int main(int argc, char **argv)
 		int err = ring_buffer__poll(rb, 200 /* ms */);
 		if (err < 0 && err != -EINTR)
 			break;
-		// Surface drops live (~every second) so they're visible during the run
-		// and not lost if heimdall is hard-killed before the exit summary.
+		// ~every second: surface drops live, and flush the JSON stream so a
+		// hard-kill loses at most ~1s of records (JSONL stays valid; the array
+		// form is still only complete after a clean exit).
 		if (++ticks >= 5) {
 			ticks = 0;
+			if (g_json)
+				fflush(g_json);
 			unsigned long long d = read_dropped(dropfd);
 			if (d > last_drops) {
 				fprintf(stderr, "[drops] %llu event(s) dropped so far (ring buffer full)\n", d);
@@ -1114,7 +1137,8 @@ out_rb:
 out:
 	pend_flush_all();                       // emit any entries whose return we never saw
 	if (g_json) {
-		fputs("\n]\n", g_json);
+		if (!g_jsonl)
+			fputs("\n]\n", g_json);
 		fclose(g_json);
 		printf("wrote %llu syscall record%s to %s\n",
 		       g_json_count, g_json_count == 1 ? "" : "s", json_path);

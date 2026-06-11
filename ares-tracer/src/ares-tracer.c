@@ -48,6 +48,7 @@ static const struct argp_option options[] = {
     { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
+    { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
     { 0 }
 };
 
@@ -69,6 +70,7 @@ struct args {
     char output_file[256];
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
+    bool caller_only;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -132,6 +134,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             if (args->func_ret_pattern_count < 32)
                 strncpy(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
                         sizeof(args->func_ret_patterns[0]) - 1);
+            break;
+
+        case 'c':
+            args->caller_only = true;
             break;
 
         // No arguments case
@@ -458,6 +464,7 @@ int func_ret_re_count = 0;
 static bool verbose = false;
 static bool list_libs = false;
 static bool resolve_syms = false;
+static bool caller_only = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -1400,14 +1407,16 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 out_print(" [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
         }
 
-        for (__u32 i = 2; i < e->stack_depth; i++) {
-            if (!e->call_stack[i]) break;
-            char frame_mod[128] = "";
-            unsigned long frame_off = 0;
-            if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
-            else
-                out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+        if (!caller_only) {
+            for (__u32 i = 2; i < e->stack_depth; i++) {
+                if (!e->call_stack[i]) break;
+                char frame_mod[128] = "";
+                unsigned long frame_off = 0;
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                else
+                    out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+            }
         }
 
         if (target->arg_count >= 0) {
@@ -1491,8 +1500,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             }
         }
 
-        // Call stack
-        for (__u32 i = 1; i < e->stack_depth; i++) {
+        // Call stack (frame 1 = direct caller; frames 2+ suppressed by -c)
+        __u32 stack_limit = caller_only ? 2 : e->stack_depth;
+        for (__u32 i = 1; i < stack_limit; i++) {
             if (!e->call_stack[i]) break;
             char frame_mod[128] = "";
             unsigned long frame_off = 0;
@@ -1529,6 +1539,7 @@ int main(int argc, char **argv)
     verbose = args.verbose;
     list_libs = args.list_libs;
     resolve_syms = args.resolve_syms;
+    caller_only = args.caller_only;
 
     if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
         return 1;

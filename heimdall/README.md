@@ -8,10 +8,12 @@ frida-strace's in-kernel stack-filter design, but standalone and on-device.
 
 ## Two capture modes
 
-- **Library-filtered (default):** `heimdall <package> <lib-substring>` — only
-  syscalls originating from that library. Cheap: the in-kernel hook skips the
-  stack walk entirely until the library is mapped, and drops any syscall whose
-  backtrace misses it.
+- **Library-filtered (default):** `heimdall <package> <lib>` — only syscalls
+  originating from that library. Cheap: the in-kernel hook skips the stack walk
+  entirely until the library is mapped, and drops any syscall whose backtrace
+  misses it. `<lib>` is a substring of the mapped name, **or a glob** (`* ? []`)
+  over it — use `'e_*'` / `'e_[0-9]*'` to target a protector payload loaded under
+  a randomized per-run name (same matching the `-D` dump option uses).
 - **Capture-all:** `heimdall -a <package>` — every syscall of the app's UID, from
   its first one. A firehose (a user backtrace is taken on *every* syscall), so
   expect high event volume; pair it with `-o trace.json`. If the ring buffer
@@ -162,9 +164,10 @@ adb shell
 su
 # eBPF on Android usually needs SELinux out of the way during testing:
 setenforce 0
-/data/local/tmp/heimdall <package> <lib-substring> [activity]
+/data/local/tmp/heimdall <package> <lib> [activity]
 # e.g.
 /data/local/tmp/heimdall com.example.app librasp.so
+/data/local/tmp/heimdall com.example.app 'e_[0-9]*'   # randomized-name library (glob)
 /data/local/tmp/heimdall -o /data/local/tmp/trace.json com.example.app librasp.so
 /data/local/tmp/heimdall com.example.app libtoyguard.so com.example.app.MainActivity
 /data/local/tmp/heimdall -a -o /data/local/tmp/all.json com.example.app   # capture everything
@@ -174,7 +177,7 @@ setenforce 0
 ```
 
 ```
-usage: heimdall [-o out.json] [-v] [-q] [-a|-l] [-D lib] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]
+usage: heimdall [-o out.json] [-v] [-q] [-a|-l] [-D lib] [-b MB] [-s list|-x list] <package> [lib] [activity]
   -a, --all           capture ALL syscalls of the app (no library filter)
   -l, --libs          only log libraries loaded into the app (no syscalls)
   -D, --dump lib      at exit, dump every loaded library whose name contains <lib>

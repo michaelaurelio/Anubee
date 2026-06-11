@@ -4,8 +4,11 @@
 // app, emitting only those whose user backtrace passes through a chosen native
 // library (e.g. a RASP .so).
 //
-//   usage: heimdall <package> <lib-substring> [activity]
+//   usage: heimdall <package> <lib> [activity]
+//   where <lib> is a substring of the native library's mapped name, or a glob
+//   (* ? []) over it for a randomized per-run name (e.g. 'e_[0-9]*').
 //   e.g.   heimdall com.example.app librasp.so
+//          heimdall com.example.app 'e_[0-9]*'
 //          heimdall com.example.app libguard.so com.example.app.MainActivity
 //
 // What it does, in order:
@@ -29,6 +32,7 @@
 #include <signal.h>
 #include <time.h>
 #include <fcntl.h>
+#include <fnmatch.h>               // glob match for the target-library name
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -250,9 +254,26 @@ static int resolve_component(const char *pkg, char *out, size_t outsz)
 
 // ---- target library -> BPF filter ----------------------------------------
 
+// Does a mapped library's basename match the target-library selector g_lib? A
+// selector containing glob metacharacters (* ? [) is matched with fnmatch;
+// otherwise it's a substring match (backward compatible). This mirrors dump.c's
+// name_matches so the same pattern (e.g. 'e_*' / 'e_[0-9]*' for a protector
+// payload loaded under a randomized per-run name) selects the library for both
+// syscall tracing and dumping.
+static int lib_name_matches(const char *name)
+{
+	if (!g_lib[0])
+		return 0;
+	if (strpbrk(g_lib, "*?["))
+		return fnmatch(g_lib, name, 0) == 0;
+	return strstr(name, g_lib) != NULL;
+}
+
 // Push a newly seen executable range of the target library into lib_ranges[tgid]
 // so the syscall hook starts matching it. Read-modify-write of the per-tgid set.
-static void push_lib_range(__u32 tgid, __u64 start, __u64 end)
+// `name` is the matched library's basename (which, under a glob selector, is the
+// concrete per-run name — reported so the user sees what actually armed).
+static void push_lib_range(__u32 tgid, __u64 start, __u64 end, const char *name)
 {
 	struct heimdall_lib_ranges lr;
 	memset(&lr, 0, sizeof(lr));
@@ -271,7 +292,7 @@ static void push_lib_range(__u32 tgid, __u64 start, __u64 end)
 
 	if (bpf_map_update_elem(g_lib_ranges_fd, &tgid, &lr, BPF_ANY) == 0)
 		printf("[+] %s mapped in pid %u: [0x%llx, 0x%llx) — filter armed (%u range%s)\n",
-		       g_lib, tgid, (unsigned long long)start, (unsigned long long)end,
+		       name, tgid, (unsigned long long)start, (unsigned long long)end,
 		       lr.count, lr.count == 1 ? "" : "s");
 }
 
@@ -1109,8 +1130,8 @@ static void process_event(const void *data, size_t sz)
 			dump_note_pid(m->h.pid);
 		if (g_libs_only)
 			handle_library(m);
-		else if (m->is_exec && g_lib[0] && strstr(m->name, g_lib))
-			push_lib_range(m->h.pid, m->start, m->end);
+		else if (m->is_exec && lib_name_matches(m->name))
+			push_lib_range(m->h.pid, m->start, m->end, m->name);
 		break;
 	}
 	case HEIMDALL_EV_UNMAP: {
@@ -1316,14 +1337,17 @@ static void usage(const char *argv0)
 		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
 		"\n"
-		"  By default a <lib-substring> is required and only syscalls whose backtrace\n"
+		"  By default a <lib> selector is required and only syscalls whose backtrace\n"
 		"  passes through that library are recorded. With -a or -l it is optional/ignored.\n"
+		"  <lib> is a substring of the mapped name, or a glob (* ? []) over it — e.g.\n"
+		"  'e_*' / 'e_[0-9]*' for a protector payload loaded under a randomized name.\n"
 		"  -s/-x further restrict which syscalls are kept (works with the default/-a modes).\n"
 		"  e.g. %s com.example.app librasp.so\n"
+		"       %s com.example.app 'e_[0-9]*'         # trace a randomized-name library\n"
 		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n"
 		"       %s -l com.example.app                 # just list loaded libraries\n"
 		"       %s -l -D libpacked.so --dump-dir /data/local/tmp com.example.app\n",
-		argv0, argv0, argv0, argv0, argv0);
+		argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)

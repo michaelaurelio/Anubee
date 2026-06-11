@@ -45,7 +45,7 @@ SYSCALLS    := $(BUILD)/syscalls_gen.h
 BPF_CFLAGS  := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) \
                -I$(LIBBPF_INC) -I$(SRC) -I.
 
-LOADER_CFLAGS := -O2 -Wall -Wextra -static \
+LOADER_CFLAGS := -O2 -Wall -Wextra -static -pthread \
                  -I$(BUILD) -I$(SRC) -I$(LIBBPF_INC)
 # Static link: libelf (built with zstd support) pulls in zstd + zlib, so they
 # must follow -lelf on the line.

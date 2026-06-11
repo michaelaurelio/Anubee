@@ -109,11 +109,19 @@ static struct procmaps *pm_get(int pid)
 	return pm;
 }
 
+// /proc/<pid>/maps is address-sorted and non-overlapping, so binary search.
 static struct mapping *find_mapping(struct procmaps *pm, uint64_t addr)
 {
-	for (size_t i = 0; i < pm->n; i++)
-		if (addr >= pm->m[i].start && addr < pm->m[i].end)
-			return &pm->m[i];
+	size_t lo = 0, hi = pm->n;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (addr < pm->m[mid].start)
+			hi = mid;
+		else if (addr >= pm->m[mid].end)
+			lo = mid + 1;
+		else
+			return &pm->m[mid];
+	}
 	return NULL;
 }
 
@@ -342,12 +350,112 @@ static void display_name(const char *path, char *buf, size_t n)
 		*del = '\0';
 }
 
+// ---- address -> symbol cache --------------------------------------------
+//
+// Backtraces are extremely repetitive (a loop hits the same stack thousands of
+// times), so caching the resolved string per (pid,addr) amortizes nearly all of
+// the per-frame work — the linear map/dynsym lookups only run on the first sight
+// of each distinct address. This is what lets the JSON drain keep up under a
+// firehose. Open-addressing hash table, cleared when a pid's maps change.
+
+#define SC_STR 120
+
+struct sc_ent {
+	uint64_t addr;
+	int pid;
+	int used;
+	char sym[SC_STR];
+};
+
+static struct sc_ent *g_sc;
+static size_t g_sc_cap, g_sc_used;
+
+static uint64_t sc_hash(int pid, uint64_t addr)
+{
+	uint64_t h = addr ^ ((uint64_t)(uint32_t)pid * 0x9e3779b97f4a7c15ULL);
+	h *= 0xbf58476d1ce4e5b9ULL;
+	h ^= h >> 31;
+	return h;
+}
+
+static void sc_clear(void)
+{
+	if (g_sc)
+		memset(g_sc, 0, g_sc_cap * sizeof(*g_sc));
+	g_sc_used = 0;
+}
+
+static int sc_get(int pid, uint64_t addr, char *out, size_t outsz)
+{
+	if (!g_sc)
+		return 0;
+	size_t mask = g_sc_cap - 1, i = sc_hash(pid, addr) & mask;
+	for (size_t probe = 0; probe < g_sc_cap; probe++) {
+		struct sc_ent *e = &g_sc[i];
+		if (!e->used)
+			return 0;
+		if (e->addr == addr && e->pid == pid) {
+			snprintf(out, outsz, "%s", e->sym);
+			return 1;
+		}
+		i = (i + 1) & mask;
+	}
+	return 0;
+}
+
+static void sc_put(int pid, uint64_t addr, const char *sym)
+{
+	if (!g_sc) {
+		g_sc_cap = 1u << 16;
+		g_sc = calloc(g_sc_cap, sizeof(*g_sc));
+		if (!g_sc) { g_sc_cap = 0; return; }
+	}
+	if ((g_sc_used + 1) * 4 >= g_sc_cap * 3) {          // grow at 75% load
+		size_t ncap = g_sc_cap * 2, nmask = ncap - 1;
+		struct sc_ent *ng = calloc(ncap, sizeof(*ng));
+		if (ng) {
+			for (size_t k = 0; k < g_sc_cap; k++) {
+				if (!g_sc[k].used)
+					continue;
+				size_t j = sc_hash(g_sc[k].pid, g_sc[k].addr) & nmask;
+				while (ng[j].used)
+					j = (j + 1) & nmask;
+				ng[j] = g_sc[k];
+			}
+			free(g_sc);
+			g_sc = ng;
+			g_sc_cap = ncap;
+		}
+	}
+	size_t mask = g_sc_cap - 1, i = sc_hash(pid, addr) & mask;
+	while (g_sc[i].used && !(g_sc[i].addr == addr && g_sc[i].pid == pid))
+		i = (i + 1) & mask;
+	if (!g_sc[i].used)
+		g_sc_used++;
+	g_sc[i].used = 1;
+	g_sc[i].pid = pid;
+	g_sc[i].addr = addr;
+	snprintf(g_sc[i].sym, sizeof(g_sc[i].sym), "%s", sym);
+}
+
+// Returns 1 if the result is stable enough to cache (a real mapping), 0 for an
+// unmapped/transient address (which a later mmap could turn into a real symbol).
+static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz);
+
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
+{
+	if (sc_get(pid, (uint64_t)addr, out, outsz))
+		return;
+	if (sym_resolve_uncached(pid, addr, out, outsz))
+		sc_put(pid, (uint64_t)addr, out);
+}
+
+static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz)
 {
 	struct procmaps *pm = pm_get(pid);
 	if (!pm) {
 		snprintf(out, outsz, "0x%llx", addr);
-		return;
+		return 0;
 	}
 
 	struct mapping *hit = find_mapping(pm, (uint64_t)addr);
@@ -358,7 +466,7 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	if (!hit) {
 		// Not in any mapping: stale frame, or a bad frame-pointer unwind.
 		snprintf(out, outsz, "0x%llx [unmapped]", addr);
-		return;
+		return 0;
 	}
 
 	uint64_t load_base, elf_off, base_end;
@@ -370,7 +478,7 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	if (hit->path[0] == '\0') {
 		snprintf(out, outsz, "[anon]+0x%llx",
 			 (unsigned long long)((uint64_t)addr - hit->start));
-		return;
+		return 1;
 	}
 
 	char base[MAX_PATH_LEN];
@@ -383,7 +491,7 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	// recovered below via /proc/<pid>/map_files.)
 	if (hit->path[0] == '[') {
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
-		return;
+		return 1;
 	}
 
 	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, load_base, base_end);
@@ -397,6 +505,7 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	} else {
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
 	}
+	return 1;
 }
 
 void sym_flush_pid(int pid)
@@ -404,4 +513,5 @@ void sym_flush_pid(int pid)
 	for (size_t i = 0; i < g_npm; i++)
 		if (g_pm[i].pid == pid)
 			g_pm[i].n = 0;          // force reread on next resolve
+	sc_clear();                             // addresses may have moved
 }

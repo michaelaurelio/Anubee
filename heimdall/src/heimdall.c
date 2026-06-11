@@ -35,6 +35,8 @@
 #include <sys/syscall.h>            // __NR_* for the generated table
 #include <linux/types.h>
 #include <arpa/inet.h>              // inet_ntop / ntohs for sockaddr decode
+#include <stdint.h>
+#include <pthread.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
@@ -119,6 +121,7 @@ static const char *g_lib;
 static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static int g_quiet;                             // suppress per-event console output
+static int g_libs_only;                         // only log libraries loaded into the app
 static volatile sig_atomic_t exiting;
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
@@ -608,6 +611,74 @@ static int decode_sockaddr(const __u8 *sa, __u32 len, char *out, size_t outsz)
 	return 1;
 }
 
+// fd -> path cache: a readlink per fd arg per event is otherwise the dominant
+// per-event syscall cost under a firehose. Keyed by (pid,fd); invalidated when a
+// close on that fd is seen. Open addressing.
+struct fdc_ent { int used, pid, fd; char path[256]; };
+static struct fdc_ent *g_fdc;
+static size_t g_fdc_cap, g_fdc_used;
+
+static size_t fdc_hash(int pid, int fd)
+{
+	return ((size_t)(unsigned)pid * 2654435761u) ^ ((size_t)(unsigned)fd * 40503u);
+}
+
+static struct fdc_ent *fdc_slot(int pid, int fd)
+{
+	if (!g_fdc)
+		return NULL;
+	size_t mask = g_fdc_cap - 1, i = fdc_hash(pid, fd) & mask;
+	for (size_t probe = 0; probe < g_fdc_cap; probe++) {
+		struct fdc_ent *e = &g_fdc[i];
+		if (!e->used || (e->pid == pid && e->fd == fd))
+			return e;
+		i = (i + 1) & mask;
+	}
+	return NULL;
+}
+
+static void fdc_put(int pid, int fd, const char *path)
+{
+	if (!g_fdc) {
+		g_fdc_cap = 1u << 12;
+		g_fdc = calloc(g_fdc_cap, sizeof(*g_fdc));
+		if (!g_fdc) { g_fdc_cap = 0; return; }
+	}
+	if ((g_fdc_used + 1) * 4 >= g_fdc_cap * 3) {       // grow at 75%
+		size_t ncap = g_fdc_cap * 2, nmask = ncap - 1;
+		struct fdc_ent *ng = calloc(ncap, sizeof(*ng));
+		if (ng) {
+			for (size_t k = 0; k < g_fdc_cap; k++) {
+				if (!g_fdc[k].used)
+					continue;
+				size_t j = fdc_hash(g_fdc[k].pid, g_fdc[k].fd) & nmask;
+				while (ng[j].used)
+					j = (j + 1) & nmask;
+				ng[j] = g_fdc[k];
+			}
+			free(g_fdc);
+			g_fdc = ng;
+			g_fdc_cap = ncap;
+		}
+	}
+	struct fdc_ent *e = fdc_slot(pid, fd);
+	if (!e)
+		return;
+	if (!e->used)
+		g_fdc_used++;
+	e->used = 1;
+	e->pid = pid;
+	e->fd = fd;
+	snprintf(e->path, sizeof(e->path), "%s", path);
+}
+
+static void fdc_drop(int pid, int fd)
+{
+	struct fdc_ent *e = fdc_slot(pid, fd);
+	if (e && e->used && e->pid == pid && e->fd == fd)
+		e->used = 0, g_fdc_used--;          // tombstone-free: ok for low churn
+}
+
 // Render an fd value: "AT_FDCWD", "fd=199 </proc/self/maps>", or "fd=5".
 static void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
 {
@@ -620,11 +691,17 @@ static void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
 		snprintf(out, outsz, "%d", fd);
 		return;
 	}
+	struct fdc_ent *c = fdc_slot(pid, fd);
+	if (c && c->used && c->pid == pid && c->fd == fd) {
+		snprintf(out, outsz, "fd=%d <%s>", fd, c->path);
+		return;
+	}
 	char p[64], tgt[256];
 	snprintf(p, sizeof(p), "/proc/%d/fd/%d", pid, fd);
 	ssize_t k = readlink(p, tgt, sizeof(tgt) - 1);
 	if (k > 0) {
 		tgt[k] = '\0';
+		fdc_put(pid, fd, tgt);
 		snprintf(out, outsz, "fd=%d <%s>", fd, tgt);
 	} else {
 		snprintf(out, outsz, "fd=%d", fd);
@@ -661,108 +738,169 @@ static void render_ret(long long ret, char *out, size_t outsz)
 }
 
 // ---- JSON export ---------------------------------------------------------
+//
+// Records are built into a growable in-memory buffer with hand-rolled formatting
+// (no per-field fprintf, which locks the FILE and re-parses a format string on
+// every call), then written with a single fwrite. This is the dominant per-event
+// cost on the drain path once symbolization is cached.
 
-static void json_puts_escaped(FILE *f, const char *s)
+struct jbuf { char *b; size_t len, cap; };
+static struct jbuf g_jb;
+
+static void jb_need(struct jbuf *j, size_t n)
 {
-	for (; *s; s++) {
-		unsigned char c = (unsigned char)*s;
-		switch (c) {
-		case '"':  fputs("\\\"", f); break;
-		case '\\': fputs("\\\\", f); break;
-		case '\n': fputs("\\n", f);  break;
-		case '\r': fputs("\\r", f);  break;
-		case '\t': fputs("\\t", f);  break;
-		default:
-			if (c < 0x20)
-				fprintf(f, "\\u%04x", c);
-			else
-				fputc(c, f);
+	if (j->len + n <= j->cap)
+		return;
+	size_t nc = j->cap ? j->cap * 2 : 8192;
+	while (nc < j->len + n)
+		nc *= 2;
+	char *nb = realloc(j->b, nc);
+	if (nb) { j->b = nb; j->cap = nc; }
+}
+
+static void jb_raw(struct jbuf *j, const char *s, size_t n)
+{
+	jb_need(j, n);
+	if (j->b) { memcpy(j->b + j->len, s, n); j->len += n; }
+}
+
+static void jb_s(struct jbuf *j, const char *s) { jb_raw(j, s, strlen(s)); }
+static void jb_c(struct jbuf *j, char c) { jb_need(j, 1); if (j->b) j->b[j->len++] = c; }
+
+static void jb_u64(struct jbuf *j, unsigned long long v)
+{
+	char t[24];
+	int n = 0;
+	do { t[n++] = '0' + (v % 10); v /= 10; } while (v);
+	jb_need(j, n);
+	while (n--) jb_c(j, t[n]);
+}
+
+static void jb_i64(struct jbuf *j, long long v)
+{
+	if (v < 0) { jb_c(j, '-'); jb_u64(j, (unsigned long long)(-(v + 1)) + 1); }
+	else jb_u64(j, (unsigned long long)v);
+}
+
+static void jb_hex(struct jbuf *j, unsigned long long v)
+{
+	static const char d[] = "0123456789abcdef";
+	char t[16];
+	int n = 0;
+	do { t[n++] = d[v & 0xf]; v >>= 4; } while (v);
+	jb_s(j, "0x");
+	jb_need(j, n);
+	while (n--) jb_c(j, t[n]);
+}
+
+static void jb_esc(struct jbuf *j, const char *s)
+{
+	const char *p = s;
+	while (*p) {
+		const char *run = p;             // bulk-copy the (common) run of safe chars
+		unsigned char c;
+		while ((c = (unsigned char)*p) >= 0x20 && c != '"' && c != '\\')
+			p++;
+		if (p > run)
+			jb_raw(j, run, (size_t)(p - run));
+		if (!*p)
+			break;
+		switch (*p) {
+		case '"':  jb_s(j, "\\\""); break;
+		case '\\': jb_s(j, "\\\\"); break;
+		case '\n': jb_s(j, "\\n");  break;
+		case '\r': jb_s(j, "\\r");  break;
+		case '\t': jb_s(j, "\\t");  break;
+		default: { char u[8]; snprintf(u, sizeof(u), "\\u%04x", (unsigned char)*p); jb_s(j, u); }
 		}
+		p++;
 	}
 }
 
 static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id,
 		      int has_ret, long long ret)
 {
-	FILE *f = g_json;
+	struct jbuf *j = &g_jb;
+	j->len = 0;
+
 	if (g_jsonl)
-		fputc('{', f);                  // one self-contained object per line
-	else
-		fprintf(f, "%s\n  {", g_json_count ? "," : "");
+		jb_c(j, '{');
+	else { jb_s(j, g_json_count ? "," : ""); jb_s(j, "\n  {"); }
 	g_json_count++;
-	fprintf(f, "\"id\":%llu,\"pid\":%u,\"tid\":%u,\"syscall_nr\":%llu,\"syscall\":\"%s\",",
-		id, e->h.pid, e->h.tid, (unsigned long long)e->nr, sysname(e->nr));
+
+	jb_s(j, "\"id\":");        jb_u64(j, id);
+	jb_s(j, ",\"pid\":");      jb_u64(j, e->h.pid);
+	jb_s(j, ",\"tid\":");      jb_u64(j, e->h.tid);
+	jb_s(j, ",\"syscall_nr\":"); jb_u64(j, e->nr);
+	jb_s(j, ",\"syscall\":\""); jb_s(j, sysname(e->nr)); jb_c(j, '"');
 
 	int nargs = arg_count(e->nr);
-	fprintf(f, "\"args\":[");
-	for (int i = 0; i < nargs; i++)
-		fprintf(f, "%s\"0x%llx\"", i ? "," : "", (unsigned long long)e->args[i]);
-	fprintf(f, "],");
+	jb_s(j, ",\"args\":[");
+	for (int i = 0; i < nargs; i++) {
+		if (i) jb_c(j, ',');
+		jb_c(j, '"'); jb_hex(j, e->args[i]); jb_c(j, '"');
+	}
+	jb_s(j, "],\"retval\":");
+	if (has_ret) jb_i64(j, ret); else jb_s(j, "null");
 
-	if (has_ret)
-		fprintf(f, "\"retval\":%lld,", ret);
-	else
-		fprintf(f, "\"retval\":null,");
-
-	fprintf(f, "\"string_args\":{");
+	jb_s(j, ",\"string_args\":{");
 	for (int i = 0, first = 1; i < HEIMDALL_STR_SLOTS; i++) {
 		const char *s = arg_string(e, i);
-		if (!s)
-			continue;
-		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		if (!s) continue;
+		if (!first)
+			jb_c(j, ',');
 		first = 0;
-		json_puts_escaped(f, s);
-		fputc('"', f);
+		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, s); jb_c(j, '"');
 	}
-	fprintf(f, "},\"fd_args\":{");
+	jb_s(j, "},\"fd_args\":{");
 	unsigned fdm = arg_fd_mask(e->nr);
 	for (int i = 0, first = 1; i < HEIMDALL_SYSCALL_NARGS; i++) {
-		if (!(fdm & (1u << i)))
-			continue;
+		if (!(fdm & (1u << i))) continue;
 		char fdbuf[320];
 		render_fd((int)e->h.pid, e->args[i], fdbuf, sizeof(fdbuf));
-		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		if (!first)
+			jb_c(j, ',');
 		first = 0;
-		json_puts_escaped(f, fdbuf);
-		fputc('"', f);
+		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, fdbuf); jb_c(j, '"');
 	}
-	fprintf(f, "},\"decoded_args\":{");
+	jb_s(j, "},\"decoded_args\":{");
 	for (int i = 0, first = 1; i < nargs; i++) {
 		char dec[256];
 		if (arg_string(e, i) || (arg_fd_mask(e->nr) & (1u << i)))
-			continue;                       // already in string_args / fd_args
+			continue;
 		if (!flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec)))
 			continue;
-		fprintf(f, "%s\"%d\":\"", first ? "" : ",", i);
+		if (!first)
+			jb_c(j, ',');
 		first = 0;
-		json_puts_escaped(f, dec);
-		fputc('"', f);
+		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, dec); jb_c(j, '"');
 	}
-	fprintf(f, "},");
+	jb_c(j, '}');
 
 	if (e->sock_len > 0) {
 		char sockbuf[128];
 		if (decode_sockaddr(e->sock, e->sock_len, sockbuf, sizeof(sockbuf))) {
-			fprintf(f, "\"sock_addr\":\"");
-			json_puts_escaped(f, sockbuf);
-			fprintf(f, "\",");
+			jb_s(j, ",\"sock_addr\":\""); jb_esc(j, sockbuf); jb_c(j, '"');
 		}
 	}
-	fprintf(f, "\"backtrace\":[");
 
+	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
 	char sym[320];
 	for (int i = 0, first = 1; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
-		if (e->stack[i] == 0)
-			break;
+		if (e->stack[i] == 0) break;
 		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
-		fprintf(f, "%s{\"frame\":%d,\"addr\":\"0x%llx\",\"symbol\":\"",
-			first ? "" : ",", i, (unsigned long long)e->stack[i]);
+		if (!first)
+			jb_c(j, ',');
 		first = 0;
-		json_puts_escaped(f, sym);
-		fputs("\"}", f);
+		jb_s(j, "{\"frame\":"); jb_u64(j, i);
+		jb_s(j, ",\"addr\":\""); jb_hex(j, e->stack[i]);
+		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_s(j, "\"}");
 	}
-	fputs(g_jsonl ? "]}\n" : "]}", f);
+	jb_s(j, g_jsonl ? "]}\n" : "]}");
+
+	if (j->b && j->len)
+		fwrite(j->b, 1, j->len, g_json);
 }
 
 // ---- entry/return pairing ------------------------------------------------
@@ -875,52 +1013,182 @@ static void handle_return(const struct heimdall_return_event *r)
 	}
 	if (g_json)
 		json_emit(&p->ev, p->id, 1, r->retval);
+#ifdef __NR_close
+	if (p->ev.nr == __NR_close && r->retval == 0)
+		fdc_drop((int)p->ev.h.pid, (int)p->ev.args[0]);   // fd may be reused
+#endif
 	p->used = 0;
 }
 
-static int handle_event(void *ctx, void *data, size_t sz)
+// ---- library-load logging (-l) -------------------------------------------
+//
+// In --libs mode the syscall hook is never attached; the only events are the
+// executable file-backed mappings from uprobe_mmap (i.e. each .so as it is
+// loaded into the app). We log them directly here.
+
+static void json_emit_lib(const struct heimdall_map_event *m)
 {
-	(void)ctx;
-	// On Ctrl+C, abort the ring-buffer drain promptly instead of finishing the
-	// whole backlog: a negative return makes ring_buffer__poll bail out.
-	if (exiting)
-		return -1;
+	struct jbuf *j = &g_jb;
+	j->len = 0;
+
+	if (g_jsonl)
+		jb_c(j, '{');
+	else { jb_s(j, g_json_count ? "," : ""); jb_s(j, "\n  {"); }
+	g_json_count++;
+
+	jb_s(j, "\"id\":");      jb_u64(j, g_next_id++);
+	jb_s(j, ",\"pid\":");    jb_u64(j, m->h.pid);
+	jb_s(j, ",\"tid\":");    jb_u64(j, m->h.tid);
+	jb_s(j, ",\"library\":\""); jb_esc(j, m->name); jb_c(j, '"');
+	jb_s(j, ",\"start\":\""); jb_hex(j, m->start); jb_c(j, '"');
+	jb_s(j, ",\"end\":\"");   jb_hex(j, m->end);   jb_c(j, '"');
+	jb_s(j, ",\"pgoff\":");   jb_u64(j, m->pgoff);
+	jb_s(j, ",\"inode\":");   jb_u64(j, m->inode);
+	jb_s(j, g_jsonl ? "}\n" : "}");
+
+	if (j->b && j->len)
+		fwrite(j->b, 1, j->len, g_json);
+}
+
+static void handle_library(const struct heimdall_map_event *m)
+{
+	if (!g_quiet)
+		printf("[lib] pid %u  %-24s [0x%llx, 0x%llx)  off=0x%llx  inode=%llu\n",
+		       m->h.pid, m->name,
+		       (unsigned long long)m->start, (unsigned long long)m->end,
+		       (unsigned long long)m->pgoff, (unsigned long long)m->inode);
+	if (g_json)
+		json_emit_lib(m);
+}
+
+// Process one event — the heavy path (symbolization + JSON). Runs ONLY on the
+// worker thread, so all the caches/pending state it touches stay single-threaded.
+static void process_event(const void *data, size_t sz)
+{
 	if (sz < sizeof(struct heimdall_hdr))
-		return 0;
+		return;
 	const struct heimdall_hdr *h = data;
 
 	switch (h->type) {
 	case HEIMDALL_EV_MAP: {
 		if (sz < sizeof(struct heimdall_map_event))
-			return 0;
+			return;
 		const struct heimdall_map_event *m = data;
 		if (g_verbose)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
-		if (m->is_exec && g_lib[0] && strstr(m->name, g_lib))
+		if (g_libs_only)
+			handle_library(m);
+		else if (m->is_exec && g_lib[0] && strstr(m->name, g_lib))
 			push_lib_range(m->h.pid, m->start, m->end);
 		break;
 	}
 	case HEIMDALL_EV_UNMAP: {
 		if (sz < sizeof(struct heimdall_unmap_event))
-			return 0;
+			return;
 		const struct heimdall_unmap_event *u = data;
 		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
 		break;
 	}
 	case HEIMDALL_EV_SYSCALL:
 		if (sz < sizeof(struct heimdall_syscall_event))
-			return 0;
+			return;
 		handle_syscall(data);
 		break;
 	case HEIMDALL_EV_RETURN:
 		if (sz < sizeof(struct heimdall_return_event))
-			return 0;
+			return;
 		handle_return(data);
 		break;
 	}
+}
+
+// ---- decoupled drain: fast drain thread -> queue -> worker thread ---------
+//
+// The ring_buffer callback (drain thread) does only a memcpy into a large
+// userspace byte-queue, so the kernel ring stays empty regardless of how slow
+// symbolization/JSON is. The worker thread drains the queue and does the heavy
+// per-event work. This absorbs bursts in ordinary RAM (the queue can be far
+// bigger than a kernel ring) and parallelizes copy vs processing.
+
+struct queue {
+	char *buf;
+	size_t cap, head, tail, used;
+	pthread_mutex_t m;
+	pthread_cond_t cv;
+	int done;
+	unsigned long long qdropped;
+};
+static struct queue g_q;
+
+static void q_in(struct queue *q, const void *src, size_t n)
+{
+	size_t f = q->cap - q->head;
+	if (f > n) f = n;
+	memcpy(q->buf + q->head, src, f);
+	if (n > f) memcpy(q->buf, (const char *)src + f, n - f);
+	q->head = (q->head + n) % q->cap;
+	q->used += n;
+}
+
+static void q_out(struct queue *q, void *dst, size_t n)
+{
+	size_t f = q->cap - q->tail;
+	if (f > n) f = n;
+	memcpy(dst, q->buf + q->tail, f);
+	if (n > f) memcpy((char *)dst + f, q->buf, n - f);
+	q->tail = (q->tail + n) % q->cap;
+	q->used -= n;
+}
+
+// ring_buffer callback (drain thread): copy the raw event into the queue.
+static int enqueue_event(void *ctx, void *data, size_t sz)
+{
+	(void)ctx;
+	if (exiting)
+		return -1;                          // bail the drain promptly on Ctrl+C
+	struct queue *q = &g_q;
+	uint32_t s = (uint32_t)sz;
+	size_t total = 4 + sz;
+	pthread_mutex_lock(&q->m);
+	if (q->cap - q->used < total) {
+		q->qdropped++;                      // queue full: worker fell behind
+	} else {
+		q_in(q, &s, 4);
+		q_in(q, data, sz);
+		pthread_cond_signal(&q->cv);
+	}
+	pthread_mutex_unlock(&q->m);
 	return 0;
+}
+
+static void *worker_main(void *arg)
+{
+	(void)arg;
+	struct queue *q = &g_q;
+	static char rec[sizeof(struct heimdall_syscall_event) + 64];
+	unsigned long flushed = 0;
+	for (;;) {
+		pthread_mutex_lock(&q->m);
+		while (q->used == 0 && !q->done)
+			pthread_cond_wait(&q->cv, &q->m);
+		if (q->used == 0 && q->done) {
+			pthread_mutex_unlock(&q->m);
+			break;
+		}
+		uint32_t sz;
+		q_out(q, &sz, 4);
+		if (sz > sizeof(rec))
+			sz = sizeof(rec);               // safety clamp
+		q_out(q, rec, sz);
+		pthread_mutex_unlock(&q->m);
+		process_event(rec, sz);
+		// Periodic flush so a hard-kill loses little (JSONL stays valid).
+		if (g_json && (++flushed & 0x3fff) == 0)
+			fflush(g_json);
+	}
+	return NULL;
 }
 
 // ---- main ----------------------------------------------------------------
@@ -998,23 +1266,26 @@ static unsigned long long read_dropped(int fd)
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
+		"usage: %s [-o out.json] [-v] [-q] [-a|-l] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
 		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
+		"  -l, --libs          only log libraries loaded into the app (no syscalls)\n"
 		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
 		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
 		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
 		"  -J, --jsonl         write JSON Lines (one record/line; crash-safe, streamable).\n"
 		"                      Auto-enabled when -o ends in .jsonl\n"
-		"  -b, --bufsize MB    ring buffer size in MB (default 4; rounded up to a power of 2)\n"
+		"  -b, --bufsize MB    kernel ring buffer size in MB (default 4; rounded to power of 2)\n"
+		"  -Q, --queue MB      userspace worker queue size in MB (default 256; absorbs bursts)\n"
 		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
 		"\n"
 		"  By default a <lib-substring> is required and only syscalls whose backtrace\n"
-		"  passes through that library are recorded. With -a it is optional/ignored.\n"
-		"  -s/-x further restrict which syscalls are kept (works in either mode).\n"
+		"  passes through that library are recorded. With -a or -l it is optional/ignored.\n"
+		"  -s/-x further restrict which syscalls are kept (works with the default/-a modes).\n"
 		"  e.g. %s com.example.app librasp.so\n"
-		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n",
-		argv0, argv0, argv0);
+		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n"
+		"       %s -l com.example.app                 # just list loaded libraries\n",
+		argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
@@ -1023,10 +1294,12 @@ int main(int argc, char **argv)
 	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
 	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
+	g_libs_only = getenv("HEIMDALL_LIBS") != NULL;
 	const char *json_path = getenv("HEIMDALL_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
-	int bufmb = 4;                           // ring buffer size (MB)
+	int bufmb = 4;                           // kernel ring buffer size (MB)
+	int queue_mb = 256;                      // userspace worker queue size (MB)
 
 	int ai = 1;
 	for (; ai < argc; ai++) {
@@ -1043,8 +1316,14 @@ int main(int argc, char **argv)
 			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
 			bufmb = atoi(argv[++ai]);
 			if (bufmb < 1) { fprintf(stderr, "bufsize must be >= 1 MB\n"); return 1; }
+		} else if (!strcmp(argv[ai], "-Q") || !strcmp(argv[ai], "--queue")) {
+			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
+			queue_mb = atoi(argv[++ai]);
+			if (queue_mb < 1) { fprintf(stderr, "queue must be >= 1 MB\n"); return 1; }
 		} else if (!strcmp(argv[ai], "-a") || !strcmp(argv[ai], "--all")) {
 			capture_all = 1;
+		} else if (!strcmp(argv[ai], "-l") || !strcmp(argv[ai], "--libs")) {
+			g_libs_only = 1;
 		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
 			if (ai + 1 >= argc || syscall_mode == 2) {
 				fprintf(stderr, "use either -s or -x, not both\n");
@@ -1067,15 +1346,25 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
-	// Need <package>, plus <lib-substring> unless capturing all.
+	// -l logs library loads only; it never attaches the syscall hook, so a
+	// capture mode / syscall filter alongside it would be silently ignored.
+	if (g_libs_only && (capture_all || syscall_mode)) {
+		fprintf(stderr, "-l/--libs cannot be combined with -a/-s/-x\n");
+		usage(argv[0]);
+		return 1;
+	}
+
+	// Need <package>; <lib-substring> is required only in the default
+	// library-filtered mode (not with -a or -l).
+	int no_lib_needed = capture_all || g_libs_only;
 	int npos = argc - ai;
-	if (npos < 1 || (!capture_all && npos < 2)) {
+	if (npos < 1 || (!no_lib_needed && npos < 2)) {
 		usage(argv[0]);
 		return 1;
 	}
 	g_pkg = argv[ai];
 	const char *activity;
-	if (capture_all) {
+	if (no_lib_needed) {
 		g_lib = "";                          // no library filter
 		activity = (npos > 1) ? argv[ai + 1] : NULL;
 	} else {
@@ -1088,7 +1377,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
 		return 1;
 	}
-	if (capture_all)
+	if (g_libs_only)
+		printf("package %s -> uid %d, logging library loads only\n", g_pkg, uid);
+	else if (capture_all)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
@@ -1139,6 +1430,9 @@ int main(int argc, char **argv)
 			fprintf(stderr, "cannot open '%s': %s\n", json_path, strerror(errno));
 			goto out;
 		}
+		// Large output buffer: batch the worker's writes into big flash writes
+		// so it doesn't stall on small I/O during a burst.
+		setvbuf(g_json, malloc(8u << 20), _IOFBF, 8u << 20);
 		if (!g_jsonl)
 			fputc('[', g_json);     // JSONL needs no array framing
 	}
@@ -1158,24 +1452,50 @@ int main(int argc, char **argv)
 	// so disable its autoattach.
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
 
+	// --libs only needs the uprobe_mmap/munmap hooks; leaving the syscall
+	// dispatcher hook off means zero syscall overhead on the device.
+	if (g_libs_only)
+		bpf_program__set_autoattach(skel->progs.on_svc_enter, false);
+
 	if (heimdall__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
 	}
 
-	int nret = attach_return_probes(skel);
-	if (nret == 0)
-		fprintf(stderr, "warning: no return-value probes attached; "
-				"continuing without return values\n");
-	else
-		printf("return-value probes attached to %d syscalls\n", nret);
+	if (!g_libs_only) {
+		int nret = attach_return_probes(skel);
+		if (nret == 0)
+			fprintf(stderr, "warning: no return-value probes attached; "
+					"continuing without return values\n");
+		else
+			printf("return-value probes attached to %d syscalls\n", nret);
+	}
 
 	struct ring_buffer *rb =
-		ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
+		ring_buffer__new(bpf_map__fd(skel->maps.events), enqueue_event, NULL, NULL);
 	if (!rb) {
 		fprintf(stderr, "ring_buffer__new failed\n");
 		goto out;
 	}
+
+	// Decoupled processing: a worker thread drains the in-RAM queue and does all
+	// the heavy per-event work, so this (drain) thread only copies events out of
+	// the kernel ring. The queue absorbs bursts the kernel ring can't.
+	g_q.cap = (size_t)queue_mb << 20;
+	g_q.buf = malloc(g_q.cap);
+	if (!g_q.buf) {
+		fprintf(stderr, "cannot allocate %d MB queue\n", queue_mb);
+		goto out_rb;
+	}
+	pthread_mutex_init(&g_q.m, NULL);
+	pthread_cond_init(&g_q.cv, NULL);
+	pthread_t worker;
+	int worker_ok = (pthread_create(&worker, NULL, worker_main, NULL) == 0);
+	if (!worker_ok) {
+		fprintf(stderr, "cannot start worker thread\n");
+		goto out_rb;
+	}
+	printf("queue: %d MB, worker thread started\n", queue_mb);
 
 	// Fresh start: kill any running instance, then launch. Tracing is already
 	// armed, so we catch the new process from its first syscall.
@@ -1198,7 +1518,9 @@ int main(int argc, char **argv)
 	}
 
 	signal(SIGINT, on_sigint);
-	if (capture_all)
+	if (g_libs_only)
+		printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", uid);
+	else if (capture_all)
 		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", uid);
 	else
 		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
@@ -1210,25 +1532,33 @@ int main(int argc, char **argv)
 		int err = ring_buffer__poll(rb, 200 /* ms */);
 		if (err < 0 && err != -EINTR)
 			break;
-		// ~every second: surface drops live, and flush the JSON stream so a
-		// hard-kill loses at most ~1s of records (JSONL stays valid; the array
-		// form is still only complete after a clean exit).
+		// ~every second: surface drops live (kernel ring + userspace queue).
 		if (++ticks >= 5) {
 			ticks = 0;
-			if (g_json)
-				fflush(g_json);
-			unsigned long long d = read_dropped(dropfd);
+			pthread_mutex_lock(&g_q.m);
+			unsigned long long qd = g_q.qdropped;
+			pthread_mutex_unlock(&g_q.m);
+			unsigned long long d = read_dropped(dropfd) + qd;
 			if (d > last_drops) {
-				fprintf(stderr, "[drops] %llu event(s) dropped so far (ring buffer full)\n", d);
+				fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
 				last_drops = d;
 			}
 		}
 	}
 
+	// Stop the worker and let it drain whatever is still queued.
+	pthread_mutex_lock(&g_q.m);
+	g_q.done = 1;
+	pthread_cond_signal(&g_q.cv);
+	pthread_mutex_unlock(&g_q.m);
+	pthread_join(worker, NULL);
+
 	// Always report the final tally, so "no message" never means "didn't check".
-	unsigned long long drops = read_dropped(dropfd);
+	unsigned long long kdrops = read_dropped(dropfd), qdrops = g_q.qdropped;
+	unsigned long long drops = kdrops + qdrops;
 	if (drops)
-		fprintf(stderr, "%llu event(s) dropped (ring buffer full) — trace is incomplete\n", drops);
+		fprintf(stderr, "%llu event(s) dropped (%llu kernel ring, %llu queue) — "
+				"trace is incomplete\n", drops, kdrops, qdrops);
 	else
 		fprintf(stderr, "no events dropped\n");
 
@@ -1240,8 +1570,9 @@ out:
 		if (!g_jsonl)
 			fputs("\n]\n", g_json);
 		fclose(g_json);
-		printf("wrote %llu syscall record%s to %s\n",
-		       g_json_count, g_json_count == 1 ? "" : "s", json_path);
+		printf("wrote %llu %s record%s to %s\n",
+		       g_json_count, g_libs_only ? "library" : "syscall",
+		       g_json_count == 1 ? "" : "s", json_path);
 	}
 	free(g_pend);
 	heimdall__destroy(skel);

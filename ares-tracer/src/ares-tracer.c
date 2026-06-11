@@ -26,8 +26,9 @@
 
 extern char **environ;
 
-#define ARG_STR 0
-#define ARG_VAL 1
+#define ARG_STR  0
+#define ARG_VAL  1
+#define ARG_NONE 2  // no return probe for this target
 
 // Argument parser module using argp.h
 const char *argp_program_version = "ares-tracer 1.0";
@@ -46,6 +47,7 @@ static const struct argp_option options[] = {
     { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
     { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
+    { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { 0 }
 };
 
@@ -65,6 +67,8 @@ struct args {
     char spec_files[8][256];
     int spec_file_count;
     char output_file[256];
+    char func_ret_patterns[32][256];
+    int func_ret_pattern_count;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -122,6 +126,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'o':
             strncpy(args->output_file, arg, sizeof(args->output_file) - 1);
+            break;
+
+        case 'r':
+            if (args->func_ret_pattern_count < 32)
+                strncpy(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
+                        sizeof(args->func_ret_patterns[0]) - 1);
             break;
 
         // No arguments case
@@ -359,6 +369,8 @@ typedef struct {
     __u64 runtime_entry_addr;
     int arg_count;       // -1 = use BPF heuristic; 0-8 = typed
     uint8_t arg_types[8];
+    uint8_t ret_type;    // ARG_VAL, ARG_STR, or ARG_NONE (no return probe)
+    bool ret_only;       // true = -r match: uprobe_save_only + uretprobe, no CALL event
 } probe_target_t;
 
 typedef struct {
@@ -367,6 +379,8 @@ typedef struct {
     unsigned long offset; // 0 = resolve from symbol name
     int arg_count;
     uint8_t arg_types[8];
+    uint8_t ret_type;    // ARG_VAL, ARG_STR, or ARG_NONE
+    bool ret_only;       // true when '>' present but no '()': uretprobe only, no CALL event
 } custom_probe_spec_t;
 
 static bool mod_matches(const char *full_path, regex_t *re, bool *has_slash, int count)
@@ -439,6 +453,8 @@ static int         apk_cache_count;
 // Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
+regex_t func_ret_re[32];
+int func_ret_re_count = 0;
 static bool verbose = false;
 static bool list_libs = false;
 static bool resolve_syms = false;
@@ -519,10 +535,16 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
                 const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
                 if (!name || name[0] == '\0') continue;
-                if (!func_matches(name, func_re, func_re_count)) continue;
+                bool entry_match = func_matches(name, func_re, func_re_count);
+                // When -r given but not -i, don't apply default "match all" for entry probes
+                if (func_re_count == 0 && func_ret_re_count > 0) entry_match = false;
+                bool ret_match = func_ret_re_count > 0 &&
+                                 func_matches(name, func_ret_re, func_ret_re_count);
+                if (!entry_match && !ret_match) continue;
 
-                if (verbose) err_print(" [match] > %s!%s @ 0x%lx\n",
-                    path, name, (unsigned long)sym.st_value);
+                if (verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
+                    path, name, (unsigned long)sym.st_value,
+                    (!entry_match && ret_match) ? " (ret-only)" : "");
 
                 if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                     targets[count].pid = pid;
@@ -531,6 +553,8 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                     targets[count].offset = (unsigned long)sym.st_value;
                     targets[count].arg_count = -1;
                     memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
+                    targets[count].ret_only = !entry_match && ret_match;
+                    targets[count].ret_type = targets[count].ret_only ? ARG_VAL : ARG_NONE;
                     count++;
                 }
             }
@@ -547,6 +571,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 }
 
 struct bpf_link *probe_links[4096];
+struct bpf_link *probe_ret_links[4096];
 struct ares_tracer_bpf *skel = NULL;
 
 typedef struct {
@@ -907,10 +932,16 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
 
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (!name || name[0] == '\0') continue;
-            if (!func_matches(name, func_re, func_re_count)) continue;
 
-            if (verbose) err_print(" [match] > %s!%s @ 0x%lx\n",
-                path, name, (unsigned long)sym.st_value);
+            bool entry_match = func_matches(name, func_re, func_re_count);
+            if (func_re_count == 0 && func_ret_re_count > 0) entry_match = false;
+            bool ret_match = func_ret_re_count > 0 &&
+                             func_matches(name, func_ret_re, func_ret_re_count);
+            if (!entry_match && !ret_match) continue;
+
+            if (verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
+                path, name, (unsigned long)sym.st_value,
+                (!entry_match && ret_match) ? " (ret-only)" : "");
 
             if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                 targets[count].pid = pid;
@@ -919,6 +950,8 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
                 targets[count].offset = (unsigned long)sym.st_value;
                 targets[count].arg_count = -1;
                 memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
+                targets[count].ret_only = !entry_match && ret_match;
+                targets[count].ret_type = targets[count].ret_only ? ARG_VAL : ARG_NONE;
                 count++;
             }
         }
@@ -971,10 +1004,32 @@ static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->arg_count = -1;
+    out->ret_type  = ARG_NONE;
 
     char buf[512];
     strncpy(buf, input, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
+
+    // Strip '>rettype' suffix (outside any parentheses): e.g. "libc.so!fgets(S,V,V)>V"
+    {
+        bool in_paren = false;
+        for (char *p = buf; *p; p++) {
+            if (*p == '(') in_paren = true;
+            else if (*p == ')') in_paren = false;
+            else if (*p == '>' && !in_paren) {
+                *p = '\0';
+                char *rp = p + 1;
+                while (*rp == ' ') rp++;
+                if (*rp == 'S' || *rp == 's')      out->ret_type = ARG_STR;
+                else if (*rp == 'V' || *rp == 'v') out->ret_type = ARG_VAL;
+                else {
+                    err_print("   [err] > unknown return type '%c' in spec: %s\n", *rp, input);
+                    return -1;
+                }
+                break;
+            }
+        }
+    }
 
     char *paren = strchr(buf, '(');
     if (paren) {
@@ -1033,6 +1088,9 @@ static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
         err_print("   [err] > spec needs function name or offset: %s\n", input);
         return -1;
     }
+    // '>rettype' without '()': return-only probe (no CALL event, like -r)
+    // '()>rettype' or '(args)>rettype': paired (CALL + RET)
+    out->ret_only = (out->ret_type != ARG_NONE && out->arg_count == -1);
     return 0;
 }
 
@@ -1048,6 +1106,8 @@ static int resolve_custom_spec_for_path(pid_t pid, const char *path,
     out->runtime_entry_addr = 0;
     out->arg_count = spec->arg_count;
     memcpy(out->arg_types, spec->arg_types, sizeof(spec->arg_types));
+    out->ret_type = spec->ret_type;
+    out->ret_only = spec->ret_only;
 
     if (spec->offset > 0) {
         out->offset = spec->offset;
@@ -1119,16 +1179,21 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
         if (resolve_syms) {
             out_print("  [sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
         } else {
-            out_print(" [spec] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+            out_print(" [spec] > %s!%s @ 0x%lx%s\n", bname, label, tgt.offset,
+                      tgt.ret_only ? " (ret-only)" :
+                      tgt.ret_type != ARG_NONE ? " [+ret]" : "");
+            struct bpf_program *entry_prog = tgt.ret_only
+                ? skel->progs.uprobe_save_only
+                : skel->progs.uprobe_open;
             probe_links[idx] = bpf_program__attach_uprobe(
-                skel->progs.uprobe_open, false, uprobe_pid, path, tgt.offset);
+                entry_prog, false, uprobe_pid, path, tgt.offset);
             if (!probe_links[idx] && map_start && map_end) {
                 char map_files[80];
                 snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
                          pid, map_start, map_end);
                 if (access(map_files, F_OK) == 0) {
                     probe_links[idx] = bpf_program__attach_uprobe(
-                        skel->progs.uprobe_open, false, uprobe_pid, map_files, tgt.offset);
+                        entry_prog, false, uprobe_pid, map_files, tgt.offset);
                     if (probe_links[idx])
                         out_print(" [spec] > attached via map_files (file deleted): %s!%s\n",
                                   bname, label);
@@ -1140,6 +1205,13 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
                 }
             } else if (!probe_links[idx]) {
                 err_print(" [spec] > FAILED: %s!%s\n", bname, label);
+            }
+
+            if (tgt.ret_type != ARG_NONE || tgt.ret_only) {
+                probe_ret_links[idx] = bpf_program__attach_uprobe(
+                    skel->progs.uretprobe_open, true, uprobe_pid, path, tgt.offset);
+                if (!probe_ret_links[idx])
+                    err_print(" [spec] > FAILED ret: %s!%s\n", bname, label);
             }
         }
     }
@@ -1188,8 +1260,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             return 0;
         }
 
-        // Normal symbol resolution (filtered by -I/-i; skipped when no -I given)
-        if (mod_matched && mod_re_count > 0) {
+        // Normal symbol resolution (filtered by -I/-i/-r)
+        if (mod_matched && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev_count = probe_target_count;
             int max_targets = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev_count;
             int resolved = resolve_targets_for_file(header->pid, path,
@@ -1207,11 +1279,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                         out_print("  [sym] > %s!%s @ 0x%lx\n",
                             bname, probe_targets[i].func_name, probe_targets[i].offset);
                     } else {
-                        out_print("[uprobe] > %s!%s @ 0x%lx\n",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                        bool ro = probe_targets[i].ret_only;
+                        out_print("%s > %s!%s @ 0x%lx%s\n",
+                            ro ? "[rprobe]" : "[uprobe]",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset,
+                            probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
 
+                        struct bpf_program *entry_prog = ro
+                            ? skel->progs.uprobe_save_only
+                            : skel->progs.uprobe_open;
                         probe_links[i] = bpf_program__attach_uprobe(
-                            skel->progs.uprobe_open, false, -1,
+                            entry_prog, false, -1,
                             probe_targets[i].mod_path, probe_targets[i].offset);
 
                         if (!probe_links[i]) {
@@ -1220,7 +1298,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                                      header->pid, (unsigned long)e->start, (unsigned long)e->end);
                             if (access(map_files, F_OK) == 0) {
                                 probe_links[i] = bpf_program__attach_uprobe(
-                                    skel->progs.uprobe_open, false, -1,
+                                    entry_prog, false, -1,
                                     map_files, probe_targets[i].offset);
                                 if (probe_links[i])
                                     out_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
@@ -1231,6 +1309,15 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                                 out_print("[uprobe] > MISSED: %s!%s (mapping gone before attach)\n",
                                           bname, probe_targets[i].func_name);
                             }
+                        }
+
+                        if (probe_targets[i].ret_type != ARG_NONE || ro) {
+                            probe_ret_links[i] = bpf_program__attach_uprobe(
+                                skel->progs.uretprobe_open, true, -1,
+                                probe_targets[i].mod_path, probe_targets[i].offset);
+                            if (!probe_ret_links[i])
+                                err_print("[uprobe] > FAILED ret: %s!%s\n",
+                                    bname, probe_targets[i].func_name);
                         }
                     }
                 }
@@ -1263,13 +1350,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
             if (probe_links[i])
                 bpf_link__destroy(probe_links[i]);
+            if (probe_ret_links[i])
+                bpf_link__destroy(probe_ret_links[i]);
 
             if (retired_count < 4096)
                 retired_targets[retired_count++] = probe_targets[i];
 
-            probe_targets[i] = probe_targets[probe_target_count - 1];
-            probe_links[i]   = probe_links[probe_target_count - 1];
-            probe_links[probe_target_count - 1] = NULL;
+            probe_targets[i]    = probe_targets[probe_target_count - 1];
+            probe_links[i]      = probe_links[probe_target_count - 1];
+            probe_ret_links[i]  = probe_ret_links[probe_target_count - 1];
+            probe_links[probe_target_count - 1]     = NULL;
+            probe_ret_links[probe_target_count - 1] = NULL;
             probe_target_count--;
             removed++;
         }
@@ -1337,6 +1428,78 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 else
                     out_print(" [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
             }
+        }
+    }
+
+    if (header->type == ARES_EVENT_RETURN) {
+        if (list_libs || resolve_syms) return 0;
+        const struct event *e = data;
+        if (data_sz < sizeof(*e)) return 0;
+
+        bool used_fallback = false;
+        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
+
+        const char *bname = "???";
+        const char *fname = "???";
+        unsigned long offset = 0;
+        uint8_t ret_type = ARG_VAL;
+        int arg_count = -1;
+        uint8_t *arg_types = NULL;
+
+        if (target) {
+            const char *b = strrchr(target->mod_path, '/');
+            bname    = b ? b + 1 : target->mod_path;
+            fname    = target->func_name;
+            offset   = target->offset;
+            ret_type = (target->ret_type != ARG_NONE) ? target->ret_type : ARG_VAL;
+            arg_count = target->arg_count;
+            arg_types = target->arg_types;
+        }
+
+        // Elapsed time
+        char elapsed_buf[32] = "";
+        if (e->elapsed_ns > 0) {
+            if (e->elapsed_ns < 1000)
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%lluns",
+                         (unsigned long long)e->elapsed_ns);
+            else if (e->elapsed_ns < 1000000)
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fus",
+                         (double)e->elapsed_ns / 1000.0);
+            else
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fms",
+                         (double)e->elapsed_ns / 1000000.0);
+        }
+
+        // Return value: strings[0]/is_str[0] holds the string read from retval pointer
+        char retval_buf[MAX_STR_LEN + 4];
+        if (ret_type == ARG_STR && e->is_str[0])
+            snprintf(retval_buf, sizeof(retval_buf), "\"%s\"", e->strings[0]);
+        else
+            snprintf(retval_buf, sizeof(retval_buf), "0x%lx", (unsigned long)e->retval);
+
+        out_print(" [event] > [RET]  %s PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
+            ts, header->pid, bname, fname, offset,
+            used_fallback ? " (resolved from known offset)" : "",
+            elapsed_buf, retval_buf);
+
+        // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]
+        // Only print S-typed args that yielded a string at return time
+        if (arg_count >= 0) {
+            for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
+                if (arg_types[i] == ARG_STR && e->is_str[i + 1])
+                    out_print(" [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
+            }
+        }
+
+        // Call stack
+        for (__u32 i = 1; i < e->stack_depth; i++) {
+            if (!e->call_stack[i]) break;
+            char frame_mod[128] = "";
+            unsigned long frame_off = 0;
+            if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+            else
+                out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
         }
     }
 
@@ -1408,6 +1571,15 @@ int main(int argc, char **argv)
         func_re_count++;
     }
 
+    for (int i = 0; i < args.func_ret_pattern_count; i++) {
+        if (regcomp(&func_ret_re[i], args.func_ret_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            err_print("   [err] > invalid -r regex pattern: %s\n", args.func_ret_patterns[i]);
+            err = -1;
+            goto cleanup;
+        }
+        func_ret_re_count++;
+    }
+
 
     // Parse custom probe specs from -e flags
     for (int i = 0; i < args.custom_spec_count; i++) {
@@ -1444,6 +1616,8 @@ int main(int argc, char **argv)
     }
 
     bpf_program__set_autoattach(skel->progs.uprobe_open, false);
+    bpf_program__set_autoattach(skel->progs.uprobe_save_only, false);
+    bpf_program__set_autoattach(skel->progs.uretprobe_open, false);
     err = ares_tracer_bpf__attach(skel);
     if (err) {
         err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
@@ -1503,19 +1677,33 @@ int main(int argc, char **argv)
                     out_print("  [sym] > %s!%s @ 0x%lx\n",
                         bname, probe_targets[i].func_name, probe_targets[i].offset);
                 } else {
-                    out_print("[uprobe] > %s!%s @ 0x%lx\n",
-                        bname, probe_targets[i].func_name, probe_targets[i].offset);
+                    bool ro = probe_targets[i].ret_only;
+                    out_print("%s > %s!%s @ 0x%lx%s\n",
+                        ro ? "[rprobe]" : "[uprobe]",
+                        bname, probe_targets[i].func_name, probe_targets[i].offset,
+                        probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
+                    struct bpf_program *entry_prog = ro
+                        ? skel->progs.uprobe_save_only
+                        : skel->progs.uprobe_open;
                     probe_links[i] = bpf_program__attach_uprobe(
-                        skel->progs.uprobe_open,
-                        false,
+                        entry_prog, false,
                         probe_targets[i].pid,
                         probe_targets[i].mod_path,
-                        probe_targets[i].offset
-                    );
+                        probe_targets[i].offset);
                     if (!probe_links[i]) {
                         err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
                         err = -1;
                         goto cleanup;
+                    }
+                    if (probe_targets[i].ret_type != ARG_NONE || ro) {
+                        probe_ret_links[i] = bpf_program__attach_uprobe(
+                            skel->progs.uretprobe_open, true,
+                            probe_targets[i].pid,
+                            probe_targets[i].mod_path,
+                            probe_targets[i].offset);
+                        if (!probe_ret_links[i])
+                            err_print("[uprobe] > FAILED ret: %s!%s\n",
+                                      bname, probe_targets[i].func_name);
                     }
                 }
             }
@@ -1552,7 +1740,7 @@ int main(int argc, char **argv)
         }
         out_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
 
-        if (!list_libs && mod_re_count > 0) {
+        if (!list_libs && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
             int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
@@ -1566,14 +1754,28 @@ int main(int argc, char **argv)
                         out_print("  [sym] > %s!%s @ 0x%lx\n",
                             bname, probe_targets[i].func_name, probe_targets[i].offset);
                     } else {
-                        out_print("[uprobe] > %s!%s @ 0x%lx\n",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                        bool ro = probe_targets[i].ret_only;
+                        out_print("%s > %s!%s @ 0x%lx%s\n",
+                            ro ? "[rprobe]" : "[uprobe]",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset,
+                            probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
+                        struct bpf_program *entry_prog = ro
+                            ? skel->progs.uprobe_save_only
+                            : skel->progs.uprobe_open;
                         probe_links[i] = bpf_program__attach_uprobe(
-                            skel->progs.uprobe_open, false, -1,
+                            entry_prog, false, -1,
                             probe_targets[i].mod_path, probe_targets[i].offset);
                         if (!probe_links[i])
                             err_print("[uprobe] > FAILED: %s!%s\n",
                                 bname, probe_targets[i].func_name);
+                        if (probe_targets[i].ret_type != ARG_NONE || ro) {
+                            probe_ret_links[i] = bpf_program__attach_uprobe(
+                                skel->progs.uretprobe_open, true, -1,
+                                probe_targets[i].mod_path, probe_targets[i].offset);
+                            if (!probe_ret_links[i])
+                                err_print("[uprobe] > FAILED ret: %s!%s\n",
+                                    bname, probe_targets[i].func_name);
+                        }
                     }
                 }
                 if (!resolve_syms)
@@ -1647,10 +1849,13 @@ int main(int argc, char **argv)
     cleanup:
         ring_buffer__free(events_rb);
 
-        for (int i = 0; i < probe_target_count; i++) 
-            if (probe_links[i]) bpf_link__destroy(probe_links[i]);
-        for (int i = 0; i < mod_re_count; i++) regfree(&mod_re[i]);
-        for (int i = 0; i < func_re_count; i++) regfree(&func_re[i]);
+        for (int i = 0; i < probe_target_count; i++) {
+            if (probe_links[i])     bpf_link__destroy(probe_links[i]);
+            if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
+        }
+        for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
+        for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
+        for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
         ares_tracer_bpf__destroy(skel);
         csv_close();

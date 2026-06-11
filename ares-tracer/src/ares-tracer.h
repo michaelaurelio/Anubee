@@ -27,21 +27,35 @@ struct event_header {
 };
 
 
-// Event for native function calls
+// Event for native function calls (ARES_EVENT_CALL) and returns (ARES_EVENT_RETURN).
+//
+// RETURN layout differs from CALL:
+//   retval        = PT_REGS_RC (raw return value)
+//   elapsed_ns    = ns from entry to return (0 in CALL events)
+//   is_str[0]     = 1 if retval is a valid string pointer and was read into strings[0]
+//   strings[0]    = retval read as string (if is_str[0])
+//   args[i+1]     = saved entry arg[i] pointer (for output buffer re-read), i=0..6
+//   is_str[i+1]   = 1 if re-read of entry arg[i] produced a string
+//   strings[i+1]  = re-read string content of entry arg[i]
+//
+// TID-keyed entry_map limitation: nested calls to two different tracked functions on the
+// same thread will corrupt correlation — the inner entry overwrites the outer's saved data.
+// Acceptable for RASP analysis (functions don't nest this way in practice). Future fix:
+// key by (TID, lower-N-bits-of-entry_addr) or use a per-TID call stack in the map.
 struct event {
     struct event_header h;
     __u64 entry_addr;
-    __u64 caller_addr;    // x30 (LR) at function entry (immediate caller's return address)
+    __u64 caller_addr;    // x30 (LR) at function entry; unused in RETURN events
+    __u64 elapsed_ns;     // time from entry to return (RETURN only; 0 in CALL)
+    __u64 retval;         // return value register (RETURN only)
     int ppid;
-    bool exit_event;
+    bool exit_event;      // true for RETURN events
     char comm[TASK_COMM_LEN];
     unsigned long args[NUM_ARGS];
     __u8 is_str[NUM_ARGS];
     char strings[NUM_ARGS][MAX_STR_LEN];
-    __u64 call_stack[STACK_DEPTH]; // bpf_get_stack result; [0]=current PC, [1]=immediate caller
-    __u32 stack_depth;             // valid entries in call_stack; 0 if bpf_get_stack failed/unavailable
-    // FEATURE: Add BETTER arguments later
-    // FEATURE: Add retval later
+    __u64 call_stack[STACK_DEPTH];
+    __u32 stack_depth;
 };
 
 

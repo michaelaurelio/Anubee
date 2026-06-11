@@ -44,6 +44,7 @@
 #include "heimdall.skel.h"
 #include "symbolize.h"
 #include "flags.h"
+#include "dump.h"
 
 extern char **environ;
 
@@ -122,7 +123,30 @@ static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static int g_quiet;                             // suppress per-event console output
 static int g_libs_only;                         // only log libraries loaded into the app
+static const char *g_dump_substr;               // -D: dump matching libs from memory at exit
+static const char *g_dump_dir = ".";            // output dir for dumps
 static volatile sig_atomic_t exiting;
+
+// App PIDs seen mapping a library, recorded so the exit-time memory dump knows
+// which processes to read. Small dedup'd set (apps spawn few processes).
+static __u32 *g_dump_pids;
+static size_t g_dump_pids_n, g_dump_pids_cap;
+
+static void dump_note_pid(__u32 pid)
+{
+	for (size_t i = 0; i < g_dump_pids_n; i++)
+		if (g_dump_pids[i] == pid)
+			return;
+	if (g_dump_pids_n == g_dump_pids_cap) {
+		size_t nc = g_dump_pids_cap ? g_dump_pids_cap * 2 : 16;
+		__u32 *np = realloc(g_dump_pids, nc * sizeof(*np));
+		if (!np)
+			return;
+		g_dump_pids = np;
+		g_dump_pids_cap = nc;
+	}
+	g_dump_pids[g_dump_pids_n++] = pid;
+}
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
@@ -1078,6 +1102,11 @@ static void process_event(const void *data, size_t sz)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
+		// Record every app process that maps anything; the exit-time dump
+		// rescans each one's /proc/<pid>/maps (full paths, final state) to
+		// decide what actually matches.
+		if (g_dump_substr)
+			dump_note_pid(m->h.pid);
 		if (g_libs_only)
 			handle_library(m);
 		else if (m->is_exec && g_lib[0] && strstr(m->name, g_lib))
@@ -1266,9 +1295,17 @@ static unsigned long long read_dropped(int fd)
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] [-q] [-a|-l] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
+		"usage: %s [-o out.json] [-v] [-q] [-a|-l] [-D lib] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
 		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
 		"  -l, --libs          only log libraries loaded into the app (no syscalls)\n"
+		"  -D, --dump lib      at exit, dump every loaded library whose name contains\n"
+		"                      <lib> from the app's live memory (captures in-memory\n"
+		"                      decryption/unpacking). Combine with -l for a dump-only run.\n"
+		"                      A glob (* ? []) matches the basename, e.g. 'e_*' for a\n"
+		"                      protector payload loaded under a randomized per-run name.\n"
+		"      --dump-dir dir  directory for dumped .so images (default: current dir)\n"
+		"      --dump-raw      dump the raw phdr-fixed memory image only (no section\n"
+		"                      headers / relocation rebuild) — fallback for odd packers\n"
 		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
 		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
 		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
@@ -1284,8 +1321,9 @@ static void usage(const char *argv0)
 		"  -s/-x further restrict which syscalls are kept (works with the default/-a modes).\n"
 		"  e.g. %s com.example.app librasp.so\n"
 		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n"
-		"       %s -l com.example.app                 # just list loaded libraries\n",
-		argv0, argv0, argv0, argv0);
+		"       %s -l com.example.app                 # just list loaded libraries\n"
+		"       %s -l -D libpacked.so --dump-dir /data/local/tmp com.example.app\n",
+		argv0, argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
@@ -1295,6 +1333,11 @@ int main(int argc, char **argv)
 	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
 	g_libs_only = getenv("HEIMDALL_LIBS") != NULL;
+	g_dump_substr = getenv("HEIMDALL_DUMP");
+	if (getenv("HEIMDALL_DUMP_DIR"))
+		g_dump_dir = getenv("HEIMDALL_DUMP_DIR");
+	if (getenv("HEIMDALL_DUMP_RAW"))
+		dump_set_raw(1);
 	const char *json_path = getenv("HEIMDALL_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
@@ -1324,6 +1367,14 @@ int main(int argc, char **argv)
 			capture_all = 1;
 		} else if (!strcmp(argv[ai], "-l") || !strcmp(argv[ai], "--libs")) {
 			g_libs_only = 1;
+		} else if (!strcmp(argv[ai], "-D") || !strcmp(argv[ai], "--dump")) {
+			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
+			g_dump_substr = argv[++ai];
+		} else if (!strcmp(argv[ai], "--dump-dir")) {
+			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
+			g_dump_dir = argv[++ai];
+		} else if (!strcmp(argv[ai], "--dump-raw")) {
+			dump_set_raw(1);
 		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
 			if (ai + 1 >= argc || syscall_mode == 2) {
 				fprintf(stderr, "use either -s or -x, not both\n");
@@ -1562,6 +1613,23 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "no events dropped\n");
 
+	// Dump matching libraries from the (still-running) app's live memory. Done
+	// here, post-drain, so every MAP event's pid is recorded — and at exit time,
+	// after the app has run, any in-memory decryption/unpacking has happened.
+	if (g_dump_substr) {
+		if (g_dump_pids_n == 0)
+			fprintf(stderr, "[dump] no process mapped a library matching '%s'\n",
+				g_dump_substr);
+		int total = 0;
+		for (size_t i = 0; i < g_dump_pids_n; i++) {
+			int d = dump_pid_modules((int)g_dump_pids[i], g_dump_substr, g_dump_dir);
+			if (d > 0)
+				total += d;
+		}
+		fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
+			total, total == 1 ? "" : "s", g_dump_substr, g_dump_dir);
+	}
+
 out_rb:
 	ring_buffer__free(rb);
 out:
@@ -1575,6 +1643,7 @@ out:
 		       g_json_count == 1 ? "" : "s", json_path);
 	}
 	free(g_pend);
+	free(g_dump_pids);
 	heimdall__destroy(skel);
 	return 0;
 }

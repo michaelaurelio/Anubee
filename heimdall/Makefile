@@ -87,8 +87,8 @@ $(SYSCALLS):
 	@echo "generated $@ ($$(wc -l < $@) entries)"
 
 # ---- userspace loader (cross, static) -------------------------------------
-LOADER_SRC := $(SRC)/heimdall.c $(SRC)/symbolize.c $(SRC)/flags.c
-$(BIN): $(LOADER_SRC) $(SRC)/heimdall.h $(SRC)/symbolize.h $(SRC)/flags.h $(SKEL) $(SYSCALLS) $(LIBBPF_A)
+LOADER_SRC := $(SRC)/heimdall.c $(SRC)/symbolize.c $(SRC)/flags.c $(SRC)/dump.c
+$(BIN): $(LOADER_SRC) $(SRC)/heimdall.h $(SRC)/symbolize.h $(SRC)/flags.h $(SRC)/dump.h $(SKEL) $(SYSCALLS) $(LIBBPF_A)
 	$(CC) $(LOADER_CFLAGS) $(LOADER_SRC) -o $@ $(LOADER_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 

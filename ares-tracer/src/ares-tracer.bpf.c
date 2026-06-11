@@ -8,7 +8,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(max_entries, 4 * 1024 * 1024);
 } events_rb SEC(".maps");
 
 struct {
@@ -60,11 +60,22 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     pid_t pid = (__u32)(id >> 32);
     pid_t tid = (__u32)id;
 
+    long raw[NUM_ARGS] = {a1, a2, a3, a4, a5, a6, a7, a8};
+
+    // Save entry context before ringbuf reserve so uretprobe always has it,
+    // even when the ring buffer is full and the CALL event gets dropped.
+    struct entry_ctx ectx = {};
+    ectx.entry_addr = (__u64)PT_REGS_IP(ctx);
+    ectx.timestamp  = bpf_ktime_get_ns();
+    #pragma unroll
+    for (int i = 0; i < NUM_ARGS; i++)
+        ectx.args[i] = (unsigned long)raw[i];
+    bpf_map_update_elem(&entry_map, &tid, &ectx, BPF_ANY);
+
     // Reserve space in ring buffer for event
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e)
         return 0;
-
 
     // Fill event data
     task = (struct task_struct *)bpf_get_current_task();
@@ -79,8 +90,6 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     e->exit_event = false;
 
-    // TEMP STUFF, FIX TOMORROW
-    long raw[NUM_ARGS] = {a1, a2, a3, a4, a5, a6, a7, a8};
     #pragma unroll
     for (int i = 0; i < NUM_ARGS; i++) {
         e->args[i] = (unsigned long)raw[i];
@@ -96,15 +105,6 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     e->stack_depth = (stack_ret > 0) ? (__u32)((__u64)stack_ret >> 3) : 0;
 
     bpf_ringbuf_submit(e, 0);
-
-    struct entry_ctx ectx = {};
-    ectx.entry_addr = (__u64)PT_REGS_IP(ctx);
-    ectx.timestamp  = bpf_ktime_get_ns();
-    #pragma unroll
-    for (int i = 0; i < NUM_ARGS; i++)
-        ectx.args[i] = (unsigned long)raw[i];
-    bpf_map_update_elem(&entry_map, &tid, &ectx, BPF_ANY);
-
     return 0;
 }
 

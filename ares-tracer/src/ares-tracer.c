@@ -361,6 +361,27 @@ static void csv_close(void)
     if (g_csv) { fclose(g_csv); g_csv = NULL; }
 }
 
+// Top-level event line: prepends "HH:MM:SS  " to stdout; CSV receives message only.
+static void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void ts_print(const char *fmt, ...)
+{
+    time_t t; time(&t);
+    char ts_buf[16];
+    strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", localtime(&t));
+    printf("%s ", ts_buf);
+    va_list ap1, ap2;
+    va_start(ap1, fmt);
+    va_copy(ap2, ap1);
+    vprintf(fmt, ap1);
+    va_end(ap1);
+    if (g_csv) {
+        char buf[4096];
+        vsnprintf(buf, sizeof(buf), fmt, ap2);
+        csv_write("out", buf);
+    }
+    va_end(ap2);
+}
+
 
 // Check module and function pattern match
 regex_t mod_re[32];
@@ -455,6 +476,67 @@ typedef struct {
 
 static apk_cache_t apk_cache[APK_CACHE_MAX];
 static int         apk_cache_count;
+
+// Basename-to-fullpath cache: used when /proc/PID/maps is unreadable during
+// MAP event handling (e.g. during UNMAP/REMAP cycles).
+#define PATH_CACHE_PIDS    16
+#define PATH_CACHE_NAMES  256
+
+typedef struct {
+    char basename[128];
+    char fullpath[256];
+} path_cache_entry_t;
+
+typedef struct {
+    pid_t              pid;
+    path_cache_entry_t names[PATH_CACHE_NAMES];
+    int                count;
+} pid_path_cache_t;
+
+static pid_path_cache_t path_cache[PATH_CACHE_PIDS];
+static int              path_cache_pid_count;
+
+static pid_path_cache_t *path_cache_find_pid(pid_t pid)
+{
+    for (int i = 0; i < path_cache_pid_count; i++)
+        if (path_cache[i].pid == pid) return &path_cache[i];
+    return NULL;
+}
+
+static void path_cache_put(pid_t pid, const char *basename, const char *fullpath)
+{
+    pid_path_cache_t *c = path_cache_find_pid(pid);
+    if (!c) {
+        if (path_cache_pid_count >= PATH_CACHE_PIDS) return;
+        c = &path_cache[path_cache_pid_count++];
+        c->pid   = pid;
+        c->count = 0;
+    }
+    for (int i = 0; i < c->count; i++) {
+        if (strcmp(c->names[i].basename, basename) == 0) {
+            strncpy(c->names[i].fullpath, fullpath, sizeof(c->names[i].fullpath) - 1);
+            return;
+        }
+    }
+    if (c->count >= PATH_CACHE_NAMES) return;
+    strncpy(c->names[c->count].basename, basename, sizeof(c->names[c->count].basename) - 1);
+    strncpy(c->names[c->count].fullpath, fullpath, sizeof(c->names[c->count].fullpath) - 1);
+    c->count++;
+}
+
+static int path_cache_lookup(pid_t pid, const char *basename, char *out, size_t outsz)
+{
+    pid_path_cache_t *c = path_cache_find_pid(pid);
+    if (!c) return -1;
+    for (int i = 0; i < c->count; i++) {
+        if (strcmp(c->names[i].basename, basename) == 0) {
+            strncpy(out, c->names[i].fullpath, outsz - 1);
+            out[outsz - 1] = '\0';
+            return 0;
+        }
+    }
+    return -1;
+}
 
 // Parser module for target resolution
 int mod_re_count = 0;
@@ -1184,9 +1266,9 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
         const char *label = tgt.func_name[0] ? tgt.func_name : "?";
 
         if (resolve_syms) {
-            out_print("  [sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+            ts_print("[sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
         } else {
-            out_print(" [spec] > %s!%s @ 0x%lx%s\n", bname, label, tgt.offset,
+            ts_print("[spec] > %s!%s @ 0x%lx%s\n", bname, label, tgt.offset,
                       tgt.ret_only ? " (ret-only)" :
                       tgt.ret_type != ARG_NONE ? " [+ret]" : "");
             struct bpf_program *entry_prog = tgt.ret_only
@@ -1202,12 +1284,12 @@ static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprob
                     probe_links[idx] = bpf_program__attach_uprobe(
                         entry_prog, false, uprobe_pid, map_files, tgt.offset);
                     if (probe_links[idx])
-                        out_print(" [spec] > attached via map_files (file deleted): %s!%s\n",
+                        ts_print("[spec] > attached via map_files (file deleted): %s!%s\n",
                                   bname, label);
                     else
                         err_print(" [spec] > FAILED: %s!%s\n", bname, label);
                 } else {
-                    out_print(" [spec] > MISSED: %s!%s (mapping gone before attach)\n",
+                    ts_print("[spec] > MISSED: %s!%s (mapping gone before attach)\n",
                               bname, label);
                 }
             } else if (!probe_links[idx]) {
@@ -1229,24 +1311,22 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     const struct event_header *header = data;
     if (data_sz < sizeof(*header)) return 0;
 
-    // Get current time
-    struct tm *tm;
-    char ts[32];
-    time_t t;
-    time(&t);
-    tm = localtime(&t);
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
     if (header->type == ARES_EVENT_MAP) {
         const struct map_event *e = data;
         if (data_sz < sizeof(*e)) 
             return 0;
         
-        if (verbose) err_print(" [event]   | MMAP : %s\n", e->name);
-        // Get full path from /proc/PID/maps based on start addreess
+        if (verbose) err_print("         [event]   | MMAP : %s\n", e->name);
         char path[256];
-        if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) != 0)
-            return 0;
+        if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) == 0) {
+            const char *bname = strrchr(path, '/');
+            path_cache_put(header->pid, bname ? bname + 1 : path, path);
+        } else {
+            if (path_cache_lookup(header->pid, e->name, path, sizeof(path)) != 0)
+                return 0;
+            if (verbose)
+                err_print("  [scan] > using cached path for %s (maps unreadable)\n", e->name);
+        }
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
@@ -1257,11 +1337,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                     char so_name[128];
                     unsigned long so_off;
                     if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
-                        out_print("   [map] > %s -> %s\n", path, so_name);
+                        ts_print("[map] > %s -> %s\n", path, so_name);
                     else
-                        out_print("   [map] > %s\n", path);
+                        ts_print("[map] > %s\n", path);
                 } else {
-                    out_print("   [map] > %s\n", path);
+                    ts_print("[map] > %s\n", path);
                 }
             }
             return 0;
@@ -1283,11 +1363,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                     bname = bname ? bname + 1 : probe_targets[i].mod_path;
 
                     if (resolve_syms) {
-                        out_print("  [sym] > %s!%s @ 0x%lx\n",
+                        ts_print("[sym] > %s!%s @ 0x%lx\\n",
                             bname, probe_targets[i].func_name, probe_targets[i].offset);
                     } else {
                         bool ro = probe_targets[i].ret_only;
-                        out_print("%s > %s!%s @ 0x%lx%s\n",
+                        ts_print("%s > %s!%s @ 0x%lx%s\n",
                             ro ? "[rprobe]" : "[uprobe]",
                             bname, probe_targets[i].func_name, probe_targets[i].offset,
                             probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
@@ -1308,12 +1388,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                                     entry_prog, false, -1,
                                     map_files, probe_targets[i].offset);
                                 if (probe_links[i])
-                                    out_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
+                                    ts_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
                                               bname, probe_targets[i].func_name);
                                 else
                                     err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
                             } else {
-                                out_print("[uprobe] > MISSED: %s!%s (mapping gone before attach)\n",
+                                ts_print("[uprobe] > MISSED: %s!%s (mapping gone before attach)\n",
                                           bname, probe_targets[i].func_name);
                             }
                         }
@@ -1344,7 +1424,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (verbose) err_print(" [event]   | UNMAP: %s\n", e->name);
+        if (verbose) err_print("         [event]   | UNMAP: %s\n", e->name);
 
         if (list_libs) return 0;
 
@@ -1373,7 +1453,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         }
 
         if (removed > 0 && !resolve_syms)
-            out_print(" [unmap] > %s (%d probes removed)\n", e->name, removed);
+            ts_print("[unmap] > %s (%d probes removed)\n", e->name, removed);
 
         return 0;
     }
@@ -1389,12 +1469,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
             bname = bname ? bname + 1 : target->mod_path;
-            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
-                ts, e->h.pid, e->ppid, bname, target->func_name, target->offset,
+            ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
+                e->h.pid, e->ppid, bname, target->func_name, target->offset,
                 used_fallback ? " (resolved from known offset)" : "");
         } else {
-            out_print(" [event] > [CALL] %s PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
-                ts, e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
+            ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
+                e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
             return 0;
         }
 
@@ -1402,9 +1482,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             char caller_mod[128] = "";
             unsigned long caller_off = 0;
             if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
-                out_print(" [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
+                out_print("         [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
             else
-                out_print(" [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
+                out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
         }
 
         if (!caller_only) {
@@ -1413,9 +1493,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 char frame_mod[128] = "";
                 unsigned long frame_off = 0;
                 if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
                 else
-                    out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
             }
         }
 
@@ -1423,19 +1503,19 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             for (int i = 0; i < target->arg_count; i++) {
                 if (target->arg_types[i] == ARG_STR) {
                     if (e->is_str[i])
-                        out_print(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
                     else
-                        out_print(" [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
+                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
                 } else {
-                    out_print(" [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
                 }
             }
         } else {
             for (int i = 0; i < NUM_ARGS; i++) {
                 if (e->is_str[i])
-                    out_print(" [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
                 else
-                    out_print(" [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
             }
         }
     }
@@ -1486,8 +1566,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         else
             snprintf(retval_buf, sizeof(retval_buf), "0x%lx", (unsigned long)e->retval);
 
-        out_print(" [event] > [RET]  %s PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
-            ts, header->pid, bname, fname, offset,
+        ts_print("[event] > [RET]  PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
+            header->pid, bname, fname, offset,
             used_fallback ? " (resolved from known offset)" : "",
             elapsed_buf, retval_buf);
 
@@ -1496,7 +1576,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (arg_count >= 0) {
             for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
                 if (arg_types[i] == ARG_STR && e->is_str[i + 1])
-                    out_print(" [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
+                    out_print("         [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
             }
         }
 
@@ -1508,14 +1588,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             unsigned long frame_off = 0;
             if (i == 1) {
                 if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print(" [event]   | caller: %s+0x%lx\n", frame_mod, frame_off);
+                    out_print("         [event]   | caller: %s+0x%lx\n", frame_mod, frame_off);
                 else
-                    out_print(" [event]   | caller: 0x%llx\n", (unsigned long long)e->call_stack[i]);
+                    out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->call_stack[i]);
             } else {
                 if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
                 else
-                    out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
             }
         }
     }
@@ -1553,8 +1633,8 @@ int main(int argc, char **argv)
     }
 
     if (verbose) err_print("  [verb] > mode ON\n");
-    if (list_libs) out_print("  [info] > library detection mode\n");
-    if (resolve_syms) out_print("  [info] > symbol resolution mode\n");
+    if (list_libs) ts_print("[info] > library detection mode\n");
+    if (resolve_syms) ts_print("[info] > symbol resolution mode\n");
 
 
     // Resolve application UID (if spawn mode)
@@ -1565,7 +1645,7 @@ int main(int argc, char **argv)
             err = -1;
             goto cleanup;
         }
-        out_print(" [spawn] > %s UID %d\n", args.package_name, uid);
+        ts_print("[spawn] > %s UID %d\n", args.package_name, uid);
     }
 
 
@@ -1655,7 +1735,7 @@ int main(int argc, char **argv)
     if (args.pid_count > 0) {
         if (!list_libs && mod_re_count > 0) {
             for (int i = 0; i < args.pid_count; i++) {
-                out_print(" [probe] > resolving targets for PID %d\n", args.pids[i]);
+                ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
                     args.pids[i],
                     probe_targets + probe_target_count,
@@ -1683,7 +1763,7 @@ int main(int argc, char **argv)
                 err_print(" [probe] > failed to set target UID %d: %s\n", pid_uid, strerror(errno));
                 goto cleanup;
             }
-            out_print(" [probe] > PID %d UID %d\n", args.pids[i], pid_uid);
+            ts_print("[probe] > PID %d UID %d\n", args.pids[i], pid_uid);
         }
 
         if (!list_libs && mod_re_count > 0) {
@@ -1692,11 +1772,11 @@ int main(int argc, char **argv)
                 bname = bname ? bname + 1 : probe_targets[i].mod_path;
 
                 if (resolve_syms) {
-                    out_print("  [sym] > %s!%s @ 0x%lx\n",
+                    ts_print("[sym] > %s!%s @ 0x%lx\n",
                         bname, probe_targets[i].func_name, probe_targets[i].offset);
                 } else {
                     bool ro = probe_targets[i].ret_only;
-                    out_print("%s > %s!%s @ 0x%lx%s\n",
+                    ts_print("%s > %s!%s @ 0x%lx%s\n",
                         ro ? "[rprobe]" : "[uprobe]",
                         bname, probe_targets[i].func_name, probe_targets[i].offset,
                         probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
@@ -1756,24 +1836,24 @@ int main(int argc, char **argv)
             err = -1;
             goto cleanup;
         }
-        out_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
+        ts_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
 
         if (!list_libs && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
             int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
-            out_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
+            ts_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
             if (resolved > 0) {
                 probe_target_count += resolved;
                 for (int i = prev; i < probe_target_count && !exiting; i++) {
                     const char *bname = strrchr(probe_targets[i].mod_path, '/');
                     bname = bname ? bname + 1 : probe_targets[i].mod_path;
                     if (resolve_syms) {
-                        out_print("  [sym] > %s!%s @ 0x%lx\n",
+                        ts_print("[sym] > %s!%s @ 0x%lx\\n",
                             bname, probe_targets[i].func_name, probe_targets[i].offset);
                     } else {
                         bool ro = probe_targets[i].ret_only;
-                        out_print("%s > %s!%s @ 0x%lx%s\n",
+                        ts_print("%s > %s!%s @ 0x%lx%s\n",
                             ro ? "[rprobe]" : "[uprobe]",
                             bname, probe_targets[i].func_name, probe_targets[i].offset,
                             probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
@@ -1797,7 +1877,7 @@ int main(int argc, char **argv)
                     }
                 }
                 if (!resolve_syms)
-                    out_print("[zygote] > attached %d uprobes for pre-loaded libs\n",
+                    ts_print("[zygote] > attached %d uprobes for pre-loaded libs\n",
                               probe_target_count - prev);
             }
         }
@@ -1847,7 +1927,7 @@ int main(int argc, char **argv)
             goto cleanup;
         }
 
-        out_print(" [spawn] > launching %s\n", args.package_name);
+        ts_print("[spawn] > launching %s\n", args.package_name);
         snprintf(cmd, sizeof(cmd), "am start -S -n %s", package_activity);
         if (sh_exec(cmd, NULL, 0) != 0) {
             err_print(" [spawn] > failed to start %s\n", args.package_name);

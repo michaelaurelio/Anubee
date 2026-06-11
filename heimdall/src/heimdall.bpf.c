@@ -257,16 +257,28 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	}
 
 	// Capture the sockaddr for connect/bind/sendto. sock_args[nr] holds the
-	// 1-based index of the sockaddr* arg; the addrlen is the next arg.
+	// 1-based index of the sockaddr* arg; the addrlen is the next arg. The args
+	// array is indexed with constant offsets (unrolled) so the verifier keeps the
+	// bounds — a runtime index into e->args is rejected.
 	e->sock_len = 0;
 	__u8 *sap = (nr32 < ARG_TYPES_MAX) ? bpf_map_lookup_elem(&sock_args, &nr32) : NULL;
 	__u8 sidx = sap ? *sap : 0;
-	if (sidx >= 1 && sidx <= HEIMDALL_SYSCALL_NARGS - 1) {
-		const void *ptr = (const void *)e->args[sidx - 1];
-		__u64 alen = e->args[sidx];
+	if (sidx) {
+		const void *ptr = NULL;
+		__u64 alen = 0;
+		#pragma clang loop unroll(full)
+		for (int j = 0; j < HEIMDALL_SYSCALL_NARGS - 1; j++) {
+			if (sidx == (__u8)(j + 1)) {
+				ptr = (const void *)e->args[j];
+				alen = e->args[j + 1];
+			}
+		}
 		if (ptr && alen) {
-			__u32 cnt = alen < HEIMDALL_SOCK_MAX ? (__u32)alen : HEIMDALL_SOCK_MAX;
-			if (bpf_probe_read_user(e->sock, cnt, ptr) == 0)
+			// Mask rather than clamp so the bound is on the exact size register
+			// the verifier checks (a conditional clamp left an unbounded copy).
+			// sock[] is HEIMDALL_SOCK_MAX (a power of two); never reads > alen.
+			__u32 cnt = (__u32)alen & (HEIMDALL_SOCK_MAX - 1);
+			if (cnt && bpf_probe_read_user(e->sock, cnt, ptr) == 0)
 				e->sock_len = cnt;
 		}
 	}

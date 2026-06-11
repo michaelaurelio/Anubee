@@ -17,6 +17,82 @@ frida-strace's in-kernel stack-filter design, but standalone and on-device.
   expect high event volume; pair it with `-o trace.json`. If the ring buffer
   fills, dropped events are counted and reported at exit
   (`warning: N event(s) dropped …`) so you know whether the trace is complete.
+- **Libraries-only:** `heimdall -l <package>` — log each native library (`.so`) as
+  it is loaded into the app's userspace memory, and nothing else. The syscall
+  dispatcher hook is **never attached** in this mode, so it has effectively zero
+  syscall overhead; only the `uprobe_mmap` hook runs. Each line shows the library
+  basename, its executable range, file offset and inode:
+
+  ```
+  [lib] pid 12903  libc.so                  [0x7c1d20000, 0x7c1d2f000)  off=0x0  inode=4210
+  [lib] pid 12903  librasp.so               [0x7b004a000, 0x7b0061000)  off=0x0  inode=8814
+  ```
+
+  Pairs with `-o file.json` / `-J` for a machine-readable list (records carry
+  `library`, `pid`, `start`, `end`, `pgoff`, `inode`). Cannot be combined with
+  `-a`/`-s`/`-x` (there are no syscalls to filter).
+
+## Dumping a library from memory (`-D`)
+
+Packers and RASP often ship a native library whose code is encrypted on disk and
+only decrypted *in memory* after load (sometimes the on-disk `.so` is even
+deleted once mapped). `-D, --dump <lib>` reconstructs a loadable `.so` from the
+library's **live process memory**, so you get the post-decryption image:
+
+```
+# let the app run long enough for the library to decrypt, then Ctrl-C to dump:
+heimdall -l -D libpacked.so --dump-dir /data/local/tmp com.example.app
+...
+[dump] libpacked.so (pid 12903) -> /data/local/tmp/libpacked.so.12903.7b004a000.so  (212992 bytes, 212992 read from memory)
+[dump] wrote 1 module image matching 'libpacked.so' to /data/local/tmp
+```
+
+How it works: every app process that maps a `.so` is recorded; at exit (Ctrl-C),
+for each one we re-read `/proc/<pid>/maps`, find modules whose path contains
+`<lib>`, and rebuild each from `/proc/<pid>/mem`. This is the same job as
+[SoFixer](https://github.com/F8LEFT/SoFixer), done live against `/proc` rather
+than a pre-made dump, and a **superset** of it:
+
+- **Whole-range capture.** Reads the entire `[base, end)` range page by page, so
+  data a packer hides in the gaps *between* `PT_LOAD` segments is captured;
+  unreadable guard pages are zero-filled rather than aborting the read.
+- **Program-header fixup.** Rewrites every phdr so the file mirrors memory
+  (`p_offset = p_paddr = p_vaddr`, `p_filesz = p_memsz`), and grows each
+  `PT_LOAD` to the next segment so the gaps live inside a loadable segment.
+- **Section-header reconstruction.** Regenerates a full section table from the
+  dynamic segment — `.dynsym`, `.dynstr`, `.hash`/`.gnu.hash`, `.rela.dyn`,
+  `.rela.plt`, `.relr.dyn`, `.init_array`, `.fini_array`, `.dynamic`, `.text`,
+  `.data`, `.shstrtab` — so tools that read section headers (incl. older IDA)
+  see named sections and the dynamic symbol table.
+- **Relocation un-applying.** Restores file-relative values for relative
+  relocations the loader applied in memory — both classic `DT_RELA`
+  (`R_AARCH64_RELATIVE`) **and `DT_RELR`** (modern Android packed relatives,
+  which SoFixer does not handle).
+- **`.dynamic` de-rebasing.** Pointer entries (`DT_SYMTAB`/`DT_STRTAB`/… ) the
+  linker rewrote to absolute addresses are restored to relative offsets, and
+  `DT_DEBUG` is cleared. (SoFixer assumes these are still relative — true on
+  bionic, but this also handles a glibc-style rebased dynamic section.)
+
+The result loads in IDA/Ghidra with named sections and dynamic symbols intact.
+**Timing matters:** the dump happens when you stop tracing, so let the app run
+until the library has actually decrypted itself. `-D` can be combined with any
+mode; pair it with `-l` for a lightweight dump-only run (no syscall hook). Only
+file-backed, named mappings are dumped — a fully anonymous decrypted blob (no
+`vm_file`) has no name to match. Output filenames are
+`<basename>.<pid>.<loadbase>.so`.
+
+**Randomized library names.** A protector often loads its payload under a name
+that changes every run (e.g. `e_<pid>` / `e_<random>`, frequently `unlink`ed so
+it shows as `… (deleted)`). Pass a glob (`* ? []`) to `-D` and it is matched
+against the mapping basename — `'e_*'` or `'e_[0-9]*'` catches such a payload
+regardless of the per-run suffix. A pattern with no glob characters keeps the
+original "substring of the full path" behaviour.
+
+If the rebuild trips over an unusual packer's dynamic info, `--dump-raw` writes
+just the phdr-fixed raw memory image (no section table, no relocation rebuild)
+as a fallback. **Not handled:** Android APS2 packed relocations
+(`DT_ANDROID_REL[A]`) are not un-applied (neither does SoFixer), and 32-bit
+(ELF32/ARM) modules — heimdall is aarch64-only.
 
 ## Why it's different from a naive strace
 
@@ -93,11 +169,17 @@ setenforce 0
 /data/local/tmp/heimdall com.example.app libguard.so com.example.app.MainActivity
 /data/local/tmp/heimdall -a -o /data/local/tmp/all.json com.example.app   # capture everything
 /data/local/tmp/heimdall -a -s openat,read,close,newfstatat com.example.app   # only these syscalls
+/data/local/tmp/heimdall -l com.example.app   # just list libraries loaded into the app
+/data/local/tmp/heimdall -l -D libpacked.so --dump-dir /data/local/tmp com.example.app   # dump a decrypted .so from memory
 ```
 
 ```
-usage: heimdall [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]
+usage: heimdall [-o out.json] [-v] [-q] [-a|-l] [-D lib] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]
   -a, --all           capture ALL syscalls of the app (no library filter)
+  -l, --libs          only log libraries loaded into the app (no syscalls)
+  -D, --dump lib      at exit, dump every loaded library whose name contains <lib>
+                      from the app's live memory (captures in-memory decryption)
+      --dump-dir dir  directory for dumped .so images (default: current dir)
   -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)
   -x, --exclude list  all syscalls except these (comma-separated names)
   -o, --json <file>   export captured syscalls to a JSON file (implies -q)
@@ -119,11 +201,15 @@ and tolerates a truncated final line.
 in-kernel check runs before the stack walk, so excluded syscalls are nearly free
 — handy to tame the capture-all firehose).
 
-**Throughput / dropped events.** Per-event console rendering (printing,
-symbolization, fd readlinks) is the main drain-path cost, so `-o` enables `-q`
-automatically; add `-q` yourself for fast non-JSON runs. If you still see drops,
-raise the buffer with `-b` (e.g. `-b 64`). (`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`,
-`HEIMDALL_DEBUG`, `HEIMDALL_ALL`, `HEIMDALL_QUIET` env vars mirror the flags.)
+**Throughput / dropped events.** A **drain thread** copies events out of the
+kernel ring into a large userspace **worker queue** (`-Q MB`, default 256), and a
+**worker thread** does all symbolization + JSON writing — so the kernel ring stays
+empty and bursts are absorbed in RAM. Symbolization is cached (address→symbol and
+fd→path), and JSON is written with a fast in-memory serializer. `-o` implies `-q`.
+If you still see drops on a very heavy target, raise the queue (`-Q 512`) and/or
+the kernel ring (`-b 128`); the exit line reports kernel-ring vs queue drops
+separately. (`HEIMDALL_JSON`, `HEIMDALL_VERBOSE`,
+`HEIMDALL_DEBUG`, `HEIMDALL_ALL`, `HEIMDALL_LIBS`, `HEIMDALL_QUIET` env vars mirror the flags.)
 
 ### Console output
 
@@ -146,7 +232,9 @@ line prints the **return value** when the call completes (paired by id):
 ```
 
 Flag / enum arguments are decoded (`O_RDONLY|O_CLOEXEC`, `PROT_READ|PROT_WRITE`,
-`MAP_PRIVATE|MAP_ANONYMOUS`, `PR_GET_DUMPABLE`, `AF_INET`, `SIGKILL`, …).
+`MAP_PRIVATE|MAP_ANONYMOUS`, `PR_GET_DUMPABLE`, `AF_INET`, `SIGKILL`, …), and the
+`sockaddr` of `connect`/`bind`/`sendto` is resolved to the peer address —
+`connect(fd=42, 142.250.4.100:443)`, `sendto(fd=45, …, unix:@frida)`.
 
 Frames resolve across **all** libraries (target + libc + linker + …) to
 `lib!function+0xdelta`. Frames with no matching symbol show `lib+0xvaddr`.
@@ -175,6 +263,20 @@ arrives (so `retval` is populated; `null` if the return was never observed):
 }
 ```
 
+For `connect`/`bind`/`sendto` a `"sock_addr"` field carries the decoded peer
+(e.g. `"142.250.4.100:443"`, `"[2001:db8::1]:8443"`, `"unix:@frida"`):
+
+```json
+{
+  "syscall": "connect", "retval": -115,
+  "fd_args": { "0": "fd=42" },
+  "sock_addr": "142.250.4.100:443",
+  "backtrace": [
+    { "frame": 0, "addr": "0x7c1d2a1c", "symbol": "librasp.so!scan_maps+0x178" }
+  ]
+}
+```
+
 ### Loop folding (`tools/heimdall-fold.py`)
 
 A standalone post-processor that detects **loops in the syscall sequence** and
@@ -193,6 +295,14 @@ tools/heimdall-fold.py trace.json --json folded.json
 Output JSON: a `loops` registry (`{id, period, body, occurrences, iterations_total}`,
 where a nested body item is `{loop, iterations}`) plus a per-thread `timeline`
 that replaces each run with `{ "loop": "L4", "iterations": 2, "event_ids": [...] }`.
+
+### LLM-driven analysis (`tools/heimdall-mcp/`)
+
+For LLM-assisted analysis, an **MCP server** (DuckDB-backed) exposes the trace to
+Claude Code / Claude Desktop as queryable tools (`overview`, `hot_loops`,
+`files`, `query`, `get_event`, `distinct_backtraces`, `via`-origin filtering, …).
+The model retrieves small, pre-aggregated slices on demand instead of ingesting
+a multi-million-event trace — see `tools/heimdall-mcp/README.md`.
 
 ### How syscalls are identified, and string-arg resolution
 
@@ -218,7 +328,10 @@ resolved.
   The table is fixed at build time; a number beyond it prints as `sys_<nr>`.
 - **String args:** only args 0–3, capped at 256 bytes, and only for syscalls in
   the built-in `const char *` table. Non-path string/buffer args (e.g. `write`
-  buffers, `connect` sockaddrs) are shown as raw pointers.
+  buffers) are shown as raw pointers.
+- **sockaddr decode:** `connect`/`bind`/`sendto` resolve the peer to
+  `ip:port` / `[ip6]:port` / `unix:/path` / `unix:@abstract`. `recvfrom`/`accept`
+  fill the address at *return*, so those aren't captured (entry-only).
 - **Return values** are paired to entries by tid (syscalls are serialized per
   thread) and only for syscalls in the curated kretprobe list (see *How it
   works*); others print without a `<==`. The JSON record is emitted when the

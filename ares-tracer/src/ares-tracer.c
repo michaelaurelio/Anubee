@@ -18,7 +18,6 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <fnmatch.h>
-#include <sys/ptrace.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
@@ -47,7 +46,6 @@ static const struct argp_option options[] = {
     { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
     { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
-    { "cold-launch", 'C', NULL, 0, "Spawn mode: skip preload scan, attach uprobes via MAP events only (avoids early BRK detection)" },
     { 0 }
 };
 
@@ -67,7 +65,6 @@ struct args {
     char spec_files[8][256];
     int spec_file_count;
     char output_file[256];
-    bool cold_launch;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -125,10 +122,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'o':
             strncpy(args->output_file, arg, sizeof(args->output_file) - 1);
-            break;
-
-        case 'C':
-            args->cold_launch = true;
             break;
 
         // No arguments case
@@ -449,7 +442,6 @@ int func_re_count = 0;
 static bool verbose = false;
 static bool list_libs = false;
 static bool resolve_syms = false;
-static bool cold_launch = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -556,7 +548,6 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
 struct bpf_link *probe_links[4096];
 struct ares_tracer_bpf *skel = NULL;
-static pid_t g_zygote_pid = -1;
 
 typedef struct {
     pid_t         pid;
@@ -963,16 +954,6 @@ static pid_t find_zygote_pid(void)
     }
     closedir(dir);
     return result;
-}
-
-static int seize_zygote(pid_t pid)
-{
-    if (ptrace(PTRACE_SEIZE, pid, NULL, (void *)(long)PTRACE_O_TRACEFORK) != 0) {
-        err_print("[zygote] > ptrace SEIZE failed: %s\n", strerror(errno));
-        return -1;
-    }
-    out_print("[zygote] > seized PID %d\n", pid);
-    return 0;
 }
 
 static bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path)
@@ -1385,7 +1366,6 @@ int main(int argc, char **argv)
     verbose = args.verbose;
     list_libs = args.list_libs;
     resolve_syms = args.resolve_syms;
-    cold_launch = args.cold_launch;
 
     if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
         return 1;
@@ -1562,17 +1542,60 @@ int main(int argc, char **argv)
     } else {
         char cmd[512], package_activity[256];
 
-        if (!cold_launch) {
-            // V1: seize zygote so we can scan the forked child's pre-loaded maps
-            g_zygote_pid = find_zygote_pid();
-            if (g_zygote_pid < 0) {
-                err_print("[zygote] > failed to find Zygote PID\n");
-                err = -1;
-                goto cleanup;
+        // V4: scan Zygote's pre-loaded libs without ptrace; child inherits
+        // BRK patches via CoW page table copy on fork
+        pid_t zygote_pid = find_zygote_pid();
+        if (zygote_pid < 0) {
+            err_print("[zygote] > failed to find Zygote PID\n");
+            err = -1;
+            goto cleanup;
+        }
+        out_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
+
+        if (!list_libs && mod_re_count > 0) {
+            int prev = probe_target_count;
+            int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
+            int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
+            out_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
+            if (resolved > 0) {
+                probe_target_count += resolved;
+                for (int i = prev; i < probe_target_count && !exiting; i++) {
+                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
+                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
+                    if (resolve_syms) {
+                        out_print("  [sym] > %s!%s @ 0x%lx\n",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                    } else {
+                        out_print("[uprobe] > %s!%s @ 0x%lx\n",
+                            bname, probe_targets[i].func_name, probe_targets[i].offset);
+                        probe_links[i] = bpf_program__attach_uprobe(
+                            skel->progs.uprobe_open, false, -1,
+                            probe_targets[i].mod_path, probe_targets[i].offset);
+                        if (!probe_links[i])
+                            err_print("[uprobe] > FAILED: %s!%s\n",
+                                bname, probe_targets[i].func_name);
+                    }
+                }
+                if (!resolve_syms)
+                    out_print("[zygote] > attached %d uprobes for pre-loaded libs\n",
+                              probe_target_count - prev);
             }
-            if (seize_zygote(g_zygote_pid) != 0) {
-                err = -1;
-                goto cleanup;
+        }
+
+        if (!list_libs && custom_probe_spec_count > 0) {
+            char cmaps[64];
+            snprintf(cmaps, sizeof(cmaps), "/proc/%d/maps", zygote_pid);
+            FILE *cf = fopen(cmaps, "r");
+            if (cf) {
+                char cline[512];
+                while (fgets(cline, sizeof(cline), cf)) {
+                    char cperms[5], cpath[256] = "";
+                    if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
+                    if (cpath[0] != '/') continue;
+                    if (!strchr(cperms, 'x')) continue;
+                    apply_custom_specs_for_file(zygote_pid, cpath, -1, 0, 0);
+                }
+                fclose(cf);
             }
         }
 
@@ -1604,8 +1627,7 @@ int main(int argc, char **argv)
             goto cleanup;
         }
 
-        out_print(" [spawn] > launching %s%s\n", args.package_name,
-                  cold_launch ? " (cold)" : "");
+        out_print(" [spawn] > launching %s\n", args.package_name);
         snprintf(cmd, sizeof(cmd), "am start -S -n %s", package_activity);
         if (sh_exec(cmd, NULL, 0) != 0) {
             err_print(" [spawn] > failed to start %s\n", args.package_name);
@@ -1614,127 +1636,7 @@ int main(int argc, char **argv)
         }
     }
 
-    // Zygote fork handling for pre-loaded libraries (V1 only, skipped in cold launch)
-    bool zygote_fork_done = cold_launch || (g_zygote_pid < 0);
-    pid_t pending_children[64];
-    int pending_children_count = 0;
-    bool preload_scan_done = false;
-
     while (!exiting) {
-        if (!zygote_fork_done) {
-            int wstatus;
-            pid_t wpid = waitpid(-1, &wstatus, WNOHANG | __WALL);
-
-            if (wpid > 0) {
-                int pending_idx = -1;
-                for (int j = 0; j < pending_children_count; j++) {
-                    if (pending_children[j] == wpid) { pending_idx = j; break; }
-                }
-
-                if (WIFEXITED(wstatus) || WIFSIGNALED(wstatus)) {
-                    if (pending_idx >= 0) {
-                        if (WIFEXITED(wstatus))
-                            err_print("[zygote] > child %d exited before scan (code %d)\n",
-                                wpid, WEXITSTATUS(wstatus));
-                        else
-                            err_print("[zygote] > child %d killed before scan (sig %d)\n",
-                                wpid, WTERMSIG(wstatus));
-                        pending_children[pending_idx] = pending_children[--pending_children_count];
-                    }
-
-                } else if (WIFSTOPPED(wstatus)) {
-                    int ptrace_event = wstatus >> 16;
-
-                    if (wpid == g_zygote_pid && ptrace_event == PTRACE_EVENT_FORK) {
-                        unsigned long child_pid_long = 0;
-                        ptrace(PTRACE_GETEVENTMSG, g_zygote_pid, NULL, &child_pid_long);
-                        pid_t new_child = (pid_t)child_pid_long;
-                        out_print("[zygote] > forked PID %d\n", new_child);
-                        if (!preload_scan_done && pending_children_count < 64)
-                            pending_children[pending_children_count++] = new_child;
-                        ptrace(PTRACE_CONT, g_zygote_pid, NULL, NULL);
-
-                    } else if (pending_idx >= 0) {
-                        if (!preload_scan_done) {
-                            uid_t child_uid = get_pid_uid(wpid);
-                            if (child_uid != (uid_t)uid) {
-                                if (verbose)
-                                    err_print("[zygote] > child %d is UID %d (not target %d), skipping\n",
-                                              wpid, child_uid, uid);
-                                ptrace(PTRACE_DETACH, wpid, NULL, NULL);
-                                pending_children[pending_idx] = pending_children[--pending_children_count];
-                                continue;
-                            }
-                            if (!list_libs && mod_re_count > 0) {
-                                if (verbose)
-                                    err_print("[zygote] > child %d stopped - scanning\n", wpid);
-                                out_print("[zygote] > resolving pre-loaded libs for PID %d...\n", wpid);
-                                int prev = probe_target_count;
-                                int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-                                int resolved = resolve_targets(wpid, probe_targets + prev, max);
-                                out_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
-                                if (resolved > 0) {
-                                    probe_target_count += resolved;
-                                    for (int i = prev; i < probe_target_count && !exiting; i++) {
-                                        const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                                        bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                                        if (resolve_syms) {
-                                            out_print("  [sym] > %s!%s @ 0x%lx\n",
-                                                bname, probe_targets[i].func_name, probe_targets[i].offset);
-                                        } else {
-                                            out_print("[uprobe] > %s!%s @ 0x%lx\n",
-                                                bname, probe_targets[i].func_name, probe_targets[i].offset);
-                                            probe_links[i] = bpf_program__attach_uprobe(
-                                                skel->progs.uprobe_open, false, -1,
-                                                probe_targets[i].mod_path, probe_targets[i].offset);
-                                            if (!probe_links[i])
-                                                err_print("[uprobe] > FAILED: %s!%s\n",
-                                                    bname, probe_targets[i].func_name);
-                                        }
-                                    }
-                                    if (!resolve_syms)
-                                        out_print("[zygote] > attached %d uprobes for pre-loaded libs\n", resolved);
-                                }
-                            }
-
-                            if (!list_libs && custom_probe_spec_count > 0) {
-                                char cmaps[64];
-                                snprintf(cmaps, sizeof(cmaps), "/proc/%d/maps", wpid);
-                                FILE *cf = fopen(cmaps, "r");
-                                if (cf) {
-                                    char cline[512];
-                                    while (fgets(cline, sizeof(cline), cf)) {
-                                        char cperms[5], cpath[256] = "";
-                                        if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
-                                        if (cpath[0] != '/') continue;
-                                        if (!strchr(cperms, 'x')) continue;
-                                        apply_custom_specs_for_file(wpid, cpath, -1, 0, 0);
-                                    }
-                                    fclose(cf);
-                                }
-                            }
-                            preload_scan_done = true;
-                        }
-
-                        if (verbose) err_print("[zygote]   | releasing child %d\n", wpid);
-                        pending_children[pending_idx] = pending_children[--pending_children_count];
-                        ptrace(PTRACE_DETACH, wpid, NULL, NULL);
-
-                        if (pending_children_count == 0) {
-                            if (ptrace(PTRACE_INTERRUPT, g_zygote_pid, NULL, NULL) == 0)
-                                waitpid(g_zygote_pid, NULL, __WALL);
-                            ptrace(PTRACE_DETACH, g_zygote_pid, NULL, NULL);
-                            g_zygote_pid = -1;
-                            zygote_fork_done = true;
-                        }
-
-                    } else {
-                        ptrace(PTRACE_CONT, wpid, NULL, NULL);
-                    }
-                }
-            }
-        }
-
         err = ring_buffer__poll(events_rb, 50);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
@@ -1743,11 +1645,6 @@ int main(int argc, char **argv)
 
     // Cleanup mechanism
     cleanup:
-        if (g_zygote_pid > 0) {
-            if (ptrace(PTRACE_INTERRUPT, g_zygote_pid, NULL, NULL) == 0)
-                waitpid(g_zygote_pid, NULL, __WALL);
-            ptrace(PTRACE_DETACH, g_zygote_pid, NULL, NULL);
-        }
         ring_buffer__free(events_rb);
 
         for (int i = 0; i < probe_target_count; i++) 

@@ -1500,16 +1500,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             }
         }
 
-        // Call stack (frame 1 = direct caller; frames 2+ suppressed by -c)
+        // Call stack (frame 1 = direct caller printed as "caller:", frames 2+ as "#N")
         __u32 stack_limit = caller_only ? 2 : e->stack_depth;
         for (__u32 i = 1; i < stack_limit; i++) {
             if (!e->call_stack[i]) break;
             char frame_mod[128] = "";
             unsigned long frame_off = 0;
-            if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
-            else
-                out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+            if (i == 1) {
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print(" [event]   | caller: %s+0x%lx\n", frame_mod, frame_off);
+                else
+                    out_print(" [event]   | caller: 0x%llx\n", (unsigned long long)e->call_stack[i]);
+            } else {
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print(" [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                else
+                    out_print(" [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+            }
         }
     }
 

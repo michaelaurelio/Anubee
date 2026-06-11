@@ -9,12 +9,14 @@
 #define ARES_VM_EXEC 0x00000004UL // Linux VMA flag for executable mappings
 
 
-// Identifier for different event types 
+// Identifier for different event types
 enum event_type {
     ARES_EVENT_CALL = 1,
     ARES_EVENT_MAP = 2,
-    ARES_EVENT_RETURN = 3, 
+    ARES_EVENT_RETURN = 3,
     ARES_EVENT_UNMAP = 4,
+    ARES_EVENT_SPAWN = 5,
+    ARES_EVENT_PROC_EXIT = 6,
 };
 
 
@@ -69,6 +71,27 @@ struct map_event {
 	__u64 inode;
 	__u32 dev;
 	char name[MAX_STR_LEN];               // mapped file basename
+};
+
+
+// Event for process fork (ARES_EVENT_SPAWN).
+// h.pid = parent TGID; child_pid = new process/thread TID.
+// Note: thread creation via clone() also fires this event.
+struct spawn_event {
+    struct event_header h;
+    __u32 child_pid;
+    char  comm[TASK_COMM_LEN];  // parent comm at fork time
+};
+
+
+// Event for process exit (ARES_EVENT_PROC_EXIT).
+// Only emitted for the main thread (pid == tid); thread exits are suppressed.
+// exit_code encoding: signal = exit_code & 0x7f (non-zero = killed);
+//                     status = (exit_code >> 8) & 0xff (for normal exit).
+struct proc_exit_event {
+    struct event_header h;
+    char comm[TASK_COMM_LEN];
+    int  exit_code;
 };
 
 

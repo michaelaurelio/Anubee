@@ -49,6 +49,7 @@ static const struct argp_option options[] = {
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
+    { "proc-events", 'x', NULL, 0, "Trace process spawn and exit events for the target UID" },
     { 0 }
 };
 
@@ -71,6 +72,7 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
+    bool proc_events;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -138,6 +140,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'c':
             args->caller_only = true;
+            break;
+
+        case 'x':
+            args->proc_events = true;
             break;
 
         // No arguments case
@@ -547,6 +553,7 @@ static bool verbose = false;
 static bool list_libs = false;
 static bool resolve_syms = false;
 static bool caller_only = false;
+static bool proc_events = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -661,6 +668,8 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
+static struct bpf_link *proc_fork_link = NULL;
+static struct bpf_link *proc_exit_link = NULL;
 struct ares_tracer_bpf *skel = NULL;
 
 typedef struct {
@@ -1458,6 +1467,30 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
 
+    if (header->type == ARES_EVENT_SPAWN) {
+        if (list_libs || resolve_syms) return 0;
+        const struct spawn_event *e = data;
+        if (data_sz < sizeof(*e)) return 0;
+        ts_print("[proc]  > [FORK]  PID:%d (%s) -> child PID:%d\n",
+            e->h.pid, e->comm, e->child_pid);
+        return 0;
+    }
+
+    if (header->type == ARES_EVENT_PROC_EXIT) {
+        if (list_libs || resolve_syms) return 0;
+        const struct proc_exit_event *e = data;
+        if (data_sz < sizeof(*e)) return 0;
+        int sig    = e->exit_code & 0x7f;
+        int status = (e->exit_code >> 8) & 0xff;
+        if (sig)
+            ts_print("[proc]  > [EXIT]  PID:%d (%s) killed by signal %d\n",
+                header->pid, e->comm, sig);
+        else
+            ts_print("[proc]  > [EXIT]  PID:%d (%s) exit status %d\n",
+                header->pid, e->comm, status);
+        return 0;
+    }
+
     if (header->type == ARES_EVENT_CALL) {
         if (list_libs || resolve_syms) return 0;
         const struct event *e = data;
@@ -1627,6 +1660,7 @@ int main(int argc, char **argv)
     list_libs = args.list_libs;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
+    proc_events = args.proc_events;
 
     if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
         return 1;
@@ -1716,10 +1750,28 @@ int main(int argc, char **argv)
     bpf_program__set_autoattach(skel->progs.uprobe_open, false);
     bpf_program__set_autoattach(skel->progs.uprobe_save_only, false);
     bpf_program__set_autoattach(skel->progs.uretprobe_open, false);
+    bpf_program__set_autoattach(skel->progs.on_proc_fork, false);
+    bpf_program__set_autoattach(skel->progs.on_proc_exit, false);
     err = ares_tracer_bpf__attach(skel);
     if (err) {
         err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
         goto cleanup;
+    }
+
+    if (proc_events) {
+        proc_fork_link = bpf_program__attach(skel->progs.on_proc_fork);
+        if (!proc_fork_link) {
+            err_print("   [bpf] > failed to attach sched_process_fork tracepoint\n");
+            err = -1;
+            goto cleanup;
+        }
+        proc_exit_link = bpf_program__attach(skel->progs.on_proc_exit);
+        if (!proc_exit_link) {
+            err_print("   [bpf] > failed to attach sched_process_exit tracepoint\n");
+            err = -1;
+            goto cleanup;
+        }
+        ts_print("[proc]  > process spawn/exit tracing enabled\n");
     }
     elf_version(EV_CURRENT);
 
@@ -1951,6 +2003,8 @@ int main(int argc, char **argv)
             if (probe_links[i])     bpf_link__destroy(probe_links[i]);
             if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
         }
+        if (proc_fork_link) bpf_link__destroy(proc_fork_link);
+        if (proc_exit_link) bpf_link__destroy(proc_exit_link);
         for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
         for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
         for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);

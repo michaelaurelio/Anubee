@@ -1937,7 +1937,7 @@ int main(int argc, char **argv)
     }
 
     while (!exiting) {
-        err = ring_buffer__poll(events_rb, 50);
+        err = ring_buffer__poll(events_rb, 1);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
     }

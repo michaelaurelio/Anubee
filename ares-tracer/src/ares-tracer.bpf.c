@@ -302,3 +302,4 @@ int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start
 
 #include "modules/proc_events.bpf.c"
 #include "modules/execve.bpf.c"
+#include "modules/prop_read.bpf.c"

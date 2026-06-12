@@ -34,6 +34,7 @@ extern char **environ;
 static const ares_module_t *const all_modules[] = {
     &module_proc_events,
     &module_execve,
+    &module_prop_read,
     NULL,
 };
 static const ares_module_t *active_modules[16];
@@ -158,7 +159,7 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
                     return 0;
                 }
             }
-            fprintf(stderr, "unknown module '%s'. Available: proc-events, execve\n", arg);
+            fprintf(stderr, "unknown module '%s'. Available: proc-events, execve, prop-read\n", arg);
             return ARGP_ERR_UNKNOWN;
         }
 

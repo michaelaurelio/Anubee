@@ -20,6 +20,7 @@ enum event_type {
     ARES_EVENT_SPAWN = 5,
     ARES_EVENT_PROC_EXIT = 6,
     ARES_EVENT_EXECVE = 7,
+    ARES_EVENT_PROP_READ = 8,
 };
 
 
@@ -111,6 +112,22 @@ struct execve_event {
     char  filename[MAX_STR_LEN];
     char  argv[MAX_ARGV_ENTRIES][MAX_ARGV_STR];
     __u64 call_stack[STACK_DEPTH];
+};
+
+
+// Event for system property reads (ARES_EVENT_PROP_READ).
+// Emitted at entry of __system_property_read_callback for each property the target
+// app inspects during a __system_property_foreach sweep.
+// name  = prop_info.name  (flexible array at byte offset 96 in the bionic prop_info struct)
+// value = prop_info.value (char[92] at byte offset 4)
+#define PROP_NAME_LEN  128
+#define PROP_VALUE_LEN  96
+
+struct prop_read_event {
+    struct event_header h;
+    char comm[TASK_COMM_LEN];
+    char name[PROP_NAME_LEN];
+    char value[PROP_VALUE_LEN];
 };
 
 

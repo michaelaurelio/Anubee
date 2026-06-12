@@ -45,6 +45,7 @@ aarch64-linux-gnu-gcc -g -Wall \
     ares-tracer.c \
     modules/proc_events.c \
     modules/execve.c \
+    modules/prop_read.c \
     "$LIBBPF_DIST/usr/lib64/libbpf.a" \
     -lelf -lz \
     -static \

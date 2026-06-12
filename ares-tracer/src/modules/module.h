@@ -19,5 +19,6 @@ typedef struct {
 
 extern ares_module_t module_proc_events;
 extern ares_module_t module_execve;
+extern ares_module_t module_prop_read;
 
 #endif /* __MODULE_H */

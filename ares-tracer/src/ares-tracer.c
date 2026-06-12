@@ -1510,6 +1510,26 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             return 0;
         }
 
+        if (target->arg_count >= 0) {
+            for (int i = 0; i < target->arg_count; i++) {
+                if (target->arg_types[i] == ARG_STR) {
+                    if (e->is_str[i])
+                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                    else
+                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
+                } else {
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                }
+            }
+        } else {
+            for (int i = 0; i < NUM_ARGS; i++) {
+                if (e->is_str[i])
+                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                else
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+            }
+        }
+
         if (e->caller_addr) {
             char caller_mod[128] = "";
             unsigned long caller_off = 0;
@@ -1528,26 +1548,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                     out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
                 else
                     out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
-            }
-        }
-
-        if (target->arg_count >= 0) {
-            for (int i = 0; i < target->arg_count; i++) {
-                if (target->arg_types[i] == ARG_STR) {
-                    if (e->is_str[i])
-                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
-                    else
-                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
-                } else {
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
-                }
-            }
-        } else {
-            for (int i = 0; i < NUM_ARGS; i++) {
-                if (e->is_str[i])
-                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
-                else
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
             }
         }
     }

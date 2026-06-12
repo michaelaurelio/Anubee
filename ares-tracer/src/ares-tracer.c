@@ -32,7 +32,7 @@ extern char **environ;
 #define ARG_NONE 2  // no return probe for this target
 
 static const ares_module_t *const all_modules[] = {
-    &module_proc_events,
+    &module_proc_event,
     &module_execve,
     &module_prop_read,
     NULL,
@@ -59,7 +59,7 @@ static const struct argp_option options[] = {
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
-    { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-events, execve" },
+    { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
     { 0 }
 };
 
@@ -159,7 +159,7 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
                     return 0;
                 }
             }
-            fprintf(stderr, "unknown module '%s'. Available: proc-events, execve, prop-read\n", arg);
+            fprintf(stderr, "unknown module '%s'. Available: proc-event, execve, prop-read\n", arg);
             return ARGP_ERR_UNKNOWN;
         }
 

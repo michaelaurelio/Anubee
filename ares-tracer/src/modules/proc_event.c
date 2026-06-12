@@ -58,8 +58,8 @@ static int pe_handle_event(const struct event_header *hdr, const void *data, siz
     return -1;
 }
 
-ares_module_t module_proc_events = {
-    .name         = "proc-events",
+ares_module_t module_proc_event = {
+    .name         = "proc-event",
     .description  = "Trace process fork and exit events",
     .pre_attach   = pe_pre_attach,
     .attach       = pe_attach,

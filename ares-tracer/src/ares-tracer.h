@@ -20,7 +20,10 @@ enum event_type {
     ARES_EVENT_SPAWN = 5,
     ARES_EVENT_PROC_EXIT = 6,
     ARES_EVENT_EXECVE = 7,
-    ARES_EVENT_PROP_READ = 8,
+    ARES_EVENT_PROP_READ = 8,  // __system_property_read_callback (per-property in foreach)
+    ARES_EVENT_PROP_GET  = 9,  // __system_property_get  (CALL is_ret=0, RET is_ret=1)
+    ARES_EVENT_PROP_FIND = 10, // __system_property_find (CALL is_ret=0, RET is_ret=1)
+    ARES_EVENT_PROP_SCAN = 11, // __system_property_foreach (entry only)
 };
 
 
@@ -115,19 +118,29 @@ struct execve_event {
 };
 
 
-// Event for system property reads (ARES_EVENT_PROP_READ).
-// Emitted at entry of __system_property_read_callback for each property the target
-// app inspects during a __system_property_foreach sweep.
-// name  = prop_info.name  (flexible array at byte offset 96 in the bionic prop_info struct)
-// value = prop_info.value (char[92] at byte offset 4)
+// Unified event struct for all system property API hooks (PROP_READ, PROP_GET, PROP_FIND, PROP_SCAN).
+//
+// prop_info layout (Android 8+, bionic, stable across API 26-35):
+//   offset  0: atomic_uint_least32_t serial   (4 bytes)
+//   offset  4: char value[92]                 (PROP_VALUE_MAX)
+//   offset 96: char name[0]                   (flexible array)
+//
+// is_ret / found usage by type:
+//   PROP_READ  — is_ret=0, found=0  (entry of read_callback; name+value always present)
+//   PROP_GET   — is_ret=0: CALL, name only; is_ret=1: RET, name+value (value="" if empty)
+//   PROP_FIND  — is_ret=0: CALL, name only; is_ret=1: RET, found=1→name+value, found=0→name only
+//   PROP_SCAN  — is_ret=0, found=0  (entry of foreach; name/value empty)
 #define PROP_NAME_LEN  128
 #define PROP_VALUE_LEN  96
 
-struct prop_read_event {
+struct prop_event {
     struct event_header h;
-    char comm[TASK_COMM_LEN];
-    char name[PROP_NAME_LEN];
-    char value[PROP_VALUE_LEN];
+    char  comm[TASK_COMM_LEN];
+    char  name[PROP_NAME_LEN];
+    char  value[PROP_VALUE_LEN];
+    __u8  is_ret;    // 0 = call/entry, 1 = return
+    __u8  found;     // PROP_FIND RET: 1 = property exists, 0 = not found
+    __u8  _pad[2];
 };
 
 

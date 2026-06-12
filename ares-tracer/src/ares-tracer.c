@@ -668,8 +668,10 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
-static struct bpf_link *proc_fork_link = NULL;
-static struct bpf_link *proc_exit_link = NULL;
+static struct bpf_link *proc_fork_link   = NULL;
+static struct bpf_link *proc_exit_link   = NULL;
+static struct bpf_link *proc_execve_link = NULL; // sys_enter_execve (full argv)
+static struct bpf_link *proc_exec_link   = NULL; // sched_process_exec (filename fallback)
 struct ares_tracer_bpf *skel = NULL;
 
 typedef struct {
@@ -1491,6 +1493,54 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
 
+    if (header->type == ARES_EVENT_EXECVE) {
+        if (list_libs || resolve_syms) return 0;
+        const struct execve_event *e = data;
+        if (data_sz < sizeof(*e)) return 0;
+
+        // Build argv string: ["arg0", "arg1", ...]
+        char argv_buf[MAX_ARGV_ENTRIES * (MAX_ARGV_STR + 4) + 4];
+        int off = 0;
+        off += snprintf(argv_buf + off, sizeof(argv_buf) - off, "[");
+        for (__u32 j = 0; j < e->argc && j < MAX_ARGV_ENTRIES; j++) {
+            if (j) off += snprintf(argv_buf + off, sizeof(argv_buf) - off, ", ");
+            off += snprintf(argv_buf + off, sizeof(argv_buf) - off, "\"%s\"", e->argv[j]);
+        }
+        snprintf(argv_buf + off, sizeof(argv_buf) - off, "]");
+
+        ts_print("[proc]  > [EXEC]  PID:%d (%s) %s%s%s\n",
+            e->h.pid, e->comm, e->filename,
+            e->argc ? " " : "",
+            e->argc ? argv_buf : "");
+
+        if (e->stack_depth > 0) {
+            char caller_mod[128] = "";
+            unsigned long caller_off = 0;
+            __u32 start = (e->stack_depth > 0) ? 1 : 0;
+            if (start < e->stack_depth && e->call_stack[start]) {
+                if (lookup_caller(header->pid, e->call_stack[start],
+                                  caller_mod, sizeof(caller_mod), &caller_off) == 0)
+                    out_print("         [event]   | caller: %s+0x%lx\n",
+                              caller_mod, caller_off);
+            }
+            if (!caller_only) {
+                for (__u32 i = start + 1; i < e->stack_depth; i++) {
+                    if (!e->call_stack[i]) break;
+                    char frame_mod[128] = "";
+                    unsigned long frame_off = 0;
+                    if (lookup_caller(header->pid, e->call_stack[i],
+                                      frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                        out_print("         [event]   | #%u %s+0x%lx\n",
+                                  i, frame_mod, frame_off);
+                    else
+                        out_print("         [event]   | #%u 0x%llx\n",
+                                  i, (unsigned long long)e->call_stack[i]);
+                }
+            }
+        }
+        return 0;
+    }
+
     if (header->type == ARES_EVENT_CALL) {
         if (list_libs || resolve_syms) return 0;
         const struct event *e = data;
@@ -1752,6 +1802,8 @@ int main(int argc, char **argv)
     bpf_program__set_autoattach(skel->progs.uretprobe_open, false);
     bpf_program__set_autoattach(skel->progs.on_proc_fork, false);
     bpf_program__set_autoattach(skel->progs.on_proc_exit, false);
+    bpf_program__set_autoattach(skel->progs.on_execve, false);
+    bpf_program__set_autoattach(skel->progs.on_proc_exec, false);
     err = ares_tracer_bpf__attach(skel);
     if (err) {
         err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
@@ -1771,7 +1823,14 @@ int main(int argc, char **argv)
             err = -1;
             goto cleanup;
         }
-        ts_print("[proc]  > process spawn/exit tracing enabled\n");
+        proc_execve_link = bpf_program__attach(skel->progs.on_execve);
+        if (!proc_execve_link) {
+            err_print("   [bpf] > kprobe/__arm64_sys_execve unavailable, falling back to sched_process_exec (filename only)\n");
+            proc_exec_link = bpf_program__attach(skel->progs.on_proc_exec);
+            if (!proc_exec_link)
+                err_print("   [bpf] > sched_process_exec also unavailable; execve tracing disabled\n");
+        }
+        ts_print("[proc]  > process spawn/exit/execve tracing enabled\n");
     }
     elf_version(EV_CURRENT);
 
@@ -2003,8 +2062,10 @@ int main(int argc, char **argv)
             if (probe_links[i])     bpf_link__destroy(probe_links[i]);
             if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
         }
-        if (proc_fork_link) bpf_link__destroy(proc_fork_link);
-        if (proc_exit_link) bpf_link__destroy(proc_exit_link);
+        if (proc_fork_link)   bpf_link__destroy(proc_fork_link);
+        if (proc_exit_link)   bpf_link__destroy(proc_exit_link);
+        if (proc_execve_link) bpf_link__destroy(proc_execve_link);
+        if (proc_exec_link)   bpf_link__destroy(proc_exec_link);
         for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
         for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
         for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);

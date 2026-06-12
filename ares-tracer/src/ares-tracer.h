@@ -1,10 +1,12 @@
 #ifndef __ARES_TRACER_H
 #define __ARES_TRACER_H
 
-#define TASK_COMM_LEN 32
-#define MAX_STR_LEN 128
-#define NUM_ARGS    8
-#define STACK_DEPTH 16
+#define TASK_COMM_LEN    32
+#define MAX_STR_LEN      128
+#define NUM_ARGS         8
+#define STACK_DEPTH      16
+#define MAX_ARGV_ENTRIES 8
+#define MAX_ARGV_STR     64
 
 #define ARES_VM_EXEC 0x00000004UL // Linux VMA flag for executable mappings
 
@@ -17,6 +19,7 @@ enum event_type {
     ARES_EVENT_UNMAP = 4,
     ARES_EVENT_SPAWN = 5,
     ARES_EVENT_PROC_EXIT = 6,
+    ARES_EVENT_EXECVE = 7,
 };
 
 
@@ -92,6 +95,21 @@ struct proc_exit_event {
     struct event_header h;
     char comm[TASK_COMM_LEN];
     int  exit_code;
+};
+
+
+// Event for execve syscall (ARES_EVENT_EXECVE).
+// Emitted at sys_enter_execve; comm is the calling thread name before exec replaces it.
+// argv[] entries beyond argc are zero-initialised.
+// call_stack[0..stack_depth) is the user-space stack at execve entry.
+struct execve_event {
+    struct event_header h;
+    __u32 argc;
+    __u32 stack_depth;
+    char  comm[TASK_COMM_LEN];
+    char  filename[MAX_STR_LEN];
+    char  argv[MAX_ARGV_ENTRIES][MAX_ARGV_STR];
+    __u64 call_stack[STACK_DEPTH];
 };
 
 

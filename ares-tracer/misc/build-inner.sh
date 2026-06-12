@@ -43,6 +43,8 @@ aarch64-linux-gnu-gcc -g -Wall \
     -I"$LIBBPF_DIST/usr/include" \
     -I"$LIBBPF_UAPI" \
     ares-tracer.c \
+    modules/proc_events.c \
+    modules/execve.c \
     "$LIBBPF_DIST/usr/lib64/libbpf.a" \
     -lelf -lz \
     -static \

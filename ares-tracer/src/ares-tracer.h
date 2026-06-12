@@ -73,6 +73,7 @@ struct map_event {
 	__u64 vm_flags;
 	__u64 inode;
 	__u32 dev;
+	int   ppid;
 	char name[MAX_STR_LEN];               // mapped file basename
 };
 

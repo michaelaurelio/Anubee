@@ -23,12 +23,21 @@
 
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
+#include "modules/module.h"
 
 extern char **environ;
 
 #define ARG_STR  0
 #define ARG_VAL  1
 #define ARG_NONE 2  // no return probe for this target
+
+static const ares_module_t *const all_modules[] = {
+    &module_proc_events,
+    &module_execve,
+    NULL,
+};
+static const ares_module_t *active_modules[16];
+static int active_module_count = 0;
 
 // Argument parser module using argp.h
 const char *argp_program_version = "ares-tracer 1.0";
@@ -49,7 +58,7 @@ static const struct argp_option options[] = {
     { "output", 'o', "FILE", 0, "Export all output to CSV file" },
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
-    { "proc-events", 'x', NULL, 0, "Trace process spawn and exit events for the target UID" },
+    { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-events, execve" },
     { 0 }
 };
 
@@ -72,7 +81,6 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
-    bool proc_events;
 };
 
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
@@ -142,9 +150,17 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             args->caller_only = true;
             break;
 
-        case 'x':
-            args->proc_events = true;
-            break;
+        case 'm': {
+            for (int i = 0; all_modules[i]; i++) {
+                if (strcmp(arg, all_modules[i]->name) == 0) {
+                    if (active_module_count < 16)
+                        active_modules[active_module_count++] = all_modules[i];
+                    return 0;
+                }
+            }
+            fprintf(stderr, "unknown module '%s'. Available: proc-events, execve\n", arg);
+            return ARGP_ERR_UNKNOWN;
+        }
 
         // No arguments case
         case ARGP_KEY_END:
@@ -317,8 +333,8 @@ static void csv_write(const char *stream, const char *buf)
     fflush(g_csv);
 }
 
-static void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void out_print(const char *fmt, ...)
+void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void out_print(const char *fmt, ...)
 {
     va_list ap1, ap2;
     va_start(ap1, fmt);
@@ -333,8 +349,8 @@ static void out_print(const char *fmt, ...)
     va_end(ap2);
 }
 
-static void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void err_print(const char *fmt, ...)
+void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void err_print(const char *fmt, ...)
 {
     va_list ap1, ap2;
     va_start(ap1, fmt);
@@ -368,8 +384,8 @@ static void csv_close(void)
 }
 
 // Top-level event line: prepends "HH:MM:SS  " to stdout; CSV receives message only.
-static void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void ts_print(const char *fmt, ...)
+void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void ts_print(const char *fmt, ...)
 {
     time_t t; time(&t);
     char ts_buf[16];
@@ -549,11 +565,10 @@ int mod_re_count = 0;
 int func_re_count = 0;
 regex_t func_ret_re[32];
 int func_ret_re_count = 0;
-static bool verbose = false;
-static bool list_libs = false;
-static bool resolve_syms = false;
-static bool caller_only = false;
-static bool proc_events = false;
+bool verbose = false;
+bool list_libs = false;
+bool resolve_syms = false;
+bool caller_only = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -668,10 +683,6 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
-static struct bpf_link *proc_fork_link   = NULL;
-static struct bpf_link *proc_exit_link   = NULL;
-static struct bpf_link *proc_execve_link = NULL; // sys_enter_execve (full argv)
-static struct bpf_link *proc_exec_link   = NULL; // sched_process_exec (filename fallback)
 struct ares_tracer_bpf *skel = NULL;
 
 typedef struct {
@@ -948,7 +959,7 @@ static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t m
     return found;
 }
 
-static int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned long *offset_out)
+int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned long *offset_out)
 {
     for (int i = 0; i < caller_cache_count; i++) {
         if (caller_cache[i].pid == pid && caller_cache[i].addr == addr) {
@@ -1348,11 +1359,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                     char so_name[128];
                     unsigned long so_off;
                     if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
-                        ts_print("[map] > %s -> %s\n", path, so_name);
+                        ts_print("[map] > PID:%d PPID:%d %s -> %s\n", header->pid, e->ppid, path, so_name);
                     else
-                        ts_print("[map] > %s\n", path);
+                        ts_print("[map] > PID:%d PPID:%d %s\n", header->pid, e->ppid, path);
                 } else {
-                    ts_print("[map] > %s\n", path);
+                    ts_print("[map] > PID:%d PPID:%d %s\n", header->pid, e->ppid, path);
                 }
             }
             return 0;
@@ -1464,79 +1475,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         }
 
         if (removed > 0 && !resolve_syms)
-            ts_print("[unmap] > %s (%d probes removed)\n", e->name, removed);
+            ts_print("[unmap] > PID:%d PPID:%d %s (%d probes removed)\n", header->pid, e->ppid, e->name, removed);
 
         return 0;
     }
 
-    if (header->type == ARES_EVENT_SPAWN) {
-        if (list_libs || resolve_syms) return 0;
-        const struct spawn_event *e = data;
-        if (data_sz < sizeof(*e)) return 0;
-        ts_print("[proc]  > [FORK]  PID:%d (%s) -> child PID:%d\n",
-            e->h.pid, e->comm, e->child_pid);
-        return 0;
-    }
-
-    if (header->type == ARES_EVENT_PROC_EXIT) {
-        if (list_libs || resolve_syms) return 0;
-        const struct proc_exit_event *e = data;
-        if (data_sz < sizeof(*e)) return 0;
-        int sig    = e->exit_code & 0x7f;
-        int status = (e->exit_code >> 8) & 0xff;
-        if (sig)
-            ts_print("[proc]  > [EXIT]  PID:%d (%s) killed by signal %d\n",
-                header->pid, e->comm, sig);
-        else
-            ts_print("[proc]  > [EXIT]  PID:%d (%s) exit status %d\n",
-                header->pid, e->comm, status);
-        return 0;
-    }
-
-    if (header->type == ARES_EVENT_EXECVE) {
-        if (list_libs || resolve_syms) return 0;
-        const struct execve_event *e = data;
-        if (data_sz < sizeof(*e)) return 0;
-
-        // Build argv string: ["arg0", "arg1", ...]
-        char argv_buf[MAX_ARGV_ENTRIES * (MAX_ARGV_STR + 4) + 4];
-        int off = 0;
-        off += snprintf(argv_buf + off, sizeof(argv_buf) - off, "[");
-        for (__u32 j = 0; j < e->argc && j < MAX_ARGV_ENTRIES; j++) {
-            if (j) off += snprintf(argv_buf + off, sizeof(argv_buf) - off, ", ");
-            off += snprintf(argv_buf + off, sizeof(argv_buf) - off, "\"%s\"", e->argv[j]);
-        }
-        snprintf(argv_buf + off, sizeof(argv_buf) - off, "]");
-
-        ts_print("[proc]  > [EXEC]  PID:%d (%s) %s%s%s\n",
-            e->h.pid, e->comm, e->filename,
-            e->argc ? " " : "",
-            e->argc ? argv_buf : "");
-
-        if (e->stack_depth > 0) {
-            char caller_mod[128] = "";
-            unsigned long caller_off = 0;
-            __u32 start = (e->stack_depth > 0) ? 1 : 0;
-            if (start < e->stack_depth && e->call_stack[start]) {
-                if (lookup_caller(header->pid, e->call_stack[start],
-                                  caller_mod, sizeof(caller_mod), &caller_off) == 0)
-                    out_print("         [event]   | caller: %s+0x%lx\n",
-                              caller_mod, caller_off);
-            }
-            if (!caller_only) {
-                for (__u32 i = start + 1; i < e->stack_depth; i++) {
-                    if (!e->call_stack[i]) break;
-                    char frame_mod[128] = "";
-                    unsigned long frame_off = 0;
-                    if (lookup_caller(header->pid, e->call_stack[i],
-                                      frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                        out_print("         [event]   | #%u %s+0x%lx\n",
-                                  i, frame_mod, frame_off);
-                    else
-                        out_print("         [event]   | #%u 0x%llx\n",
-                                  i, (unsigned long long)e->call_stack[i]);
-                }
-            }
+    // Route module event types (>= ARES_EVENT_SPAWN) to active modules
+    if (header->type >= ARES_EVENT_SPAWN) {
+        for (int i = 0; i < active_module_count; i++) {
+            if (!active_modules[i]->handle_event) continue;
+            if (active_modules[i]->handle_event(header, data, data_sz) == 0)
+                return 0;
         }
         return 0;
     }
@@ -1710,7 +1659,6 @@ int main(int argc, char **argv)
     list_libs = args.list_libs;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
-    proc_events = args.proc_events;
 
     if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
         return 1;
@@ -1800,37 +1748,21 @@ int main(int argc, char **argv)
     bpf_program__set_autoattach(skel->progs.uprobe_open, false);
     bpf_program__set_autoattach(skel->progs.uprobe_save_only, false);
     bpf_program__set_autoattach(skel->progs.uretprobe_open, false);
-    bpf_program__set_autoattach(skel->progs.on_proc_fork, false);
-    bpf_program__set_autoattach(skel->progs.on_proc_exit, false);
-    bpf_program__set_autoattach(skel->progs.on_execve, false);
-    bpf_program__set_autoattach(skel->progs.on_proc_exec, false);
+    for (int i = 0; all_modules[i]; i++)
+        if (all_modules[i]->pre_attach)
+            all_modules[i]->pre_attach(skel);
+
     err = ares_tracer_bpf__attach(skel);
     if (err) {
         err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
         goto cleanup;
     }
 
-    if (proc_events) {
-        proc_fork_link = bpf_program__attach(skel->progs.on_proc_fork);
-        if (!proc_fork_link) {
-            err_print("   [bpf] > failed to attach sched_process_fork tracepoint\n");
-            err = -1;
-            goto cleanup;
+    for (int i = 0; i < active_module_count; i++) {
+        if (active_modules[i]->attach) {
+            int r = active_modules[i]->attach(skel);
+            if (r == -1) { err = -1; goto cleanup; }
         }
-        proc_exit_link = bpf_program__attach(skel->progs.on_proc_exit);
-        if (!proc_exit_link) {
-            err_print("   [bpf] > failed to attach sched_process_exit tracepoint\n");
-            err = -1;
-            goto cleanup;
-        }
-        proc_execve_link = bpf_program__attach(skel->progs.on_execve);
-        if (!proc_execve_link) {
-            err_print("   [bpf] > kprobe/__arm64_sys_execve unavailable, falling back to sched_process_exec (filename only)\n");
-            proc_exec_link = bpf_program__attach(skel->progs.on_proc_exec);
-            if (!proc_exec_link)
-                err_print("   [bpf] > sched_process_exec also unavailable; execve tracing disabled\n");
-        }
-        ts_print("[proc]  > process spawn/exit/execve tracing enabled\n");
     }
     elf_version(EV_CURRENT);
 
@@ -2062,10 +1994,9 @@ int main(int argc, char **argv)
             if (probe_links[i])     bpf_link__destroy(probe_links[i]);
             if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
         }
-        if (proc_fork_link)   bpf_link__destroy(proc_fork_link);
-        if (proc_exit_link)   bpf_link__destroy(proc_exit_link);
-        if (proc_execve_link) bpf_link__destroy(proc_execve_link);
-        if (proc_exec_link)   bpf_link__destroy(proc_exec_link);
+        for (int i = 0; i < active_module_count; i++)
+            if (active_modules[i]->detach)
+                active_modules[i]->detach();
         for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
         for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
         for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);

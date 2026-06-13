@@ -740,7 +740,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
                     targets[count].arg_count = -1;
                     memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                     targets[count].ret_only = !entry_match && ret_match;
-                    targets[count].ret_type = targets[count].ret_only ? ARG_VAL : ARG_NONE;
+                    targets[count].ret_type = ret_match ? ARG_VAL : ARG_NONE;
                     count++;
                 }
             }
@@ -1137,7 +1137,7 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
                 targets[count].arg_count = -1;
                 memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                 targets[count].ret_only = !entry_match && ret_match;
-                targets[count].ret_type = targets[count].ret_only ? ARG_VAL : ARG_NONE;
+                targets[count].ret_type = ret_match ? ARG_VAL : ARG_NONE;
                 count++;
             }
         }

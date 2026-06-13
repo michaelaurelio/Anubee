@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 SEC("tp/sched/sched_process_fork")
 int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 {

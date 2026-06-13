@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 // Full execve tracing via kprobe on __arm64_sys_execve.
 // __arm64_sys_execve(const struct pt_regs *regs): userspace syscall args in regs->regs[0..2].
 // Falls back to on_proc_exec (sched_process_exec) when this kprobe fails to attach.

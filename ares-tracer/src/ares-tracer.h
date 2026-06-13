@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef __ARES_TRACER_H
 #define __ARES_TRACER_H
 

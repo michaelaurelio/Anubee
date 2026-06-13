@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 // prop_read.bpf.c — BPF programs for all Android system property APIs.
 //
 // Hooks:

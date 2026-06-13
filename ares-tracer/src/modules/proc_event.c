@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <bpf/libbpf.h>
 #include "module.h"
 #include "ares-tracer-priv.h"

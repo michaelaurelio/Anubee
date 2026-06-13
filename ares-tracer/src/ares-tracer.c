@@ -56,7 +56,7 @@ static const struct argp_option options[] = {
     { "resolve-syms", 'S', NULL, 0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment" },
     { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
     { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
-    { "output", 'o', "FILE", 0, "Export all output to CSV file" },
+    { "output", 'o', "FILE", 0, "Export output to file (.csv -> CSV, .jsonl/.ndjson -> JSONL)" },
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
     { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
@@ -298,6 +298,8 @@ static void sig_handler(int sig)
 
 // CSV output and print wrappers
 static FILE *g_csv = NULL;
+static FILE *g_jsonl = NULL;
+static void jsonl_write(const char *stream, const char *buf);
 
 static void csv_write(const char *stream, const char *buf)
 {
@@ -342,10 +344,11 @@ void out_print(const char *fmt, ...)
     va_copy(ap2, ap1);
     vprintf(fmt, ap1);
     va_end(ap1);
-    if (g_csv) {
+    if (g_csv || g_jsonl) {
         char buf[4096];
         vsnprintf(buf, sizeof(buf), fmt, ap2);
-        csv_write("out", buf);
+        if (g_csv)   csv_write("out", buf);
+        if (g_jsonl) jsonl_write("out", buf);
     }
     va_end(ap2);
 }
@@ -359,10 +362,11 @@ void err_print(const char *fmt, ...)
     FILE *se = stderr;
     vfprintf(se, fmt, ap1);
     va_end(ap1);
-    if (g_csv) {
+    if (g_csv || g_jsonl) {
         char buf[4096];
         vsnprintf(buf, sizeof(buf), fmt, ap2);
-        csv_write("err", buf);
+        if (g_csv)   csv_write("err", buf);
+        if (g_jsonl) jsonl_write("err", buf);
     }
     va_end(ap2);
 }
@@ -384,6 +388,74 @@ static void csv_close(void)
     if (g_csv) { fclose(g_csv); g_csv = NULL; }
 }
 
+static void json_fwrite_str(FILE *f, const char *s)
+{
+    fputc('"', f);
+    for (; *s; s++) {
+        switch (*s) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\n': fputs("\\n",  f); break;
+            case '\r': fputs("\\r",  f); break;
+            case '\t': fputs("\\t",  f); break;
+            default:
+                if ((unsigned char)*s < 0x20)
+                    fprintf(f, "\\u%04x", (unsigned char)*s);
+                else
+                    fputc(*s, f);
+        }
+    }
+    fputc('"', f);
+}
+
+static void jsonl_write(const char *stream, const char *buf)
+{
+    char msg[4096];
+    strncpy(msg, buf, sizeof(msg) - 1);
+    msg[sizeof(msg) - 1] = '\0';
+    size_t len = strlen(msg);
+    while (len > 0 && (msg[len-1] == '\n' || msg[len-1] == '\r'))
+        msg[--len] = '\0';
+    if (len == 0) return;
+
+    char tag[32] = "";
+    const char *p = msg;
+    while (*p == ' ') p++;
+    if (*p == '[') {
+        const char *end = strchr(p + 1, ']');
+        if (end) {
+            size_t tlen = (size_t)(end - p - 1);
+            if (tlen < sizeof(tag)) { memcpy(tag, p + 1, tlen); tag[tlen] = '\0'; }
+        }
+    }
+
+    time_t t; time(&t);
+    struct tm *tmi = localtime(&t);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", tmi);
+
+    fprintf(g_jsonl, "{\"ts\":\"%s\",\"stream\":\"%s\",\"tag\":\"%s\",\"message\":",
+            ts, stream, tag);
+    json_fwrite_str(g_jsonl, msg);
+    fputs("}\n", g_jsonl);
+    fflush(g_jsonl);
+}
+
+static int jsonl_open(const char *path)
+{
+    g_jsonl = fopen(path, "w");
+    if (!g_jsonl) {
+        err_print("   [err] > cannot open JSONL output '%s': %s\n", path, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static void jsonl_close(void)
+{
+    if (g_jsonl) { fclose(g_jsonl); g_jsonl = NULL; }
+}
+
 // Top-level event line, prepends "HH:MM:SS  " to stdout; CSV receives message only.
 void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ts_print(const char *fmt, ...)
@@ -397,10 +469,11 @@ void ts_print(const char *fmt, ...)
     va_copy(ap2, ap1);
     vprintf(fmt, ap1);
     va_end(ap1);
-    if (g_csv) {
+    if (g_csv || g_jsonl) {
         char buf[4096];
         vsnprintf(buf, sizeof(buf), fmt, ap2);
-        csv_write("out", buf);
+        if (g_csv)   csv_write("out", buf);
+        if (g_jsonl) jsonl_write("out", buf);
     }
     va_end(ap2);
 }
@@ -1661,8 +1734,13 @@ int main(int argc, char **argv)
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
 
-    if (args.output_file[0] != '\0' && csv_open(args.output_file) != 0) {
-        return 1;
+    if (args.output_file[0] != '\0') {
+        const char *ext = strrchr(args.output_file, '.');
+        const char *slash = strrchr(args.output_file, '/');
+        bool is_jsonl = ext && (!slash || ext > slash) &&
+                        (strcmp(ext, ".jsonl") == 0 || strcmp(ext, ".ndjson") == 0);
+        if ((is_jsonl ? jsonl_open(args.output_file) : csv_open(args.output_file)) != 0)
+            return 1;
     }
 
     if (verbose) err_print("  [verb] > mode ON\n");
@@ -1777,7 +1855,7 @@ int main(int argc, char **argv)
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
     if (args.pid_count > 0) {
-        if (!list_libs && mod_re_count > 0) {
+        if (!list_libs && (mod_re_count > 0 || func_re_count > 0)) {
             for (int i = 0; i < args.pid_count; i++) {
                 ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
@@ -1810,7 +1888,7 @@ int main(int argc, char **argv)
             ts_print("[probe] > PID %d UID %d\n", args.pids[i], pid_uid);
         }
 
-        if (!list_libs && mod_re_count > 0) {
+        if (!list_libs && (mod_re_count > 0 || func_re_count > 0)) {
             for (int i = 0; i < probe_target_count && !exiting; i++) {
                 const char *bname = strrchr(probe_targets[i].mod_path, '/');
                 bname = bname ? bname + 1 : probe_targets[i].mod_path;
@@ -1882,7 +1960,7 @@ int main(int argc, char **argv)
         }
         ts_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
 
-        if (!list_libs && (mod_re_count > 0 || func_ret_re_count > 0)) {
+        if (!list_libs && (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0)) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
             int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
@@ -2004,6 +2082,7 @@ int main(int argc, char **argv)
 
         ares_tracer_bpf__destroy(skel);
         csv_close();
+        jsonl_close();
 
         return err < 0 ? -err : 0;
 }

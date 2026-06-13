@@ -54,3 +54,11 @@ aarch64-linux-gnu-gcc -g -Wall \
 echo ""
 echo "Done. Binary: $SRC_DIR/ares-tracer-aarch64"
 echo "  $(ls -lh "$SRC_DIR/ares-tracer-aarch64")"
+
+echo ""
+echo "[4/4] Building prelude-check diagnostic tool..."
+aarch64-linux-gnu-gcc -g -Wall -O1 -fno-inline \
+    /workspace/tools/prelude-check.c \
+    -static-pie \
+    -o /workspace/bin/prelude-check-aarch64
+echo "  $(ls -lh /workspace/bin/prelude-check-aarch64)"

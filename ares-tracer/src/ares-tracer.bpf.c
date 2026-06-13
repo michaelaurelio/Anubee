@@ -32,7 +32,7 @@ struct {
 } entry_map SEC(".maps");
 
 
-// Determine if a value is a user-space pointer (heuristic) -> CHANGE LATER
+// Determine if a value is a user-space pointer (heuristic)
 static __always_inline bool is_user_ptr(unsigned long val)
 {
     unsigned long untagged = val & 0x00FFFFFFFFFFFFFFUL;
@@ -62,8 +62,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 
     long raw[NUM_ARGS] = {a1, a2, a3, a4, a5, a6, a7, a8};
 
-    // Save entry context before ringbuf reserve so uretprobe always has it,
-    // even when the ring buffer is full and the CALL event gets dropped.
+    // Save entry context before ringbuf reserve so uretprobe always has it
     struct entry_ctx ectx = {};
     ectx.entry_addr = (__u64)PT_REGS_IP(ctx);
     ectx.timestamp  = bpf_ktime_get_ns();
@@ -109,8 +108,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 }
 
 
-// Silent entry saver for -r (return-only) probes: records entry context without emitting
-// a CALL event. uretprobe_open reads this map for both paired and return-only probes.
+// Silent entry saver for -r (return-only) probes -> records entry context without emitting CALL event
 SEC("uprobe")
 int BPF_KPROBE(uprobe_save_only, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8)
 {
@@ -133,12 +131,6 @@ int BPF_KPROBE(uprobe_save_only, long a1, long a2, long a3, long a4, long a5, lo
 
 
 // Return handler for both paired probes (spec with '>') and return-only probes (-r flag).
-// Layout of emitted event (ARES_EVENT_RETURN):
-//   retval        = PT_REGS_RC
-//   is_str[0]     = 1 if retval read as string into strings[0]
-//   args[i+1]     = saved entry arg[i] for output buffer re-read, i=0..6
-//   is_str[i+1]   = 1 if re-read of entry arg[i] produced a string into strings[i+1]
-//   elapsed_ns    = ktime delta from entry to return
 SEC("uretprobe")
 int BPF_KRETPROBE(uretprobe_open)
 {

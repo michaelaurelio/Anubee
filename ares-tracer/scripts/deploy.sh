@@ -24,5 +24,12 @@ if [ -d "$SPECS_DIR" ] && [ -n "$(ls -A "$SPECS_DIR")" ]; then
     adb push "$SPECS_DIR"/. "$DEVICE_SPECS_PATH"
 fi
 
+PRELUDE_CHECK="$ARES_DIR/bin/prelude-check-aarch64"
+if [ -f "$PRELUDE_CHECK" ]; then
+    echo "=== Pushing prelude-check to device ==="
+    adb push "$PRELUDE_CHECK" /data/local/tmp/prelude-check
+    adb shell chmod +x /data/local/tmp/prelude-check
+fi
+
 echo "Done. Run with: adb shell 'su -c $DEVICE_PATH'"
 echo "Specs at: $DEVICE_SPECS_PATH"

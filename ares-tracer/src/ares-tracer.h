@@ -37,20 +37,6 @@ struct event_header {
 
 
 // Event for native function calls (ARES_EVENT_CALL) and returns (ARES_EVENT_RETURN).
-//
-// RETURN layout differs from CALL:
-//   retval        = PT_REGS_RC (raw return value)
-//   elapsed_ns    = ns from entry to return (0 in CALL events)
-//   is_str[0]     = 1 if retval is a valid string pointer and was read into strings[0]
-//   strings[0]    = retval read as string (if is_str[0])
-//   args[i+1]     = saved entry arg[i] pointer (for output buffer re-read), i=0..6
-//   is_str[i+1]   = 1 if re-read of entry arg[i] produced a string
-//   strings[i+1]  = re-read string content of entry arg[i]
-//
-// TID-keyed entry_map limitation: nested calls to two different tracked functions on the
-// same thread will corrupt correlation — the inner entry overwrites the outer's saved data.
-// Acceptable for RASP analysis (functions don't nest this way in practice). Future fix:
-// key by (TID, lower-N-bits-of-entry_addr) or use a per-TID call stack in the map.
 struct event {
     struct event_header h;
     __u64 entry_addr;
@@ -83,8 +69,6 @@ struct map_event {
 
 
 // Event for process fork (ARES_EVENT_SPAWN).
-// h.pid = parent TGID; child_pid = new process/thread TID.
-// Note: thread creation via clone() also fires this event.
 struct spawn_event {
     struct event_header h;
     __u32 child_pid;
@@ -93,9 +77,6 @@ struct spawn_event {
 
 
 // Event for process exit (ARES_EVENT_PROC_EXIT).
-// Only emitted for the main thread (pid == tid); thread exits are suppressed.
-// exit_code encoding: signal = exit_code & 0x7f (non-zero = killed);
-//                     status = (exit_code >> 8) & 0xff (for normal exit).
 struct proc_exit_event {
     struct event_header h;
     char comm[TASK_COMM_LEN];
@@ -104,9 +85,6 @@ struct proc_exit_event {
 
 
 // Event for execve syscall (ARES_EVENT_EXECVE).
-// Emitted at sys_enter_execve; comm is the calling thread name before exec replaces it.
-// argv[] entries beyond argc are zero-initialised.
-// call_stack[0..stack_depth) is the user-space stack at execve entry.
 struct execve_event {
     struct event_header h;
     __u32 argc;
@@ -119,17 +97,6 @@ struct execve_event {
 
 
 // Unified event struct for all system property API hooks (PROP_READ, PROP_GET, PROP_FIND, PROP_SCAN).
-//
-// prop_info layout (Android 8+, bionic, stable across API 26-35):
-//   offset  0: atomic_uint_least32_t serial   (4 bytes)
-//   offset  4: char value[92]                 (PROP_VALUE_MAX)
-//   offset 96: char name[0]                   (flexible array)
-//
-// is_ret / found usage by type:
-//   PROP_READ  — is_ret=0, found=0  (entry of read_callback; name+value always present)
-//   PROP_GET   — is_ret=0: CALL, name only; is_ret=1: RET, name+value (value="" if empty)
-//   PROP_FIND  — is_ret=0: CALL, name only; is_ret=1: RET, found=1→name+value, found=0→name only
-//   PROP_SCAN  — is_ret=0, found=0  (entry of foreach; name/value empty)
 #define PROP_NAME_LEN  128
 #define PROP_VALUE_LEN  96
 

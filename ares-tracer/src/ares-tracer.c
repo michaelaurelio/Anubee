@@ -280,7 +280,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 {
     // if (level == LIBBPF_DEBUG) return 0;
     // return vfprintf(stderr, format, args);
-    return 0; // Suppress temporarily
+    return 0; // Suppress output
 }
 
 
@@ -384,7 +384,7 @@ static void csv_close(void)
     if (g_csv) { fclose(g_csv); g_csv = NULL; }
 }
 
-// Top-level event line: prepends "HH:MM:SS  " to stdout; CSV receives message only.
+// Top-level event line, prepends "HH:MM:SS  " to stdout; CSV receives message only.
 void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ts_print(const char *fmt, ...)
 {
@@ -417,7 +417,7 @@ typedef struct {
     char func_name[256];
     unsigned long offset;
     __u64 runtime_entry_addr;
-    int arg_count;       // -1 = use BPF heuristic; 0-8 = typed
+    int arg_count;       // -1 = use BPF heuristic, 0-8 manual spec
     uint8_t arg_types[8];
     uint8_t ret_type;    // ARG_VAL, ARG_STR, or ARG_NONE (no return probe)
     bool ret_only;       // true = -r match: uprobe_save_only + uretprobe, no CALL event
@@ -814,7 +814,7 @@ static apk_cache_t *apk_cache_get(const char *apk_path)
     off_t fsize = lseek(fd, 0, SEEK_END);
     if (fsize < 22) { close(fd); return NULL; }
 
-    // Find EOCD (End of Central Directory): usually at fsize-22, no ZIP comment
+    // Find EOCD (End of Central Directory), usually at fsize-22, no ZIP comment
     uint8_t buf[22];
     off_t eocd_off = -1;
     lseek(fd, fsize - 22, SEEK_SET);
@@ -874,7 +874,7 @@ static apk_cache_t *apk_cache_get(const char *apk_path)
         size_t blen = strlen(base);
         if (blen < 4 || strcmp(base + blen - 3, ".so") != 0) continue;
 
-        // Read local file header for actual extra field length (may differ from CD)
+        // Read local file header for actual extra field length, may differ from CD
         off_t cur = lseek(fd, 0, SEEK_CUR);
         uint8_t lfh[30];
         lseek(fd, lhdr_off, SEEK_SET);

@@ -1525,32 +1525,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         if (list_libs) return 0;
 
-        int removed = 0;
-        for (int i = probe_target_count - 1; i >= 0; i--) {
-            const char *bname = strrchr(probe_targets[i].mod_path, '/');
-            bname = bname ? bname + 1 : probe_targets[i].mod_path;
-            if (strcmp(bname, e->name) != 0)
-                continue;
-
-            if (probe_links[i])
-                bpf_link__destroy(probe_links[i]);
-            if (probe_ret_links[i])
-                bpf_link__destroy(probe_ret_links[i]);
-
-            if (retired_count < 4096)
-                retired_targets[retired_count++] = probe_targets[i];
-
-            probe_targets[i]    = probe_targets[probe_target_count - 1];
-            probe_links[i]      = probe_links[probe_target_count - 1];
-            probe_ret_links[i]  = probe_ret_links[probe_target_count - 1];
-            probe_links[probe_target_count - 1]     = NULL;
-            probe_ret_links[probe_target_count - 1] = NULL;
-            probe_target_count--;
-            removed++;
-        }
-
-        if (removed > 0 && !resolve_syms)
-            ts_print("[unmap] > PID:%d PPID:%d %s (%d probes removed)\n", header->pid, e->ppid, e->name, removed);
+        if (!resolve_syms)
+            ts_print("[unmap] > PID:%d PPID:%d %s\n", header->pid, e->ppid, e->name);
 
         return 0;
     }

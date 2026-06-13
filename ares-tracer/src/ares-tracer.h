@@ -7,7 +7,7 @@
 #define NUM_ARGS         8
 #define STACK_DEPTH      16
 #define MAX_ARGV_ENTRIES 8
-#define MAX_ARGV_STR     64
+#define MAX_ARGV_STR     128
 
 #define ARES_VM_EXEC 0x00000004UL // Linux VMA flag for executable mappings
 

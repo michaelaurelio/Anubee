@@ -261,7 +261,7 @@ static int get_pid_uid(pid_t pid)
 
 static int resolve_component(const char *pkg, char *out, size_t outsz)
 {
-	char cmd[256], buf[1024];
+	char cmd[512], buf[1024];
 	snprintf(cmd, sizeof(cmd), "cmd package resolve-activity --brief %s", pkg);
 	if (sh_exec(cmd, buf, sizeof(buf)) < 0)
 		return -1;

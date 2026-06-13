@@ -3,33 +3,46 @@
 #include "module.h"
 #include "ares-tracer-priv.h"
 
-static struct bpf_link *execve_link = NULL;
-static struct bpf_link *exec_link   = NULL;
+static struct bpf_link *execve_link   = NULL;
+static struct bpf_link *execveat_link = NULL;
+static struct bpf_link *exec_link     = NULL;
 
 static void ex_pre_attach(struct ares_tracer_bpf *skel)
 {
-    bpf_program__set_autoattach(skel->progs.on_execve, false);
+    bpf_program__set_autoattach(skel->progs.on_execve,    false);
+    bpf_program__set_autoattach(skel->progs.on_execveat,  false);
     bpf_program__set_autoattach(skel->progs.on_proc_exec, false);
 }
 
 static int ex_attach(struct ares_tracer_bpf *skel)
 {
-    execve_link = bpf_program__attach(skel->progs.on_execve);
-    if (!execve_link) {
-        err_print("   [bpf] > kprobe/__arm64_sys_execve unavailable, falling back to sched_process_exec (filename only)\n");
+    execve_link   = bpf_program__attach(skel->progs.on_execve);
+    execveat_link = bpf_program__attach(skel->progs.on_execveat);
+
+    if (!execve_link)
+        err_print("   [bpf] > kprobe/__arm64_sys_execve unavailable\n");
+    if (!execveat_link)
+        err_print("   [bpf] > kprobe/__arm64_sys_execveat unavailable\n");
+
+    if (!execve_link && !execveat_link) {
+        err_print("   [bpf] > both kprobes unavailable, falling back to sched_process_exec (filename only)\n");
         exec_link = bpf_program__attach(skel->progs.on_proc_exec);
-        if (!exec_link)
+        if (!exec_link) {
             err_print("   [bpf] > sched_process_exec also unavailable; execve tracing disabled\n");
+            return -2;
+        }
     }
+
     ts_print("[proc]  > execve tracing enabled%s\n",
-             execve_link ? "" : " (fallback: filename only)");
+             (execve_link || execveat_link) ? "" : " (fallback: filename only)");
     return 0;
 }
 
 static void ex_detach(void)
 {
-    if (execve_link) { bpf_link__destroy(execve_link); execve_link = NULL; }
-    if (exec_link)   { bpf_link__destroy(exec_link);   exec_link   = NULL; }
+    if (execve_link)   { bpf_link__destroy(execve_link);   execve_link   = NULL; }
+    if (execveat_link) { bpf_link__destroy(execveat_link); execveat_link = NULL; }
+    if (exec_link)     { bpf_link__destroy(exec_link);     exec_link     = NULL; }
 }
 
 static int ex_handle_event(const struct event_header *hdr, const void *data, size_t sz)

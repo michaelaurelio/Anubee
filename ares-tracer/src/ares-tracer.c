@@ -1680,11 +1680,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (verbose) err_print("         [event]   | UNMAP: %s\n", e->name);
-
         if (list_libs) return 0;
 
-        if (!resolve_syms)
+        if (verbose)
             ts_print("[unmap] > PID:%d PPID:%d %s\n", header->pid, e->ppid, e->name);
 
         return 0;

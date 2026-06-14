@@ -95,7 +95,8 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
         e->args[i] = (unsigned long)raw[i];
         e->is_str[i] = 0;
         if (is_user_ptr((unsigned long)raw[i])) {
-            long n = bpf_probe_read_user_str(e->strings[i], MAX_STR_LEN, (void*)raw[i]);
+            unsigned long ptr = (unsigned long)raw[i] & 0x00FFFFFFFFFFFFFFul;
+            long n = bpf_probe_read_user_str(e->strings[i], MAX_STR_LEN, (void *)ptr);
             if (n > 1)
                 e->is_str[i] = 1;
         }
@@ -168,7 +169,8 @@ int BPF_KRETPROBE(uretprobe_open)
     e->retval    = (unsigned long)PT_REGS_RC(ctx);
     e->is_str[0] = 0;
     if (is_user_ptr(e->retval)) {
-        long n = bpf_probe_read_user_str(e->strings[0], MAX_STR_LEN, (void *)e->retval);
+        unsigned long retptr = e->retval & 0x00FFFFFFFFFFFFFFul;
+        long n = bpf_probe_read_user_str(e->strings[0], MAX_STR_LEN, (void *)retptr);
         if (n > 1) e->is_str[0] = 1;
     }
 
@@ -177,7 +179,8 @@ int BPF_KRETPROBE(uretprobe_open)
         e->args[i + 1]    = saved->args[i];
         e->is_str[i + 1]  = 0;
         if (is_user_ptr(saved->args[i])) {
-            long n = bpf_probe_read_user_str(e->strings[i + 1], MAX_STR_LEN, (void *)saved->args[i]);
+            unsigned long argptr = saved->args[i] & 0x00FFFFFFFFFFFFFFul;
+            long n = bpf_probe_read_user_str(e->strings[i + 1], MAX_STR_LEN, (void *)argptr);
             if (n > 1) e->is_str[i + 1] = 1;
         }
     }

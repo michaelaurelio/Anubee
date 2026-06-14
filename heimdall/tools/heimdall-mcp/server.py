@@ -130,6 +130,36 @@ def search(text: str, limit: int = 50) -> list:
     return store.search(text=text, limit=limit)
 
 
+@mcp.tool()
+def wx_scan(top: int = 50) -> dict:
+    """Find self-modifying / unpacking memory behavior in the active trace — the
+    decrypt-then-execute signal of packers and JIT-decrypt RASP, and a top RASP
+    tell. Returns {summary, rwx_maps, w_then_x, self_inspection}: `rwx_maps` are
+    mmap/mprotect calls that make memory writable+executable at once; `w_then_x`
+    are regions made executable AFTER being writable (code written, then run);
+    `self_inspection` are process_vm_readv/process_vm_writev/ptrace targeting the
+    app's OWN process (integrity self-checks / anti-debug). Each entry is grouped
+    by call site (symbolized stack) with a count and an example_id for get_event
+    — so you see exactly which library/offset does the unpacking or self-check."""
+    return store.wx_scan(top=top)
+
+
+@mcp.tool()
+def diff_traces(baseline: str, compare: str, top: int = 50,
+                via: Optional[str] = None) -> dict:
+    """Compare two trace files and report what fired ONLY in `compare` — the
+    single highest-leverage view for RASP triage: run the app on a clean device
+    (`baseline`) and on a rooted/hooked/emulator device (`compare`), and this
+    surfaces which checks/branches/resources are new. Returns {summary,
+    new_syscalls, new_paths, new_stacks, new_errors, new_endpoints}: `new_stacks`
+    are call sites (symbolized, ASLR-invariant) seen only in compare — i.e. the
+    checks that activated; `new_paths` are probed files (volatile numeric
+    segments normalized) like a sudden `/sbin/su` stat; `new_errors` are new
+    failing probes. `via` restricts new_stacks to a library/function substring.
+    Both paths are loaded fresh; the active trace is untouched."""
+    return store.diff(baseline=baseline, compare=compare, top=top, via=via)
+
+
 # ---- on-device operations (require adb + heimdall on the device) ----------
 
 @mcp.tool()

@@ -40,6 +40,68 @@ def _errname(ret):
     return None
 
 
+def _build_events(con, path, suffix=""):
+    """Load a trace file into `events{suffix}` (+ `frames{suffix}`) tables in the
+    given connection, with the derived paths/flags/stacksig columns. Returns
+    (abspath, skipped_count). Shared by load() (suffix="") and diff() (which
+    builds two table sets, "_a"/"_b", in one connection)."""
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    with open(path, "r", errors="replace") as f:
+        head = f.read(64).lstrip()
+    fmt = "array" if head.startswith("[") else "newline_delimited"
+    esc = path.replace("'", "''")
+    ev, fr = "events" + suffix, "frames" + suffix
+
+    con.execute(
+        f"CREATE TABLE {ev} AS SELECT * FROM read_json('{esc}', "
+        f"format='{fmt}', columns={_COLS}, maximum_object_size=20000000, "
+        f"ignore_errors=true)"
+    )
+    # `ignore_errors` keeps unparseable input as an all-null row rather than
+    # dropping it; a real heimdall record always has an id, so a null id marks
+    # junk. Remove it (and count it) so it neither pollutes queries nor silently
+    # inflates the event count.
+    skipped = con.execute(f"SELECT count(*) FROM {ev} WHERE id IS NULL").fetchone()[0]
+    if skipped:
+        con.execute(f"DELETE FROM {ev} WHERE id IS NULL")
+    # Derived, query-friendly columns.
+    con.execute(f"ALTER TABLE {ev} ADD COLUMN paths VARCHAR")
+    con.execute(
+        f"UPDATE {ev} SET paths = trim(array_to_string("
+        "list_concat(coalesce(map_values(string_args), []), "
+        "coalesce(map_values(fd_args), [])), ' '))"
+    )
+    con.execute(f"ALTER TABLE {ev} ADD COLUMN flags VARCHAR")
+    con.execute(
+        f"UPDATE {ev} SET flags = trim(array_to_string("
+        "coalesce(map_values(decoded_args), []), ' '))"
+    )
+    con.execute(f"ALTER TABLE {ev} ADD COLUMN stacksig VARCHAR")
+    con.execute(
+        f"UPDATE {ev} SET stacksig = list_aggregate("
+        "list_transform(backtrace, x -> x.symbol), 'string_agg', ' ; ')"
+    )
+    # ASLR-invariant signature for cross-run diffing: keep only frames that
+    # resolved to a module/region and drop the raw "0x… [unmapped]" / bare-address
+    # frames (anonymous/JIT code or bad unwinds). Their values differ per run, so
+    # in a diff they masquerade as new call sites; the module-relative frames are
+    # the stable, comparable part. Empty when no frame resolved.
+    con.execute(f"ALTER TABLE {ev} ADD COLUMN stack_inv VARCHAR")
+    con.execute(
+        f"UPDATE {ev} SET stack_inv = list_aggregate(list_filter("
+        "list_transform(backtrace, x -> x.symbol), s -> s NOT LIKE '0x%'), "
+        "'string_agg', ' ; ')"
+    )
+    # Flattened frames for origin ("via") queries.
+    con.execute(
+        f"CREATE TABLE {fr} AS SELECT id AS event_id, fr.frame AS idx, "
+        f"fr.symbol AS symbol FROM {ev}, UNNEST(backtrace) AS t(fr)"
+    )
+    return path, skipped
+
+
 class TraceStore:
     def __init__(self):
         self.con = None
@@ -56,52 +118,11 @@ class TraceStore:
     # ---- loading ---------------------------------------------------------
 
     def load(self, path):
-        path = os.path.abspath(os.path.expanduser(path))
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
-        with open(path, "r", errors="replace") as f:
-            head = f.read(64).lstrip()
-        fmt = "array" if head.startswith("[") else "newline_delimited"
-        esc = path.replace("'", "''")
-
         con = duckdb.connect()
         con.execute("PRAGMA threads=4")
-        con.execute(
-            f"CREATE TABLE events AS SELECT * FROM read_json('{esc}', "
-            f"format='{fmt}', columns={_COLS}, maximum_object_size=20000000, "
-            f"ignore_errors=true)"
-        )
-        # `ignore_errors` keeps unparseable input as an all-null row rather than
-        # dropping it; a real heimdall record always has an id, so a null id marks
-        # junk. Remove it (and count it for the load report) so it neither
-        # pollutes queries nor silently inflates the event count.
-        skipped = con.execute("SELECT count(*) FROM events WHERE id IS NULL").fetchone()[0]
-        if skipped:
-            con.execute("DELETE FROM events WHERE id IS NULL")
-        # Derived, query-friendly columns.
-        con.execute("ALTER TABLE events ADD COLUMN paths VARCHAR")
-        con.execute(
-            "UPDATE events SET paths = trim(array_to_string("
-            "list_concat(coalesce(map_values(string_args), []), "
-            "coalesce(map_values(fd_args), [])), ' '))"
-        )
-        con.execute("ALTER TABLE events ADD COLUMN flags VARCHAR")
-        con.execute(
-            "UPDATE events SET flags = trim(array_to_string("
-            "coalesce(map_values(decoded_args), []), ' '))"
-        )
-        con.execute("ALTER TABLE events ADD COLUMN stacksig VARCHAR")
-        con.execute(
-            "UPDATE events SET stacksig = list_aggregate("
-            "list_transform(backtrace, x -> x.symbol), 'string_agg', ' ; ')"
-        )
-        # Flattened frames for origin ("via") queries.
-        con.execute(
-            "CREATE TABLE frames AS SELECT id AS event_id, fr.frame AS idx, "
-            "fr.symbol AS symbol FROM events, UNNEST(backtrace) AS t(fr)"
-        )
+        abspath, skipped = _build_events(con, path, "")
         self.con = con
-        self.path = path
+        self.path = abspath
 
         # Report how many records loaded and how many malformed ones were
         # dropped, so a bad trace doesn't silently mis-count.
@@ -282,6 +303,237 @@ class TraceStore:
             "array_to_string(map_values(string_args), ' ') AS str "
             "FROM events WHERE paths LIKE '%' || ? || '%' OR stacksig LIKE '%' || ? || '%' "
             f"ORDER BY id LIMIT {limit}", [text, text])
+
+    # ---- diff two traces -------------------------------------------------
+
+    def diff(self, baseline, compare, top=50, via=None):
+        """Compare a `baseline` trace (e.g. a clean device) against a `compare`
+        trace (rooted/hooked/emulator) and report what is NEW in `compare` — the
+        probes/branches/resources that fired only there. The diff is over
+        ASLR-invariant dimensions: call stacks are compared on their resolved
+        (module/region-relative) frames only — raw "0x… [unmapped]" frames are
+        dropped so per-run address jitter doesn't fake up new stacks — and paths
+        have volatile numeric segments normalized. Does not disturb the active
+        trace. `via` restricts the new-stack list to events with that substring
+        in a backtrace frame."""
+        top = _clamp(top)
+        con = duckdb.connect()
+        con.execute("PRAGMA threads=4")
+        try:
+            pa, ska = _build_events(con, baseline, "_a")
+            pb, skb = _build_events(con, compare, "_b")
+
+            def rows(sql, params=None):
+                rel = con.execute(sql, params or [])
+                cols = [d[0] for d in rel.description]
+                return [dict(zip(cols, r)) for r in rel.fetchall()]
+
+            def one(sql, params=None):
+                r = con.execute(sql, params or []).fetchone()
+                return r[0] if r else None
+
+            # Syscalls seen only in the compare run.
+            new_syscalls = rows(
+                "SELECT syscall, count(*) AS count FROM events_b b WHERE NOT EXISTS "
+                "(SELECT 1 FROM events_a a WHERE a.syscall = b.syscall) "
+                f"GROUP BY 1 ORDER BY count DESC LIMIT {top}")
+
+            # (syscall, path) probed only in compare, with volatile numeric path
+            # segments (pids/fds/tids) collapsed to '#' so the diff is meaningful.
+            norm = (
+                "WITH pa AS (SELECT DISTINCT syscall, "
+                "  regexp_replace(p, '[0-9]+', '#', 'g') AS np "
+                "  FROM (SELECT syscall, unnest(map_values(string_args)) AS p "
+                "        FROM events_a WHERE cardinality(string_args) > 0)), "
+                "pb AS (SELECT syscall, regexp_replace(p, '[0-9]+', '#', 'g') AS np "
+                "       FROM (SELECT syscall, unnest(map_values(string_args)) AS p "
+                "             FROM events_b WHERE cardinality(string_args) > 0)) ")
+            new_paths = rows(
+                norm +
+                "SELECT np AS path, syscall, count(*) AS count FROM pb b "
+                "WHERE NOT EXISTS (SELECT 1 FROM pa a WHERE a.np = b.np AND a.syscall = b.syscall) "
+                f"GROUP BY np, syscall ORDER BY count DESC LIMIT {top}")
+
+            # Distinct call stacks (branches/checks) that fired only in compare.
+            # Compared on the ASLR-invariant signature (resolved frames only), so
+            # differing raw [unmapped] addresses don't fake up new stacks.
+            via_clause = ("AND id IN (SELECT event_id FROM frames_b "
+                          "WHERE symbol LIKE '%' || ? || '%') ") if via else ""
+            vp = [via] if via else []
+            new_stacks = rows(
+                "SELECT stack_inv AS stack, count(*) AS count, min(id) AS example_id, "
+                "any_value(syscall) AS syscall FROM events_b b "
+                "WHERE stack_inv IS NOT NULL AND stack_inv <> '' " + via_clause +
+                "AND NOT EXISTS (SELECT 1 FROM events_a a WHERE a.stack_inv = b.stack_inv) "
+                f"GROUP BY stack_inv ORDER BY count DESC LIMIT {top}", vp)
+
+            # (syscall, errno) failures only in compare (new probes/denials).
+            new_errors = rows(
+                "SELECT syscall, retval, count(*) AS count FROM events_b b "
+                "WHERE retval < 0 AND NOT EXISTS "
+                "(SELECT 1 FROM events_a a WHERE a.syscall = b.syscall AND a.retval = b.retval) "
+                f"GROUP BY 1, 2 ORDER BY count DESC LIMIT {top}")
+            for r in new_errors:
+                r["errno"] = _errname(r["retval"])
+
+            # Peer endpoints contacted only in compare.
+            new_endpoints = rows(
+                "SELECT sock_addr AS endpoint, count(*) AS count FROM events_b b "
+                "WHERE sock_addr IS NOT NULL AND NOT EXISTS "
+                "(SELECT 1 FROM events_a a WHERE a.sock_addr = b.sock_addr) "
+                f"GROUP BY 1 ORDER BY count DESC LIMIT {top}")
+
+            summary = {
+                "baseline": pa, "compare": pb,
+                "baseline_events": one("SELECT count(*) FROM events_a"),
+                "compare_events": one("SELECT count(*) FROM events_b"),
+                "new_stacks": one(
+                    "SELECT count(*) FROM (SELECT DISTINCT stack_inv FROM events_b "
+                    "WHERE stack_inv IS NOT NULL AND stack_inv <> '' AND stack_inv NOT IN "
+                    "(SELECT stack_inv FROM events_a WHERE stack_inv IS NOT NULL AND stack_inv <> ''))"),
+                "new_syscalls": one(
+                    "SELECT count(*) FROM (SELECT DISTINCT syscall FROM events_b "
+                    "WHERE syscall NOT IN (SELECT syscall FROM events_a))"),
+                "new_endpoints": one(
+                    "SELECT count(*) FROM (SELECT DISTINCT sock_addr FROM events_b "
+                    "WHERE sock_addr IS NOT NULL AND sock_addr NOT IN "
+                    "(SELECT sock_addr FROM events_a WHERE sock_addr IS NOT NULL))"),
+            }
+            if ska:
+                summary["baseline_skipped"] = ska
+            if skb:
+                summary["compare_skipped"] = skb
+
+            return {
+                "summary": summary,
+                "new_syscalls": new_syscalls,
+                "new_paths": new_paths,
+                "new_stacks": new_stacks,
+                "new_errors": new_errors,
+                "new_endpoints": new_endpoints,
+            }
+        finally:
+            con.close()
+
+    # ---- W^X / memory-tamper finder --------------------------------------
+
+    @staticmethod
+    def _prot_str(prot):
+        if prot == 0:
+            return "PROT_NONE"
+        parts = []
+        if prot & 1: parts.append("PROT_READ")
+        if prot & 2: parts.append("PROT_WRITE")
+        if prot & 4: parts.append("PROT_EXEC")
+        if prot & ~7: parts.append("0x%x" % (prot & ~7))
+        return "|".join(parts)
+
+    def wx_scan(self, top=50):
+        """Surface self-modifying / unpacking memory behavior — the
+        decrypt-then-execute signature of packers and JIT-decrypt RASP. Reports
+        RWX maps (W+X in one call), W->X transitions (a region made executable
+        after being writable), and self-targeting process_vm_readv/ptrace
+        (integrity self-checks / anti-debug), each grouped by call site."""
+        self._require()
+        top = _clamp(top)
+        PROT_W, PROT_X = 2, 4
+
+        rows = self._rows(
+            "SELECT id, retval, syscall, args, stack_inv AS stack "
+            "FROM events WHERE syscall IN ('mprotect','pkey_mprotect','mmap') ORDER BY id")
+
+        ever_w = []                  # merged [start,end) ranges ever made writable
+        rwx, wtx = {}, {}
+        n_mprotect = n_mmap = 0
+
+        def add_ivl(s, e):
+            ever_w.append((s, e))
+            ever_w.sort()
+            merged = []
+            for a, b in ever_w:
+                if merged and a <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+                else:
+                    merged.append((a, b))
+            ever_w[:] = merged
+
+        def overlaps(s, e):
+            for a, b in ever_w:
+                if s < b and a < e:
+                    return True
+                if a >= e:
+                    break
+            return False
+
+        def bump(d, r, prot):
+            k = r["stack"] or "<unresolved>"
+            ent = d.get(k)
+            if ent is None:
+                ent = d[k] = {"stack": k, "count": 0, "example_id": r["id"],
+                              "syscall": r["syscall"], "prot": self._prot_str(prot)}
+            ent["count"] += 1
+
+        for r in rows:
+            args = r["args"] or []
+            try:
+                if r["syscall"] in ("mprotect", "pkey_mprotect"):
+                    base = int(args[0], 16); length = int(args[1], 16); prot = int(args[2], 16)
+                    n_mprotect += 1
+                else:                                  # mmap: base is the return value
+                    if r["retval"] is None or r["retval"] < 0:
+                        continue
+                    base = int(r["retval"]); length = int(args[1], 16); prot = int(args[2], 16)
+                    n_mmap += 1
+            except (IndexError, ValueError, TypeError):
+                continue
+            if length <= 0:
+                continue
+            s, e = base, base + length
+            w, x = bool(prot & PROT_W), bool(prot & PROT_X)
+            if w and x:
+                bump(rwx, r, prot)                     # RWX in a single call
+            elif x and overlaps(s, e):
+                bump(wtx, r, prot)                     # made executable after being writable
+            if w:
+                add_ivl(s, e)
+
+        # Self-inspection: process_vm_*/ptrace aimed at the app's own process.
+        si = {}
+        for r in self._rows(
+                "SELECT id, pid, syscall, args, stack_inv AS stack "
+                "FROM events WHERE syscall IN ('process_vm_readv','process_vm_writev','ptrace')"):
+            args = r["args"] or []
+            try:
+                if r["syscall"] in ("process_vm_readv", "process_vm_writev"):
+                    is_self = int(args[0], 16) == r["pid"]
+                else:                                  # ptrace(request, pid, ...)
+                    is_self = int(args[0], 16) == 0 or int(args[1], 16) == r["pid"]
+            except (IndexError, ValueError, TypeError):
+                continue
+            if not is_self:
+                continue
+            k = r["stack"] or "<unresolved>"
+            ent = si.get(k)
+            if ent is None:
+                ent = si[k] = {"stack": k, "count": 0, "example_id": r["id"],
+                               "syscall": r["syscall"]}
+            ent["count"] += 1
+
+        def top_list(d):
+            return sorted(d.values(), key=lambda v: v["count"], reverse=True)[:top]
+
+        return {
+            "summary": {
+                "mprotect_events": n_mprotect,
+                "mmap_events": n_mmap,
+                "rwx_maps": len(rwx),
+                "w_then_x_sites": len(wtx),
+                "self_inspection_sites": len(si),
+            },
+            "rwx_maps": top_list(rwx),
+            "w_then_x": top_list(wtx),
+            "self_inspection": top_list(si),
+        }
 
     # ---- loop folding ----------------------------------------------------
 

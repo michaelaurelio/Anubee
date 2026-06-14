@@ -171,6 +171,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'm': {
             for (int i = 0; all_modules[i]; i++) {
                 if (strcmp(arg, all_modules[i]->name) == 0) {
+                    for (int j = 0; j < active_module_count; j++) {
+                        if (active_modules[j] == all_modules[i])
+                            return 0;  // already active, ignore duplicate
+                    }
                     if (active_module_count < 16)
                         active_modules[active_module_count++] = all_modules[i];
                     return 0;
@@ -1089,7 +1093,8 @@ static apk_cache_t *apk_cache_get(const char *apk_path)
         ssize_t  n    = read(fd, fname, rlen);
         if (n < 0) break;
         fname[n] = '\0';
-        lseek(fd, (fname_len - rlen) + extra_len + comment_len, SEEK_CUR);
+        off_t skip = (off_t)(fname_len - rlen) + extra_len + comment_len;
+        if (skip > 0 && lseek(fd, skip, SEEK_CUR) == (off_t)-1) break;
 
         // Only stored (uncompressed) .so files under lib/
         if (method != 0) continue;
@@ -2019,6 +2024,9 @@ int main(int argc, char **argv)
         if (active_modules[i]->attach) {
             int r = active_modules[i]->attach(skel);
             if (r == -1) { err = -1; goto cleanup; }
+            if (r == -2)
+                ts_print("[warn]  > module '%s' running in degraded mode — some events will be missing\n",
+                         active_modules[i]->name);
         }
     }
     elf_version(EV_CURRENT);

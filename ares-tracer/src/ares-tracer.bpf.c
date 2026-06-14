@@ -74,8 +74,10 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 
     // Reserve space in ring buffer for event
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bpf_map_delete_elem(&entry_map, &tid);
         return 0;
+    }
 
     // Fill event data
     task = (struct task_struct *)bpf_get_current_task();
@@ -296,6 +298,6 @@ int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start
 	return 0;
 }
 
+#include "modules/prop_read.bpf.c"
 #include "modules/proc_event.bpf.c"
 #include "modules/execve.bpf.c"
-#include "modules/prop_read.bpf.c"

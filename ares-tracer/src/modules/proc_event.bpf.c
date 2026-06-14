@@ -28,10 +28,16 @@ int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
     if (!uid_matches())
         return 0;
 
-    // Skip thread exits; only emit for the process main thread
     __u64 id  = bpf_get_current_pid_tgid();
     pid_t pid = (__u32)(id >> 32);
     pid_t tid = (__u32)id;
+
+    // Always clean up entry map slots — prevents stale TID entries when a thread
+    // exits inside a probed function (e.g. abort() called while tracing kill()).
+    bpf_map_delete_elem(&entry_map,      &tid);
+    bpf_map_delete_elem(&prop_entry_map, &tid);
+
+    // Skip thread exits; only emit PROC_EXIT for the process main thread
     if (pid != tid)
         return 0;
 

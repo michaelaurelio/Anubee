@@ -50,9 +50,11 @@ Aggregation-first — the model is told to start broad, then drill down:
 | `sockets()` | Decoded peer endpoints (ip:port / unix path) with counts + the socket calls. |
 | `errors(top)` | Failing syscalls grouped by (syscall, errno). |
 | `distinct_backtraces(syscall,via,top)` | Deduped call stacks + counts. |
+| `wx_scan(top)` | Self-modifying/unpacking + anti-tamper memory ops: RWX maps, W→X transitions, and self-targeted `process_vm_readv`/`ptrace`, grouped by call site. |
 | `query(syscall,tid,path_contains,via,only_errors,retval,id_min,id_max,limit)` | Filtered event list (capped at 200; `matched` is the true count). |
 | `get_event(id)` | Full detail of one event incl. backtrace. |
 | `search(text,limit)` | Events whose paths/args/symbols contain `text`. |
+| `diff_traces(baseline,compare,top,via)` | What fired only in `compare` vs `baseline` — new call stacks, probed paths, syscalls, errors, endpoints. Highest-leverage RASP triage (clean vs rooted run). |
 
 `via` matches a substring in any backtrace frame — i.e. *which library/function
 the syscall came from* (e.g. `via="librasp"`), the key dimension for RASP work.
@@ -141,6 +143,11 @@ block, e.g. `"env": { "HEIMDALL_SHELL_PREFIX": "su -c" }`.
 
 The model uses `overview`/`hot_loops` to orient, then `query`/`get_event` to dig —
 each call stays small, so even a giant trace is tractable.
+
+For RASP triage, capture the same app on a clean device and a rooted/hooked one,
+then: *"diff_traces('/clean.jsonl', '/rooted.jsonl') — which checks fired only on
+the rooted device?"* The new call stacks and probed paths (e.g. a sudden
+`newfstatat('/sbin/su')`) point straight at the detection logic.
 
 **Live (drive the device):**
 

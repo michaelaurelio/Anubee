@@ -156,6 +156,8 @@ static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
 static unsigned long long g_json_count;         // objects written so far
 static int g_jsonl;                             // 1 = JSON Lines (one record/line)
+static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
+static unsigned long long g_stack_count;        // snapshots written so far
 
 static void on_sigint(int s)
 {
@@ -862,6 +864,57 @@ static void jb_esc(struct jbuf *j, const char *s)
 	}
 }
 
+// Base64-encode a byte run into the json buffer (for the stack snapshot blob).
+static void jb_b64(struct jbuf *j, const unsigned char *p, size_t n)
+{
+	static const char e[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	jb_need(j, (n + 2) / 3 * 4);
+	size_t i = 0;
+	for (; i + 3 <= n; i += 3) {
+		unsigned v = (unsigned)p[i] << 16 | (unsigned)p[i + 1] << 8 | p[i + 2];
+		jb_c(j, e[(v >> 18) & 63]); jb_c(j, e[(v >> 12) & 63]);
+		jb_c(j, e[(v >> 6) & 63]);  jb_c(j, e[v & 63]);
+	}
+	if (n - i == 1) {
+		unsigned v = (unsigned)p[i] << 16;
+		jb_c(j, e[(v >> 18) & 63]); jb_c(j, e[(v >> 12) & 63]);
+		jb_s(j, "==");
+	} else if (n - i == 2) {
+		unsigned v = (unsigned)p[i] << 16 | (unsigned)p[i + 1] << 8;
+		jb_c(j, e[(v >> 18) & 63]); jb_c(j, e[(v >> 12) & 63]);
+		jb_c(j, e[(v >> 6) & 63]); jb_c(j, '=');
+	}
+}
+
+// Write one stack snapshot (registers + base64 stack bytes) to the sidecar
+// stream. Always JSON Lines — this is consumed by the off-device unwinder, not
+// the main trace. Deduped in-kernel, so these are comparatively rare.
+static void json_emit_stack(const struct heimdall_stack_snapshot *s)
+{
+	if (!g_stacks)
+		return;
+	struct jbuf *j = &g_jb;
+	j->len = 0;
+
+	jb_s(j, "{\"type\":\"stack\",\"pid\":"); jb_u64(j, s->h.pid);
+	jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
+	jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
+	jb_s(j, ",\"pc\":\"");     jb_hex(j, s->pc); jb_c(j, '"');
+	jb_s(j, ",\"sp\":\"");     jb_hex(j, s->sp); jb_c(j, '"');
+	jb_s(j, ",\"fp\":\"");     jb_hex(j, s->fp); jb_c(j, '"');
+	jb_s(j, ",\"lr\":\"");     jb_hex(j, s->lr); jb_c(j, '"');
+	jb_s(j, ",\"snap_len\":"); jb_u64(j, s->snap_len);
+	jb_s(j, ",\"snapshot\":\"");
+	if (s->snap_len <= sizeof(s->snap))
+		jb_b64(j, s->snap, s->snap_len);
+	jb_s(j, "\"}\n");
+
+	if (j->b && j->len)
+		fwrite(j->b, 1, j->len, g_stacks);
+	g_stack_count++;
+}
+
 static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id,
 		      int has_ret, long long ret)
 {
@@ -928,6 +981,9 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 			jb_s(j, ",\"sock_addr\":\""); jb_esc(j, sockbuf); jb_c(j, '"');
 		}
 	}
+
+	if (e->stack_id)
+		{ jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
 
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
@@ -1151,6 +1207,11 @@ static void process_event(const void *data, size_t sz)
 			return;
 		handle_return(data);
 		break;
+	case HEIMDALL_EV_STACK:
+		if (sz < sizeof(struct heimdall_stack_snapshot))
+			return;
+		json_emit_stack(data);
+		break;
 	}
 }
 
@@ -1217,7 +1278,8 @@ static void *worker_main(void *arg)
 {
 	(void)arg;
 	struct queue *q = &g_q;
-	static char rec[sizeof(struct heimdall_syscall_event) + 64];
+	// Sized to the largest record (the stack snapshot), so nothing is truncated.
+	static char rec[sizeof(struct heimdall_stack_snapshot) + 64];
 	unsigned long flushed = 0;
 	for (;;) {
 		pthread_mutex_lock(&q->m);
@@ -1336,6 +1398,8 @@ static void usage(const char *argv0)
 		"  -Q, --queue MB      userspace worker queue size in MB (default 256; absorbs bursts)\n"
 		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
+		"      --no-snapshot   disable per-syscall stack snapshots (library-filtered mode\n"
+		"                      writes a <out>.stacks sidecar for off-device unwinding by default)\n"
 		"\n"
 		"  By default a <lib> selector is required and only syscalls whose backtrace\n"
 		"  passes through that library are recorded. With -a or -l it is optional/ignored.\n"
@@ -1356,6 +1420,7 @@ int main(int argc, char **argv)
 	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
 	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
+	int no_snapshot = getenv("HEIMDALL_NO_SNAPSHOT") != NULL;
 	g_libs_only = getenv("HEIMDALL_LIBS") != NULL;
 	g_dump_substr = getenv("HEIMDALL_DUMP");
 	if (getenv("HEIMDALL_DUMP_DIR"))
@@ -1399,6 +1464,8 @@ int main(int argc, char **argv)
 			g_dump_dir = argv[++ai];
 		} else if (!strcmp(argv[ai], "--dump-raw")) {
 			dump_set_raw(1);
+		} else if (!strcmp(argv[ai], "--no-snapshot")) {
+			no_snapshot = 1;
 		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
 			if (ai + 1 >= argc || syscall_mode == 2) {
 				fprintf(stderr, "use either -s or -x, not both\n");
@@ -1481,8 +1548,13 @@ int main(int argc, char **argv)
 		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
 	}
+	// Stack snapshots: library-filtered mode only (far too heavy for the -a
+	// firehose), and only when writing JSON (the snapshots go to a sidecar the
+	// off-device unwinder reads). Disable with --no-snapshot.
+	int want_snapshots = !capture_all && !g_libs_only && !no_snapshot && json_path != NULL;
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
+	skel->rodata->snapshot_enabled = want_snapshots;
 	bpf_map__set_max_entries(skel->maps.events, bufbytes);
 	if (heimdall__load(skel)) {
 		fprintf(stderr, "load failed (run as root? SELinux permissive?)\n");
@@ -1510,6 +1582,21 @@ int main(int argc, char **argv)
 		setvbuf(g_json, malloc(8u << 20), _IOFBF, 8u << 20);
 		if (!g_jsonl)
 			fputc('[', g_json);     // JSONL needs no array framing
+	}
+
+	// Stack-snapshot sidecar (JSON Lines) next to the trace, for the off-device
+	// unwinder. Failing to open it is non-fatal — we just lose the snapshots.
+	if (want_snapshots && json_path) {
+		char sp[1024];
+		snprintf(sp, sizeof(sp), "%s.stacks", json_path);
+		g_stacks = fopen(sp, "w");
+		if (!g_stacks)
+			fprintf(stderr, "warning: cannot open snapshot sidecar '%s': %s\n",
+				sp, strerror(errno));
+		else {
+			setvbuf(g_stacks, malloc(8u << 20), _IOFBF, 8u << 20);
+			printf("stack snapshots: %s\n", sp);
+		}
 	}
 
 	// Tell the hook which syscall args are strings, and arm the UID filter —
@@ -1665,6 +1752,11 @@ out:
 		printf("wrote %llu %s record%s to %s\n",
 		       g_json_count, g_libs_only ? "library" : "syscall",
 		       g_json_count == 1 ? "" : "s", json_path);
+	}
+	if (g_stacks) {
+		fclose(g_stacks);
+		printf("wrote %llu stack snapshot%s to %s.stacks\n",
+		       g_stack_count, g_stack_count == 1 ? "" : "s", json_path);
 	}
 	free(g_pend);
 	free(g_dump_pids);

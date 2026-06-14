@@ -47,6 +47,12 @@ const volatile int capture_all = 0;
 // 2 = denylist (all except flagged). The flagged set lives in syscall_filter.
 const volatile int syscall_filter_mode = 0;
 
+// 1 = also capture a register set + bounded user-stack snapshot for each kept
+// syscall (library-filtered mode only), deduped by stack signature, for
+// off-device DWARF unwinding. The loader sets this; it is never on in
+// capture-all mode (the snapshot is far too heavy for the firehose).
+const volatile int snapshot_enabled = 0;
+
 // ---- maps ----------------------------------------------------------------
 
 struct {
@@ -118,6 +124,15 @@ struct {
 	__type(value, __u64);
 } pending SEC(".maps");
 
+// Stack signatures already snapshotted (dedup set for option A). LRU so a long
+// run self-evicts; an eviction just causes one extra snapshot later (harmless).
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, __u8);
+} stack_seen SEC(".maps");
+
 // ---- helpers -------------------------------------------------------------
 
 static __always_inline void bump_dropped(void)
@@ -176,6 +191,54 @@ static __always_inline int stack_hits(struct heimdall_lib_ranges *lr, __u64 *sta
 	return 0;
 }
 
+// FNV-1a over the captured return addresses, seeded with the tgid so the same
+// call path in different processes (different ASLR, different stack bytes) gets
+// distinct ids and one process's snapshot never suppresses another's. Within a
+// process the addresses are stable for its lifetime, so a repeated stack hashes
+// the same and is snapshotted once. Never returns 0 (0 = "no stack id").
+static __always_inline __u64 hash_stack(__u64 *stack, int n, __u32 tgid)
+{
+	__u64 h = 0xcbf29ce484222325ULL ^ ((__u64)tgid << 32);
+	#pragma clang loop unroll(full)
+	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
+		if (i >= n)
+			continue;
+		h ^= stack[i];
+		h *= 0x100000001b3ULL;
+	}
+	return h ? h : 1;
+}
+
+// Emit one stack-snapshot record: user registers + a bounded copy of the user
+// stack from sp upward. Two fixed-size attempts (the verifier needs a constant
+// length) so a fault near the top of the stack still yields the smaller window.
+static __always_inline void emit_snapshot(struct pt_regs *user_regs,
+					  __u32 tgid, __u32 tid, __u64 sid)
+{
+	struct heimdall_stack_snapshot *s = bpf_ringbuf_reserve(&events, sizeof(*s), 0);
+	if (!s) {
+		bump_dropped();
+		return;
+	}
+	s->h.type = HEIMDALL_EV_STACK;
+	s->h.pid  = tgid;
+	s->h.tid  = tid;
+	s->h._pad = 0;
+	s->stack_id = sid;
+	s->pc = BPF_CORE_READ(user_regs, pc);
+	s->sp = BPF_CORE_READ(user_regs, sp);
+	s->fp = BPF_CORE_READ(user_regs, regs[29]);
+	s->lr = BPF_CORE_READ(user_regs, regs[30]);
+	s->_pad = 0;
+	s->snap_len = 0;
+	const void *sp = (const void *)s->sp;
+	if (s->sp && bpf_probe_read_user(s->snap, HEIMDALL_SNAP_MAX, sp) == 0)
+		s->snap_len = HEIMDALL_SNAP_MAX;
+	else if (s->sp && bpf_probe_read_user(s->snap, HEIMDALL_SNAP_SMALL, sp) == 0)
+		s->snap_len = HEIMDALL_SNAP_SMALL;
+	bpf_ringbuf_submit(s, 0);
+}
+
 // ---- syscall entry -------------------------------------------------------
 
 SEC("kprobe/do_el0_svc")
@@ -209,6 +272,20 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 			return 0;
 	}
 
+	// Stack snapshot (option A dedup): the first time we see a given stack for
+	// this process, ship its registers + stack bytes for off-device unwinding;
+	// thereafter the syscall event just carries the stack_id. Filtered mode only
+	// (snapshot_enabled is never set in capture-all).
+	__u64 stack_id = 0;
+	if (snapshot_enabled && sz > 0) {
+		stack_id = hash_stack(stack, n, tgid);
+		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
+			__u8 one = 1;
+			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
+			emit_snapshot(user_regs, tgid, (__u32)id, stack_id);
+		}
+	}
+
 	struct heimdall_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		bump_dropped();
@@ -227,6 +304,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->args[3] = BPF_CORE_READ(user_regs, regs[3]);
 	e->args[4] = BPF_CORE_READ(user_regs, regs[4]);
 	e->args[5] = BPF_CORE_READ(user_regs, regs[5]);
+	e->stack_id = stack_id;
 	if (sz > 0) {
 		e->stack_sz = (__s32)sz;
 		__builtin_memcpy(e->stack, stack, sizeof(e->stack));

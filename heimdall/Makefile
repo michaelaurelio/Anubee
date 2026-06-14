@@ -8,7 +8,7 @@
 # One-time host deps (Debian/Ubuntu):
 #   sudo apt install clang llvm bpftool gcc-aarch64-linux-gnu
 #   sudo dpkg --add-architecture arm64 && sudo apt update
-#   sudo apt install libelf-dev:arm64 zlib1g-dev:arm64 libzstd-dev:arm64
+#   sudo apt install libelf-dev:arm64 zlib1g-dev:arm64 libzstd-dev:arm64 liblzma-dev:arm64
 # libbpf itself is vendored at third_party/libbpf and built here.
 #
 #   make            # build build/heimdall
@@ -48,8 +48,9 @@ BPF_CFLAGS  := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) \
 LOADER_CFLAGS := -O2 -Wall -Wextra -static -pthread \
                  -I$(BUILD) -I$(SRC) -I$(LIBBPF_INC)
 # Static link: libelf (built with zstd support) pulls in zstd + zlib, so they
-# must follow -lelf on the line.
-LOADER_LIBS   := $(LIBBPF_A) -lelf -lz -lzstd
+# must follow -lelf on the line. liblzma decodes .gnu_debugdata mini-debug-info
+# in the symbolizer.
+LOADER_LIBS   := $(LIBBPF_A) -lelf -lz -lzstd -llzma
 
 .PHONY: all push clean regen-vmlinux
 all: $(BIN)

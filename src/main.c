@@ -11,6 +11,7 @@
 // Engine entry points (renamed from each tool's former main()).
 int cmd_syscalls(int argc, char **argv);   // src/syscalls/heimdall.c
 int cmd_funcs(int argc, char **argv);      // src/funcs/ares-tracer.c
+int cmd_lib(int argc, char **argv);        // src/lib/lib.c
 
 static void usage(const char *argv0)
 {
@@ -24,6 +25,8 @@ static void usage(const char *argv0)
 		"                  (injectionless / stealthy). Traces Java + native layers.\n"
 		"  funcs           uprobe function tracer, spec-driven. Writes BRK into the\n"
 		"                  target (detectable). Modules: proc / execve / getprop.\n"
+		"  lib             library-load tracer: launch an app and list every native\n"
+		"                  library (.so) it loads (injectionless / stealthy).\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -48,6 +51,8 @@ int main(int argc, char **argv)
 		return cmd_syscalls(argc - 1, argv + 1);
 	if (!strcmp(cmd, "funcs"))
 		return cmd_funcs(argc - 1, argv + 1);
+	if (!strcmp(cmd, "lib"))
+		return cmd_lib(argc - 1, argv + 1);
 
 	fprintf(stderr, "%s: unknown command '%s'\n\n", argv[0], cmd);
 	usage(argv[0]);

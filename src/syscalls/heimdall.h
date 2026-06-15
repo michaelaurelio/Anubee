@@ -10,7 +10,6 @@
 #define HEIMDALL_MAX_STACK_DEPTH 32
 #define HEIMDALL_MAX_RANGES      8
 #define HEIMDALL_SYSCALL_NARGS   6
-#define HEIMDALL_MAX_NAME        64
 
 /* Stack snapshot (Phase 2a): registers + a bounded copy of the thread's user
  * stack, captured in eBPF at the syscall point (the thread is in-kernel, so the
@@ -30,11 +29,6 @@
 /* Raw sockaddr captured at entry for connect/bind/sendto (family + port + addr,
  * or a unix path prefix), decoded to ip:port in userspace. */
 #define HEIMDALL_SOCK_MAX        64
-
-/* Linux VMA flag (not always macro-defined in vmlinux.h). */
-#ifndef HEIMDALL_VM_EXEC
-#define HEIMDALL_VM_EXEC 0x00000004UL
-#endif
 
 enum heimdall_event_type {
 	HEIMDALL_EV_SYSCALL = 1,
@@ -80,25 +74,9 @@ struct heimdall_stack_snapshot {
 	__u8  snap[HEIMDALL_SNAP_MAX];               /* user stack starting at sp */
 };
 
-/* An executable, file-backed mapping just appeared (from uprobe_mmap). */
-struct heimdall_map_event {
-	struct heimdall_hdr h;
-	__u64 start;
-	__u64 end;
-	__u64 pgoff;                                 /* file offset in pages */
-	__u64 vm_flags;
-	__u64 inode;
-	__u32 dev;
-	__u32 is_exec;
-	char  name[HEIMDALL_MAX_NAME];               /* mapped file basename */
-};
-
-/* A range was unmapped (from uprobe_munmap). */
-struct heimdall_unmap_event {
-	struct heimdall_hdr h;
-	__u64 start;
-	__u64 end;
-};
+/* Executable file-backed mappings (uprobe_mmap) and unmaps (uprobe_munmap) are
+ * captured by the shared probe in common/lib_trace.bpf.h and arrive as
+ * struct lib_map_event / struct lib_unmap_event (see common/lib_trace.h). */
 
 /* Return value of a previously-emitted syscall, paired by tid (from the
  * kretprobe.multi on __arm64_sys_*). */

@@ -25,6 +25,7 @@
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
 #include "modules/module.h"
+#include "so_repair.h"
 
 extern char **environ;
 
@@ -806,6 +807,8 @@ static void dump_library_full(pid_t pid, const char *path, const char *bname,
                  bname, pid,
                  (unsigned long long)min_start, (unsigned long long)max_end,
                  outfile, (unsigned long long)written);
+
+    repair_dumped_so(outfile, min_start);
 }
 
 static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)

@@ -46,6 +46,7 @@ aarch64-linux-gnu-gcc -g -Wall \
     modules/proc_event.c \
     modules/execve.c \
     modules/prop_read.c \
+    so_repair.c \
     "$LIBBPF_DIST/usr/lib64/libbpf.a" \
     -lelf -lz \
     -static \

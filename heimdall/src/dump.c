@@ -162,6 +162,20 @@ static size_t mem_read_range(int memfd, uint64_t va, uint8_t *dst, uint64_t len)
 	return got;
 }
 
+// Public wrappers over the /proc/<pid>/mem reader (see dump.h), so the
+// symbolizer can read live target memory without duplicating this logic.
+int proc_mem_open(int pid)
+{
+	char mp[64];
+	snprintf(mp, sizeof(mp), "/proc/%d/mem", pid);
+	return open(mp, O_RDONLY | O_CLOEXEC);
+}
+
+size_t proc_mem_read(int memfd, uint64_t va, void *dst, size_t len)
+{
+	return mem_read_range(memfd, va, (uint8_t *)dst, (uint64_t)len);
+}
+
 // ---- dynamic info extracted from PT_DYNAMIC -------------------------------
 //
 // All addresses are stored as file-relative virtual offsets (== file offset in

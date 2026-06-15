@@ -690,9 +690,12 @@ static char dump_zero_page[4096];  // zero-fill buffer for unmapped gaps
 typedef struct { uint64_t start; uint64_t end; } vma_range_t;
 
 // Collect all VMA ranges in /proc/PID/maps that belong to `path`.
+// If apk_off_lo < apk_off_hi, only include segments whose file offset (bytes)
+// falls within [apk_off_lo, apk_off_hi) — used to isolate one embedded SO.
 // Returns segment count, -1 on maps open failure, 0 if path not found.
 static int collect_segments(pid_t pid, const char *path,
-                             vma_range_t *out, int max_segs)
+                             vma_range_t *out, int max_segs,
+                             uint64_t apk_off_lo, uint64_t apk_off_hi)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
@@ -703,16 +706,17 @@ static int collect_segments(pid_t pid, const char *path,
     int count = 0;
     char line[512];
     while (fgets(line, sizeof(line), f) && count < max_segs) {
-        unsigned long long seg_start, seg_end;
+        unsigned long long seg_start, seg_end, pgoff;
         char seg_path[256] = "";
-        if (sscanf(line, "%llx-%llx %*s %*x %*s %*d %255s",
-                   &seg_start, &seg_end, seg_path) < 2)
+        if (sscanf(line, "%llx-%llx %*s %llx %*s %*d %255s",
+                   &seg_start, &seg_end, &pgoff, seg_path) < 3)
             continue;
-        if (strcmp(seg_path, path) == 0) {
-            out[count].start = (uint64_t)seg_start;
-            out[count].end   = (uint64_t)seg_end;
-            count++;
-        }
+        if (strcmp(seg_path, path) != 0) continue;
+        if (apk_off_lo < apk_off_hi &&
+            (pgoff < apk_off_lo || pgoff >= apk_off_hi)) continue;
+        out[count].start = (uint64_t)seg_start;
+        out[count].end   = (uint64_t)seg_end;
+        count++;
     }
     fclose(f);
     return count;
@@ -724,10 +728,11 @@ static int collect_segments(pid_t pid, const char *path,
 // Falls back to [fb_start, fb_end] if maps scanning fails or finds nothing.
 // Unmapped gaps between segments are zero-filled.
 static void dump_library_full(pid_t pid, const char *path, const char *bname,
-                               uint64_t fb_start, uint64_t fb_end)
+                               uint64_t fb_start, uint64_t fb_end,
+                               uint64_t apk_off_lo, uint64_t apk_off_hi)
 {
     vma_range_t segs[32];
-    int nseg = collect_segments(pid, path, segs, 32);
+    int nseg = collect_segments(pid, path, segs, 32, apk_off_lo, apk_off_hi);
 
     uint64_t min_start, max_end;
     if (nseg <= 0) {
@@ -1585,10 +1590,42 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
-        if (dump_module_count > 0 && dump_pattern_matches(path)) {
-            const char *bname = strrchr(path, '/');
-            dump_library_full(header->pid, path, bname ? bname + 1 : path,
-                              e->start, e->end);
+        if (dump_module_count > 0) {
+            const char *dump_label = NULL;
+            char apk_so_name[128] = "";
+            bool do_dump = false;
+            uint64_t apk_off_lo = 0, apk_off_hi = 0;
+
+            size_t plen = strlen(path);
+            if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0) {
+                unsigned long so_off;
+                if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12,
+                                       apk_so_name, sizeof(apk_so_name), &so_off)
+                    && dump_pattern_matches(apk_so_name)) {
+                    do_dump = true;
+                    dump_label = apk_so_name;
+                    // Narrow segment collection to this SO's byte range in the APK
+                    // so dump_library_full doesn't span segments of other embedded SOs.
+                    apk_cache_t *ac = apk_cache_get(path);
+                    if (ac) {
+                        for (int k = 0; k < ac->count; k++) {
+                            if (strcmp(ac->entries[k].name, apk_so_name) == 0) {
+                                apk_off_lo = ac->entries[k].data_start;
+                                apk_off_hi = ac->entries[k].data_start + ac->entries[k].size;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if (dump_pattern_matches(path)) {
+                do_dump = true;
+                const char *bname = strrchr(path, '/');
+                dump_label = bname ? bname + 1 : path;
+            }
+
+            if (do_dump)
+                dump_library_full(header->pid, path, dump_label, e->start, e->end,
+                                  apk_off_lo, apk_off_hi);
         }
 
         if (list_libs) {

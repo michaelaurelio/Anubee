@@ -1,4 +1,5 @@
 build/
+docs/
 .ares-image-stamp
 # generated funcs skeleton sits in-tree next to its source
 src/funcs/ares-tracer.skel.h

@@ -122,8 +122,9 @@ build truth.
   and no uprobes — nothing is written into the target, so it sits on the stealthy
   side of the detectability firewall (§7).
 - Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
-  line (shared with `syscalls -l` and `funcs -L`), plus optional structured JSONL via
-  `-o` (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §5).
+  line (shared with `syscalls -l`), plus optional structured JSONL via `-o`
+  (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §5). `[unlib]` unmap lines are
+  suppressed on stdout unless `-v` is passed; the JSONL (`-o`) always records both.
 
 ## 5. Unified trace schema
 
@@ -144,13 +145,7 @@ stream:
   schema (`{"id":..,"library":..,...}`) since its records share the syscall trace.
 
 **Planned (deferred):** a structured emitter for `funcs` so its events become
-first-class, analyzable records under the same discriminator:
-`{"type":"call","module":..,"symbol":..,"entry_addr":..,"args":[..],
-"strings":[..],"call_stack":[..]}`, `{"type":"return","retval":..,
-"elapsed_ns":..}`, and `map/unmap/spawn/proc_exit/execve/prop`. The hook point is
-marked as a `SEAM` comment at the top of `handle_event()` in
-`src/funcs/ares-tracer.c`; the event structs already carry all the needed fields
-(`src/funcs/ares-tracer.h`).
+first-class records under the same discriminator. See [BACKLOG.md](BACKLOG.md).
 
 ## 6. MCP server (`tools/ares-mcp`, host-side Python)
 
@@ -167,10 +162,7 @@ marked as a `SEAM` comment at the top of `handle_event()` in
   `ARES_SHELL_PREFIX`, `ARES_SERIAL`).
 
 **Long-term:** a single unified `ares-mcp` that treats `ares funcs` structured
-output as a first-class trace source alongside syscalls — function-call
-histograms, filter by symbol/module, call→return timing, distinct stacks,
-prop/exec/spawn views — sharing the same filtering layer. This depends on the
-deferred structured-funcs emitter (§5).
+output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLOG.md).
 
 ---
 
@@ -194,46 +186,9 @@ deferred structured-funcs emitter (§5).
 
 ---
 
-## 8. Shared-code / future-consolidation roadmap
+## 8. Future work
 
-The two engines were merged with **minimal edits** (surgical), so they still carry
-duplicated logic. The **library-load tracing slice is now consolidated** into
-`src/common/lib_trace.*` (mmap/munmap capture, `/proc` resolution, `[lib]` emitter,
-unified `lib_map_event`/`lib_unmap_event`; see §1/§4). The remaining items are
-recorded here so a later `src/common/` pass has a map. Rough priority:
-
-1. **JSON/JSONL string escaping** — identical switch in both
-   (`src/syscalls/heimdall.c` `jb_*` vs `src/funcs/ares-tracer.c`
-   `json_fwrite_str`); differs only in output sink → one `json_escape(sink)`.
-2. **Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
-   shared drain helper.
-3. **`/proc/<pid>/maps` parsing + basename→fullpath cache** — the funcs engine's
-   inline parsing + cache is now in `src/common/lib_trace.c` (`ares_libtrace_resolve_path`),
-   shared by all three engines. *Remaining:* `symbolize.c`'s own maps parsing (for
-   stack symbolization) is still separate → fold into one maps/symbol module.
-4. **Kernel-side UID filter** — `uid_matches()` + target-uid BPF map
-   (`target_uid` vs `target_uids`) → shared BPF header.
-5. **`resolve_uid()` + app launch/force-stop + install-UID-before-launch** — same
-   flow in both → shared device/launch helper.
-6. **ELF reconstruction** — `dump.c` (dump live memory + rebuild) vs `so_repair.c`
-   (repair a dump); related, mergeable into one ELF dump/repair module.
-7. **Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
-8. ~~Near-identical `map_event` struct in both headers~~ — **done:** unified as
-   `lib_map_event`/`lib_unmap_event` in `src/common/lib_trace.h`. Still duplicated:
-   `libbpf_print_fn` + signal handlers; duplicate `vmlinux.h`; (vendored libbpf now
-   single).
-9. **Capability the funcs engine could borrow:** the syscalls engine's
-   `decode_sockaddr` (the funcs engine has no sockaddr decoding).
-
----
-
-## 9. Deferred / known tech debt
-
-- The remaining `src/common/` consolidation in §8 (the library-load tracing slice
-  is done — see §1/§4).
-- Structured JSONL emitter for `ares funcs` + matching MCP analysis tools (§5, §6).
-- Correlated simultaneous syscall + function tracing in a single pass (currently
-  out of scope to preserve the detectability firewall).
-- Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.
-- Rebranding the syscalls engine's internal `HEIMDALL_*` env vars / `heimdall.*`
-  filenames to `ares-*` (cosmetic; left to avoid churn during the merge).
+Deferred architecture work (notably the proposed **`ares dump`** engine that
+consolidates the two memory-dump implementations and unblocks removing
+`ares syscalls -l`), the `src/common/` consolidation roadmap, and known tech debt
+now live in [BACKLOG.md](BACKLOG.md).

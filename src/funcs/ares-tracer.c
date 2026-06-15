@@ -56,7 +56,6 @@ static const struct argp_option options[] = {
     { "include-module", 'I', "MODULE", 0, "Target module to trace (path, name)" },
     { "include", 'i', "FUNCTION", 0, "Target function to trace (regex)" },
     { "verbose", 'v', NULL, 0, "Verbose debug output (modules scanned, symbols matched)" },
-    { "list-libs", 'L', NULL, 0, "Library detection mode: list loaded/unloaded libs, no uprobe attachment" },
     { "resolve-syms", 'S', NULL, 0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment" },
     { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
     { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
@@ -78,7 +77,6 @@ struct args {
     char func_patterns[32][256];
     int func_pattern_count;
     bool verbose;
-    bool list_libs;
     bool resolve_syms;
     char custom_specs[64][512];
     int custom_spec_count;
@@ -126,10 +124,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'v':
             args->verbose = true;
-            break;
-
-        case 'L':
-            args->list_libs = true;
             break;
 
         case 'S':
@@ -602,7 +596,6 @@ int func_re_count = 0;
 regex_t func_ret_re[32];
 int func_ret_re_count = 0;
 bool verbose = false;
-bool list_libs = false;
 bool resolve_syms = false;
 bool caller_only = false;
 
@@ -1411,8 +1404,6 @@ static int resolve_custom_spec_for_path(pid_t pid, const char *path,
 static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprobe_pid,
                                          unsigned long map_start, unsigned long map_end)
 {
-    if (list_libs) return;
-
     int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0]));
     for (int s = 0; s < custom_probe_spec_count && probe_target_count < max; s++) {
         const custom_probe_spec_t *spec = &custom_probe_specs[s];
@@ -1545,23 +1536,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                                   apk_off_lo, apk_off_hi);
         }
 
-        if (list_libs) {
-            if (mod_matched) {
-                char so_name[128], line[512];
-                const char *soname = NULL;
-                unsigned long so_off;
-                size_t plen = strlen(path);
-                if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0 &&
-                    apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
-                    soname = so_name;
-                // Unified [lib] format via the shared formatter, kept on funcs's
-                // ts_print plumbing so -o/-csv mirroring is preserved.
-                ares_libtrace_format_lib(line, sizeof(line), e, path, soname);
-                ts_print("%s\n", line);
-            }
-            return 0;
-        }
-
         // Normal symbol resolution (filtered by -I/-i/-r)
         if (mod_matched && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev_count = probe_target_count;
@@ -1639,8 +1613,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (list_libs) return 0;
-
         if (verbose)
             ts_print("[unmap] > PID:%d 0x%llx-0x%llx\n", header->pid,
                      (unsigned long long)e->start, (unsigned long long)e->end);
@@ -1659,7 +1631,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
 
     if (header->type == ARES_EVENT_CALL) {
-        if (list_libs || resolve_syms) return 0;
+        if (resolve_syms) return 0;
         const struct event *e = data;
 
         if (data_sz < sizeof(*e)) return 0;
@@ -1756,7 +1728,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
 
     if (header->type == ARES_EVENT_RETURN) {
-        if (list_libs || resolve_syms) return 0;
+        if (resolve_syms) return 0;
         const struct event *e = data;
         if (data_sz < sizeof(*e)) return 0;
 
@@ -1859,7 +1831,6 @@ int cmd_funcs(int argc, char **argv)
     };
     argp_parse(&argp, argc, argv, 0, NULL, &args);
     verbose = args.verbose;
-    list_libs = args.list_libs;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
 
@@ -1882,7 +1853,6 @@ int cmd_funcs(int argc, char **argv)
     }
 
     if (verbose) err_print("  [verb] > mode ON\n");
-    if (list_libs) ts_print("[info] > library detection mode\n");
     if (resolve_syms) ts_print("[info] > symbol resolution mode\n");
 
 
@@ -1996,7 +1966,7 @@ int cmd_funcs(int argc, char **argv)
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
     if (args.pid_count > 0) {
-        if (!list_libs && (mod_re_count > 0 || func_re_count > 0)) {
+        if (mod_re_count > 0 || func_re_count > 0) {
             for (int i = 0; i < args.pid_count; i++) {
                 ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
@@ -2029,7 +1999,7 @@ int cmd_funcs(int argc, char **argv)
             ts_print("[probe] > PID %d UID %d\n", args.pids[i], pid_uid);
         }
 
-        if (!list_libs && (mod_re_count > 0 || func_re_count > 0)) {
+        if (mod_re_count > 0 || func_re_count > 0) {
             for (int i = 0; i < probe_target_count && !exiting; i++) {
                 const char *bname = strrchr(probe_targets[i].mod_path, '/');
                 bname = bname ? bname + 1 : probe_targets[i].mod_path;
@@ -2101,7 +2071,7 @@ int cmd_funcs(int argc, char **argv)
         }
         ts_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
 
-        if (!list_libs && (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0)) {
+        if (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
             int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
@@ -2145,7 +2115,7 @@ int cmd_funcs(int argc, char **argv)
             }
         }
 
-        if (!list_libs && custom_probe_spec_count > 0) {
+        if (custom_probe_spec_count > 0) {
             char cmaps[64];
             snprintf(cmaps, sizeof(cmaps), "/proc/%d/maps", zygote_pid);
             FILE *cf = fopen(cmaps, "r");

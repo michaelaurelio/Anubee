@@ -10,7 +10,6 @@
 // Globals defined in ares-tracer.c, shared with modules
 extern bool verbose;
 extern bool caller_only;
-extern bool list_libs;
 extern bool resolve_syms;
 
 // Functions defined in ares-tracer.c, shared with modules

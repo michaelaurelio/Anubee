@@ -7,7 +7,7 @@ layers** by combining two complementary eBPF tracing engines in a single binary:
 | Subcommand | Engine | What it sees | Footprint |
 |---|---|---|---|
 | `ares syscalls` | kprobe on the syscall dispatcher, filtered by which library a syscall came from | every syscall a target library makes, with decoded args + backtraces; plus live ELF/library dumping | **injectionless** — nothing is written into the target; `TracerPid` stays 0 |
-| `ares funcs` | uprobe/uretprobe on specific functions (spec-driven), plus process/exec/getprop modules | individual function calls with typed arguments, return values and timing | **detectable** — inserts a `BRK` into the target's code (use `ares prelude-check` to see it) |
+| `ares funcs` | uprobe/uretprobe on specific functions (spec-driven), plus process/exec/getprop modules | individual function calls with typed arguments, return values and timing | **detectable** — inserts a `BRK` into the target's code |
 
 > **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
 > RASP triage (e.g. clean-vs-rooted diffing). `funcs` is more granular but a
@@ -119,15 +119,6 @@ modules · `-o file` (`.jsonl`/`.csv`) · `-D pattern` dump module.
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.
 
-### `ares prelude-check` — uprobe detectability diagnostic
-
-```sh
-ares prelude-check           # prints its PID + attach commands, then waits
-```
-
-Shows whether `ares funcs`' uprobe `BRK` injection is visible at a function
-prelude — i.e. how detectable the function tracer is on this target.
-
 ### MCP server (optional, host-side)
 
 ```sh
@@ -149,7 +140,7 @@ ares keeps the two engines as **separate subcommands** deliberately:
   RASP integrity checks.
 - `funcs` **writes a `BRK`** into the target's executable pages (how uprobes
   work). A RASP that checksums its own code or inspects function prologues can
-  detect this (that's what `prelude-check` demonstrates).
+  detect this.
 
 **Putting both in one on-disk binary does not make `syscalls` any more
 detectable** — the binary sits at `/data/local/tmp`, not inside the target. The

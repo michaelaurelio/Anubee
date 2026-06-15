@@ -11,7 +11,6 @@
 // Engine entry points (renamed from each tool's former main()).
 int cmd_syscalls(int argc, char **argv);   // src/syscalls/heimdall.c
 int cmd_funcs(int argc, char **argv);      // src/funcs/ares-tracer.c
-int cmd_prelude_check(void);               // tools/prelude-check.c
 
 static void usage(const char *argv0)
 {
@@ -25,8 +24,6 @@ static void usage(const char *argv0)
 		"                  (injectionless / stealthy). Traces Java + native layers.\n"
 		"  funcs           uprobe function tracer, spec-driven. Writes BRK into the\n"
 		"                  target (detectable). Modules: proc / execve / getprop.\n"
-		"  prelude-check   on-device diagnostic showing whether uprobe BRK injection\n"
-		"                  is visible at a function prelude.\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -51,8 +48,6 @@ int main(int argc, char **argv)
 		return cmd_syscalls(argc - 1, argv + 1);
 	if (!strcmp(cmd, "funcs"))
 		return cmd_funcs(argc - 1, argv + 1);
-	if (!strcmp(cmd, "prelude-check"))
-		return cmd_prelude_check();
 
 	fprintf(stderr, "%s: unknown command '%s'\n\n", argv[0], cmd);
 	usage(argv[0]);

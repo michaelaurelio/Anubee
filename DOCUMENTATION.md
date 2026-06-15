@@ -19,19 +19,19 @@ the churn to rename (e.g. the syscalls engine's `HEIMDALL_*` runtime env vars an
                         ares  (single static aarch64 binary)
                                        │
                         src/main.c  — subcommand dispatch
-              ┌────────────────────────┼─────────────────────────┐
-        "syscalls"                  "funcs"                  "prelude-check"
-   src/syscalls/ (heimdall)   src/funcs/ (ares-tracer)     tools/prelude-check.c
-   kprobe syscall engine      uprobe function engine        uprobe-visibility
-   + its own BPF skeleton     + its own BPF skeleton         diagnostic
-            │                          │
-            └──── JSONL trace ─────────┴────► host: tools/ares-mcp (DuckDB + MCP)
+              ┌────────────────────────┴─────────────────────────┐
+        "syscalls"                                            "funcs"
+   src/syscalls/ (heimdall)                          src/funcs/ (ares-tracer)
+   kprobe syscall engine                             uprobe function engine
+   + its own BPF skeleton                            + its own BPF skeleton
+            │                                                  │
+            └──────────────── JSONL trace ─────────────────────┴──► host: tools/ares-mcp (DuckDB + MCP)
 ```
 
 - **One binary, two engines, selected by subcommand.** `main()` looks at
-  `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs` /
-  `cmd_prelude_check`), passing the remaining argv so each engine keeps its own
-  argument parser unchanged.
+  `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs`),
+  passing the remaining argv so each engine keeps its own argument parser
+  unchanged.
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
   are *not* fused into a single always-on pass (see §6).
@@ -47,9 +47,9 @@ The Makefile solves this without rewriting either engine: it compiles each
 engine's objects, **partial-links** them into one relocatable object
 (`ld -r`), then **localizes every symbol except the single `cmd_*` entry point**
 with `objcopy --keep-global-symbol=cmd_<engine>`. After that, each engine's
-internals are file-local and cannot collide; only `cmd_syscalls` / `cmd_funcs` /
-`cmd_prelude_check` remain visible to `main()`. The only source change required
-was renaming each former `main()` to its `cmd_*` name.
+internals are file-local and cannot collide; only `cmd_syscalls` / `cmd_funcs`
+remain visible to `main()`. The only source change required was renaming each
+former `main()` to its `cmd_*` name.
 
 ### Build pipeline (Makefile)
 
@@ -155,8 +155,7 @@ deferred structured-funcs emitter (§4).
 - Detectability is **per-mechanism, not per-binary**: `syscalls` (kprobe) is
   invisible to in-process RASP (no `TracerPid`, no target-memory modification,
   kernel-side filtering); `funcs` (uprobe) writes a `BRK` into the target's
-  executable pages and is detectable by prologue/code-integrity checks
-  (`prelude-check` demonstrates this).
+  executable pages and is detectable by prologue/code-integrity checks.
 - **The real risk is running the loud (uprobe) engine alongside the quiet (kprobe)
   one.** A RASP that spots the `BRK` knows it is being analyzed and can change
   behavior — poisoning the syscall engine's highest-value use (clean-vs-rooted

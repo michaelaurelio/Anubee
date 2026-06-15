@@ -34,6 +34,7 @@ static void on_sigint(int sig) { (void)sig; exiting = 1; }
 
 static FILE *g_jsonl = NULL;   // structured JSONL sink (-o), or NULL
 static int   g_quiet = 0;      // suppress stdout text
+static int   g_verbose = 0;    // -v: also print [unlib] unmap lines on stdout
 
 // ---- running Android tools (no libc system(): /bin/sh is absent) ---------
 
@@ -134,7 +135,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	} else if (h->type == LIB_EV_UNMAP) {
 		if (sz < sizeof(struct lib_unmap_event))
 			return 0;
-		ares_libtrace_emit_unlib(g_jsonl, g_quiet, data);
+		ares_libtrace_emit_unlib(g_jsonl, g_quiet || !g_verbose, data);
 	}
 	return 0;
 }
@@ -155,6 +156,7 @@ static void usage(void)
 		"\n"
 		"options:\n"
 		"  -o, --output FILE   also write structured JSONL ({\"type\":\"lib\",...})\n"
+		"  -v, --verbose       also print [unlib] unmap lines (default: [lib] only)\n"
 		"  -q, --quiet         suppress the human-readable [lib] lines on stdout\n"
 		"  -h, --help          show this help\n");
 }
@@ -170,6 +172,8 @@ int cmd_lib(int argc, char **argv)
 			return 0;
 		} else if (!strcmp(a, "-q") || !strcmp(a, "--quiet")) {
 			g_quiet = 1;
+		} else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
+			g_verbose = 1;
 		} else if (!strcmp(a, "-o") || !strcmp(a, "--output")) {
 			if (++i >= argc) { fprintf(stderr, "lib: -o needs a FILE\n"); return 1; }
 			out_path = argv[i];

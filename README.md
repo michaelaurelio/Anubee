@@ -138,15 +138,16 @@ ares lib com.example.app com.example.app/.MainActivity
 ares lib -o libs.jsonl com.example.app
 ```
 
-Output line (shared with `syscalls -l` / `funcs -L`):
+Output line (shared with `syscalls -l`):
 
 ```
 [lib] pid 22045 /data/app/~~.../lib/arm64/libfoo.so [0x7a..,0x7b..) off=0x0 inode=12345 ppid=1037
 ```
 
-Common flags: `-o file.jsonl` structured output (`{"type":"lib",...}`) · `-q`
-quiet. This is the dedicated standalone tracer; `ares syscalls -l` keeps the same
-listing but is wired to the on-exit memory-dump pipeline (`-D`).
+Common flags: `-o file.jsonl` structured output (`{"type":"lib",...}`) · `-v` also
+print `[unlib]` unmap lines (off by default — keeps the stream to `[lib]` only) ·
+`-q` quiet. This is the dedicated standalone tracer; `ares syscalls -l` keeps the
+same listing but is wired to the on-exit memory-dump pipeline (`-D`).
 
 ### MCP server (optional, host-side)
 

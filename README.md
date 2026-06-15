@@ -119,6 +119,35 @@ modules · `-o file` (`.jsonl`/`.csv`) · `-D pattern` dump module.
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.
 
+### `ares lib` — library-load tracer
+
+Launches an app fresh and lists every native library (`.so`) it loads, from the
+process's first thread. Like `syscalls` it gates by app UID installed *before*
+launch (injectionless / stealthy — a kprobe on `uprobe_mmap`, nothing written
+into the target), so it catches the earliest linker loads and every forked app
+process.
+
+```sh
+# Trace all libraries an app loads (Ctrl-C to stop):
+ares lib com.example.app
+
+# Pass an explicit launcher activity if it can't be auto-resolved:
+ares lib com.example.app com.example.app/.MainActivity
+
+# Also write structured JSON Lines for later analysis:
+ares lib -o libs.jsonl com.example.app
+```
+
+Output line (shared with `syscalls -l` / `funcs -L`):
+
+```
+[lib] pid 22045 /data/app/~~.../lib/arm64/libfoo.so [0x7a..,0x7b..) off=0x0 inode=12345 ppid=1037
+```
+
+Common flags: `-o file.jsonl` structured output (`{"type":"lib",...}`) · `-q`
+quiet. This is the dedicated standalone tracer; `ares syscalls -l` keeps the same
+listing but is wired to the on-exit memory-dump pipeline (`-D`).
+
 ### MCP server (optional, host-side)
 
 ```sh

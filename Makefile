@@ -58,6 +58,8 @@ FUNC_BPF_OBJ := $(BUILD)/ares-tracer.bpf.o
 # funcs skeleton lives next to its source: ares-tracer.c and modules/*.c include
 # it via "ares-tracer.skel.h" / "../ares-tracer.skel.h".
 FUNC_SKEL    := $(SRC)/funcs/ares-tracer.skel.h
+LIB_BPF_OBJ  := $(BUILD)/lib.bpf.o
+LIB_SKEL     := $(BUILD)/lib.skel.h
 SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
@@ -69,15 +71,30 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/so_repair.c \
              $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
              $(SRC)/funcs/modules/prop_read.c
 
+# shared library-load tracing module (src/common), linked once; exports only its
+# ares_libtrace_* API (everything else localized, like the engines).
+COMMON_CSRC := $(SRC)/common/lib_trace.c
+COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
+COMMON_PART := $(BUILD)/common.part.o
+COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
+               ares_libtrace_emit_lib ares_libtrace_emit_unlib
+
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 
+LIB_CSRC := $(SRC)/lib/lib.c
+LIB_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(LIB_CSRC))
+
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
+LIB_PART  := $(BUILD)/lib.part.o
 MAIN_OBJ  := $(BUILD)/main.o
 
-SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
-FUNC_CFLAGS := -O2 -Wall -I$(SRC)/funcs -I$(LIBBPF_INC)
+# -I$(SRC) lets engines and the common module resolve "common/lib_trace.h".
+SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
+FUNC_CFLAGS := -O2 -Wall -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
+LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC)
+COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 
 # Static link: libelf (zstd-enabled) pulls in zstd+zlib; liblzma decodes
 # .gnu_debugdata mini-debug-info in the symbolizer. Superset of both engines.
@@ -103,21 +120,32 @@ $(LIBBPF_A):
 		CC=$(CC) AR=$(AR) install install_uapi_headers
 
 # ---- BPF objects + skeletons (host clang) ---------------------------------
-$(SYSC_BPF_OBJ): $(SRC)/syscalls/heimdall.bpf.c $(SRC)/syscalls/heimdall.h vmlinux.h $(LIBBPF_A)
+$(SYSC_BPF_OBJ): $(SRC)/syscalls/heimdall.bpf.c $(SRC)/syscalls/heimdall.h vmlinux.h $(LIBBPF_A) \
+                 $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h
 	mkdir -p $(BUILD)
-	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC)/syscalls -c $< -o $@
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/syscalls -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name heimdall > $@
 
-# ares-tracer.bpf.c #includes its module .bpf.c files; one compilation unit.
+# ares-tracer.bpf.c #includes its module .bpf.c files and the shared lib_trace
+# probe; one compilation unit.
 $(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c $(SRC)/funcs/ares-tracer.h vmlinux.h $(LIBBPF_A) \
+                 $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h \
                  $(wildcard $(SRC)/funcs/modules/*.bpf.c)
 	mkdir -p $(BUILD)
-	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC)/funcs -c $< -o $@
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(FUNC_SKEL): $(FUNC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_tracer_bpf > $@
+
+# lib engine BPF: minimal maps + uid gate, then #includes the shared probe.
+$(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/lib -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(LIB_SKEL): $(LIB_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name ares_lib > $@
 
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
@@ -138,6 +166,14 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(COMMON_CFLAGS) -c $< -o $@
+
+$(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(SRC)/common/lib_trace.h $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(LIB_CFLAGS) -c $< -o $@
+
 $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
@@ -151,9 +187,17 @@ $(FUNC_PART): $(FUNC_OBJ)
 	$(LD) -r -o $@ $(FUNC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_funcs $@
 
+$(COMMON_PART): $(COMMON_OBJ)
+	$(LD) -r -o $@ $(COMMON_OBJ)
+	$(OBJCOPY) $(foreach s,$(COMMON_API),--keep-global-symbol=$(s)) $@
+
+$(LIB_PART): $(LIB_OBJ)
+	$(LD) -r -o $@ $(LIB_OBJ)
+	$(OBJCOPY) --keep-global-symbol=cmd_lib $@
+
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)

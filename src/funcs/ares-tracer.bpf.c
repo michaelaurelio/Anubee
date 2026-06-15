@@ -4,6 +4,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "ares-tracer.h"
+#include "common/lib_trace.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -196,107 +197,9 @@ int BPF_KRETPROBE(uretprobe_open)
 }
 
 
-SEC("kprobe/uprobe_mmap")
-int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
-{
-    if (!uid_matches())
-        return 0;
-
-    // Filter out anonymous mappings
-	struct file *file = BPF_CORE_READ(vma, vm_file);
-	if (file == NULL)
-		return 0;
-
-    // Skip non-executable mappings
-	__u64 vm_flags = BPF_CORE_READ(vma, vm_flags);
-	if (!(vm_flags & ARES_VM_EXEC))
-		return 0;
-
-    // Reserve ring buffer slot
-	struct map_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-    __u64 id = bpf_get_current_pid_tgid();
-    pid_t pid = (__u32)(id >> 32);
-    pid_t tid = (__u32)id;
-
-	e->h.type = ARES_EVENT_MAP;
-	e->h.pid  = pid;
-	e->h.tid  = tid;
-	e->h._pad = 0;
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
-
-    // Fill event-specific data
-	e->start    = BPF_CORE_READ(vma, vm_start);
-	e->end      = BPF_CORE_READ(vma, vm_end);
-	e->pgoff    = BPF_CORE_READ(vma, vm_pgoff);
-	e->vm_flags = vm_flags;
-
-    // Store inode and device info 
-	struct inode *inode = BPF_CORE_READ(file, f_inode);
-	if (inode != NULL) {
-		e->inode = BPF_CORE_READ(inode, i_ino);
-		e->dev   = BPF_CORE_READ(inode, i_sb, s_dev);
-	} else {
-		e->inode = 0;
-		e->dev   = 0;
-	}
-
-    // Store file basename
-	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
-	e->name[0] = '\0';
-	if (name != NULL)
-		bpf_probe_read_kernel_str(e->name, sizeof(e->name), name);
-
-    // Submit event to ring buffer
-	bpf_ringbuf_submit(e, 0);
-	return 0;
-}
-
-SEC("kprobe/uprobe_munmap")
-int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start, unsigned long end)
-{
-    if (!uid_matches())
-        return 0;
-
-	struct file *file = BPF_CORE_READ(vma, vm_file);
-	if (file == NULL)
-		return 0;
-
-	__u64 vm_flags = BPF_CORE_READ(vma, vm_flags);
-	if (!(vm_flags & ARES_VM_EXEC))
-		return 0;
-
-	struct map_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-	__builtin_memset(e, 0, sizeof(*e));
-
-    __u64 id = bpf_get_current_pid_tgid();
-    pid_t pid = (__u32)(id >> 32);
-    pid_t tid = (__u32)id;
-
-	e->h.type = ARES_EVENT_UNMAP;
-	e->h.pid  = pid;
-	e->h.tid  = tid;
-	e->h._pad = 0;
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
-	e->start  = start;
-	e->end    = end;
-
-	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
-	e->name[0] = '\0';
-	if (name != NULL)
-		bpf_probe_read_kernel_str(e->name, sizeof(e->name), name);
-
-	bpf_ringbuf_submit(e, 0);
-	return 0;
-}
+// Shared mmap/munmap capture (emits lib_map_event / lib_unmap_event into events_rb).
+#define LIBTRACE_EVENTS_RB events_rb
+#include "common/lib_trace.bpf.h"
 
 #include "modules/prop_read.bpf.c"
 #include "modules/proc_event.bpf.c"

@@ -26,6 +26,7 @@
 #include "ares-tracer.skel.h"
 #include "modules/module.h"
 #include "so_repair.h"
+#include "common/lib_trace.h"
 
 extern char **environ;
 
@@ -595,67 +596,6 @@ typedef struct {
 static apk_cache_t apk_cache[APK_CACHE_MAX];
 static int         apk_cache_count;
 
-// Basename-to-fullpath cache: used when /proc/PID/maps is unreadable during
-// MAP event handling (e.g. during UNMAP/REMAP cycles).
-#define PATH_CACHE_PIDS    16
-#define PATH_CACHE_NAMES  256
-
-typedef struct {
-    char basename[128];
-    char fullpath[256];
-} path_cache_entry_t;
-
-typedef struct {
-    pid_t              pid;
-    path_cache_entry_t names[PATH_CACHE_NAMES];
-    int                count;
-} pid_path_cache_t;
-
-static pid_path_cache_t path_cache[PATH_CACHE_PIDS];
-static int              path_cache_pid_count;
-
-static pid_path_cache_t *path_cache_find_pid(pid_t pid)
-{
-    for (int i = 0; i < path_cache_pid_count; i++)
-        if (path_cache[i].pid == pid) return &path_cache[i];
-    return NULL;
-}
-
-static void path_cache_put(pid_t pid, const char *basename, const char *fullpath)
-{
-    pid_path_cache_t *c = path_cache_find_pid(pid);
-    if (!c) {
-        if (path_cache_pid_count >= PATH_CACHE_PIDS) return;
-        c = &path_cache[path_cache_pid_count++];
-        c->pid   = pid;
-        c->count = 0;
-    }
-    for (int i = 0; i < c->count; i++) {
-        if (strcmp(c->names[i].basename, basename) == 0) {
-            strncpy(c->names[i].fullpath, fullpath, sizeof(c->names[i].fullpath) - 1);
-            return;
-        }
-    }
-    if (c->count >= PATH_CACHE_NAMES) return;
-    strncpy(c->names[c->count].basename, basename, sizeof(c->names[c->count].basename) - 1);
-    strncpy(c->names[c->count].fullpath, fullpath, sizeof(c->names[c->count].fullpath) - 1);
-    c->count++;
-}
-
-static int path_cache_lookup(pid_t pid, const char *basename, char *out, size_t outsz)
-{
-    pid_path_cache_t *c = path_cache_find_pid(pid);
-    if (!c) return -1;
-    for (int i = 0; i < c->count; i++) {
-        if (strcmp(c->names[i].basename, basename) == 0) {
-            strncpy(out, c->names[i].fullpath, outsz - 1);
-            out[outsz - 1] = '\0';
-            return 0;
-        }
-    }
-    return -1;
-}
-
 // Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
@@ -1007,37 +947,6 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
 
 
 // Handle events from ring buffer
-static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, size_t outsz)
-{
-    char maps_path[64];
-    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
-    FILE *f = fopen(maps_path, "r");
-    if (!f) {
-        if (verbose) err_print("  [scan] > fopen %s failed: %s\n", maps_path, strerror(errno));
-        return -1;
-    }
-
-    // Read /proc/PID/maps line by line then parse
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        char perms[5], path[256] = "";
-        unsigned long long start_addr;
-
-        if (sscanf(line, "%llx-%*x %4s %*x %*s %*d %255s", &start_addr, perms, path) < 2) continue;
-        
-        if (start_addr == start) {
-            strncpy(out, path, outsz - 1);
-            out[outsz - 1] = '\0';
-            
-            fclose(f);
-            return 0;
-        }
-    }   
-
-    fclose(f);
-    return -1;
-}
-
 static apk_cache_t *apk_cache_get(const char *apk_path)
 {
     for (int i = 0; i < apk_cache_count; i++)
@@ -1587,21 +1496,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     // uses for "type":"syscall" records. Hook the emitter into each case below.
 
     if (header->type == ARES_EVENT_MAP) {
-        const struct map_event *e = data;
-        if (data_sz < sizeof(*e)) 
+        const struct lib_map_event *e = data;
+        if (data_sz < sizeof(*e))
             return 0;
-        
+
         if (verbose) err_print("         [event]   | MMAP : %s\n", e->name);
         char path[256];
-        if (find_path_in_maps(header->pid, e->start, path, sizeof(path)) == 0) {
-            const char *bname = strrchr(path, '/');
-            path_cache_put(header->pid, bname ? bname + 1 : path, path);
-        } else {
-            if (path_cache_lookup(header->pid, e->name, path, sizeof(path)) != 0)
-                return 0;
-            if (verbose)
-                err_print("  [scan] > using cached path for %s (maps unreadable)\n", e->name);
-        }
+        if (ares_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
+            return 0;
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
@@ -1645,17 +1547,17 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         if (list_libs) {
             if (mod_matched) {
+                char so_name[128], line[512];
+                const char *soname = NULL;
+                unsigned long so_off;
                 size_t plen = strlen(path);
-                if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0) {
-                    char so_name[128];
-                    unsigned long so_off;
-                    if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
-                        ts_print("[map] > PID:%d PPID:%d %s -> %s\n", header->pid, e->ppid, path, so_name);
-                    else
-                        ts_print("[map] > PID:%d PPID:%d %s\n", header->pid, e->ppid, path);
-                } else {
-                    ts_print("[map] > PID:%d PPID:%d %s\n", header->pid, e->ppid, path);
-                }
+                if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0 &&
+                    apk_resolve_offset(path, (unsigned long)e->pgoff << 12, so_name, sizeof(so_name), &so_off))
+                    soname = so_name;
+                // Unified [lib] format via the shared formatter, kept on funcs's
+                // ts_print plumbing so -o/-csv mirroring is preserved.
+                ares_libtrace_format_lib(line, sizeof(line), e, path, soname);
+                ts_print("%s\n", line);
             }
             return 0;
         }
@@ -1733,14 +1635,15 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     }
 
     if (header->type == ARES_EVENT_UNMAP) {
-        const struct map_event *e = data;
+        const struct lib_unmap_event *e = data;
         if (data_sz < sizeof(*e))
             return 0;
 
         if (list_libs) return 0;
 
         if (verbose)
-            ts_print("[unmap] > PID:%d PPID:%d %s\n", header->pid, e->ppid, e->name);
+            ts_print("[unmap] > PID:%d 0x%llx-0x%llx\n", header->pid,
+                     (unsigned long long)e->start, (unsigned long long)e->end);
 
         return 0;
     }

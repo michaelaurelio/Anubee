@@ -16,25 +16,33 @@ the churn to rename (e.g. the syscalls engine's `HEIMDALL_*` runtime env vars an
 ## 1. Architecture
 
 ```
-                        ares  (single static aarch64 binary)
-                                       │
-                        src/main.c  — subcommand dispatch
-              ┌────────────────────────┴─────────────────────────┐
-        "syscalls"                                            "funcs"
-   src/syscalls/ (heimdall)                          src/funcs/ (ares-tracer)
-   kprobe syscall engine                             uprobe function engine
-   + its own BPF skeleton                            + its own BPF skeleton
-            │                                                  │
-            └──────────────── JSONL trace ─────────────────────┴──► host: tools/ares-mcp (DuckDB + MCP)
+                              ares  (single static aarch64 binary)
+                                            │
+                              src/main.c  — subcommand dispatch
+        ┌──────────────────────────┬────────────────────────┬───────────────────────┐
+   "syscalls"                    "funcs"                   "lib"
+ src/syscalls/ (heimdall)     src/funcs/ (ares-tracer)   src/lib/
+ kprobe syscall engine        uprobe function engine     kprobe library-load engine
+ + its own BPF skeleton       + its own BPF skeleton      + its own BPF skeleton
+        └──────────────────────────┴──── src/common/lib_trace ────────┘
+            shared .so mmap/munmap capture + /proc maps resolver + "[lib]" emitter
+                                            │
+                                      JSONL trace ──► host: tools/ares-mcp (DuckDB + MCP)
 ```
 
-- **One binary, two engines, selected by subcommand.** `main()` looks at
-  `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs`),
-  passing the remaining argv so each engine keeps its own argument parser
-  unchanged.
+- **One binary, three engines, selected by subcommand.** `main()` looks at
+  `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs` /
+  `cmd_lib`), passing the remaining argv so each engine keeps its own argument
+  parser unchanged.
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
-  are *not* fused into a single always-on pass (see §6).
+  are *not* fused into a single always-on pass (see §7).
+- **Library-load tracing is shared, not duplicated.** The mmap/munmap capture,
+  `/proc/<pid>/maps` full-path resolution, and the `[lib]` text/JSONL emitter live
+  once in `src/common/lib_trace.*` and are used by all three engines. The BPF probe
+  is *source*-shared (`#include`d into each engine's own skeleton, preserving the
+  per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
+  exporting only its `ares_libtrace_*` API. See §8.
 
 ### Why partial-link + symbol localization
 
@@ -88,7 +96,7 @@ build truth.
 - **Memory dump / ELF reconstruction** (`dump.c`): on exit, dumps matching
   libraries from live memory and rebuilds loadable ELFs (captures in-memory
   decryption/unpacking).
-- Output: structured per-event JSONL (see §4) plus optional dump files.
+- Output: structured per-event JSONL (see §5) plus optional dump files.
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 
@@ -101,9 +109,23 @@ build truth.
   `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
   (Android `__system_property_*` hooks).
 - ELF repair of dumped libraries: `so_repair.c`.
-- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §4).
+- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §5).
 
-## 4. Unified trace schema
+## 4. The `lib` engine (kprobe, library-load only)
+
+- Launches the target package fresh under a UID filter installed *before* launch
+  (resolve app-UID → `am force-stop` + `am start`), so every executable, file-backed
+  mapping is seen from the process's first thread, including forked app processes.
+- The thinnest engine: it adds only a ring buffer, the target-UID map, and
+  `uid_matches()`; the mmap/munmap capture, `/proc/<pid>/maps` full-path resolution,
+  and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
+  and no uprobes — nothing is written into the target, so it sits on the stealthy
+  side of the detectability firewall (§7).
+- Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
+  line (shared with `syscalls -l` and `funcs -L`), plus optional structured JSONL via
+  `-o` (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §5).
+
+## 5. Unified trace schema
 
 Every record carries a **`type` discriminator** so one consumer can ingest a mixed
 stream:
@@ -115,6 +137,11 @@ stream:
 - `ares funcs` currently emits **log-line** records:
   `{"ts":..,"stream":"out|err","tag":"event|map|...","message":".."}` — the
   rendered human-readable output, not field-level data.
+- `ares lib` emits **structured** library-load records via `-o`:
+  `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
+  "pgoff":..,"inode":..}` and `{"type":"unlib","pid":..,"tid":..,"start":..,
+  "end":..}` (from the shared emitter). `ares syscalls -l` keeps its own combined
+  schema (`{"id":..,"library":..,...}`) since its records share the syscall trace.
 
 **Planned (deferred):** a structured emitter for `funcs` so its events become
 first-class, analyzable records under the same discriminator:
@@ -125,7 +152,7 @@ marked as a `SEAM` comment at the top of `handle_event()` in
 `src/funcs/ares-tracer.c`; the event structs already carry all the needed fields
 (`src/funcs/ares-tracer.h`).
 
-## 5. MCP server (`tools/ares-mcp`, host-side Python)
+## 6. MCP server (`tools/ares-mcp`, host-side Python)
 
 - `trace_store.py` — loads a trace (JSON array or JSONL) into in-memory **DuckDB**
   and exposes bounded, pre-aggregated queries. Reads only the explicit syscall
@@ -143,11 +170,11 @@ marked as a `SEAM` comment at the top of `handle_event()` in
 output as a first-class trace source alongside syscalls — function-call
 histograms, filter by symbol/module, call→return timing, distinct stacks,
 prop/exec/spawn views — sharing the same filtering layer. This depends on the
-deferred structured-funcs emitter (§4).
+deferred structured-funcs emitter (§5).
 
 ---
 
-## 6. Detectability analysis
+## 7. Detectability analysis
 
 - **Combining engines into one on-disk binary does not increase detectability of
   the stealthy path.** The binary lives at `/data/local/tmp`, not in the target's
@@ -167,20 +194,23 @@ deferred structured-funcs emitter (§4).
 
 ---
 
-## 7. Shared-code / future-consolidation roadmap
+## 8. Shared-code / future-consolidation roadmap
 
 The two engines were merged with **minimal edits** (surgical), so they still carry
-duplicated logic. None of this is consolidated yet; it is recorded here so a later
-`src/common/` pass has a map. Rough priority:
+duplicated logic. The **library-load tracing slice is now consolidated** into
+`src/common/lib_trace.*` (mmap/munmap capture, `/proc` resolution, `[lib]` emitter,
+unified `lib_map_event`/`lib_unmap_event`; see §1/§4). The remaining items are
+recorded here so a later `src/common/` pass has a map. Rough priority:
 
 1. **JSON/JSONL string escaping** — identical switch in both
    (`src/syscalls/heimdall.c` `jb_*` vs `src/funcs/ares-tracer.c`
    `json_fwrite_str`); differs only in output sink → one `json_escape(sink)`.
 2. **Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
    shared drain helper.
-3. **`/proc/<pid>/maps` parsing + basename→fullpath cache** — `symbolize.c` vs the
-   funcs engine's inline maps parsing (duplicated even within the funcs engine) →
-   one maps/symbol-resolution module.
+3. **`/proc/<pid>/maps` parsing + basename→fullpath cache** — the funcs engine's
+   inline parsing + cache is now in `src/common/lib_trace.c` (`ares_libtrace_resolve_path`),
+   shared by all three engines. *Remaining:* `symbolize.c`'s own maps parsing (for
+   stack symbolization) is still separate → fold into one maps/symbol module.
 4. **Kernel-side UID filter** — `uid_matches()` + target-uid BPF map
    (`target_uid` vs `target_uids`) → shared BPF header.
 5. **`resolve_uid()` + app launch/force-stop + install-UID-before-launch** — same
@@ -188,17 +218,20 @@ duplicated logic. None of this is consolidated yet; it is recorded here so a lat
 6. **ELF reconstruction** — `dump.c` (dump live memory + rebuild) vs `so_repair.c`
    (repair a dump); related, mergeable into one ELF dump/repair module.
 7. **Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
-8. Near-identical `map_event` struct in both headers; `libbpf_print_fn` + signal
-   handlers; duplicate `vmlinux.h`; duplicate vendored libbpf (now single).
+8. ~~Near-identical `map_event` struct in both headers~~ — **done:** unified as
+   `lib_map_event`/`lib_unmap_event` in `src/common/lib_trace.h`. Still duplicated:
+   `libbpf_print_fn` + signal handlers; duplicate `vmlinux.h`; (vendored libbpf now
+   single).
 9. **Capability the funcs engine could borrow:** the syscalls engine's
    `decode_sockaddr` (the funcs engine has no sockaddr decoding).
 
 ---
 
-## 8. Deferred / known tech debt
+## 9. Deferred / known tech debt
 
-- The `src/common/` consolidation in §7.
-- Structured JSONL emitter for `ares funcs` + matching MCP analysis tools (§4, §5).
+- The remaining `src/common/` consolidation in §8 (the library-load tracing slice
+  is done — see §1/§4).
+- Structured JSONL emitter for `ares funcs` + matching MCP analysis tools (§5, §6).
 - Correlated simultaneous syscall + function tracing in a single pass (currently
   out of scope to preserve the detectability firewall).
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.

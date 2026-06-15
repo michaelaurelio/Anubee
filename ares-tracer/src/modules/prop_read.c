@@ -42,6 +42,35 @@ static int prop_stat_cmp_desc(const void *a, const void *b)
     return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
 }
 
+// ── RASP-sensitive property list ──────────────────────────────────────────────
+// Properties in this list are highlighted in the summary table.
+// Edit to add or remove entries; NULL terminates the list.
+static const char *const rasp_props[] = {
+    "ro.debuggable",
+    "ro.secure",
+    "ro.build.type",            // "user" vs "userdebug"/"eng"
+    "ro.build.tags",            // "release-keys" vs "test-keys"
+    "ro.build.fingerprint",
+    "ro.build.selinux",
+    "ro.boot.verifiedbootstate",
+    "ro.boot.veritymode",
+    "ro.product.model",
+    "ro.product.brand",
+    "ro.product.device",
+    "persist.sys.usb.config",   // USB debugging state
+    "service.adb.root",         // adbd running as root
+    "ro.build.version.release",
+    "ro.build.version.sdk",
+    NULL,
+};
+
+static bool is_rasp_prop(const char *name)
+{
+    for (int i = 0; rasp_props[i]; i++)
+        if (strcmp(rasp_props[i], name) == 0) return true;
+    return false;
+}
+
 static void pr_print_summary(void)
 {
     if (prop_stat_count == 0) return;
@@ -49,36 +78,50 @@ static void pr_print_summary(void)
     qsort(prop_stats, prop_stat_count, sizeof(prop_stat_t), prop_stat_cmp_desc);
 
     uint64_t total = 0;
-    for (int i = 0; i < prop_stat_count; i++)
+    int rasp_count = 0;
+    for (int i = 0; i < prop_stat_count; i++) {
         total += prop_stats[i].count;
+        if (is_rasp_prop(prop_stats[i].name)) rasp_count++;
+    }
+
+    int use_color = isatty(STDOUT_FILENO);
+
+#define SEP "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80" \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"     \
+            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n"
 
     ts_print("[prop] \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Property Access Summary "
              "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
              "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
              "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
              "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
-    ts_print("[prop]   Count  Property\n");
-    ts_print("[prop]  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
-    for (int i = 0; i < prop_stat_count; i++)
-        ts_print("[prop]  %6u  %s\n", prop_stats[i].count, prop_stats[i].name);
-    ts_print("[prop]  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
-    ts_print("[prop]  %llu total access%s across %d unique propert%s\n",
+    ts_print("[prop]       Count  Property\n");
+    ts_print("[prop]" SEP);
+
+    for (int i = 0; i < prop_stat_count; i++) {
+        bool rasp = is_rasp_prop(prop_stats[i].name);
+        if (rasp && use_color)
+            ts_print("[prop]  \033[1;33m[!] %6u  %s\033[0m\n",
+                     prop_stats[i].count, prop_stats[i].name);
+        else if (rasp)
+            ts_print("[prop]  [!] %6u  %s\n",
+                     prop_stats[i].count, prop_stats[i].name);
+        else
+            ts_print("[prop]      %6u  %s\n",
+                     prop_stats[i].count, prop_stats[i].name);
+    }
+
+    ts_print("[prop]" SEP);
+    ts_print("[prop]  %llu total access%s across %d unique propert%s (%d RASP-flagged)\n",
              (unsigned long long)total, total == 1 ? "" : "es",
-             prop_stat_count, prop_stat_count == 1 ? "y" : "ies");
+             prop_stat_count, prop_stat_count == 1 ? "y" : "ies",
+             rasp_count);
+#undef SEP
 }
 
 static struct bpf_link *pr_link_get      = NULL;

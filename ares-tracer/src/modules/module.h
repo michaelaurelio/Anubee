@@ -14,6 +14,7 @@ typedef struct {
     // Called only for ACTIVE modules. Returns 0 ok, -1 fatal, -2 degraded (non-fatal).
     int  (*attach)(struct ares_tracer_bpf *skel);
     void (*detach)(void);
+    void (*print_summary)(void);  // called once on exit; may be NULL
     // Returns 0 if handled, -1 if event type not recognised by this module.
     int  (*handle_event)(const struct event_header *hdr, const void *data, size_t sz);
 } ares_module_t;

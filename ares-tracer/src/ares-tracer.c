@@ -2290,6 +2290,9 @@ int main(int argc, char **argv)
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
     }
 
+    for (int i = 0; i < active_module_count; i++)
+        if (active_modules[i]->print_summary)
+            active_modules[i]->print_summary();
 
     // Cleanup mechanism
     cleanup:

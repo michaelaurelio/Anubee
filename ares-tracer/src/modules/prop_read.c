@@ -1,11 +1,85 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <fcntl.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <libelf.h>
 #include <gelf.h>
 #include <bpf/libbpf.h>
 #include "module.h"
 #include "ares-tracer-priv.h"
+
+// ── per-property access counters ─────────────────────────────────────────────
+
+#define PROP_STAT_MAX 512
+
+typedef struct {
+    char     name[PROP_NAME_LEN];
+    uint32_t count;
+} prop_stat_t;
+
+static prop_stat_t prop_stats[PROP_STAT_MAX];
+static int         prop_stat_count = 0;
+
+static void prop_stat_add(const char *name)
+{
+    for (int i = 0; i < prop_stat_count; i++) {
+        if (strcmp(prop_stats[i].name, name) == 0) {
+            prop_stats[i].count++;
+            return;
+        }
+    }
+    if (prop_stat_count >= PROP_STAT_MAX) return;
+    strncpy(prop_stats[prop_stat_count].name, name, PROP_NAME_LEN - 1);
+    prop_stats[prop_stat_count].name[PROP_NAME_LEN - 1] = '\0';
+    prop_stats[prop_stat_count].count = 1;
+    prop_stat_count++;
+}
+
+static int prop_stat_cmp_desc(const void *a, const void *b)
+{
+    uint32_t ca = ((const prop_stat_t *)a)->count;
+    uint32_t cb = ((const prop_stat_t *)b)->count;
+    return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
+}
+
+static void pr_print_summary(void)
+{
+    if (prop_stat_count == 0) return;
+
+    qsort(prop_stats, prop_stat_count, sizeof(prop_stat_t), prop_stat_cmp_desc);
+
+    uint64_t total = 0;
+    for (int i = 0; i < prop_stat_count; i++)
+        total += prop_stats[i].count;
+
+    ts_print("[prop] \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Property Access Summary "
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
+    ts_print("[prop]   Count  Property\n");
+    ts_print("[prop]  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
+    for (int i = 0; i < prop_stat_count; i++)
+        ts_print("[prop]  %6u  %s\n", prop_stats[i].count, prop_stats[i].name);
+    ts_print("[prop]  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+             "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
+    ts_print("[prop]  %llu total access%s across %d unique propert%s\n",
+             (unsigned long long)total, total == 1 ? "" : "es",
+             prop_stat_count, prop_stat_count == 1 ? "y" : "ies");
+}
 
 static struct bpf_link *pr_link_get      = NULL;
 static struct bpf_link *pr_link_get_ret  = NULL;
@@ -137,6 +211,7 @@ static int pr_handle_event(const struct event_header *hdr, const void *data, siz
 
     case ARES_EVENT_PROP_GET:
         if (!e->is_ret) {
+            prop_stat_add(e->name);
             ts_print("[prop]  GET   CALL  PID:%-6d (%s)  %s\n",
                 hdr->pid, e->comm, e->name);
         } else {
@@ -148,6 +223,7 @@ static int pr_handle_event(const struct event_header *hdr, const void *data, siz
 
     case ARES_EVENT_PROP_FIND:
         if (!e->is_ret) {
+            prop_stat_add(e->name);
             ts_print("[prop]  FIND  CALL  PID:%-6d (%s)  %s\n",
                 hdr->pid, e->comm, e->name);
         } else if (e->found) {
@@ -165,6 +241,7 @@ static int pr_handle_event(const struct event_header *hdr, const void *data, siz
         return 0;
 
     case ARES_EVENT_PROP_READ:
+        prop_stat_add(e->name);
         ts_print("[prop]  READCB      PID:%-6d (%s)  %s = %s\n",
             hdr->pid, e->comm, e->name, e->value);
         return 0;
@@ -175,10 +252,11 @@ static int pr_handle_event(const struct event_header *hdr, const void *data, siz
 }
 
 ares_module_t module_prop_read = {
-    .name         = "prop-read",
-    .description  = "Trace all system property reads (_get, _find, _foreach, _read_callback)",
-    .pre_attach   = pr_pre_attach,
-    .attach       = pr_attach,
-    .detach       = pr_detach,
-    .handle_event = pr_handle_event,
+    .name          = "prop-read",
+    .description   = "Trace all system property reads (_get, _find, _foreach, _read_callback)",
+    .pre_attach    = pr_pre_attach,
+    .attach        = pr_attach,
+    .detach        = pr_detach,
+    .print_summary = pr_print_summary,
+    .handle_event  = pr_handle_event,
 };

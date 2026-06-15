@@ -915,6 +915,19 @@ static void json_emit_stack(const struct heimdall_stack_snapshot *s)
 	g_stack_count++;
 }
 
+// A frame inside one of ART's interpreter entrypoints means a Java method is
+// being interpreted: there is no native frame for the managed method itself (it
+// lives as a ShadowFrame in ART's managed stack), so the backtrace can't name
+// it without an ART-internal stack walk. Flag it so the reader knows a Java
+// frame was elided here rather than mistaking the bridge for the whole story.
+static int is_interp_frame(const char *sym)
+{
+	return strstr(sym, "ToInterpreterBridge") ||      // art{Quick,Interpreter}ToInterpreterBridge
+	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter
+	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
+	       strstr(sym, "artInterpreterToCompiledCodeBridge");
+}
+
 static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id,
 		      int has_ret, long long ret)
 {
@@ -996,7 +1009,10 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 		first = 0;
 		jb_s(j, "{\"frame\":"); jb_u64(j, i);
 		jb_s(j, ",\"addr\":\""); jb_hex(j, e->stack[i]);
-		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_s(j, "\"}");
+		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
+		if (is_interp_frame(sym))
+			jb_s(j, ",\"java\":\"interpreted (managed frame elided)\"");
+		jb_c(j, '}');
 	}
 	jb_s(j, g_jsonl ? "]}\n" : "]}");
 
@@ -1398,8 +1414,10 @@ static void usage(const char *argv0)
 		"  -Q, --queue MB      userspace worker queue size in MB (default 256; absorbs bursts)\n"
 		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
 		"  -v, --verbose       also log every executable mapping\n"
-		"      --no-snapshot   disable per-syscall stack snapshots (library-filtered mode\n"
-		"                      writes a <out>.stacks sidecar for off-device unwinding by default)\n"
+		"      --snapshot      capture per-syscall register+stack snapshots to a\n"
+		"                      <out>.stacks sidecar for off-device CFI unwinding of\n"
+		"                      packed/obfuscated native code (library-filtered mode; off by\n"
+		"                      default — Java/JIT/OAT frames are symbolized on-device)\n"
 		"\n"
 		"  By default a <lib> selector is required and only syscalls whose backtrace\n"
 		"  passes through that library are recorded. With -a or -l it is optional/ignored.\n"
@@ -1420,7 +1438,10 @@ int main(int argc, char **argv)
 	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
 	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
 	int capture_all = getenv("HEIMDALL_ALL") != NULL;
-	int no_snapshot = getenv("HEIMDALL_NO_SNAPSHOT") != NULL;
+	// Java frames are now symbolized on-device, so the off-device stack-snapshot
+	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
+	// packed/obfuscated code). --snapshot / HEIMDALL_SNAPSHOT enables it.
+	int want_snap = getenv("HEIMDALL_SNAPSHOT") != NULL;
 	g_libs_only = getenv("HEIMDALL_LIBS") != NULL;
 	g_dump_substr = getenv("HEIMDALL_DUMP");
 	if (getenv("HEIMDALL_DUMP_DIR"))
@@ -1464,8 +1485,10 @@ int main(int argc, char **argv)
 			g_dump_dir = argv[++ai];
 		} else if (!strcmp(argv[ai], "--dump-raw")) {
 			dump_set_raw(1);
+		} else if (!strcmp(argv[ai], "--snapshot")) {
+			want_snap = 1;
 		} else if (!strcmp(argv[ai], "--no-snapshot")) {
-			no_snapshot = 1;
+			want_snap = 0;          // accepted for back-compat; off is the default
 		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
 			if (ai + 1 >= argc || syscall_mode == 2) {
 				fprintf(stderr, "use either -s or -x, not both\n");
@@ -1548,10 +1571,11 @@ int main(int argc, char **argv)
 		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
 	}
-	// Stack snapshots: library-filtered mode only (far too heavy for the -a
-	// firehose), and only when writing JSON (the snapshots go to a sidecar the
-	// off-device unwinder reads). Disable with --no-snapshot.
-	int want_snapshots = !capture_all && !g_libs_only && !no_snapshot && json_path != NULL;
+	// Stack snapshots: opt-in (--snapshot), library-filtered mode only (far too
+	// heavy for the -a firehose), and only when writing JSON (the snapshots go to
+	// a <out>.stacks sidecar for off-device CFI unwinding of obfuscated native
+	// frames — Java frames are resolved on-device by the symbolizer).
+	int want_snapshots = want_snap && !capture_all && !g_libs_only && json_path != NULL;
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;

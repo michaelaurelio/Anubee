@@ -28,4 +28,14 @@ void dump_set_raw(int on);
  * written, or -1 if the process maps could not be read. */
 int dump_pid_modules(int pid, const char *substr, const char *outdir);
 
+/* Thin, reusable handles onto the same /proc/<pid>/mem reader the dumper uses,
+ * for code that needs to read live target memory by virtual address (e.g. the
+ * symbolizer walking ART's in-process JIT debug descriptor). proc_mem_open
+ * returns a read-only fd (or -1); proc_mem_read reads `len` bytes from `va` page
+ * by page, leaving unreadable holes zeroed, and returns the bytes actually read. */
+#include <stdint.h>
+#include <stddef.h>
+int    proc_mem_open(int pid);
+size_t proc_mem_read(int memfd, uint64_t va, void *dst, size_t len);
+
 #endif /* HEIMDALL_DUMP_H */

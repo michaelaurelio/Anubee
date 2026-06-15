@@ -74,7 +74,6 @@ FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
-PRELUDE_PART := $(BUILD)/prelude.part.o
 MAIN_OBJ  := $(BUILD)/main.o
 
 SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
@@ -143,12 +142,6 @@ $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
 
-# prelude-check must keep a real, un-inlined prologue (it inspects its own LR).
-$(PRELUDE_PART): tools/prelude-check.c
-	mkdir -p $(BUILD)
-	$(CC) -O1 -fno-inline -Wall -c $< -o $(BUILD)/prelude.o
-	$(OBJCOPY) --keep-global-symbol=cmd_prelude_check $(BUILD)/prelude.o $@
-
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
 $(SYSC_PART): $(SYSC_OBJ)
 	$(LD) -r -o $@ $(SYSC_OBJ)
@@ -159,8 +152,8 @@ $(FUNC_PART): $(FUNC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_funcs $@
 
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) $(PRELUDE_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) $(PRELUDE_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(SYSC_PART) $(FUNC_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)

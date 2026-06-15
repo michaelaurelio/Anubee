@@ -33,6 +33,7 @@
 #include <bpf/bpf_core_read.h>
 
 #include "heimdall.h"
+#include "common/lib_trace.h"
 
 #define MAX_STACK_DEPTH HEIMDALL_MAX_STACK_DEPTH
 #define MAX_RANGES      HEIMDALL_MAX_RANGES
@@ -410,84 +411,11 @@ int BPF_KRETPROBE(on_sys_exit, long ret)
 }
 
 // ---- module map: mmap / munmap of executable file mappings ---------------
-
-SEC("kprobe/uprobe_mmap")
-int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
-{
-	if (!uid_matches())
-		return 0;
-
-	struct file *file = BPF_CORE_READ(vma, vm_file);
-	if (file == NULL)
-		return 0;
-
-	__u64 vm_flags = BPF_CORE_READ(vma, vm_flags);
-	if (!(vm_flags & HEIMDALL_VM_EXEC))
-		return 0;
-
-	__u64 id = bpf_get_current_pid_tgid();
-
-	struct heimdall_map_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e) {
-		bump_dropped();
-		return 0;
-	}
-
-	e->h.type = HEIMDALL_EV_MAP;
-	e->h.pid  = id >> 32;
-	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
-
-	e->start    = BPF_CORE_READ(vma, vm_start);
-	e->end      = BPF_CORE_READ(vma, vm_end);
-	e->pgoff    = BPF_CORE_READ(vma, vm_pgoff);
-	e->vm_flags = vm_flags;
-	e->is_exec  = 1;
-
-	struct inode *inode = BPF_CORE_READ(file, f_inode);
-	if (inode != NULL) {
-		e->inode = BPF_CORE_READ(inode, i_ino);
-		e->dev   = BPF_CORE_READ(inode, i_sb, s_dev);
-	} else {
-		e->inode = 0;
-		e->dev   = 0;
-	}
-
-	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
-	e->name[0] = '\0';
-	if (name != NULL)
-		bpf_probe_read_kernel_str(e->name, sizeof(e->name), name);
-
-	bpf_ringbuf_submit(e, 0);
-	return 0;
-}
-
-SEC("kprobe/uprobe_munmap")
-int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start, unsigned long end)
-{
-	if (!uid_matches())
-		return 0;
-
-	struct file *file = BPF_CORE_READ(vma, vm_file);
-	if (file == NULL)
-		return 0;
-
-	__u64 id = bpf_get_current_pid_tgid();
-
-	struct heimdall_unmap_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e) {
-		bump_dropped();
-		return 0;
-	}
-
-	e->h.type = HEIMDALL_EV_UNMAP;
-	e->h.pid  = id >> 32;
-	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
-	e->start  = start;
-	e->end    = end;
-
-	bpf_ringbuf_submit(e, 0);
-	return 0;
-}
+//
+// Shared capture (common/lib_trace.bpf.h) emits lib_map_event / lib_unmap_event
+// into `events`. heimdall numbers UNMAP as 3 (RETURN is 4), so map the shared
+// discriminators onto its enum, and route dropped reservations to bump_dropped().
+#define LIBTRACE_TYPE_MAP   HEIMDALL_EV_MAP
+#define LIBTRACE_TYPE_UNMAP HEIMDALL_EV_UNMAP
+#define LIBTRACE_ON_DROP()  bump_dropped()
+#include "common/lib_trace.bpf.h"

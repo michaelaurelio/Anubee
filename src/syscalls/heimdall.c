@@ -49,6 +49,7 @@
 #include "symbolize.h"
 #include "flags.h"
 #include "dump.h"
+#include "common/lib_trace.h"
 
 extern char **environ;
 
@@ -1148,7 +1149,7 @@ static void handle_return(const struct heimdall_return_event *r)
 // executable file-backed mappings from uprobe_mmap (i.e. each .so as it is
 // loaded into the app). We log them directly here.
 
-static void json_emit_lib(const struct heimdall_map_event *m)
+static void json_emit_lib(const struct lib_map_event *m, const char *library)
 {
 	struct jbuf *j = &g_jb;
 	j->len = 0;
@@ -1161,7 +1162,7 @@ static void json_emit_lib(const struct heimdall_map_event *m)
 	jb_s(j, "\"id\":");      jb_u64(j, g_next_id++);
 	jb_s(j, ",\"pid\":");    jb_u64(j, m->h.pid);
 	jb_s(j, ",\"tid\":");    jb_u64(j, m->h.tid);
-	jb_s(j, ",\"library\":\""); jb_esc(j, m->name); jb_c(j, '"');
+	jb_s(j, ",\"library\":\""); jb_esc(j, library); jb_c(j, '"');
 	jb_s(j, ",\"start\":\""); jb_hex(j, m->start); jb_c(j, '"');
 	jb_s(j, ",\"end\":\"");   jb_hex(j, m->end);   jb_c(j, '"');
 	jb_s(j, ",\"pgoff\":");   jb_u64(j, m->pgoff);
@@ -1172,15 +1173,21 @@ static void json_emit_lib(const struct heimdall_map_event *m)
 		fwrite(j->b, 1, j->len, g_json);
 }
 
-static void handle_library(const struct heimdall_map_event *m)
+static void handle_library(const struct lib_map_event *m)
 {
-	if (!g_quiet)
-		printf("[lib] pid %u  %-24s [0x%llx, 0x%llx)  off=0x%llx  inode=%llu\n",
-		       m->h.pid, m->name,
-		       (unsigned long long)m->start, (unsigned long long)m->end,
-		       (unsigned long long)m->pgoff, (unsigned long long)m->inode);
+	// Resolve the full on-disk path (falls back to the BPF basename), then emit
+	// the unified, MCP-compatible "[lib] ..." line shared with `ares lib`/`funcs`.
+	char path[256];
+	const char *library = path;
+	if (ares_libtrace_resolve_path(m->h.pid, m->start, m->name, path, sizeof(path)) != 0)
+		library = m->name;
+	if (!g_quiet) {
+		char line[512];
+		ares_libtrace_format_lib(line, sizeof(line), m, library, NULL);
+		printf("%s\n", line);
+	}
 	if (g_json)
-		json_emit_lib(m);
+		json_emit_lib(m, library);
 }
 
 // Process one event — the heavy path (symbolization + JSON). Runs ONLY on the
@@ -1193,9 +1200,9 @@ static void process_event(const void *data, size_t sz)
 
 	switch (h->type) {
 	case HEIMDALL_EV_MAP: {
-		if (sz < sizeof(struct heimdall_map_event))
+		if (sz < sizeof(struct lib_map_event))
 			return;
-		const struct heimdall_map_event *m = data;
+		const struct lib_map_event *m = data;
 		if (g_verbose)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
@@ -1205,16 +1212,17 @@ static void process_event(const void *data, size_t sz)
 		// decide what actually matches.
 		if (g_dump_substr)
 			dump_note_pid(m->h.pid);
+		// The shared probe only emits executable mappings, so no is_exec test.
 		if (g_libs_only)
 			handle_library(m);
-		else if (m->is_exec && lib_name_matches(m->name))
+		else if (lib_name_matches(m->name))
 			push_lib_range(m->h.pid, m->start, m->end, m->name);
 		break;
 	}
 	case HEIMDALL_EV_UNMAP: {
-		if (sz < sizeof(struct heimdall_unmap_event))
+		if (sz < sizeof(struct lib_unmap_event))
 			return;
-		const struct heimdall_unmap_event *u = data;
+		const struct lib_unmap_event *u = data;
 		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
 		break;
 	}

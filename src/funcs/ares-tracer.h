@@ -9,8 +9,6 @@
 #define MAX_ARGV_ENTRIES 8
 #define MAX_ARGV_STR     128
 
-#define ARES_VM_EXEC 0x00000004UL // Linux VMA flag for executable mappings
-
 
 // Identifier for different event types
 enum event_type {
@@ -52,20 +50,6 @@ struct event {
     char strings[NUM_ARGS][MAX_STR_LEN];
     __u64 call_stack[STACK_DEPTH];
     __u32 stack_depth;
-};
-
-
-// Event for module mapping
-struct map_event {
-	struct event_header h;
-	__u64 start;
-	__u64 end;
-	__u64 pgoff;                                 // file offset in pages 
-	__u64 vm_flags;
-	__u64 inode;
-	__u32 dev;
-	int   ppid;
-	char name[MAX_STR_LEN];               // mapped file basename
 };
 
 

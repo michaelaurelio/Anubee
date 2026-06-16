@@ -170,7 +170,7 @@ def diff_traces(baseline: str, compare: str, top: int = 50,
 @mcp.tool()
 def mapped_libraries(package: str, seconds: int = 8,
                      activity: Optional[str] = None) -> dict:
-    """Launch the app on the connected device (via `ares syscalls -l`) for
+    """Launch the app on the connected device (via `ares lib`) for
     `seconds`, then return the native libraries (.so) it loaded — one record per
     (pid, library) with the merged address range, segment count and inode. Use
     this to discover what's loaded (and the exact/randomized name of a protector
@@ -185,7 +185,7 @@ def dump_library(package: str, pattern: str, seconds: int = 12,
                  activity: Optional[str] = None,
                  out_dir: Optional[str] = None) -> dict:
     """Dump a (possibly decrypted/unpacked) native library from the app's LIVE
-    memory and pull the rebuilt .so to the host. Runs `ares syscalls -l -D
+    memory and pull the rebuilt .so to the host. Runs `ares dump <package>
     <pattern>` on the device for `seconds` — long enough to decrypt the library
     — then on exit dumps every loaded library whose basename matches `pattern`
     and rebuilds a loadable ELF. `pattern` is a glob over the basename, e.g.

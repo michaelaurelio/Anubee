@@ -2,10 +2,10 @@
 
 Drives the ares binary on a connected device over adb to (a) list the native
 libraries an app loads and (b) dump a (possibly decrypted) library from the app's
-live memory, pulling the rebuilt .so back to the host. These use the `syscalls`
-engine (kprobe, injectionless), invoked as `ares syscalls ...`. ares is run under
-`timeout -s INT <seconds>` so it traces for a bounded window and then receives the
-SIGINT that triggers its flush / exit-time memory dump.
+live memory, pulling the rebuilt .so back to the host. Listing uses the stealthy
+`ares lib` engine (kprobe, injectionless); memory dumping uses `ares dump`. ares
+is run under `timeout -s INT <seconds>` so it traces for a bounded window and then
+receives the SIGINT that triggers its flush / exit-time memory dump.
 
 Configuration (environment):
   ARES_ADB           adb executable (default: "adb")
@@ -62,7 +62,7 @@ def _clamp_seconds(seconds):
 # ---- output parsing (pure) ------------------------------------------------
 
 def parse_lib_lines(text):
-    """Parse `ares syscalls -l` output into a list of per-segment mapping records."""
+    """Parse `ares lib` output into a list of per-segment mapping records."""
     out = []
     for line in text.splitlines():
         m = _LIB_RE.match(line.strip())
@@ -80,7 +80,7 @@ def parse_lib_lines(text):
 
 
 def parse_dump_lines(text):
-    """Parse `ares syscalls -D` per-module `[dump]` lines into structured records."""
+    """Parse `ares dump` per-module `[dump]` lines into structured records."""
     out = []
     for line in text.splitlines():
         m = _DUMP_RE.match(line.strip())
@@ -160,12 +160,13 @@ def _adb_shell(cmd_str, timeout=120):
     return _adb(["shell", cmd_str], timeout=timeout)
 
 
-def _run_ares(args, seconds):
-    """Run `ares syscalls <args>` on the device for `seconds` (SIGINT-terminated
+def _run_ares(subcmd, args, seconds):
+    """Run `ares <subcmd> <args>` on the device for `seconds` (SIGINT-terminated
     via timeout), as root if ARES_SHELL_PREFIX is set. Returns combined
     stdout+stderr."""
-    inner = "timeout -s INT %d %s syscalls %s" % (
-        seconds, shlex.quote(BIN), " ".join(shlex.quote(a) for a in args))
+    inner = "timeout -s INT %d %s %s %s" % (
+        seconds, shlex.quote(BIN), subcmd,
+        " ".join(shlex.quote(a) for a in args))
     cmd = "%s %s" % (SHELL_PREFIX, shlex.quote(inner)) if SHELL_PREFIX else inner
     full = [ADB] + (["-s", SERIAL] if SERIAL else []) + ["shell", cmd]
     try:
@@ -182,12 +183,12 @@ def _run_ares(args, seconds):
 # ---- public operations ----------------------------------------------------
 
 def list_libraries(package, seconds=8, activity=None):
-    """Launch the app via `ares syscalls -l` for `seconds`, then return the native
+    """Launch the app via `ares lib` for `seconds`, then return the native
     libraries it loaded (one record per pid/library, with merged ranges)."""
     _check_pkg(package)
     secs = _clamp_seconds(seconds)
-    args = ["-l", package] + ([activity] if activity else [])
-    log = _run_ares(args, secs)
+    args = [package] + ([activity] if activity else [])
+    log = _run_ares("lib", args, secs)
     segments = parse_lib_lines(log)
     libs = aggregate_libraries(segments)
     return {
@@ -201,9 +202,10 @@ def list_libraries(package, seconds=8, activity=None):
 
 
 def dump_library(package, pattern, seconds=12, activity=None, out_dir=None):
-    """Run `ares syscalls -l -D <pattern>` on the device for `seconds`, dumping
-    every loaded library whose basename matches `pattern` (glob ok, e.g. 'e_*')
-    from live memory on exit, then pull the rebuilt .so(s) to the host."""
+    """Run `ares dump -d <dir> -q <package> <pattern>` on the device for
+    `seconds`, dumping every loaded library whose basename matches `pattern`
+    (glob ok, e.g. 'e_*') from live memory on exit, then pull the rebuilt
+    .so(s) to the host."""
     _check_pkg(package)
     if not isinstance(pattern, str) or not pattern or len(pattern) > 128:
         raise ValueError("pattern must be a non-empty string (<=128 chars)")
@@ -214,9 +216,9 @@ def dump_library(package, pattern, seconds=12, activity=None, out_dir=None):
     devdir = "/data/local/tmp/ares-mcp-" + uuid.uuid4().hex[:12]
     _adb_shell("mkdir -p " + shlex.quote(devdir))
     try:
-        args = ["-l", "-D", pattern, "-q", "--dump-dir", devdir, package] + \
+        args = ["-d", devdir, "-q", package, pattern] + \
                ([activity] if activity else [])
-        log = _run_ares(args, secs)
+        log = _run_ares("dump", args, secs)
         dumped = parse_dump_lines(log)
 
         listing = _adb_shell("ls -1 %s 2>/dev/null || true" % shlex.quote(devdir))

@@ -4,50 +4,11 @@ Deferred architecture work and known tech debt. The **current** state of each
 engine is in [DOCUMENTATION.md](DOCUMENTATION.md); this file holds the
 forward-looking items only.
 
-## Proposed: `ares dump` engine (consolidate memory dumping)
+## Done
 
-Today the live-memory dump + ELF-rebuild capability is implemented twice:
-
-- `src/syscalls/dump.c` (~776 lines) — on-exit dump across recorded PIDs; the more
-  sophisticated rebuild (program-header fixup, inter-segment gap capture, full
-  section-header reconstruction, relative-relocation un-applying incl. DT_RELR,
-  `.dynamic` de-rebasing). aarch64 / ELF64 only. Driven by `ares syscalls -l -D`
-  (the `-l` libs-only mode disables the syscall dispatcher hook, so dumping runs
-  with zero syscall overhead).
-- `src/funcs/so_repair.c` (~684 lines) + `dump_library_full()` in
-  `src/funcs/ares-tracer.c` — dump-at-map-time during function tracing; phdr
-  `p_offset` fixup, RELATIVE-reloc removal, section-header reconstruction. Includes
-  a 32-bit path (`repair32`).
-
-These overlap heavily (already flagged below as roadmap item 6). Proposal: a single
-standalone **`ares dump`** engine — kprobe-based (stealthy, like `ares lib`): launch
-the app under a pre-installed UID filter, track maps, dump matching modules, rebuild
-the ELF — replacing both dumpers with one implementation.
-
-**Couplings to untangle first (analysis 2026-06-16; none are blockers):**
-
-1. `src/syscalls/dump.c` also exports `proc_mem_open` / `proc_mem_read`, **reused by
-   the symbolizer** (`src/syscalls/symbolize.c`) to walk ART's in-process JIT debug
-   descriptor. Moving `dump.c` out of the syscalls engine requires splitting this
-   generic `/proc/<pid>/mem` reader into `src/common` (or leaving it in the syscalls
-   engine) so the symbolizer keeps working.
-2. funcs `-D` dumps a module the instant it maps, *during* function tracing. A
-   standalone `ares dump` (launch + dump-on-exit) drops trace-and-dump-in-one-pass.
-   Minor — and funcs dump rides the detectable uprobe path anyway, so it is the
-   weaker of the two for stealth.
-
-**Removals this unblocks:**
-
-- Delete dumping from `funcs` (`dump_library_full`, `so_repair.c`, the `-D`/`-d`
-  options) and from `syscalls` (`dump.c`, the `-D`/`--dump-dir`/`--dump-raw` options).
-- **Delete `ares syscalls -l`.** Its only remaining justification is being the
-  lightweight dump driver; once dumping lives in `ares dump`, standalone library
-  listing is fully covered by `ares lib`.
-- Retarget the MCP server: `tools/ares-mcp/device.py` `dump_library` → `ares dump`;
-  `mapped_libraries` → `ares lib` (the `[lib]` text line is identical across engines
-  and `_LIB_RE` already matches). Requires generalizing `device.py`'s `_run_ares`,
-  which currently hardcodes the `syscalls` subcommand, and updating `server.py`
-  docstrings + `README.md`.
+- **`ares dump` engine landed 2026-06-16** — replaced the syscalls & funcs dumpers,
+  dropped the `-l` libs-only mode from `ares syscalls`, and lifted the
+  `/proc/<pid>/mem` reader into `src/common/proc_mem`.
 
 ## Shared-code / consolidation roadmap
 
@@ -69,8 +30,8 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
    vs `target_uids`) → shared BPF header.
 5. **`resolve_uid()` + app launch/force-stop + install-UID-before-launch** — same
    flow in all engines → shared device/launch helper.
-6. **ELF reconstruction** — `dump.c` (dump live memory + rebuild) vs `so_repair.c`
-   (repair a dump); mergeable into one ELF dump/repair module (see `ares dump` above).
+6. **ELF reconstruction** — merged into `src/dump/rebuild.c` (the single `ares dump`
+   engine); the old per-engine dump files are removed.
 7. **Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
 8. **Misc duplication** — `libbpf_print_fn` + signal handlers; duplicate `vmlinux.h`.
    (Near-identical `map_event` struct and vendored libbpf are already unified.)

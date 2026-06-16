@@ -38,6 +38,30 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 9. **Capability the funcs engine could borrow:** the syscalls engine's
    `decode_sockaddr` (the funcs engine has no sockaddr decoding).
 
+## Planned: fused core + `correlate` (function→syscall)
+
+The detectability firewall is **reframed** — the one real invariant is "a stealthy run
+attaches zero uprobes"; "each engine owns its BPF object" and the partial-link
+symbol-localization are merge scaffolding, not sacred.
+
+- **`correlate` subcommand** — function→syscall on a live run. Per-tid **span stack**
+  (push on entry uprobe; **SP-based pop** by default, no stack tampering;
+  `--returns` opts into uretprobe for return value + exact exit, loud). Syscall
+  kprobe is **span-gated**: record only inside a probed function, tag with the
+  innermost span. Flat output: in-span syscalls carry `span`, func events carry
+  `parent_span`. `dump` stays separate. Span model is per-tid & synchronous;
+  CFF-resistant, defeated by inlining / VM-virtualization.
+- **Fixes a latent funcs bug as a side effect:** today's single-slot per-tid
+  `entry_map` (`src/funcs/ares-tracer.bpf.c`) clobbers on nested/recursive
+  instrumented calls on one thread → missing RETURN events / wrong `elapsed_ns`. The
+  span stack replaces it.
+- **Staging (deliberately surgical):** v1 builds the span stack + SP-pop + the
+  source-shared span-stack map + `correlate` + `--returns`, and extracts into the
+  shared core **only** the helpers `correlate` forces (launch/UID-filter, ring
+  drain). Migrating `syscalls`/`funcs`/`lib` to thin presets over the formal core,
+  and retiring the localization where no longer needed, is deferred (folds in the
+  consolidation roadmap items above).
+
 ## Planned: structured emitter + unified MCP
 
 - Structured JSONL emitter for `ares funcs` so its events become first-class,
@@ -51,8 +75,6 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 
 ## Other deferred tech debt
 
-- Correlated simultaneous syscall + function tracing in a single pass (out of scope
-  to preserve the detectability firewall).
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.
 - Rebranding the syscalls engine's internal `HEIMDALL_*` env vars / `heimdall.*`
   filenames to `ares-*` (cosmetic; left to avoid churn during the merge).

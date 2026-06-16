@@ -23,7 +23,7 @@
 // The result loads in IDA/Ghidra with named sections and dynamic symbols, as
 // the live post-decryption image. aarch64 / ELF64 only.
 
-#include "dump.h"
+#include "rebuild.h"
 #include "common/proc_mem.h"
 
 #include <stdio.h>
@@ -129,7 +129,7 @@ static const char *basename_of(const char *p)
 // (with any " (deleted)" suffix stripped) — so a protector that loads its
 // payload under a per-run name like "e_<pid>" is caught with 'e_*' or
 // 'e_[0-9]*'. A plain pattern keeps the original substring-of-full-path match.
-static int name_matches(const char *pattern, const char *path)
+int dump_name_matches(const char *pattern, const char *path)
 {
 	if (strpbrk(pattern, "*?[")) {
 		char bn[DUMP_MAX_PATH];
@@ -707,7 +707,7 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 	// from its program headers). Skip any candidate inside a dumped range so we
 	// neither re-dump it nor warn about its (header-less) middle.
 	for (int i = 0; i < n; i++) {
-		if (!m[i].path[0] || !name_matches(substr, m[i].path))
+		if (!m[i].path[0] || !dump_name_matches(substr, m[i].path))
 			continue;
 		uint64_t base = load_base_of(m, i);
 
@@ -738,4 +738,29 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 	close(memfd);
 	free(m);
 	return dumped;
+}
+
+int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir)
+{
+	struct dmap *m = NULL;
+	int n = read_maps(pid, &m);
+	if (n < 0)
+		return -1;
+
+	int hit = -1;
+	for (int i = 0; i < n; i++)
+		if (addr >= m[i].start && addr < m[i].end) { hit = i; break; }
+	if (hit < 0) { free(m); return -1; }
+
+	uint64_t base = load_base_of(m, hit);
+	free(m);
+
+	int memfd = proc_mem_open(pid);
+	if (memfd < 0)
+		return -1;
+
+	uint64_t covered_end = 0;
+	int rc = dump_one(pid, memfd, base, name, outdir, &covered_end);
+	close(memfd);
+	return rc;
 }

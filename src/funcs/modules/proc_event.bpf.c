@@ -36,7 +36,7 @@ int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
 
     // Always clean up entry map slots — prevents stale TID entries when a thread
     // exits inside a probed function (e.g. abort() called while tracing kill()).
-    bpf_map_delete_elem(&entry_map,      &tid);
+    span_stack_clear(tid);
     bpf_map_delete_elem(&prop_entry_map, &tid);
 
     // Skip thread exits; only emit PROC_EXIT for the process main thread

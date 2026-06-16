@@ -180,13 +180,13 @@ static __always_inline int stack_hits(struct heimdall_lib_ranges *lr, __u64 *sta
 
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
-		if (i >= n)
-			continue;
-		__u64 ip = stack[i];
-		#pragma clang loop unroll(full)
-		for (int j = 0; j < MAX_RANGES; j++) {
-			if (j < count && ip >= lr->r[j].start && ip < lr->r[j].end)
-				return 1;
+		if (i < n) {
+			__u64 ip = stack[i];
+			#pragma clang loop unroll(full)
+			for (int j = 0; j < MAX_RANGES; j++) {
+				if (j < count && ip >= lr->r[j].start && ip < lr->r[j].end)
+					return 1;
+			}
 		}
 	}
 	return 0;
@@ -202,10 +202,10 @@ static __always_inline __u64 hash_stack(__u64 *stack, int n, __u32 tgid)
 	__u64 h = 0xcbf29ce484222325ULL ^ ((__u64)tgid << 32);
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
-		if (i >= n)
-			continue;
-		h ^= stack[i];
-		h *= 0x100000001b3ULL;
+		if (i < n) {
+			h ^= stack[i];
+			h *= 0x100000001b3ULL;
+		}
 	}
 	return h ? h : 1;
 }

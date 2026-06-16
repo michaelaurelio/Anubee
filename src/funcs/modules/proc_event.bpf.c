@@ -22,6 +22,8 @@ int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 }
 
 
+struct trace_event_raw_sched_process_exit;
+
 SEC("tp/sched/sched_process_exit")
 int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
 {

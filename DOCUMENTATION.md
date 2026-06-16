@@ -15,22 +15,29 @@ the churn to rename (e.g. the syscalls engine's `HEIMDALL_*` runtime env vars an
 
 ## 1. Architecture
 
-```
-                              ares  (single static aarch64 binary)
-                                            │
-                              src/main.c  — subcommand dispatch
-   ┌──────────────────┬───────────────────────┬──────────────────┬──────────────────┐
-"syscalls"          "funcs"                  "lib"              "dump"
-src/syscalls/      src/funcs/ (ares-tracer)  src/lib/           src/dump/
-kprobe syscall     uprobe function engine    kprobe lib-load    kprobe live-mem dump
-engine             + its own BPF skeleton    engine             engine
-+ its own BPF      + its own BPF skeleton   + its own BPF      + its own BPF skeleton
-skeleton
-   └──────────────────┴───── src/common/lib_trace ─────────┴──────────────────┘
-         shared .so mmap/munmap capture + /proc maps resolver + "[lib]" emitter
-                                 + src/common/proc_mem (shared /proc/<pid>/mem reader)
-                                            │
-                                      JSONL trace ──► host: tools/ares-mcp (DuckDB + MCP)
+```mermaid
+flowchart TD
+    ares["ares — single static aarch64 binary"]
+    main["src/main.c — subcommand dispatch"]
+    syscalls["syscalls — src/syscalls/<br/>kprobe syscall engine<br/>+ own BPF skeleton"]
+    funcs["funcs — src/funcs/ (ares-tracer)<br/>uprobe function engine<br/>+ own BPF skeleton"]
+    lib["lib — src/lib/<br/>kprobe lib-load engine<br/>+ own BPF skeleton"]
+    dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
+    common["src/common/lib_trace — shared mmap/munmap capture<br/>+ /proc maps resolver + '[lib]' emitter<br/>+ src/common/proc_mem — shared /proc/&lt;pid&gt;/mem reader"]
+    trace["JSONL trace"]
+    mcp["host: tools/ares-mcp (DuckDB + MCP)"]
+
+    ares --> main
+    main --> syscalls
+    main --> funcs
+    main --> lib
+    main --> dump
+    syscalls --> common
+    funcs --> common
+    lib --> common
+    dump --> common
+    common --> trace
+    trace --> mcp
 ```
 
 - **One binary, four engines, selected by subcommand.** `main()` looks at

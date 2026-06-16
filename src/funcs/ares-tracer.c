@@ -25,7 +25,6 @@
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
 #include "modules/module.h"
-#include "so_repair.h"
 #include "common/lib_trace.h"
 
 extern char **environ;
@@ -63,8 +62,6 @@ static const struct argp_option options[] = {
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
     { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
-    { "dump", 'D', "PATTERN", 0, "Dump matching module from /proc/PID/mem to .bin file when mapped (repeatable, up to 8)" },
-    { "dump-dir", 'd', "DIR", 0, "Output directory for -D dumps (default: /data/local/tmp)" },
     { 0 }
 };
 
@@ -86,9 +83,6 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
-    char dump_modules[8][256];
-    int  dump_module_count;
-    char dump_dir[256];
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -160,16 +154,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'c':
             args->caller_only = true;
-            break;
-
-        case 'D':
-            if (args->dump_module_count < 8)
-                copy_str(args->dump_modules[args->dump_module_count++], arg,
-                        sizeof(args->dump_modules[0]));
-            break;
-
-        case 'd':
-            copy_str(args->dump_dir, arg, sizeof(args->dump_dir));
             break;
 
         case 'm': {
@@ -607,148 +591,6 @@ bool caller_only = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
-
-static regex_t dump_module_re[8];
-static int     dump_module_count = 0;
-static char    dump_dir[256] = "/data/local/tmp";
-
-static bool dump_pattern_matches(const char *path)
-{
-    const char *bname = strrchr(path, '/');
-    bname = bname ? bname + 1 : path;
-    for (int i = 0; i < dump_module_count; i++) {
-        if (regexec(&dump_module_re[i], bname, 0, NULL, 0) == 0)
-            return true;
-    }
-    return false;
-}
-
-#define DUMP_CHUNK (4 * 1024 * 1024)
-static char dump_chunk_buf[DUMP_CHUNK];
-static char dump_zero_page[4096];  // zero-fill buffer for unmapped gaps
-
-typedef struct { uint64_t start; uint64_t end; } vma_range_t;
-
-// Collect all VMA ranges in /proc/PID/maps that belong to `path`.
-// If apk_off_lo < apk_off_hi, only include segments whose file offset (bytes)
-// falls within [apk_off_lo, apk_off_hi) — used to isolate one embedded SO.
-// Returns segment count, -1 on maps open failure, 0 if path not found.
-static int collect_segments(pid_t pid, const char *path,
-                             vma_range_t *out, int max_segs,
-                             uint64_t apk_off_lo, uint64_t apk_off_hi)
-{
-    char maps_path[64];
-    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
-    FILE *f = fopen(maps_path, "r");
-    if (!f)
-        return -1;
-
-    int count = 0;
-    char line[512];
-    while (fgets(line, sizeof(line), f) && count < max_segs) {
-        unsigned long long seg_start, seg_end, pgoff;
-        char seg_path[256] = "";
-        if (sscanf(line, "%llx-%llx %*s %llx %*s %*d %255s",
-                   &seg_start, &seg_end, &pgoff, seg_path) < 3)
-            continue;
-        if (strcmp(seg_path, path) != 0) continue;
-        if (apk_off_lo < apk_off_hi &&
-            (pgoff < apk_off_lo || pgoff >= apk_off_hi)) continue;
-        out[count].start = (uint64_t)seg_start;
-        out[count].end   = (uint64_t)seg_end;
-        count++;
-    }
-    fclose(f);
-    return count;
-}
-
-// Dump the full in-memory image of a library from /proc/PID/mem.
-// Scans /proc/PID/maps for all segments belonging to `path` to get the full
-// ELF range (including non-executable segments the BPF never fires on).
-// Falls back to [fb_start, fb_end] if maps scanning fails or finds nothing.
-// Unmapped gaps between segments are zero-filled.
-static void dump_library_full(pid_t pid, const char *path, const char *bname,
-                               uint64_t fb_start, uint64_t fb_end,
-                               uint64_t apk_off_lo, uint64_t apk_off_hi)
-{
-    vma_range_t segs[32];
-    int nseg = collect_segments(pid, path, segs, 32, apk_off_lo, apk_off_hi);
-
-    uint64_t min_start, max_end;
-    if (nseg <= 0) {
-        // Maps already gone (transient lib) or open failed — fall back to BPF range
-        min_start = fb_start;
-        max_end   = fb_end;
-        nseg      = 0;
-    } else {
-        min_start = segs[0].start;
-        max_end   = segs[0].end;
-        for (int i = 1; i < nseg; i++) {
-            if (segs[i].start < min_start) min_start = segs[i].start;
-            if (segs[i].end   > max_end)   max_end   = segs[i].end;
-        }
-    }
-
-    char mem_path[64];
-    snprintf(mem_path, sizeof(mem_path), "/proc/%d/mem", pid);
-    int memfd = open(mem_path, O_RDONLY);
-    if (memfd < 0) {
-        err_print(" [dump] > FAILED open %s: %s\n", mem_path, strerror(errno));
-        return;
-    }
-
-    char outfile[320];
-    snprintf(outfile, sizeof(outfile), "%s/%s_%d_0x%llx.bin",
-             dump_dir, bname, pid, (unsigned long long)min_start);
-    int outfd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (outfd < 0) {
-        err_print(" [dump] > FAILED create %s: %s\n", outfile, strerror(errno));
-        close(memfd);
-        return;
-    }
-
-    uint64_t written = 0;
-    uint64_t pos     = min_start;
-
-    while (pos < max_end) {
-        // Read page by page so we can detect and zero-fill individual gaps
-        size_t want = (max_end - pos < 4096) ? (size_t)(max_end - pos) : 4096;
-        if (lseek(memfd, (off_t)pos, SEEK_SET) == (off_t)-1)
-            break;
-        ssize_t n = read(memfd, dump_chunk_buf, want);
-        if (n > 0) {
-            write(outfd, dump_chunk_buf, (size_t)n);
-            written += (uint64_t)n;
-            pos     += (uint64_t)n;
-        } else {
-            // Unmapped gap — zero-fill one page and continue
-            write(outfd, dump_zero_page, want);
-            written += want;
-            pos     += want;
-        }
-    }
-
-    close(memfd);
-    close(outfd);
-
-    if (written == 0) {
-        ts_print(" [dump] > MISSED: %s PID:%d (all mappings gone before read)\n", bname, pid);
-        return;
-    }
-
-    if (nseg > 0)
-        ts_print(" [dump] > %s PID:%d 0x%llx-0x%llx -> %s (%llu bytes, %d segments)\n",
-                 bname, pid,
-                 (unsigned long long)min_start, (unsigned long long)max_end,
-                 outfile, (unsigned long long)written, nseg);
-    else
-        ts_print(" [dump] > %s PID:%d 0x%llx-0x%llx -> %s (%llu bytes, fallback)\n",
-                 bname, pid,
-                 (unsigned long long)min_start, (unsigned long long)max_end,
-                 outfile, (unsigned long long)written);
-
-    repair_dumped_so(outfile, min_start);
-}
 
 static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 {
@@ -1497,44 +1339,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
-        if (dump_module_count > 0) {
-            const char *dump_label = NULL;
-            char apk_so_name[128] = "";
-            bool do_dump = false;
-            uint64_t apk_off_lo = 0, apk_off_hi = 0;
-
-            size_t plen = strlen(path);
-            if (plen >= 4 && strcmp(path + plen - 4, ".apk") == 0) {
-                unsigned long so_off;
-                if (apk_resolve_offset(path, (unsigned long)e->pgoff << 12,
-                                       apk_so_name, sizeof(apk_so_name), &so_off)
-                    && dump_pattern_matches(apk_so_name)) {
-                    do_dump = true;
-                    dump_label = apk_so_name;
-                    // Narrow segment collection to this SO's byte range in the APK
-                    // so dump_library_full doesn't span segments of other embedded SOs.
-                    apk_cache_t *ac = apk_cache_get(path);
-                    if (ac) {
-                        for (int k = 0; k < ac->count; k++) {
-                            if (strcmp(ac->entries[k].name, apk_so_name) == 0) {
-                                apk_off_lo = ac->entries[k].data_start;
-                                apk_off_hi = ac->entries[k].data_start + ac->entries[k].size;
-                                break;
-                            }
-                        }
-                    }
-                }
-            } else if (dump_pattern_matches(path)) {
-                do_dump = true;
-                const char *bname = strrchr(path, '/');
-                dump_label = bname ? bname + 1 : path;
-            }
-
-            if (do_dump)
-                dump_library_full(header->pid, path, dump_label, e->start, e->end,
-                                  apk_off_lo, apk_off_hi);
-        }
-
         // Normal symbol resolution (filtered by -I/-i/-r)
         if (mod_matched && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev_count = probe_target_count;
@@ -1832,15 +1636,6 @@ int cmd_funcs(int argc, char **argv)
     verbose = args.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
-
-    if (args.dump_dir[0] != '\0')
-        copy_str(dump_dir, args.dump_dir, sizeof(dump_dir));
-    for (int i = 0; i < args.dump_module_count; i++) {
-        if (regcomp(&dump_module_re[dump_module_count], args.dump_modules[i], REG_EXTENDED | REG_NOSUB) == 0)
-            dump_module_count++;
-        else
-            fprintf(stderr, "invalid dump pattern: %s\n", args.dump_modules[i]);
-    }
 
     if (args.output_file[0] != '\0') {
         const char *ext = strrchr(args.output_file, '.');

@@ -69,7 +69,7 @@ BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) 
 # ---- userspace objects (compiled per engine, then localized) --------------
 SYSC_CSRC := $(SRC)/syscalls/heimdall.c $(SRC)/syscalls/symbolize.c \
              $(SRC)/syscalls/flags.c
-FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/so_repair.c \
+FUNC_CSRC := $(SRC)/funcs/ares-tracer.c \
              $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
              $(SRC)/funcs/modules/prop_read.c
 

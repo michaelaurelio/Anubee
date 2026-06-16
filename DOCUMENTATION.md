@@ -19,27 +19,30 @@ the churn to rename (e.g. the syscalls engine's `HEIMDALL_*` runtime env vars an
                               ares  (single static aarch64 binary)
                                             │
                               src/main.c  — subcommand dispatch
-        ┌──────────────────────────┬────────────────────────┬───────────────────────┐
-   "syscalls"                    "funcs"                   "lib"
- src/syscalls/ (heimdall)     src/funcs/ (ares-tracer)   src/lib/
- kprobe syscall engine        uprobe function engine     kprobe library-load engine
- + its own BPF skeleton       + its own BPF skeleton      + its own BPF skeleton
-        └──────────────────────────┴──── src/common/lib_trace ────────┘
-            shared .so mmap/munmap capture + /proc maps resolver + "[lib]" emitter
+   ┌──────────────────┬───────────────────────┬──────────────────┬──────────────────┐
+"syscalls"          "funcs"                  "lib"              "dump"
+src/syscalls/      src/funcs/ (ares-tracer)  src/lib/           src/dump/
+kprobe syscall     uprobe function engine    kprobe lib-load    kprobe live-mem dump
+engine             + its own BPF skeleton    engine             engine
++ its own BPF      + its own BPF skeleton   + its own BPF      + its own BPF skeleton
+skeleton
+   └──────────────────┴───── src/common/lib_trace ─────────┴──────────────────┘
+         shared .so mmap/munmap capture + /proc maps resolver + "[lib]" emitter
+                                 + src/common/proc_mem (shared /proc/<pid>/mem reader)
                                             │
                                       JSONL trace ──► host: tools/ares-mcp (DuckDB + MCP)
 ```
 
-- **One binary, three engines, selected by subcommand.** `main()` looks at
+- **One binary, four engines, selected by subcommand.** `main()` looks at
   `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs` /
-  `cmd_lib`), passing the remaining argv so each engine keeps its own argument
-  parser unchanged.
+  `cmd_lib` / `cmd_dump`), passing the remaining argv so each engine keeps its own
+  argument parser unchanged.
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
-  are *not* fused into a single always-on pass (see §7).
+  are *not* fused into a single always-on pass (see §8).
 - **Library-load tracing is shared, not duplicated.** The mmap/munmap capture,
   `/proc/<pid>/maps` full-path resolution, and the `[lib]` text/JSONL emitter live
-  once in `src/common/lib_trace.*` and are used by all three engines. The BPF probe
+  once in `src/common/lib_trace.*` and are used by all four engines. The BPF probe
   is *source*-shared (`#include`d into each engine's own skeleton, preserving the
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
   exporting only its `ares_libtrace_*` API. See §8.
@@ -93,10 +96,7 @@ build truth.
   capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
-- **Memory dump / ELF reconstruction** (`dump.c`): on exit, dumps matching
-  libraries from live memory and rebuilds loadable ELFs (captures in-memory
-  decryption/unpacking).
-- Output: structured per-event JSONL (see §5) plus optional dump files.
+- Output: structured per-event JSONL (see §6).
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 
@@ -108,8 +108,7 @@ build truth.
   `pre_attach`/`attach`/`detach`/`print_summary`/`handle_event`. Built-in modules:
   `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
   (Android `__system_property_*` hooks).
-- ELF repair of dumped libraries: `so_repair.c`.
-- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §5).
+- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §6).
 
 ## 4. The `lib` engine (kprobe, library-load only)
 
@@ -120,13 +119,36 @@ build truth.
   `uid_matches()`; the mmap/munmap capture, `/proc/<pid>/maps` full-path resolution,
   and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
   and no uprobes — nothing is written into the target, so it sits on the stealthy
-  side of the detectability firewall (§7).
+  side of the detectability firewall (§8).
 - Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
-  line (shared with `syscalls -l`), plus optional structured JSONL via `-o`
-  (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §5). `[unlib]` unmap lines are
+  line, plus optional structured JSONL via `-o`
+  (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §6). `[unlib]` unmap lines are
   suppressed on stdout unless `-v` is passed; the JSONL (`-o`) always records both.
 
-## 5. Unified trace schema
+## 5. The `dump` engine (kprobe, live-memory dump)
+
+- **Stealthy fresh launch**, same approach as `ares lib`: installs a UID filter
+  *before* launch, runs `am force-stop` + `am start`, and uses the shared
+  `src/common/lib_trace` probe (mmap/munmap capture + `/proc/<pid>/maps` resolver)
+  to track every library mapping. No uprobes — nothing written into the target.
+- **Two dump triggers:**
+  - Default (on-exit): after the app terminates, rescans `/proc/<pid>/maps` for all
+    mappings that match the user-supplied glob and dumps each one.
+  - `--on-map`: dumps a library the instant it maps, using `(pid, start)` dedup to
+    avoid re-dumping the same mapping. Useful for randomized-name or early-unmap
+    libraries.
+- **Rebuild pipeline** (`src/dump/rebuild.c`): reads the raw in-memory image via
+  `/proc/<pid>/mem`, fixes program-header `p_offset` fields, captures inter-segment
+  gaps, un-applies `DT_RELR` and `RELATIVE` relocations, de-rebases `.dynamic`
+  (restores load-time-added base address), and reconstructs a full section-header
+  table. `--raw` skips the rebuild and writes the phdr-fixed image directly.
+  **aarch64/ELF64 only.** Output filename: `<name>.<pid>.<base>.so`.
+- **Shared `/proc/<pid>/mem` reader** (`src/common/proc_mem.c`, exported in
+  `COMMON_API`): the generic `proc_mem_open` / `proc_mem_read` helpers used by both
+  the dump engine's rebuild pipeline and the syscalls engine's stack symbolizer
+  (which walks ART's in-process JIT debug descriptor).
+
+## 6. Unified trace schema
 
 Every record carries a **`type` discriminator** so one consumer can ingest a mixed
 stream:
@@ -138,16 +160,16 @@ stream:
 - `ares funcs` currently emits **log-line** records:
   `{"ts":..,"stream":"out|err","tag":"event|map|...","message":".."}` — the
   rendered human-readable output, not field-level data.
-- `ares lib` emits **structured** library-load records via `-o`:
+- `ares lib` and `ares dump` both emit **structured** library-load records via `-o`
+  (from the shared emitter):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
   "pgoff":..,"inode":..}` and `{"type":"unlib","pid":..,"tid":..,"start":..,
-  "end":..}` (from the shared emitter). `ares syscalls -l` keeps its own combined
-  schema (`{"id":..,"library":..,...}`) since its records share the syscall trace.
+  "end":..}`.
 
 **Planned (deferred):** a structured emitter for `funcs` so its events become
 first-class records under the same discriminator. See [BACKLOG.md](BACKLOG.md).
 
-## 6. MCP server (`tools/ares-mcp`, host-side Python)
+## 7. MCP server (`tools/ares-mcp`, host-side Python)
 
 - `trace_store.py` — loads a trace (JSON array or JSONL) into in-memory **DuckDB**
   and exposes bounded, pre-aggregated queries. Reads only the explicit syscall
@@ -157,16 +179,17 @@ first-class records under the same discriminator. See [BACKLOG.md](BACKLOG.md).
 - `server.py` — FastMCP tools: `overview`, `hot_loops`, `syscall_histogram`,
   `files`, `threads`, `sockets`, `errors`, `distinct_backtraces`, `query`,
   `get_event`, `search`, `wx_scan`, `diff_traces`, plus on-device
-  `mapped_libraries` / `dump_library`.
-- `device.py` — drives `ares syscalls` over adb (`ARES_ADB`, `ARES_BIN`,
-  `ARES_SHELL_PREFIX`, `ARES_SERIAL`).
+  `list_libraries` (via `ares lib`) / `dump_library` (via `ares dump`).
+- `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
+  `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
+  `dump_library` → `ares dump`.
 
 **Long-term:** a single unified `ares-mcp` that treats `ares funcs` structured
 output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLOG.md).
 
 ---
 
-## 7. Detectability analysis
+## 8. Detectability analysis
 
 - **Combining engines into one on-disk binary does not increase detectability of
   the stealthy path.** The binary lives at `/data/local/tmp`, not in the target's
@@ -186,9 +209,7 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
 
 ---
 
-## 8. Future work
+## 9. Future work
 
-Deferred architecture work (notably the proposed **`ares dump`** engine that
-consolidates the two memory-dump implementations and unblocks removing
-`ares syscalls -l`), the `src/common/` consolidation roadmap, and known tech debt
-now live in [BACKLOG.md](BACKLOG.md).
+Deferred architecture work, the `src/common/` consolidation roadmap, and known
+tech debt now live in [BACKLOG.md](BACKLOG.md).

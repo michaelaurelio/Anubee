@@ -6,8 +6,9 @@ layers** by combining two complementary eBPF tracing engines in a single binary:
 
 | Subcommand | Engine | What it sees | Footprint |
 |---|---|---|---|
-| `ares syscalls` | kprobe on the syscall dispatcher, filtered by which library a syscall came from | every syscall a target library makes, with decoded args + backtraces; plus live ELF/library dumping | **injectionless** — nothing is written into the target; `TracerPid` stays 0 |
+| `ares syscalls` | kprobe on the syscall dispatcher, filtered by which library a syscall came from | every syscall a target library makes, with decoded args + backtraces | **injectionless** — nothing is written into the target; `TracerPid` stays 0 |
 | `ares funcs` | uprobe/uretprobe on specific functions (spec-driven), plus process/exec/getprop modules | individual function calls with typed arguments, return values and timing | **detectable** — inserts a `BRK` into the target's code |
+| `ares dump` | kprobe launch + shared lib_trace probe (like `ares lib`) | dumps matching modules from live memory → a rebuilt loadable ELF (.so) of a possibly-decrypted/packed library | **injectionless** — kprobe only, nothing written into the target |
 
 > **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
 > RASP triage (e.g. clean-vs-rooted diffing). `funcs` is more granular but a
@@ -87,16 +88,9 @@ ares syscalls -o trace.jsonl com.example.app librasp.so
 
 # Capture ALL of an app's syscalls (no library filter):
 ares syscalls -a -o trace.jsonl com.example.app
-
-# Just list the native libraries an app loads:
-ares syscalls -l com.example.app
-
-# Dump a (possibly decrypted) library from live memory on exit:
-ares syscalls -l -D 'libpacked.so' --dump-dir /data/local/tmp com.example.app
 ```
 
-Common flags: `-a` all syscalls · `-l` list libs only · `-D <glob>` dump
-libraries · `-s/-x list` include/exclude syscalls · `-o file` (`.jsonl` =
+Common flags: `-a` all syscalls · `-s/-x list` include/exclude syscalls · `-o file` (`.jsonl` =
 streamable JSON Lines) · `-q` quiet.
 
 ### `ares funcs` — function tracer
@@ -114,7 +108,7 @@ ares funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
 
 Common flags: `-p PID` / `-P package` target · `-I module` · `-i func-regex` ·
 `-r func-regex` (return-only) · `-e spec` / `-F spec-file` · `-m proc-event|execve`
-modules · `-o file` (`.jsonl`/`.csv`) · `-D pattern` dump module.
+modules · `-o file` (`.jsonl`/`.csv`).
 
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.
@@ -138,7 +132,7 @@ ares lib com.example.app com.example.app/.MainActivity
 ares lib -o libs.jsonl com.example.app
 ```
 
-Output line (shared with `syscalls -l`):
+Output line:
 
 ```
 [lib] pid 22045 /data/app/~~.../lib/arm64/libfoo.so [0x7a..,0x7b..) off=0x0 inode=12345 ppid=1037
@@ -146,8 +140,25 @@ Output line (shared with `syscalls -l`):
 
 Common flags: `-o file.jsonl` structured output (`{"type":"lib",...}`) · `-v` also
 print `[unlib]` unmap lines (off by default — keeps the stream to `[lib]` only) ·
-`-q` quiet. This is the dedicated standalone tracer; `ares syscalls -l` keeps the
-same listing but is wired to the on-exit memory-dump pipeline (`-D`).
+`-q` quiet. This is the dedicated standalone library-load tracer; to dump a library
+out of live memory into a loadable ELF, use `ares dump` (see below).
+
+### `ares dump` — live-memory library dumper
+
+Launches an app fresh (stealthy, like `ares lib`) and rebuilds a possibly
+decrypted/packed native library out of `/proc/<pid>/mem` into a loadable ELF.
+
+```sh
+# Dump every loaded library whose basename matches a glob, on exit:
+ares dump -d /data/local/tmp com.example.app 'libpacked.so'
+
+# Catch a randomized-name library the moment it maps:
+ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
+```
+
+Flags: `--on-map` dump at map time (default: on exit, post-decryption) ·
+`--raw` raw phdr-fixed image, skip ELF rebuild · `-q` quiet · output filename is
+`<name>.<pid>.<base>.so`.
 
 ### MCP server (optional, host-side)
 

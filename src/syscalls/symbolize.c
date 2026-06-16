@@ -16,7 +16,7 @@
 // we look up (addr - load_base) in the symbol table.
 
 #include "symbolize.h"
-#include "dump.h"             // proc_mem_open / proc_mem_read (live target memory)
+#include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
 
 #include <stdio.h>
 #include <stdlib.h>

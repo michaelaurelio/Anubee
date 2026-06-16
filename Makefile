@@ -73,11 +73,12 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/so_repair.c \
 
 # shared library-load tracing module (src/common), linked once; exports only its
 # ares_libtrace_* API (everything else localized, like the engines).
-COMMON_CSRC := $(SRC)/common/lib_trace.c
+COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
-               ares_libtrace_emit_lib ares_libtrace_emit_unlib
+               ares_libtrace_emit_lib ares_libtrace_emit_unlib \
+               proc_mem_open proc_mem_read
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -166,7 +167,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 

@@ -60,6 +60,8 @@ FUNC_BPF_OBJ := $(BUILD)/ares-tracer.bpf.o
 FUNC_SKEL    := $(SRC)/funcs/ares-tracer.skel.h
 LIB_BPF_OBJ  := $(BUILD)/lib.bpf.o
 LIB_SKEL     := $(BUILD)/lib.skel.h
+DUMP_BPF_OBJ := $(BUILD)/dump.bpf.o
+DUMP_SKEL    := $(BUILD)/dump.skel.h
 SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
@@ -86,6 +88,10 @@ FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 LIB_CSRC := $(SRC)/lib/lib.c
 LIB_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(LIB_CSRC))
 
+DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c
+DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
+DUMP_PART := $(BUILD)/dump.part.o
+
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
 LIB_PART  := $(BUILD)/lib.part.o
@@ -95,6 +101,7 @@ MAIN_OBJ  := $(BUILD)/main.o
 SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
 FUNC_CFLAGS := -O2 -Wall -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
 LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC)
+DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC)
 COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 
 # Static link: libelf (zstd-enabled) pulls in zstd+zlib; liblzma decodes
@@ -148,6 +155,14 @@ $(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib
 $(LIB_SKEL): $(LIB_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_lib > $@
 
+# dump engine BPF: minimal maps + uid gate, then #includes the shared probe.
+$(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/dump -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(DUMP_SKEL): $(DUMP_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name ares_dump > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -175,6 +190,10 @@ $(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(SRC)/common/lib_trace.h $(LIBBPF_
 	mkdir -p $(dir $@)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
+$(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(SRC)/common/proc_mem.h $(SRC)/common/lib_trace.h $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(DUMP_CFLAGS) -c $< -o $@
+
 $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
@@ -196,9 +215,13 @@ $(LIB_PART): $(LIB_OBJ)
 	$(LD) -r -o $@ $(LIB_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_lib $@
 
+$(DUMP_PART): $(DUMP_OBJ)
+	$(LD) -r -o $@ $(DUMP_OBJ)
+	$(OBJCOPY) --keep-global-symbol=cmd_dump $@
+
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(DUMP_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(DUMP_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)

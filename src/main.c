@@ -12,6 +12,7 @@
 int cmd_syscalls(int argc, char **argv);   // src/syscalls/heimdall.c
 int cmd_funcs(int argc, char **argv);      // src/funcs/ares-tracer.c
 int cmd_lib(int argc, char **argv);        // src/lib/lib.c
+int cmd_dump(int argc, char **argv);       // src/dump/dump.c
 
 static void usage(const char *argv0)
 {
@@ -27,6 +28,8 @@ static void usage(const char *argv0)
 		"                  target (detectable). Modules: proc / execve / getprop.\n"
 		"  lib             library-load tracer: launch an app and list every native\n"
 		"                  library (.so) it loads (injectionless / stealthy).\n"
+		"  dump            launch an app and dump a (possibly decrypted) native\n"
+		"                  library from live memory, rebuilt into a loadable ELF.\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -53,6 +56,8 @@ int main(int argc, char **argv)
 		return cmd_funcs(argc - 1, argv + 1);
 	if (!strcmp(cmd, "lib"))
 		return cmd_lib(argc - 1, argv + 1);
+	if (!strcmp(cmd, "dump"))
+		return cmd_dump(argc - 1, argv + 1);
 
 	fprintf(stderr, "%s: unknown command '%s'\n\n", argv[0], cmd);
 	usage(argv[0]);

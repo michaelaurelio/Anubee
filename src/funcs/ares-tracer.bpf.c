@@ -20,18 +20,119 @@ struct {
     __type(value, __u8);
 } target_uids SEC(".maps");
 
-struct entry_ctx {
-    __u64 entry_addr;
-    __u64 timestamp;
-    __u64 args[8];
+#define MAX_SPAN_DEPTH 32   // bounded per-thread instrumented-call nesting
+
+// One instrumented stack frame. The per-tid stack of these replaces the old
+// single-slot entry_ctx, so nested/recursive probed calls on one thread no
+// longer clobber each other's entry context.
+struct span_frame {
+    __u64 entry_addr;              // function entry IP (for the RETURN event)
+    __u64 entry_sp;               // user SP at entry (for SP-based reconciliation)
+    __u64 timestamp;              // entry ktime (for elapsed_ns)
+    __u64 args[NUM_ARGS];          // saved entry args, replayed into the RETURN event
 };
 
+// Per-thread depth of the span stack. Keyed by TID.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
-    __type(key, __u32);                // TID
-    __type(value, struct entry_ctx);
-} entry_map SEC(".maps");
+    __type(key, __u32);            // TID
+    __type(value, __u32);          // current stack depth
+} span_depth SEC(".maps");
+
+// Per-thread span frames, keyed by {TID, slot}; slot in [0, MAX_SPAN_DEPTH).
+struct frame_key {
+    __u32 tid;
+    __u32 slot;
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024 * MAX_SPAN_DEPTH);
+    __type(key, struct frame_key);
+    __type(value, struct span_frame);
+} span_frames SEC(".maps");
+
+// Write back a new stack depth, deleting the per-tid entry when it reaches 0 so
+// only threads currently inside a probe occupy span_depth (matches the old
+// entry_map lifecycle and bounds map pressure on many-threaded targets).
+static __always_inline void span_depth_set(__u32 tid, __u32 depth)
+{
+    if (depth == 0)
+        bpf_map_delete_elem(&span_depth, &tid);
+    else
+        bpf_map_update_elem(&span_depth, &tid, &depth, BPF_ANY);
+}
+
+// Drop frames whose function has already returned (user SP risen above the
+// frame's entry SP). Keeps the stack honest when a uretprobe was missed
+// (longjmp / exception / noreturn). aarch64 stack grows down: inside a frame
+// current_sp <= entry_sp; after the frame returns current_sp > entry_sp.
+static __always_inline void span_stack_reconcile(__u32 tid, __u64 cur_sp)
+{
+    #pragma unroll
+    for (int i = 0; i < MAX_SPAN_DEPTH; i++) {
+        __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+        if (!dp || *dp == 0)
+            break;
+        __u32 top = *dp - 1;
+        struct frame_key k = { .tid = tid, .slot = top };
+        struct span_frame *f = bpf_map_lookup_elem(&span_frames, &k);
+        if (!f)
+            break;
+        if (cur_sp <= f->entry_sp)
+            break;                 // frame still live
+        bpf_map_delete_elem(&span_frames, &k);
+        span_depth_set(tid, top);  // shrink depth (delete at 0)
+    }
+}
+
+// Push an entry frame for the current thread (no-op past MAX_SPAN_DEPTH).
+static __always_inline void span_stack_push(__u32 tid, __u64 entry_addr,
+                                            __u64 entry_sp, __u64 ts,
+                                            const long raw[NUM_ARGS])
+{
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    __u32 d = dp ? *dp : 0;
+    // Depth cap: beyond MAX_SPAN_DEPTH nested instrumented frames we stop
+    // tracking. Those frames' returns may mis-attribute until the stack unwinds
+    // back under the cap — only deep recursion of a probed function hits this.
+    if (d >= MAX_SPAN_DEPTH)
+        return;
+    struct frame_key k = { .tid = tid, .slot = d };
+    struct span_frame f = {};
+    f.entry_addr = entry_addr;
+    f.entry_sp   = entry_sp;
+    f.timestamp  = ts;
+    #pragma unroll
+    for (int i = 0; i < NUM_ARGS; i++)
+        f.args[i] = (unsigned long)raw[i];
+    bpf_map_update_elem(&span_frames, &k, &f, BPF_ANY);
+    __u32 nd = d + 1;
+    bpf_map_update_elem(&span_depth, &tid, &nd, BPF_ANY);
+}
+
+// Pop the top frame (used to undo a push when a ringbuf reserve fails).
+static __always_inline void span_stack_pop(__u32 tid)
+{
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    if (!dp || *dp == 0)
+        return;
+    __u32 top = *dp - 1;
+    struct frame_key k = { .tid = tid, .slot = top };
+    bpf_map_delete_elem(&span_frames, &k);
+    span_depth_set(tid, top);
+}
+
+// Delete an entire thread's stack (called on thread exit).
+static __always_inline void span_stack_clear(__u32 tid)
+{
+    #pragma unroll
+    for (int s = 0; s < MAX_SPAN_DEPTH; s++) {
+        struct frame_key k = { .tid = tid, .slot = (__u32)s };
+        bpf_map_delete_elem(&span_frames, &k);
+    }
+    bpf_map_delete_elem(&span_depth, &tid);
+}
 
 
 // Determine if a value is a user-space pointer (heuristic)
@@ -64,19 +165,17 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 
     long raw[NUM_ARGS] = {a1, a2, a3, a4, a5, a6, a7, a8};
 
-    // Save entry context before ringbuf reserve so uretprobe always has it
-    struct entry_ctx ectx = {};
-    ectx.entry_addr = (__u64)PT_REGS_IP(ctx);
-    ectx.timestamp  = bpf_ktime_get_ns();
-    #pragma unroll
-    for (int i = 0; i < NUM_ARGS; i++)
-        ectx.args[i] = (unsigned long)raw[i];
-    bpf_map_update_elem(&entry_map, &tid, &ectx, BPF_ANY);
+    // Reconcile any frames left by missed returns, then push this frame before
+    // the ringbuf reserve so the uretprobe always has its entry context.
+    __u64 entry_sp = (__u64)PT_REGS_SP(ctx);
+    span_stack_reconcile(tid, entry_sp);
+    span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
+                    bpf_ktime_get_ns(), raw);
 
     // Reserve space in ring buffer for event
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
-        bpf_map_delete_elem(&entry_map, &tid);
+        span_stack_pop(tid);       // undo the push (matches old delete-on-fail)
         return 0;
     }
 
@@ -124,13 +223,10 @@ int BPF_KPROBE(uprobe_save_only, long a1, long a2, long a3, long a4, long a5, lo
     pid_t tid = (__u32)id;
 
     long raw[NUM_ARGS] = {a1, a2, a3, a4, a5, a6, a7, a8};
-    struct entry_ctx ectx = {};
-    ectx.entry_addr = (__u64)PT_REGS_IP(ctx);
-    ectx.timestamp  = bpf_ktime_get_ns();
-    #pragma unroll
-    for (int i = 0; i < NUM_ARGS; i++)
-        ectx.args[i] = (unsigned long)raw[i];
-    bpf_map_update_elem(&entry_map, &tid, &ectx, BPF_ANY);
+    __u64 entry_sp = (__u64)PT_REGS_SP(ctx);
+    span_stack_reconcile(tid, entry_sp);
+    span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
+                    bpf_ktime_get_ns(), raw);
     return 0;
 }
 
@@ -147,13 +243,21 @@ int BPF_KRETPROBE(uretprobe_open)
     pid_t tid = (__u32)id;
     __u64 now = bpf_ktime_get_ns();
 
-    struct entry_ctx *saved = bpf_map_lookup_elem(&entry_map, &tid);
-    if (!saved)
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    if (!dp || *dp == 0)
         return 0;
+    __u32 top = *dp - 1;
+    struct frame_key fk = { .tid = tid, .slot = top };
+    struct span_frame *saved = bpf_map_lookup_elem(&span_frames, &fk);
+    if (!saved) {
+        span_depth_set(tid, top);  // depth/frame desync: shrink and bail
+        return 0;
+    }
 
     struct event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
-        bpf_map_delete_elem(&entry_map, &tid);
+        bpf_map_delete_elem(&span_frames, &fk);
+        span_depth_set(tid, top);
         return 0;
     }
 
@@ -192,7 +296,8 @@ int BPF_KRETPROBE(uretprobe_open)
     e->stack_depth = (stack_ret > 0) ? (__u32)((__u64)stack_ret >> 3) : 0;
 
     bpf_ringbuf_submit(e, 0);
-    bpf_map_delete_elem(&entry_map, &tid);
+    bpf_map_delete_elem(&span_frames, &fk);
+    span_depth_set(tid, top);      // pop the frame we just consumed
     return 0;
 }
 

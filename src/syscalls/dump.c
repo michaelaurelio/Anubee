@@ -24,6 +24,7 @@
 // the live post-decryption image. aarch64 / ELF64 only.
 
 #include "dump.h"
+#include "common/proc_mem.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,41 +140,6 @@ static int name_matches(const char *pattern, const char *path)
 		return fnmatch(pattern, bn, 0) == 0;
 	}
 	return strstr(path, pattern) != NULL;
-}
-
-// Read `len` bytes from the process at virtual address `va`, page by page,
-// leaving unreadable pages (guard gaps) zeroed. Returns bytes actually read.
-static size_t mem_read_range(int memfd, uint64_t va, uint8_t *dst, uint64_t len)
-{
-	uint64_t off = 0;
-	size_t got = 0;
-	while (off < len) {
-		uint64_t chunk = DUMP_PAGE - ((va + off) & (DUMP_PAGE - 1));
-		if (chunk > len - off)
-			chunk = len - off;
-		ssize_t r = pread(memfd, dst + off, chunk, (off_t)(va + off));
-		if (r <= 0) {
-			off += chunk;          // hole: leave zero-filled, skip the page
-			continue;
-		}
-		got += (size_t)r;
-		off += (size_t)r;
-	}
-	return got;
-}
-
-// Public wrappers over the /proc/<pid>/mem reader (see dump.h), so the
-// symbolizer can read live target memory without duplicating this logic.
-int proc_mem_open(int pid)
-{
-	char mp[64];
-	snprintf(mp, sizeof(mp), "/proc/%d/mem", pid);
-	return open(mp, O_RDONLY | O_CLOEXEC);
-}
-
-size_t proc_mem_read(int memfd, uint64_t va, void *dst, size_t len)
-{
-	return mem_read_range(memfd, va, (uint8_t *)dst, (uint64_t)len);
 }
 
 // ---- dynamic info extracted from PT_DYNAMIC -------------------------------
@@ -571,7 +537,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 		    uint64_t *covered_end)
 {
 	Elf64_Ehdr eh;
-	if (mem_read_range(memfd, base, (uint8_t *)&eh, sizeof(eh)) != sizeof(eh) ||
+	if (proc_mem_read(memfd, base, &eh, sizeof(eh)) != sizeof(eh) ||
 	    memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64) {
 		fprintf(stderr, "[dump] %s @0x%llx: no ELF64 header in memory (unmapped/encrypted?)\n",
 			name, (unsigned long long)base);
@@ -586,7 +552,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	Elf64_Phdr *ph = malloc(phsz);
 	if (!ph)
 		return -1;
-	if (mem_read_range(memfd, base + eh.e_phoff, (uint8_t *)ph, phsz) != phsz) {
+	if (proc_mem_read(memfd, base + eh.e_phoff, ph, phsz) != phsz) {
 		fprintf(stderr, "[dump] %s: cannot read program headers\n", name);
 		free(ph);
 		return -1;
@@ -623,7 +589,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 
 	// Capture the whole range from memory (gaps and all), then rewrite the phdrs
 	// so the file mirrors memory and each PT_LOAD spans up to the next one.
-	size_t got = mem_read_range(memfd, base, img, image_sz);
+	size_t got = proc_mem_read(memfd, base, img, image_sz);
 
 	// Sort PT_LOAD vaddrs to expand p_memsz to the next segment (SoFixer's
 	// FixDumpSoPhdr): make the inter-segment gaps part of a loadable segment.
@@ -721,11 +687,10 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 	if (n < 0)
 		return -1;
 
-	char mp[64];
-	snprintf(mp, sizeof(mp), "/proc/%d/mem", pid);
-	int memfd = open(mp, O_RDONLY | O_CLOEXEC);
+	int memfd = proc_mem_open(pid);
 	if (memfd < 0) {
-		fprintf(stderr, "[dump] pid %d: cannot open %s: %s\n", pid, mp, strerror(errno));
+		fprintf(stderr, "[dump] pid %d: cannot open /proc/%d/mem: %s\n",
+			pid, pid, strerror(errno));
 		free(m);
 		return -1;
 	}

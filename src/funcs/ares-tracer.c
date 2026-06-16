@@ -91,6 +91,15 @@ struct args {
     char dump_dir[256];
 };
 
+static void copy_str(char *dst, const char *src, size_t dstsz)
+{
+    if (dstsz == 0)
+        return;
+    size_t n = strnlen(src, dstsz - 1);
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 static error_t parse_opts(int key, char *arg, struct argp_state *state)
 {
     struct args *args = state->input;
@@ -106,19 +115,18 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         }
 
         case 'P':
-            strncpy(args->package_name, arg, sizeof(args->package_name) - 1);
-            args->package_name[sizeof(args->package_name) - 1] = '\0';
+            copy_str(args->package_name, arg, sizeof(args->package_name));
             break;
 
         case 'I':
             if (args->mod_pattern_count < 32) {
-                strncpy(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]) - 1);
+                copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
             }
             break;
 
         case 'i':
             if (args->func_pattern_count < 32) {
-                strncpy(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]) - 1);
+                copy_str(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]));
             }
             break;
 
@@ -132,22 +140,22 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'e':
             if (args->custom_spec_count < 64)
-                strncpy(args->custom_specs[args->custom_spec_count++], arg, 511);
+                copy_str(args->custom_specs[args->custom_spec_count++], arg, 512);
             break;
 
         case 'F':
             if (args->spec_file_count < 8)
-                strncpy(args->spec_files[args->spec_file_count++], arg, 255);
+                copy_str(args->spec_files[args->spec_file_count++], arg, 256);
             break;
 
         case 'o':
-            strncpy(args->output_file, arg, sizeof(args->output_file) - 1);
+            copy_str(args->output_file, arg, sizeof(args->output_file));
             break;
 
         case 'r':
             if (args->func_ret_pattern_count < 32)
-                strncpy(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
-                        sizeof(args->func_ret_patterns[0]) - 1);
+                copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
+                        sizeof(args->func_ret_patterns[0]));
             break;
 
         case 'c':
@@ -156,12 +164,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'D':
             if (args->dump_module_count < 8)
-                strncpy(args->dump_modules[args->dump_module_count++], arg,
-                        sizeof(args->dump_modules[0]) - 1);
+                copy_str(args->dump_modules[args->dump_module_count++], arg,
+                        sizeof(args->dump_modules[0]));
             break;
 
         case 'd':
-            strncpy(args->dump_dir, arg, sizeof(args->dump_dir) - 1);
+            copy_str(args->dump_dir, arg, sizeof(args->dump_dir));
             break;
 
         case 'm': {
@@ -321,8 +329,7 @@ static void jsonl_write(const char *stream, const char *buf);
 static void csv_write(const char *stream, const char *buf)
 {
     char msg[4096];
-    strncpy(msg, buf, sizeof(msg) - 1);
-    msg[sizeof(msg) - 1] = '\0';
+    copy_str(msg, buf, sizeof(msg));
     size_t len = strlen(msg);
     while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
         msg[--len] = '\0';
@@ -428,8 +435,7 @@ static void json_fwrite_str(FILE *f, const char *s)
 static void jsonl_write(const char *stream, const char *buf)
 {
     char msg[4096];
-    strncpy(msg, buf, sizeof(msg) - 1);
-    msg[sizeof(msg) - 1] = '\0';
+    copy_str(msg, buf, sizeof(msg));
     size_t len = strlen(msg);
     while (len > 0 && (msg[len-1] == '\n' || msg[len-1] == '\r'))
         msg[--len] = '\0';
@@ -830,8 +836,8 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
                 if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                     targets[count].pid = pid;
-                    strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
-                    strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
+                    copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
+                    copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
                     targets[count].offset = (unsigned long)sym.st_value;
                     targets[count].arg_count = -1;
                     memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
@@ -981,7 +987,7 @@ static apk_cache_t *apk_cache_get(const char *apk_path)
     uint16_t num_entries = LE16(buf, 10);
 
     apk_cache_t *c = &apk_cache[apk_cache_count];
-    strncpy(c->path, apk_path, sizeof(c->path) - 1);
+    copy_str(c->path, apk_path, sizeof(c->path));
     c->count = 0;
 
     lseek(fd, cd_off, SEEK_SET);
@@ -1022,7 +1028,7 @@ static apk_cache_t *apk_cache_get(const char *apk_path)
             lfh[0]==0x50 && lfh[1]==0x4b && lfh[2]==0x03 && lfh[3]==0x04) {
             uint32_t data_start = lhdr_off + 30 + LE16(lfh,26) + LE16(lfh,28);
             apk_so_entry_t *e = &c->entries[c->count++];
-            strncpy(e->name, base, sizeof(e->name) - 1);
+            copy_str(e->name, base, sizeof(e->name));
             e->data_start = data_start;
             e->size       = comp_size;
         }
@@ -1044,8 +1050,7 @@ static bool apk_resolve_offset(const char *apk_path, unsigned long apk_offset,
     for (int i = 0; i < c->count; i++) {
         apk_so_entry_t *e = &c->entries[i];
         if (apk_offset >= e->data_start && apk_offset < e->data_start + e->size) {
-            strncpy(so_out, e->name, so_sz - 1);
-            so_out[so_sz - 1] = '\0';
+            copy_str(so_out, e->name, so_sz);
             *so_off_out = apk_offset - e->data_start;
             return true;
         }
@@ -1072,11 +1077,9 @@ static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t m
         unsigned long file_offset = (unsigned long)(addr - start) + (unsigned long)pgoff;
         if (path[0] != '\0' && path[0] != '[') {
             const char *bname = strrchr(path, '/');
-            strncpy(mod_out, bname ? bname + 1 : path, mod_sz - 1);
-            mod_out[mod_sz - 1] = '\0';
+            copy_str(mod_out, bname ? bname + 1 : path, mod_sz);
         } else {
-            strncpy(mod_out, path[0] ? path : "[anon]", mod_sz - 1);
-            mod_out[mod_sz - 1] = '\0';
+            copy_str(mod_out, path[0] ? path : "[anon]", mod_sz);
         }
         *offset_out = file_offset;
 
@@ -1088,7 +1091,9 @@ static int resolve_addr_to_module(pid_t pid, __u64 addr, char *mod_out, size_t m
             if (apk_resolve_offset(path, file_offset, so_name, sizeof(so_name), &so_off)) {
                 const char *apk_base = strrchr(path, '/');
                 apk_base = apk_base ? apk_base + 1 : path;
-                snprintf(mod_out, mod_sz, "%s -> %s", apk_base, so_name);
+                char label[512];   // holds the full "apk -> so" before bounded copy
+                snprintf(label, sizeof(label), "%s -> %s", apk_base, so_name);
+                copy_str(mod_out, label, mod_sz);
                 *offset_out = so_off;
             }
         }
@@ -1104,8 +1109,7 @@ int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned 
 {
     for (int i = 0; i < caller_cache_count; i++) {
         if (caller_cache[i].pid == pid && caller_cache[i].addr == addr) {
-            strncpy(mod_out, caller_cache[i].mod, mod_sz - 1);
-            mod_out[mod_sz - 1] = '\0';
+            copy_str(mod_out, caller_cache[i].mod, mod_sz);
             *offset_out = caller_cache[i].offset;
             return 0;
         }
@@ -1121,12 +1125,10 @@ int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned 
         e->pid    = pid;
         e->addr   = addr;
         e->offset = offset;
-        strncpy(e->mod, mod, sizeof(e->mod) - 1);
-        e->mod[sizeof(e->mod) - 1] = '\0';
+        copy_str(e->mod, mod, sizeof(e->mod));
     }
 
-    strncpy(mod_out, mod, mod_sz - 1);
-    mod_out[mod_sz - 1] = '\0';
+    copy_str(mod_out, mod, mod_sz);
     *offset_out = offset;
     return 0;
 }
@@ -1197,8 +1199,8 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
 
             if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
                 targets[count].pid = pid;
-                strncpy(targets[count].mod_path, path, sizeof(targets[count].mod_path) - 1);
-                strncpy(targets[count].func_name, name, sizeof(targets[count].func_name) - 1);
+                copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
+                copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
                 targets[count].offset = (unsigned long)sym.st_value;
                 targets[count].arg_count = -1;
                 memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
@@ -1259,8 +1261,7 @@ static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
     out->ret_type  = ARG_NONE;
 
     char buf[512];
-    strncpy(buf, input, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    copy_str(buf, input, sizeof(buf));
 
     // Strip '>rettype' suffix (outside any parentheses): e.g. "libc.so!fgets(S,V,V)>V"
     {
@@ -1314,14 +1315,14 @@ static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
     char *bang = strchr(buf, '!');
     if (bang) {
         *bang = '\0';
-        strncpy(out->mod, buf, sizeof(out->mod) - 1);
+        copy_str(out->mod, buf, sizeof(out->mod));
         char *at = strchr(bang + 1, '@');
         if (at) {
             *at = '\0';
-            strncpy(out->func, bang + 1, sizeof(out->func) - 1);
+            copy_str(out->func, bang + 1, sizeof(out->func));
             out->offset = strtoul(at + 1, NULL, 0);
         } else {
-            strncpy(out->func, bang + 1, sizeof(out->func) - 1);
+            copy_str(out->func, bang + 1, sizeof(out->func));
         }
     } else {
         char *at = strchr(buf, '@');
@@ -1330,7 +1331,7 @@ static int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out)
             return -1;
         }
         *at = '\0';
-        strncpy(out->mod, buf, sizeof(out->mod) - 1);
+        copy_str(out->mod, buf, sizeof(out->mod));
         out->offset = strtoul(at + 1, NULL, 0);
     }
 
@@ -1353,10 +1354,8 @@ static int resolve_custom_spec_for_path(pid_t pid, const char *path,
                                          probe_target_t *out)
 {
     out->pid = pid;
-    strncpy(out->mod_path, path, sizeof(out->mod_path) - 1);
-    out->mod_path[sizeof(out->mod_path) - 1] = '\0';
-    strncpy(out->func_name, spec->func, sizeof(out->func_name) - 1);
-    out->func_name[sizeof(out->func_name) - 1] = '\0';
+    copy_str(out->mod_path, path, sizeof(out->mod_path));
+    copy_str(out->func_name, spec->func, sizeof(out->func_name));
     out->runtime_entry_addr = 0;
     out->arg_count = spec->arg_count;
     memcpy(out->arg_types, spec->arg_types, sizeof(spec->arg_types));
@@ -1835,7 +1834,7 @@ int cmd_funcs(int argc, char **argv)
     caller_only = args.caller_only;
 
     if (args.dump_dir[0] != '\0')
-        strncpy(dump_dir, args.dump_dir, sizeof(dump_dir) - 1);
+        copy_str(dump_dir, args.dump_dir, sizeof(dump_dir));
     for (int i = 0; i < args.dump_module_count; i++) {
         if (regcomp(&dump_module_re[dump_module_count], args.dump_modules[i], REG_EXTENDED | REG_NOSUB) == 0)
             dump_module_count++;

@@ -761,7 +761,10 @@ static void render_arg(const struct heimdall_syscall_event *e, int i, char *out,
 {
 	const char *s = arg_string(e, i);
 	if (s) {
-		snprintf(out, outsz, "\"%s\"", s);
+		// Bound the string to what fits between the quotes (outsz - 2 quotes -
+		// NUL) so the format provably can't overflow; long traced strings are
+		// truncated for display, same as before but without the truncation warning.
+		snprintf(out, outsz, "\"%.*s\"", (int)(outsz - 3), s);
 		return;
 	}
 	if (arg_fd_mask(e->nr) & (1u << i)) {

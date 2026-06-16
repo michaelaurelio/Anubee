@@ -48,7 +48,6 @@
 #include "heimdall.skel.h"
 #include "symbolize.h"
 #include "flags.h"
-#include "dump.h"
 #include "common/lib_trace.h"
 
 extern char **environ;
@@ -127,31 +126,7 @@ static const char *g_lib;
 static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static int g_quiet;                             // suppress per-event console output
-static int g_libs_only;                         // only log libraries loaded into the app
-static const char *g_dump_substr;               // -D: dump matching libs from memory at exit
-static const char *g_dump_dir = ".";            // output dir for dumps
 static volatile sig_atomic_t exiting;
-
-// App PIDs seen mapping a library, recorded so the exit-time memory dump knows
-// which processes to read. Small dedup'd set (apps spawn few processes).
-static __u32 *g_dump_pids;
-static size_t g_dump_pids_n, g_dump_pids_cap;
-
-static void dump_note_pid(__u32 pid)
-{
-	for (size_t i = 0; i < g_dump_pids_n; i++)
-		if (g_dump_pids[i] == pid)
-			return;
-	if (g_dump_pids_n == g_dump_pids_cap) {
-		size_t nc = g_dump_pids_cap ? g_dump_pids_cap * 2 : 16;
-		__u32 *np = realloc(g_dump_pids, nc * sizeof(*np));
-		if (!np)
-			return;
-		g_dump_pids = np;
-		g_dump_pids_cap = nc;
-	}
-	g_dump_pids[g_dump_pids_n++] = pid;
-}
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
@@ -1146,53 +1121,6 @@ static void handle_return(const struct heimdall_return_event *r)
 	p->used = 0;
 }
 
-// ---- library-load logging (-l) -------------------------------------------
-//
-// In --libs mode the syscall hook is never attached; the only events are the
-// executable file-backed mappings from uprobe_mmap (i.e. each .so as it is
-// loaded into the app). We log them directly here.
-
-static void json_emit_lib(const struct lib_map_event *m, const char *library)
-{
-	struct jbuf *j = &g_jb;
-	j->len = 0;
-
-	if (g_jsonl)
-		jb_c(j, '{');
-	else { jb_s(j, g_json_count ? "," : ""); jb_s(j, "\n  {"); }
-	g_json_count++;
-
-	jb_s(j, "\"id\":");      jb_u64(j, g_next_id++);
-	jb_s(j, ",\"pid\":");    jb_u64(j, m->h.pid);
-	jb_s(j, ",\"tid\":");    jb_u64(j, m->h.tid);
-	jb_s(j, ",\"library\":\""); jb_esc(j, library); jb_c(j, '"');
-	jb_s(j, ",\"start\":\""); jb_hex(j, m->start); jb_c(j, '"');
-	jb_s(j, ",\"end\":\"");   jb_hex(j, m->end);   jb_c(j, '"');
-	jb_s(j, ",\"pgoff\":");   jb_u64(j, m->pgoff);
-	jb_s(j, ",\"inode\":");   jb_u64(j, m->inode);
-	jb_s(j, g_jsonl ? "}\n" : "}");
-
-	if (j->b && j->len)
-		fwrite(j->b, 1, j->len, g_json);
-}
-
-static void handle_library(const struct lib_map_event *m)
-{
-	// Resolve the full on-disk path (falls back to the BPF basename), then emit
-	// the unified, MCP-compatible "[lib] ..." line shared with `ares lib`/`funcs`.
-	char path[256];
-	const char *library = path;
-	if (ares_libtrace_resolve_path(m->h.pid, m->start, m->name, path, sizeof(path)) != 0)
-		library = m->name;
-	if (!g_quiet) {
-		char line[512];
-		ares_libtrace_format_lib(line, sizeof(line), m, library, NULL);
-		printf("%s\n", line);
-	}
-	if (g_json)
-		json_emit_lib(m, library);
-}
-
 // Process one event — the heavy path (symbolization + JSON). Runs ONLY on the
 // worker thread, so all the caches/pending state it touches stay single-threaded.
 static void process_event(const void *data, size_t sz)
@@ -1210,15 +1138,8 @@ static void process_event(const void *data, size_t sz)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
-		// Record every app process that maps anything; the exit-time dump
-		// rescans each one's /proc/<pid>/maps (full paths, final state) to
-		// decide what actually matches.
-		if (g_dump_substr)
-			dump_note_pid(m->h.pid);
 		// The shared probe only emits executable mappings, so no is_exec test.
-		if (g_libs_only)
-			handle_library(m);
-		else if (lib_name_matches(m->name))
+		if (lib_name_matches(m->name))
 			push_lib_range(m->h.pid, m->start, m->end, m->name);
 		break;
 	}
@@ -1410,17 +1331,8 @@ static unsigned long long read_dropped(int fd)
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] [-q] [-a|-l] [-D lib] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
+		"usage: %s [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
 		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
-		"  -l, --libs          only log libraries loaded into the app (no syscalls)\n"
-		"  -D, --dump lib      at exit, dump every loaded library whose name contains\n"
-		"                      <lib> from the app's live memory (captures in-memory\n"
-		"                      decryption/unpacking). Combine with -l for a dump-only run.\n"
-		"                      A glob (* ? []) matches the basename, e.g. 'e_*' for a\n"
-		"                      protector payload loaded under a randomized per-run name.\n"
-		"      --dump-dir dir  directory for dumped .so images (default: current dir)\n"
-		"      --dump-raw      dump the raw phdr-fixed memory image only (no section\n"
-		"                      headers / relocation rebuild) — fallback for odd packers\n"
 		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
 		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
 		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
@@ -1436,16 +1348,14 @@ static void usage(const char *argv0)
 		"                      default — Java/JIT/OAT frames are symbolized on-device)\n"
 		"\n"
 		"  By default a <lib> selector is required and only syscalls whose backtrace\n"
-		"  passes through that library are recorded. With -a or -l it is optional/ignored.\n"
+		"  passes through that library are recorded. With -a it is optional/ignored.\n"
 		"  <lib> is a substring of the mapped name, or a glob (* ? []) over it — e.g.\n"
 		"  'e_*' / 'e_[0-9]*' for a protector payload loaded under a randomized name.\n"
 		"  -s/-x further restrict which syscalls are kept (works with the default/-a modes).\n"
 		"  e.g. %s com.example.app librasp.so\n"
 		"       %s com.example.app 'e_[0-9]*'         # trace a randomized-name library\n"
-		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n"
-		"       %s -l com.example.app                 # just list loaded libraries\n"
-		"       %s -l -D libpacked.so --dump-dir /data/local/tmp com.example.app\n",
-		argv0, argv0, argv0, argv0, argv0, argv0);
+		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n",
+		argv0, argv0, argv0, argv0);
 }
 
 int cmd_syscalls(int argc, char **argv)
@@ -1458,12 +1368,6 @@ int cmd_syscalls(int argc, char **argv)
 	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
 	// packed/obfuscated code). --snapshot / HEIMDALL_SNAPSHOT enables it.
 	int want_snap = getenv("HEIMDALL_SNAPSHOT") != NULL;
-	g_libs_only = getenv("HEIMDALL_LIBS") != NULL;
-	g_dump_substr = getenv("HEIMDALL_DUMP");
-	if (getenv("HEIMDALL_DUMP_DIR"))
-		g_dump_dir = getenv("HEIMDALL_DUMP_DIR");
-	if (getenv("HEIMDALL_DUMP_RAW"))
-		dump_set_raw(1);
 	const char *json_path = getenv("HEIMDALL_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
@@ -1491,16 +1395,6 @@ int cmd_syscalls(int argc, char **argv)
 			if (queue_mb < 1) { fprintf(stderr, "queue must be >= 1 MB\n"); return 1; }
 		} else if (!strcmp(argv[ai], "-a") || !strcmp(argv[ai], "--all")) {
 			capture_all = 1;
-		} else if (!strcmp(argv[ai], "-l") || !strcmp(argv[ai], "--libs")) {
-			g_libs_only = 1;
-		} else if (!strcmp(argv[ai], "-D") || !strcmp(argv[ai], "--dump")) {
-			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
-			g_dump_substr = argv[++ai];
-		} else if (!strcmp(argv[ai], "--dump-dir")) {
-			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
-			g_dump_dir = argv[++ai];
-		} else if (!strcmp(argv[ai], "--dump-raw")) {
-			dump_set_raw(1);
 		} else if (!strcmp(argv[ai], "--snapshot")) {
 			want_snap = 1;
 		} else if (!strcmp(argv[ai], "--no-snapshot")) {
@@ -1527,17 +1421,9 @@ int cmd_syscalls(int argc, char **argv)
 			break;
 		}
 	}
-	// -l logs library loads only; it never attaches the syscall hook, so a
-	// capture mode / syscall filter alongside it would be silently ignored.
-	if (g_libs_only && (capture_all || syscall_mode)) {
-		fprintf(stderr, "-l/--libs cannot be combined with -a/-s/-x\n");
-		usage(argv[0]);
-		return 1;
-	}
-
 	// Need <package>; <lib-substring> is required only in the default
-	// library-filtered mode (not with -a or -l).
-	int no_lib_needed = capture_all || g_libs_only;
+	// library-filtered mode (not with -a).
+	int no_lib_needed = capture_all;
 	int npos = argc - ai;
 	if (npos < 1 || (!no_lib_needed && npos < 2)) {
 		usage(argv[0]);
@@ -1558,9 +1444,7 @@ int cmd_syscalls(int argc, char **argv)
 		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
 		return 1;
 	}
-	if (g_libs_only)
-		printf("package %s -> uid %d, logging library loads only\n", g_pkg, uid);
-	else if (capture_all)
+	if (capture_all)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
@@ -1591,7 +1475,7 @@ int cmd_syscalls(int argc, char **argv)
 	// heavy for the -a firehose), and only when writing JSON (the snapshots go to
 	// a <out>.stacks sidecar for off-device CFI unwinding of obfuscated native
 	// frames — Java frames are resolved on-device by the symbolizer).
-	int want_snapshots = want_snap && !capture_all && !g_libs_only && json_path != NULL;
+	int want_snapshots = want_snap && !capture_all && json_path != NULL;
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;
@@ -1654,24 +1538,17 @@ int cmd_syscalls(int argc, char **argv)
 	// so disable its autoattach.
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
 
-	// --libs only needs the uprobe_mmap/munmap hooks; leaving the syscall
-	// dispatcher hook off means zero syscall overhead on the device.
-	if (g_libs_only)
-		bpf_program__set_autoattach(skel->progs.on_svc_enter, false);
-
 	if (heimdall__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
 	}
 
-	if (!g_libs_only) {
-		int nret = attach_return_probes(skel);
-		if (nret == 0)
-			fprintf(stderr, "warning: no return-value probes attached; "
-					"continuing without return values\n");
-		else
-			printf("return-value probes attached to %d syscalls\n", nret);
-	}
+	int nret = attach_return_probes(skel);
+	if (nret == 0)
+		fprintf(stderr, "warning: no return-value probes attached; "
+				"continuing without return values\n");
+	else
+		printf("return-value probes attached to %d syscalls\n", nret);
 
 	struct ring_buffer *rb =
 		ring_buffer__new(bpf_map__fd(skel->maps.events), enqueue_event, NULL, NULL);
@@ -1720,9 +1597,7 @@ int cmd_syscalls(int argc, char **argv)
 	}
 
 	signal(SIGINT, on_sigint);
-	if (g_libs_only)
-		printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", uid);
-	else if (capture_all)
+	if (capture_all)
 		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", uid);
 	else
 		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
@@ -1764,23 +1639,6 @@ int cmd_syscalls(int argc, char **argv)
 	else
 		fprintf(stderr, "no events dropped\n");
 
-	// Dump matching libraries from the (still-running) app's live memory. Done
-	// here, post-drain, so every MAP event's pid is recorded — and at exit time,
-	// after the app has run, any in-memory decryption/unpacking has happened.
-	if (g_dump_substr) {
-		if (g_dump_pids_n == 0)
-			fprintf(stderr, "[dump] no process mapped a library matching '%s'\n",
-				g_dump_substr);
-		int total = 0;
-		for (size_t i = 0; i < g_dump_pids_n; i++) {
-			int d = dump_pid_modules((int)g_dump_pids[i], g_dump_substr, g_dump_dir);
-			if (d > 0)
-				total += d;
-		}
-		fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
-			total, total == 1 ? "" : "s", g_dump_substr, g_dump_dir);
-	}
-
 out_rb:
 	ring_buffer__free(rb);
 out:
@@ -1790,7 +1648,7 @@ out:
 			fputs("\n]\n", g_json);
 		fclose(g_json);
 		printf("wrote %llu %s record%s to %s\n",
-		       g_json_count, g_libs_only ? "library" : "syscall",
+		       g_json_count, "syscall",
 		       g_json_count == 1 ? "" : "s", json_path);
 	}
 	if (g_stacks) {
@@ -1799,7 +1657,6 @@ out:
 		       g_stack_count, g_stack_count == 1 ? "" : "s", json_path);
 	}
 	free(g_pend);
-	free(g_dump_pids);
 	heimdall__destroy(skel);
 	return 0;
 }

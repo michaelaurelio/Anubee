@@ -8,6 +8,7 @@ layers** by combining two complementary eBPF tracing engines in a single binary:
 |---|---|---|---|
 | `ares syscalls` | kprobe on the syscall dispatcher, filtered by which library a syscall came from | every syscall a target library makes, with decoded args + backtraces | **injectionless** — nothing is written into the target; `TracerPid` stays 0 |
 | `ares funcs` | uprobe/uretprobe on specific functions (spec-driven), plus process/exec/getprop modules | individual function calls with typed arguments, return values and timing | **detectable** — inserts a `BRK` into the target's code |
+| `ares correlate` | entry uprobes (spec-driven) + a span-gated syscall kprobe sharing a per-tid span stack | the syscalls each probed function makes on a live run, each tagged with that function's `span` (function→syscall) | **detectable** — uprobe writes a `BRK`; loud by design |
 | `ares dump` | kprobe launch + shared lib_trace probe (like `ares lib`) | dumps matching modules from live memory → a rebuilt loadable ELF (.so) of a possibly-decrypted/packed library | **injectionless** — kprobe only, nothing written into the target |
 
 > **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
@@ -112,6 +113,32 @@ modules · `-o file` (`.jsonl`/`.csv`).
 
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.
+
+### `ares correlate` — function→syscall tracer (loud)
+
+Attaches an entry uprobe to each spec'd function and a **span-gated** syscall
+kprobe: every syscall a probed function issues on its thread (while the function
+is on the stack) is emitted carrying that function's `span` id. Nested probed
+functions get a `parent_span` chain. Detectable (uprobe `BRK`), so run it only
+when you accept that exposure.
+
+```sh
+# Which syscalls does libc.so!open make, in a launched app:
+ares correlate -e 'libc.so!open' -P com.example.app
+
+# Attach to a running PID with multiple specs (quote specs containing parens):
+ares correlate -p 12345 -e 'libssl.so!SSL_write(S)' -e 'libc.so!open'
+
+# Structured output:
+ares correlate -o corr.jsonl -e 'libc.so!open' -P com.example.app
+```
+
+Flat JSONL: `{"type":"func","span":N,"parent_span":M,...}` and
+`{"type":"syscall","span":N,"syscall":"openat",...}` — join on `span`.
+Flags: `-p PID` / `-P package` · `-e SPEC` (repeatable) / `-F spec-file` ·
+`-o file.jsonl`. **Quote specs with parentheses** (`'libc.so!open(S)'`) so the
+shell doesn't choke on the `(`. v1 captures raw syscall args (no decode) and uses
+SP-based span close (no return values yet).
 
 ### `ares lib` — library-load tracer
 

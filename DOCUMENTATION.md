@@ -23,7 +23,8 @@ flowchart TD
     funcs["funcs — src/funcs/ (ares-tracer)<br/>uprobe function engine<br/>+ own BPF skeleton"]
     lib["lib — src/lib/<br/>kprobe lib-load engine<br/>+ own BPF skeleton"]
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
-    common["src/common/lib_trace — shared mmap/munmap capture<br/>+ /proc maps resolver + '[lib]' emitter<br/>+ src/common/proc_mem — shared /proc/&lt;pid&gt;/mem reader"]
+    correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -32,27 +33,29 @@ flowchart TD
     main --> funcs
     main --> lib
     main --> dump
+    main --> correlate
     syscalls --> common
     funcs --> common
     lib --> common
     dump --> common
+    correlate --> common
     common --> trace
     trace --> mcp
 ```
 
-- **One binary, four engines, selected by subcommand.** `main()` looks at
+- **One binary, five engines, selected by subcommand.** `main()` looks at
   `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs` /
-  `cmd_lib` / `cmd_dump`), passing the remaining argv so each engine keeps its own
-  argument parser unchanged.
+  `cmd_lib` / `cmd_dump` / `cmd_correlate`), passing the remaining argv so each
+  engine keeps its own argument parser unchanged.
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
-  are *not* fused into a single always-on pass (see §8).
+  are *not* fused into a single always-on pass (see §9).
 - **Library-load tracing is shared, not duplicated.** The mmap/munmap capture,
   `/proc/<pid>/maps` full-path resolution, and the `[lib]` text/JSONL emitter live
-  once in `src/common/lib_trace.*` and are used by all four engines. The BPF probe
+  once in `src/common/lib_trace.*` and are used by all five engines. The BPF probe
   is *source*-shared (`#include`d into each engine's own skeleton, preserving the
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
-  exporting only its `ares_libtrace_*` API. See §8.
+  exporting only its `ares_libtrace_*` API. See §9.
 
 ### Why partial-link + symbol localization
 
@@ -103,7 +106,7 @@ build truth.
   capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
-- Output: structured per-event JSONL (see §6).
+- Output: structured per-event JSONL (see §7).
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 
@@ -115,7 +118,7 @@ build truth.
   `pre_attach`/`attach`/`detach`/`print_summary`/`handle_event`. Built-in modules:
   `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
   (Android `__system_property_*` hooks).
-- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §6).
+- Output: today, human-readable text wrapped as log-line JSONL/CSV (see §7).
 
 ## 4. The `lib` engine (kprobe, library-load only)
 
@@ -126,10 +129,10 @@ build truth.
   `uid_matches()`; the mmap/munmap capture, `/proc/<pid>/maps` full-path resolution,
   and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
   and no uprobes — nothing is written into the target, so it sits on the stealthy
-  side of the detectability firewall (§8).
+  side of the detectability firewall (§9).
 - Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
   line, plus optional structured JSONL via `-o`
-  (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §6). `[unlib]` unmap lines are
+  (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §7). `[unlib]` unmap lines are
   suppressed on stdout unless `-v` is passed; the JSONL (`-o`) always records both.
 
 ## 5. The `dump` engine (kprobe, live-memory dump)
@@ -155,7 +158,40 @@ build truth.
   the dump engine's rebuild pipeline and the syscalls engine's stack symbolizer
   (which walks ART's in-process JIT debug descriptor).
 
-## 6. Unified trace schema
+## 6. The `correlate` engine (uprobe + span-gated kprobe, loud)
+
+Function→syscall correlation on a live run. One BPF object
+(`src/correlate/correlate.bpf.c`) carries **both** an entry uprobe and a syscall
+kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
+
+- **Entry uprobe** (attached by the loader at each spec'd function offset via the
+  shared `src/common/probe_resolve` resolver): pushes a frame onto the per-tid span
+  stack, assigns a monotonic `span_id`, records `parent_span` (the enclosing open
+  frame), and emits a `func` event.
+- **SP-based span close** (no uretprobe in v1): on each later event the stack is
+  reconciled by user stack pointer (`current_sp > entry_sp` ⇒ the frame returned).
+  No stack tampering — as quiet as a bare entry uprobe.
+- **Span-gated `kprobe/do_el0_svc`**: reads the innermost open `span_id` for the
+  tid (`span_stack_top_id`); drops the syscall if none, else emits it tagged with
+  that span (number + raw `args[0..5]`, name resolved host-side from the arm64
+  syscall table).
+- **Loader** (`src/correlate/correlate.c`): reuses `src/common/launch` and
+  `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
+  per resolved `(path,offset)` plus the one shared kprobe, then drains the ring.
+- **Output**: flat, type-discriminated JSONL —
+  `{"type":"func","span":N,"parent_span":M,...}` and
+  `{"type":"syscall","span":N,"syscall":..,...}` — one row per event, joinable on
+  `span`; syscalls are never nested inside a func record.
+- **Detectability**: this object carries the uprobe, so it is the **loud** path; the
+  quiet engines never load it (see §9). Correlation is per-tid & synchronous
+  (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by
+  inlining and VM/virtualization.
+- **v1 scope**: custom specs (`-e`/`-F`) + `-p` (full) / `-P` (best-effort
+  post-launch); raw syscall args (no decode); SP-based close (no return values).
+  `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
+  (see [BACKLOG.md](BACKLOG.md)).
+
+## 7. Unified trace schema
 
 Every record carries a **`type` discriminator** so one consumer can ingest a mixed
 stream:
@@ -176,7 +212,7 @@ stream:
 **Planned (deferred):** a structured emitter for `funcs` so its events become
 first-class records under the same discriminator. See [BACKLOG.md](BACKLOG.md).
 
-## 7. MCP server (`tools/ares-mcp`, host-side Python)
+## 8. MCP server (`tools/ares-mcp`, host-side Python)
 
 - `trace_store.py` — loads a trace (JSON array or JSONL) into in-memory **DuckDB**
   and exposes bounded, pre-aggregated queries. Reads only the explicit syscall
@@ -196,15 +232,21 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
 
 ---
 
-## 8. Detectability analysis
+## 9. Detectability analysis
 
 - **Combining engines into one on-disk binary does not increase detectability of
   the stealthy path.** The binary lives at `/data/local/tmp`, not in the target's
   address space.
 - Detectability is **per-mechanism, not per-binary**: `syscalls` (kprobe) is
   invisible to in-process RASP (no `TracerPid`, no target-memory modification,
-  kernel-side filtering); `funcs` (uprobe) writes a `BRK` into the target's
-  executable pages and is detectable by prologue/code-integrity checks.
+  kernel-side filtering); `funcs` and `correlate` (uprobe) write a `BRK` into the
+  target's executable pages and are detectable by prologue/code-integrity checks.
+- **`correlate` is a loud engine by construction.** Its single BPF object carries
+  the entry uprobe, so the whole engine is on the detectable side; the quiet
+  engines never load it. Its default SP-based span close writes nothing extra to
+  the target (only the entry `BRK`); a future `--returns` mode would add a
+  uretprobe trampoline on the stack — a *second* detection surface — which is why
+  it stays opt-in.
 - **The real risk is running the loud (uprobe) engine alongside the quiet (kprobe)
   one.** A RASP that spots the `BRK` knows it is being analyzed and can change
   behavior — poisoning the syscall engine's highest-value use (clean-vs-rooted
@@ -216,7 +258,7 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
 
 ---
 
-## 9. Future work
+## 10. Future work
 
 Deferred architecture work, the `src/common/` consolidation roadmap, and known
 tech debt now live in [BACKLOG.md](BACKLOG.md).

@@ -38,29 +38,37 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 9. **Capability the funcs engine could borrow:** the syscalls engine's
    `decode_sockaddr` (the funcs engine has no sockaddr decoding).
 
-## Planned: fused core + `correlate` (function→syscall)
+## `correlate` (function→syscall) — landed 2026-06-17
 
-The detectability firewall is **reframed** — the one real invariant is "a stealthy run
-attaches zero uprobes"; "each engine owns its BPF object" and the partial-link
-symbol-localization are merge scaffolding, not sacred.
+The fused-core + `correlate` work shipped (Phase 1 + 2a–2c). The detectability
+firewall is **reframed**: the one real invariant is "a stealthy run attaches zero
+uprobes"; "each engine owns its BPF object" and the partial-link symbol-localization
+are merge scaffolding, not sacred.
 
-- **`correlate` subcommand** — function→syscall on a live run. Per-tid **span stack**
-  (push on entry uprobe; **SP-based pop** by default, no stack tampering;
-  `--returns` opts into uretprobe for return value + exact exit, loud). Syscall
-  kprobe is **span-gated**: record only inside a probed function, tag with the
-  innermost span. Flat output: in-span syscalls carry `span`, func events carry
-  `parent_span`. `dump` stays separate. Span model is per-tid & synchronous;
-  CFF-resistant, defeated by inlining / VM-virtualization.
-- **Fixes a latent funcs bug as a side effect:** today's single-slot per-tid
-  `entry_map` (`src/funcs/ares-tracer.bpf.c`) clobbers on nested/recursive
-  instrumented calls on one thread → missing RETURN events / wrong `elapsed_ns`. The
-  span stack replaces it.
-- **Staging (deliberately surgical):** v1 builds the span stack + SP-pop + the
-  source-shared span-stack map + `correlate` + `--returns`, and extracts into the
-  shared core **only** the helpers `correlate` forces (launch/UID-filter, ring
-  drain). Migrating `syscalls`/`funcs`/`lib` to thin presets over the formal core,
-  and retiring the localization where no longer needed, is deferred (folds in the
+**Done & device-verified:**
+- **Span stack** (`src/common/span_stack.bpf.h`) — per-tid stack replacing funcs'
+  single-slot `entry_map` (fixed a latent nested/recursive clobber bug → missing
+  RETURN events / wrong `elapsed_ns`); SP-based reconcile; `span_id`/`parent_span`
+  + atomic id allocator.
+- **Shared core extractions** — `src/common/launch` (UID/spawn helpers) and
+  `src/common/probe_resolve` (spec→target resolver, de-globalized onto a
+  `probe_resolve_ctx`), exported via `COMMON_API`; funcs drives them.
+- **`correlate` engine** (`src/correlate/`) — entry uprobes + span-gated
+  `do_el0_svc` kprobe sharing the span stack; flat `func`/`syscall` JSONL joined on
+  `span`. Verified on-device (`libc.so!open` → its `openat`/`fstat`/`read`/`close`).
+
+**Remaining (2d / future):**
+- `--returns`: opt-in uretprobe for return values + exact exit timing (loud — adds a
+  stack trampoline, a second detection surface).
+- Syscall **arg/sockaddr decoding** in `correlate` (currently raw `args[0..5]`) —
+  reuse the heimdall decoder + string/sockaddr capture.
+- Regex (`-I/-i`) targeting in `correlate` (currently custom specs `-e/-F` only).
+- `-P` uprobe attach is **best-effort** (post-launch `/proc/maps` scan) — tighten
+  the launch→attach timing so early calls aren't missed.
+- Migrating `syscalls`/`funcs`/`lib` to thin presets over the formal core, and
+  retiring the localization where no longer needed, remains deferred (folds in the
   consolidation roadmap items above).
+- MCP: teach `ares-mcp` to ingest `correlate` output (join syscalls by `span`).
 
 ## Planned: structured emitter + unified MCP
 

@@ -13,6 +13,7 @@ int cmd_syscalls(int argc, char **argv);   // src/syscalls/heimdall.c
 int cmd_funcs(int argc, char **argv);      // src/funcs/ares-tracer.c
 int cmd_lib(int argc, char **argv);        // src/lib/lib.c
 int cmd_dump(int argc, char **argv);       // src/dump/dump.c
+int cmd_correlate(int argc, char **argv);  // src/correlate/correlate.c
 
 static void usage(const char *argv0)
 {
@@ -30,6 +31,9 @@ static void usage(const char *argv0)
 		"                  library (.so) it loads (injectionless / stealthy).\n"
 		"  dump            launch an app and dump a (possibly decrypted) native\n"
 		"                  library from live memory, rebuilt into a loadable ELF.\n"
+		"  correlate       function->syscall tracer: entry uprobes + a span-gated\n"
+		"                  syscall kprobe (LOUD: writes BRK). Tags each in-span\n"
+		"                  syscall with the enclosing function's span.\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -58,6 +62,8 @@ int main(int argc, char **argv)
 		return cmd_lib(argc - 1, argv + 1);
 	if (!strcmp(cmd, "dump"))
 		return cmd_dump(argc - 1, argv + 1);
+	if (!strcmp(cmd, "correlate"))
+		return cmd_correlate(argc - 1, argv + 1);
 
 	fprintf(stderr, "%s: unknown command '%s'\n\n", argv[0], cmd);
 	usage(argv[0]);

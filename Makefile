@@ -60,6 +60,8 @@ FUNC_BPF_OBJ := $(BUILD)/ares-tracer.bpf.o
 FUNC_SKEL    := $(SRC)/funcs/ares-tracer.skel.h
 LIB_BPF_OBJ  := $(BUILD)/lib.bpf.o
 LIB_SKEL     := $(BUILD)/lib.skel.h
+CORR_BPF_OBJ := $(BUILD)/correlate.bpf.o
+CORR_SKEL    := $(BUILD)/correlate.skel.h
 DUMP_BPF_OBJ := $(BUILD)/dump.bpf.o
 DUMP_SKEL    := $(BUILD)/dump.skel.h
 SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
@@ -92,6 +94,10 @@ FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 LIB_CSRC := $(SRC)/lib/lib.c
 LIB_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(LIB_CSRC))
 
+CORR_CSRC := $(SRC)/correlate/correlate.c
+CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
+CORR_PART := $(BUILD)/correlate.part.o
+
 DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c
 DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
 DUMP_PART := $(BUILD)/dump.part.o
@@ -105,6 +111,7 @@ MAIN_OBJ  := $(BUILD)/main.o
 SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
 FUNC_CFLAGS := -O2 -Wall -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
 LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC)
+CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC)
 DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC)
 COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 
@@ -160,6 +167,14 @@ $(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib
 $(LIB_SKEL): $(LIB_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_lib > $@
 
+# correlate engine BPF: span stack + entry uprobe + span-gated do_el0_svc kprobe.
+$(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c $(SRC)/correlate/correlate.h $(SRC)/common/span_stack.bpf.h vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/correlate -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(CORR_SKEL): $(CORR_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name ares_correlate > $@
+
 # dump engine BPF: minimal maps + uid gate, then #includes the shared probe.
 $(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
@@ -195,6 +210,10 @@ $(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(SRC)/common/lib_trace.h $(LIBBPF_
 	mkdir -p $(dir $@)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
+$(BUILD)/correlate/%.o: $(SRC)/correlate/%.c $(CORR_SKEL) $(SYSCALLS_TBL) $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/correlate/correlate.h $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(CORR_CFLAGS) -c $< -o $@
+
 $(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(SRC)/common/proc_mem.h $(SRC)/common/lib_trace.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(DUMP_CFLAGS) -c $< -o $@
@@ -220,13 +239,17 @@ $(LIB_PART): $(LIB_OBJ)
 	$(LD) -r -o $@ $(LIB_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_lib $@
 
+$(CORR_PART): $(CORR_OBJ)
+	$(LD) -r -o $@ $(CORR_OBJ)
+	$(OBJCOPY) --keep-global-symbol=cmd_correlate $@
+
 $(DUMP_PART): $(DUMP_OBJ)
 	$(LD) -r -o $@ $(DUMP_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_dump $@
 
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(DUMP_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(DUMP_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)

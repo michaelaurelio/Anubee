@@ -17,6 +17,18 @@ if [ -z "$RUNTIME" ]; then
     fi
 fi
 
+# Docker's ENTRYPOINT runs as root with no USER directive, so files it writes
+# into the bind-mounted /workspace land on the host owned by root:root — which
+# makes build/ unwritable to the invoking user afterwards. Map the container to
+# the host UID/GID so artifacts stay host-owned. HOME is pointed at a writable
+# path because the mapped UID has no /etc/passwd entry inside the image.
+# (Rootless Podman already maps the container to the host user via its user
+# namespace; adding --user there would mis-map ownership to a subuid, so skip it.)
+RUN_USER=()
+if [ "$RUNTIME" = docker ]; then
+    RUN_USER=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
+fi
+
 echo "=== ensuring vendored libbpf submodule ==="
 if [ -d "$ROOT/.git" ]; then
     git -C "$ROOT" submodule update --init --recursive
@@ -30,9 +42,11 @@ fi
 # objects). If the Dockerfile changed since the last build, clean build/ so we
 # never link objects produced by a different image — e.g. a glibc-version
 # mismatch surfaces as undefined `__isoc23_*` references at the final link.
-# The stamp lives at the repo root (not in build/) so it is host-writable even
-# though container-produced artifacts in build/ are root-owned; the clean runs
-# IN the container (as root) so it can actually remove those root-owned files.
+# The stamp lives at the repo root (not in build/) so the guard works regardless
+# of build/ ownership. The clean step runs as the same mapped host user, so it
+# removes the host-owned artifacts this script now produces. (A build/ left
+# root-owned by an older version of this script needs a one-time `sudo rm -rf
+# build`.)
 STAMP="$ROOT/.ares-image-stamp"
 DOCKERFILE_HASH="$(sha1sum "$ROOT/misc/Dockerfile" | awk '{print $1}')"
 NEEDS_CLEAN=0
@@ -45,11 +59,11 @@ echo "=== building cross-compile image ($RUNTIME) ==="
 
 if [ "$NEEDS_CLEAN" = 1 ]; then
     echo "=== Dockerfile changed since last build — cleaning stale build/ ==="
-    "$RUNTIME" run --rm -v "$ROOT:/workspace" "$IMAGE" clean
+    "$RUNTIME" run --rm ${RUN_USER[@]+"${RUN_USER[@]}"} -v "$ROOT:/workspace" "$IMAGE" clean
 fi
 
 echo "=== compiling ares (static aarch64) ==="
-"$RUNTIME" run --rm -v "$ROOT:/workspace" "$IMAGE" "$@"
+"$RUNTIME" run --rm "${RUN_USER[@]}" -v "$ROOT:/workspace" "$IMAGE" "$@"
 
 # Record the toolchain identity for the stale-artifact guard above.
 echo "$DOCKERFILE_HASH" > "$STAMP"

@@ -7,7 +7,7 @@ forward-looking items only.
 **Contents**
 
 - [Shipped](#shipped)
-- [Open issues — review 2026-06-17 (R1–R9)](#open-issues--review-2026-06-17)
+- [Open issues — review 2026-06-17 (R2–R9)](#open-issues--review-2026-06-17)
 - [Consolidation roadmap — shared-code de-dup (C1–C9)](#consolidation-roadmap--shared-code-de-dup)
 - [`correlate` — remaining work](#correlate--remaining-work)
 - [Planned — structured emitter + unified MCP](#planned--structured-emitter--unified-mcp)
@@ -43,6 +43,13 @@ Done & device-verified:
   `do_el0_svc` kprobe sharing the span stack; flat `func`/`syscall` JSONL joined on
   `span`. Verified on-device (`libc.so!open` → its `openat`/`fstat`/`read`/`close`).
 
+### Launch/UID helper de-dup (R1 / C5) — 2026-06-18
+
+`sh_exec` / `resolve_uid` / `resolve_component` were triplicated in the `syscalls`,
+`dump`, and `lib` engines. All three now `#include "common/launch.h"` and call the
+shared `ares_*` implementations (already used by `funcs`/`correlate`), removing
+~150 duplicated lines with no behavior change. Cross-build verified.
+
 ---
 
 ## Open issues — review 2026-06-17
@@ -51,14 +58,6 @@ Repo-wide review pass. Ordered by severity; most are small and self-contained.
 
 ### Correctness / robustness
 
-- **R1 — `sh_exec` / `resolve_uid` / `resolve_component` are still triplicated** in
-  `src/syscalls/heimdall.c`, `src/dump/dump.c`, `src/lib/lib.c` — even though
-  `src/common/launch.c` already implements them and `funcs` + `correlate` already
-  use it. This is consolidation item **C5**, but it is now **low-risk**: the shared
-  helper exists and is device-proven, so the three stale engines just need to
-  `#include "common/launch.h"` and drop their private copies (watch the `static`
-  linkage — the localized-symbol build already isolates names, so the migration is
-  delete-and-call). ~150 duplicated lines removed.
 - **R2 — uprobe offset uses `sym.st_value` (a virtual address) directly as the
   uprobe file offset** in both `correlate` (`resolve_custom_spec_for_path` /
   `resolve_targets*` in `src/common/probe_resolve.c`) and `funcs`. libbpf's
@@ -127,10 +126,9 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   is still separate → fold into one maps/symbol module.
 - **C4 — Kernel-side UID filter** — `uid_matches()` + target-uid BPF map
   (`target_uid` vs `target_uids`) → shared BPF header.
-- **C5 — `resolve_uid()` + app launch/force-stop + install-UID-before-launch** — same
-  flow in all engines → shared device/launch helper. *Now actionable — see **R1**:
-  `src/common/launch.c` already exists; just migrate the three stale engines off
-  their private copies.*
+- **C5 — `resolve_uid()` + app launch/force-stop + install-UID-before-launch** —
+  **DONE (2026-06-18, R1).** All engines now call the shared `ares_*` helpers in
+  `src/common/launch.{c,h}`; the private per-engine copies are removed.
 - **C6 — ELF reconstruction** — merged into `src/dump/rebuild.c` (the single
   `ares dump` engine); the old per-engine dump files are removed.
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.

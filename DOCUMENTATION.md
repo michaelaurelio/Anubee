@@ -56,11 +56,16 @@ flowchart TD
   is *source*-shared (`#include`d into each engine's own skeleton, preserving the
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
   exporting only its `ares_libtrace_*` API. See §9.
+- **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
+  shell command), `resolve_uid` (app UID from its data dir), and `resolve_component`
+  (launchable activity) live once in `src/common/launch.*` as `ares_*` and are used
+  by all five engines. They are linked once into `common.part.o`, exporting only the
+  `ares_*` API (see `COMMON_API` in the Makefile).
 
 ### Why partial-link + symbol localization
 
 The two engines were independent programs that each assumed they owned the global
-namespace (e.g. both define `verbose`, `resolve_uid`; the funcs engine exposes
+namespace (e.g. both define `verbose`; the funcs engine exposes
 bare globals like `skel`, `out_print`, `lookup_caller`). Naively linking their
 objects together fails with `multiple definition` errors.
 

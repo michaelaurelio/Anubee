@@ -502,12 +502,32 @@ bool caller_only = false;
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
 
-static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
+// Bundle of the probe-resolution state, so the resolver is reentrant and can be
+// lifted into src/common (2c-ii). Fields point at the existing file-scope arrays
+// — no storage is moved. Attach (skel->progs) stays in the funcs engine.
+struct probe_resolve_ctx {
+    regex_t              *mod_re;
+    bool                 *mod_has_slash;
+    int                   mod_re_count;
+    regex_t              *func_re;
+    int                   func_re_count;
+    regex_t              *func_ret_re;
+    int                   func_ret_re_count;
+    probe_target_t       *targets;        // output array (base)
+    int                  *target_count;   // output count (shared cursor)
+    int                   targets_cap;
+    const custom_probe_spec_t *custom_specs;
+    int                   custom_spec_count;
+    bool                  verbose;
+};
+
+static int resolve_targets(const struct probe_resolve_ctx *ctx, pid_t pid,
+                           probe_target_t *targets, int max_targets)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
 
-    if (verbose) err_print("  [scan] > opening %s\n", maps_path);
+    if (ctx->verbose) err_print("  [scan] > opening %s\n", maps_path);
 
     FILE *f = fopen(maps_path, "r");
     if (!f) {
@@ -526,26 +546,26 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
         if (path[0] != '/') continue;
         if (!strchr(perms, 'x')) continue;
 
-        if (verbose) err_print("  [maps] > rx[%d]: %s\n", n_rx, path);
+        if (ctx->verbose) err_print("  [maps] > rx[%d]: %s\n", n_rx, path);
         n_rx++;
 
-        if (!mod_matches(path, mod_re, mod_has_slash, mod_re_count)) {
-            if (verbose) err_print("  [maps]   | skip (no -I match)\n");
+        if (!mod_matches(path, ctx->mod_re, ctx->mod_has_slash, ctx->mod_re_count)) {
+            if (ctx->verbose) err_print("  [maps]   | skip (no -I match)\n");
             continue;
         }
-        if (verbose) err_print("  [maps]   | match! opening ELF...\n");
+        if (ctx->verbose) err_print("  [maps]   | match! opening ELF...\n");
         n_matched++;
 
         int fd = open(path, O_RDONLY);
         if (fd < 0) {
-            if (verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
+            if (ctx->verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
             continue;
         }
-        if (verbose) err_print("  [maps]   | ELF fd=%d, parsing sections...\n", fd);
+        if (ctx->verbose) err_print("  [maps]   | ELF fd=%d, parsing sections...\n", fd);
 
         Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
         if (!elf) {
-            if (verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
+            if (ctx->verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
             close(fd);
             continue;
         }
@@ -563,7 +583,7 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
             if (!data) continue;
 
             int num_symbols = shdr.sh_size / shdr.sh_entsize;
-            if (verbose) err_print("  [scan]   | %s: %d symbols\n",
+            if (ctx->verbose) err_print("  [scan]   | %s: %d symbols\n",
                 shdr.sh_type == SHT_SYMTAB ? "SHT_SYMTAB" : "SHT_DYNSYM", num_symbols);
 
             for (int i = 0; i < num_symbols && count < max_targets; i++) {
@@ -575,18 +595,18 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
 
                 const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
                 if (!name || name[0] == '\0') continue;
-                bool entry_match = func_matches(name, func_re, func_re_count);
+                bool entry_match = func_matches(name, ctx->func_re, ctx->func_re_count);
                 // When -r given but not -i, don't apply default "match all" for entry probes
-                if (func_re_count == 0 && func_ret_re_count > 0) entry_match = false;
-                bool ret_match = func_ret_re_count > 0 &&
-                                 func_matches(name, func_ret_re, func_ret_re_count);
+                if (ctx->func_re_count == 0 && ctx->func_ret_re_count > 0) entry_match = false;
+                bool ret_match = ctx->func_ret_re_count > 0 &&
+                                 func_matches(name, ctx->func_ret_re, ctx->func_ret_re_count);
                 if (!entry_match && !ret_match) continue;
 
-                if (verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
+                if (ctx->verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
                     path, name, (unsigned long)sym.st_value,
                     (!entry_match && ret_match) ? " (ret-only)" : "");
 
-                if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
+                if (!is_duplicate(ctx->targets, *ctx->target_count + count, path, (unsigned long)sym.st_value)) {
                     targets[count].pid = pid;
                     copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                     copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
@@ -601,10 +621,10 @@ static int resolve_targets(pid_t pid, probe_target_t *targets, int max_targets)
         }
         elf_end(elf);
         close(fd);
-        if (verbose) err_print("  [maps]   | ELF done, symbols so far: %d\n", count);
+        if (ctx->verbose) err_print("  [maps]   | ELF done, symbols so far: %d\n", count);
     }
 
-    if (verbose) err_print("  [scan] > done: %d rx entries, %d matched, %d found\n",
+    if (ctx->verbose) err_print("  [scan] > done: %d rx entries, %d matched, %d found\n",
         n_rx, n_matched, count);
     fclose(f);
     return count;
@@ -885,11 +905,12 @@ int lookup_caller(pid_t pid, __u64 addr, char *mod_out, size_t mod_sz, unsigned 
     return 0;
 }
 
-static int resolve_targets_for_file(pid_t pid, const char *path,
+static int resolve_targets_for_file(const struct probe_resolve_ctx *ctx,
+                                     pid_t pid, const char *path,
                                      unsigned long map_start, unsigned long map_end,
                                      probe_target_t *targets, int max_targets)
 {
-    if (verbose) err_print("  [scan] > %s (map event)\n", path);
+    if (ctx->verbose) err_print("  [scan] > %s (map event)\n", path);
 
     int fd = open(path, O_RDONLY);
     if (fd < 0 && map_start && map_end) {
@@ -897,17 +918,17 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
         snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
                  pid, map_start, map_end);
         fd = open(map_files, O_RDONLY);
-        if (fd >= 0 && verbose)
+        if (fd >= 0 && ctx->verbose)
             err_print("  [scan] > opened via map_files (file deleted from fs)\n");
     }
     if (fd < 0) {
-        if (verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
+        if (ctx->verbose) err_print("  [scan] > skip (open failed: %s)\n", strerror(errno));
         return -1;
     }
 
     Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
     if (!elf) {
-        if (verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
+        if (ctx->verbose) err_print("  [scan]   | skip (not a valid ELF)\n");
         close(fd);
         return -1;
     }
@@ -926,7 +947,7 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
         if (!data) continue;
 
         int num_symbols = shdr.sh_size / shdr.sh_entsize;
-        if (verbose) err_print("  [scan]   | %s: %d symbols\n",
+        if (ctx->verbose) err_print("  [scan]   | %s: %d symbols\n",
             shdr.sh_type == SHT_SYMTAB ? "SHT_SYMTAB" : "SHT_DYNSYM", num_symbols);
 
         for (int i = 0; i < num_symbols && count < max_targets; i++) {
@@ -939,17 +960,17 @@ static int resolve_targets_for_file(pid_t pid, const char *path,
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (!name || name[0] == '\0') continue;
 
-            bool entry_match = func_matches(name, func_re, func_re_count);
-            if (func_re_count == 0 && func_ret_re_count > 0) entry_match = false;
-            bool ret_match = func_ret_re_count > 0 &&
-                             func_matches(name, func_ret_re, func_ret_re_count);
+            bool entry_match = func_matches(name, ctx->func_re, ctx->func_re_count);
+            if (ctx->func_re_count == 0 && ctx->func_ret_re_count > 0) entry_match = false;
+            bool ret_match = ctx->func_ret_re_count > 0 &&
+                             func_matches(name, ctx->func_ret_re, ctx->func_ret_re_count);
             if (!entry_match && !ret_match) continue;
 
-            if (verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
+            if (ctx->verbose) err_print(" [match] > %s!%s @ 0x%lx%s\n",
                 path, name, (unsigned long)sym.st_value,
                 (!entry_match && ret_match) ? " (ret-only)" : "");
 
-            if (!is_duplicate(probe_targets, probe_target_count + count, path, (unsigned long)sym.st_value)) {
+            if (!is_duplicate(ctx->targets, *ctx->target_count + count, path, (unsigned long)sym.st_value)) {
                 targets[count].pid = pid;
                 copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                 copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
@@ -1152,28 +1173,29 @@ static int resolve_custom_spec_for_path(pid_t pid, const char *path,
     return found;
 }
 
-static void apply_custom_specs_for_file(pid_t pid, const char *path, pid_t uprobe_pid,
+static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
+                                         pid_t pid, const char *path, pid_t uprobe_pid,
                                          unsigned long map_start, unsigned long map_end)
 {
-    int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0]));
-    for (int s = 0; s < custom_probe_spec_count && probe_target_count < max; s++) {
-        const custom_probe_spec_t *spec = &custom_probe_specs[s];
+    int max = ctx->targets_cap;
+    for (int s = 0; s < ctx->custom_spec_count && *ctx->target_count < max; s++) {
+        const custom_probe_spec_t *spec = &ctx->custom_specs[s];
         if (!custom_spec_matches_path(spec, path)) continue;
 
         probe_target_t tgt;
         if (resolve_custom_spec_for_path(pid, path, spec, &tgt) != 0) {
-            if (verbose) err_print("   [err] > custom spec: could not resolve %s!%s in %s\n",
+            if (ctx->verbose) err_print("   [err] > custom spec: could not resolve %s!%s in %s\n",
                 spec->mod, spec->func[0] ? spec->func : "?", path);
             continue;
         }
 
-        if (is_duplicate(probe_targets, probe_target_count, path, tgt.offset))
+        if (is_duplicate(ctx->targets, *ctx->target_count, path, tgt.offset))
             continue;
 
-        int idx = probe_target_count;
-        probe_targets[idx] = tgt;
+        int idx = *ctx->target_count;
+        ctx->targets[idx] = tgt;
         probe_links[idx] = NULL;
-        probe_target_count++;
+        (*ctx->target_count)++;
 
         const char *bname = strrchr(path, '/');
         bname = bname ? bname + 1 : path;
@@ -1224,6 +1246,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     const struct event_header *header = data;
     if (data_sz < sizeof(*header)) return 0;
+    struct probe_resolve_ctx *rctx = ctx;  // routed via ring_buffer__new (see cmd_funcs)
 
     // SEAM — structured trace output (deferred; see DOCUMENTATION.md "Unified
     // trace schema"). Today this handler renders human-readable text that the
@@ -1253,7 +1276,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (mod_matched && (mod_re_count > 0 || func_ret_re_count > 0)) {
             int prev_count = probe_target_count;
             int max_targets = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev_count;
-            int resolved = resolve_targets_for_file(header->pid, path,
+            int resolved = resolve_targets_for_file(rctx, header->pid, path,
                                                      (unsigned long)e->start, (unsigned long)e->end,
                                                      probe_targets + prev_count, max_targets);
 
@@ -1315,7 +1338,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
         // Custom spec resolution (independent of -I/-i filter)
         if (custom_probe_spec_count > 0)
-            apply_custom_specs_for_file(header->pid, path, -1,
+            apply_custom_specs_for_file(rctx, header->pid, path, -1,
                                         (unsigned long)e->start, (unsigned long)e->end);
 
         return 0;
@@ -1660,7 +1683,19 @@ int cmd_funcs(int argc, char **argv)
     }
     elf_version(EV_CURRENT);
 
-    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, NULL, NULL);
+    // Resolution context: points at the file-scope regex/target/spec state, built
+    // after all counts are finalized. Routed into handle_event via ring_buffer__new.
+    struct probe_resolve_ctx rctx = {
+        .mod_re = mod_re, .mod_has_slash = mod_has_slash, .mod_re_count = mod_re_count,
+        .func_re = func_re, .func_re_count = func_re_count,
+        .func_ret_re = func_ret_re, .func_ret_re_count = func_ret_re_count,
+        .targets = probe_targets, .target_count = &probe_target_count,
+        .targets_cap = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])),
+        .custom_specs = custom_probe_specs, .custom_spec_count = custom_probe_spec_count,
+        .verbose = verbose,
+    };
+
+    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &rctx, NULL);
     if (!events_rb) {
         err = -1;
         err_print("    [rb] > failed to create ring buffer\n");
@@ -1674,6 +1709,7 @@ int cmd_funcs(int argc, char **argv)
             for (int i = 0; i < args.pid_count; i++) {
                 ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
+                    &rctx,
                     args.pids[i],
                     probe_targets + probe_target_count,
                     sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
@@ -1757,7 +1793,7 @@ int cmd_funcs(int argc, char **argv)
                     if (sscanf(mline, "%*x-%*x %4s %*x %*s %*d %255s", perms, mpath) < 1) continue;
                     if (mpath[0] != '/') continue;
                     if (!strchr(perms, 'x')) continue;
-                    apply_custom_specs_for_file(args.pids[p], mpath, args.pids[p], 0, 0);
+                    apply_custom_specs_for_file(&rctx, args.pids[p], mpath, args.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1778,7 +1814,7 @@ int cmd_funcs(int argc, char **argv)
         if (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-            int resolved = resolve_targets(zygote_pid, probe_targets + prev, max);
+            int resolved = resolve_targets(&rctx, zygote_pid, probe_targets + prev, max);
             ts_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
             if (resolved > 0) {
                 probe_target_count += resolved;
@@ -1830,7 +1866,7 @@ int cmd_funcs(int argc, char **argv)
                     if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
                     if (cpath[0] != '/') continue;
                     if (!strchr(cperms, 'x')) continue;
-                    apply_custom_specs_for_file(zygote_pid, cpath, -1, 0, 0);
+                    apply_custom_specs_for_file(&rctx, zygote_pid, cpath, -1, 0, 0);
                 }
                 fclose(cf);
             }

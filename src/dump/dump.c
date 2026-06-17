@@ -12,9 +12,8 @@
 //     short-lived libraries, at the cost of possibly dumping pre-decryption).
 //
 // The ELF capture + rebuild is src/dump/rebuild.c; capture/path-resolution is
-// the shared src/common/lib_trace.*. The device/launch helpers are copied from
-// the syscalls/lib engines on purpose (device-layer consolidation is a separate
-// future pass — see DOCUMENTATION.md §7).
+// the shared src/common/lib_trace.*. The device/launch helpers are shared from
+// src/common/launch.{c,h} as ares_*.
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -30,9 +29,8 @@
 
 #include "dump.skel.h"
 #include "common/lib_trace.h"
+#include "common/launch.h"
 #include "rebuild.h"
-
-extern char **environ;
 
 static volatile sig_atomic_t exiting = 0;
 static void on_sigint(int sig) { (void)sig; exiting = 1; }
@@ -84,81 +82,8 @@ static int seen_add(__u32 pid, __u64 start)
 	return 1;                              // newly recorded
 }
 
-// ---- running Android tools (no libc system(): /bin/sh is absent) ----------
-
-static int sh_exec(const char *cmd, char *out, size_t outsz)
-{
-	int pipefd[2] = { -1, -1 };
-	if (out != NULL) {
-		out[0] = '\0';
-		if (pipe(pipefd) != 0)
-			return -1;
-	}
-
-	pid_t pid = fork();
-	if (pid < 0) {
-		if (out != NULL) { close(pipefd[0]); close(pipefd[1]); }
-		return -1;
-	}
-
-	if (pid == 0) {
-		if (out != NULL) {
-			dup2(pipefd[1], STDOUT_FILENO);
-			close(pipefd[0]);
-			close(pipefd[1]);
-		} else {
-			int devnull = open("/dev/null", O_WRONLY);
-			if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); close(devnull); }
-		}
-		char *argv[] = { (char *)"sh", (char *)"-c", (char *)cmd, NULL };
-		execve("/system/bin/sh", argv, environ);
-		_exit(127);
-	}
-
-	if (out != NULL) {
-		close(pipefd[1]);
-		size_t off = 0;
-		ssize_t n;
-		while (off + 1 < outsz && (n = read(pipefd[0], out + off, outsz - 1 - off)) > 0)
-			off += (size_t)n;
-		out[off] = '\0';
-		close(pipefd[0]);
-	}
-
-	int status = 0;
-	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-		;
-	return status;
-}
-
-static int resolve_uid(const char *pkg)
-{
-	const char *roots[] = { "/data/data/%s", "/data/user/0/%s", "/data/user_de/0/%s" };
-	for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
-		char path[256];
-		snprintf(path, sizeof(path), roots[i], pkg);
-		struct stat st;
-		if (stat(path, &st) == 0)
-			return (int)st.st_uid;
-	}
-	return -1;
-}
-
-static int resolve_component(const char *pkg, char *out, size_t outsz)
-{
-	char cmd[256], buf[1024];
-	snprintf(cmd, sizeof(cmd), "cmd package resolve-activity --brief %s", pkg);
-	if (sh_exec(cmd, buf, sizeof(buf)) < 0)
-		return -1;
-
-	out[0] = '\0';
-	char *save = NULL;
-	for (char *line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-		if (strchr(line, '/') && strstr(line, pkg))
-			snprintf(out, outsz, "%s", line);
-	}
-	return out[0] ? 0 : -1;
-}
+// Device launch/UID helpers (sh_exec / resolve_uid / resolve_component) now live
+// in src/common/launch.{c,h} as ares_*; shared across all engines.
 
 // ---- ring-buffer event handling -------------------------------------------
 
@@ -259,7 +184,7 @@ int cmd_dump(int argc, char **argv)
 		return 1;
 	}
 
-	int uid = resolve_uid(pkg);
+	int uid = ares_resolve_uid(pkg);
 	if (uid < 0) {
 		fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", pkg);
 		return 1;
@@ -297,18 +222,18 @@ int cmd_dump(int argc, char **argv)
 
 	char cmd[512], comp[256];
 	snprintf(cmd, sizeof(cmd), "am force-stop %s", pkg);
-	sh_exec(cmd, NULL, 0);
+	ares_sh_exec(cmd, NULL, 0);
 
 	if (activity)
 		snprintf(comp, sizeof(comp), "%s/%s", pkg, activity);
-	else if (resolve_component(pkg, comp, sizeof(comp)) != 0) {
+	else if (ares_resolve_component(pkg, comp, sizeof(comp)) != 0) {
 		fprintf(stderr, "dump: could not resolve launcher activity for '%s'; pass it explicitly\n", pkg);
 		goto err_rb;
 	}
 
 	snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
 	printf("launching: %s\n", cmd);
-	if (sh_exec(cmd, NULL, 0) < 0) {
+	if (ares_sh_exec(cmd, NULL, 0) < 0) {
 		fprintf(stderr, "dump: launch failed\n");
 		goto err_rb;
 	}

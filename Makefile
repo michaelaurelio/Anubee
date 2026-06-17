@@ -140,6 +140,7 @@ $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 # probe; one compilation unit.
 $(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c $(SRC)/funcs/ares-tracer.h vmlinux.h $(LIBBPF_A) \
                  $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h \
+                 $(SRC)/common/span_stack.bpf.h \
                  $(wildcard $(SRC)/funcs/modules/*.bpf.c)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@

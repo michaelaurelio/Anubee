@@ -120,7 +120,7 @@ COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 LINK_LIBS := $(LIBBPF_A) -lelf -lz -lzstd -llzma
 LINK_FLAGS := -static -pthread
 
-.PHONY: all push test clean regen-vmlinux
+.PHONY: all push device-test test clean regen-vmlinux
 all: $(BIN)
 
 # ---- vmlinux.h (committed; regenerate only on kernel change) ---------------
@@ -255,6 +255,13 @@ $(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_
 push: $(BIN)
 	adb push $(BIN) /data/local/tmp/ares
 	adb shell chmod 755 /data/local/tmp/ares
+
+# Device-tier smoke: push fresh binary, assert each capability attaches + emits
+# real output on the attached rooted device. ARES_TEST_PKG / ARES_TEST_TIMEOUT
+# override target + window. See scripts/device-test.sh and the
+# testing-ares-on-device skill.
+device-test: $(BIN)
+	scripts/device-test.sh $(CAP)
 
 # Host unit tests: pure-logic checks compiled with the HOST cc (no device, no
 # cross-toolchain). Self-contained — depends only on the C sources under test.

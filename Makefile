@@ -120,7 +120,7 @@ COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 LINK_LIBS := $(LIBBPF_A) -lelf -lz -lzstd -llzma
 LINK_FLAGS := -static -pthread
 
-.PHONY: all push clean regen-vmlinux
+.PHONY: all push test clean regen-vmlinux
 all: $(BIN)
 
 # ---- vmlinux.h (committed; regenerate only on kernel change) ---------------
@@ -255,6 +255,14 @@ $(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_
 push: $(BIN)
 	adb push $(BIN) /data/local/tmp/ares
 	adb shell chmod 755 /data/local/tmp/ares
+
+# Host unit tests: pure-logic checks compiled with the HOST cc (no device, no
+# cross-toolchain). Self-contained — depends only on the C sources under test.
+HOST_CC ?= cc
+test:
+	@mkdir -p $(BUILD)
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c -o $(BUILD)/test_probe_spec -lelf
+	$(BUILD)/test_probe_spec
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

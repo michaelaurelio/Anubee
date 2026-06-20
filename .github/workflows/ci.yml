@@ -1,0 +1,32 @@
+name: ci
+
+# Two gates so the binary can't silently rot: pure-logic unit tests, and a full
+# containerized cross-build. The on-device acceptance tier (scripts/device-test.sh)
+# is intentionally NOT here — it needs a physical rooted device.
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  host-tests:
+    name: host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libelf
+        run: sudo apt-get update && sudo apt-get install -y libelf-dev
+      - name: Run host unit tests
+        run: make test
+
+  cross-build:
+    name: cross-build (containerized)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # vendored libbpf
+      - name: Cross-build ares
+        run: ./scripts/build.sh
+      - name: Verify binary produced
+        run: test -f build/ares && file build/ares

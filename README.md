@@ -79,6 +79,25 @@ make                         # -> build/ares
 
 ---
 
+## Testing
+
+Three tiers, each runnable on its own:
+
+```sh
+make test            # host unit tests — pure logic, no device, no cross-toolchain
+make device-test     # on-device smoke — pushes the binary, asserts each capability
+                     #   attaches and emits real output (needs the rooted device)
+```
+
+- **`make test`** compiles and runs `tests/` on the host (`cc` + `libelf`); it
+  checks the custom probe-spec grammar parser. CI (`.github/workflows/ci.yml`) runs
+  this plus the containerized cross-build on every PR.
+- **`make device-test`** runs `scripts/device-test.sh [lib|syscalls|all]`. Override
+  the target app with `ARES_TEST_PKG=<package>` and the per-capability window with
+  `ARES_TEST_TIMEOUT=<secs>` (default 10). It needs a rooted device with kernel BTF.
+
+---
+
 ## Usage
 
 ### `ares syscalls` — stealthy syscall tracer

@@ -7,7 +7,7 @@ forward-looking items only.
 **Contents**
 
 - [Shipped](#shipped)
-- [Open issues — review 2026-06-17 (R2–R9)](#open-issues--review-2026-06-17)
+- [Open issues — review 2026-06-17 (R2–R7, R9)](#open-issues--review-2026-06-17)
 - [Consolidation roadmap — shared-code de-dup (C1–C9)](#consolidation-roadmap--shared-code-de-dup)
 - [`correlate` — remaining work](#correlate--remaining-work)
 - [Planned — structured emitter + unified MCP](#planned--structured-emitter--unified-mcp)
@@ -16,6 +16,22 @@ forward-looking items only.
 ---
 
 ## Shipped
+
+### Testing flow — host unit tests + CI + device smoke (R8) — 2026-06-20
+
+R8 closed. Three tiers now exist, each runnable on its own:
+
+- **Host unit tests** (`tests/test_probe_spec.c`, `make test`) — pure-logic checks
+  of the `parse_custom_probe_spec` grammar (`MOD!FUNC(S,V,F)>V`, `@offset`, malformed
+  inputs); 34 checks, no device and no cross-toolchain (host `cc` + `-lelf`).
+- **CI** (`.github/workflows/ci.yml`) — runs `make test` and the containerized
+  `scripts/build.sh` cross-build on every PR/push so the binary can't silently stop
+  compiling. The device tier is intentionally excluded (needs a physical device).
+- **Device acceptance** (`scripts/device-test.sh`, `make device-test`) — pushes the
+  fresh binary (md5-skip when unchanged) and asserts each capability attaches and
+  emits real output (`lib` → `[lib]` + bionic `libc.so`; `syscalls` → attach banner
+  or live events). Run-judgment (own `su -c`, `timeout -s INT`, reading failures) is
+  captured in the `testing-ares-on-device` skill.
 
 ### `ares dump` engine — 2026-06-16
 
@@ -89,16 +105,6 @@ Repo-wide review pass. Ordered by severity; most are small and self-contained.
 - **R7 — `FUNC_CFLAGS` lacks `-Wextra`** (Makefile) while every other engine's CFLAGS
   has it. `funcs` is the largest C unit (1.5k lines) and gets the *weakest* warning
   coverage. Align it to `-Wall -Wextra`.
-
-### Testing / CI (architectural gap)
-
-- **R8 — No automated tests and no CI.**,
-  There is zero test harness and no `.github` workflow. This is the first thing
-  that breaks as the team/feature count grows. Cheapest high-value start:
-  `parse_custom_probe_spec` is a **pure, host-compilable** function — unit-test the
-  spec grammar (`MOD!FUNC(S,V,F)>V`, `@offset`, malformed inputs) without a device.
-  Add a GitHub Actions job that runs `scripts/build.sh` (containerized cross-build)
-  on PRs so the binary can't silently stop compiling.
 
 ### Perf (minor)
 

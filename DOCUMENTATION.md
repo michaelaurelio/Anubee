@@ -99,6 +99,33 @@ both BPF objects. The container build (`misc/Dockerfile` + `scripts/build.sh`) j
 runs this same Makefile inside a pinned image, so there is a single source of
 build truth.
 
+### Testing tiers
+
+A test pyramid mirroring the cost of each check; the cheap tiers gate the
+expensive one:
+
+1. **Host unit tests** (`tests/`, `make test`) — pure, host-compilable logic with
+   no device and no cross-toolchain. `tests/test_probe_spec.c` links the real
+   `src/common/probe_resolve.c` (host `cc` + `-lelf`) and asserts the custom
+   probe-spec grammar (`MOD!FUNC(S,V,F)>V`, `@offset`, lowercase types, return-only
+   vs paired, arg clamp, and rejection of malformed input). Milliseconds; the first
+   thing to extend when adding pure logic (escaping, decoders, maps parsing).
+2. **CI** (`.github/workflows/ci.yml`) — two jobs on every PR/push: `make test`, and
+   the containerized `scripts/build.sh` cross-build so the binary can't silently
+   stop compiling. The device tier is deliberately *not* in CI (no physical device).
+3. **Device acceptance** (`scripts/device-test.sh`, `make device-test`) — the only
+   tier that exercises real attach + CO-RE relocation against the live kernel.
+   Pushes the fresh binary (md5-skip when the on-device copy matches, so a flaky
+   adb link doesn't stall the run) and per capability asserts it attaches and emits
+   real output: `lib` → `[lib]` lines including bionic `libc.so`; `syscalls` → the
+   attach banner or live `==>`/`<==` events. Knobs: `ARES_TEST_PKG`,
+   `ARES_TEST_TIMEOUT`. Three non-obvious device facts are baked in (and documented
+   in the `testing-ares-on-device` skill): run ares in its **own** `su -c` (chaining
+   `am force-stop; ares` drops it into a reduced context → BPF `-EPERM`); ares stops
+   on **SIGINT**, not SIGTERM, so `timeout -s INT -k 3` is required; and grep the
+   captured output with here-strings (an `echo | grep -q` pipe SIGPIPEs under
+   `pipefail` on large output).
+
 ---
 
 ## 2. The `syscalls` engine (kprobe, injectionless)

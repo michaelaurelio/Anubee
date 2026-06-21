@@ -95,11 +95,35 @@ test_syscalls() {
     fi
 }
 
+# funcs --structured: uprobe with structured JSONL output (-J). Needs at least
+# one probed symbol to fire; use libc.so!open as a stable target. Asserts that
+# the structured record shape ("type":"call") reaches the output file.
+test_funcs_structured() {
+    echo "=== funcs --structured (uprobe + JSONL schema) ==="
+    forcestop
+    local pid; pid="$(adb shell "su -c 'pidof $PKG'" 2>/dev/null | tr -d '\r')"
+    if [ -z "$pid" ]; then
+        adb shell "su -c 'am start -W $(adb shell pm dump $PKG 2>/dev/null | grep -o "Activity [^ ]*" | head -1 | awk "{print \$2}")'" >/dev/null 2>&1 || true
+        sleep 1
+        pid="$(adb shell "su -c 'pidof $PKG'" 2>/dev/null | tr -d '\r')"
+    fi
+    [ -n "$pid" ] || { echo "  SKIP: could not get pid for $PKG (funcs --structured)"; return; }
+    local out_file="/data/local/tmp/ares_funcs_structured_test.jsonl"
+    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    ares "funcs -p $pid -e 'libc.so!open' -J -o $out_file" >/dev/null 2>&1 || true
+    local content; content="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    grep -q '"type":"call"' <<<"$content" \
+        || { echo "  out: $content" >&2; fail "funcs --structured: no {\"type\":\"call\"} record in $out_file"; }
+    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    info "funcs --structured OK — structured call record found"
+}
+
 case "$WHAT" in
-    lib)      test_lib ;;
-    syscalls) test_syscalls ;;
-    all)      test_lib; test_syscalls ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | all)" ;;
+    lib)               test_lib ;;
+    syscalls)          test_syscalls ;;
+    funcs-structured)  test_funcs_structured ;;
+    all)               test_lib; test_syscalls; test_funcs_structured ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | funcs-structured | all)" ;;
 esac
 
 forcestop

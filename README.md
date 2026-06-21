@@ -124,11 +124,32 @@ ares funcs -p 12345 -I libfoo.so -i '^encrypt'
 
 # Inline custom probe spec (S=string arg, V=value, F=fd):
 ares funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
+
+# Structured JSONL mode: emit one self-describing record per CALL/RETURN event
+# into the -o sink (alongside the normal text output):
+ares funcs -p 12345 -e 'libc.so!open' -J -o trace.jsonl
+# Each line is a JSON object: {"type":"call","pid":...,"symbol":"open",...}
+#                          or  {"type":"return","pid":...,"retval":...,"elapsed_ns":...}
 ```
+
+**`-J` / `--structured`** writes one structured JSONL record per CALL or RETURN
+event into the `-o` file alongside the existing text output. The record shape is:
+
+```json
+{"type":"call",   "pid":N,"tid":N,"module":"libc.so","symbol":"open",
+                  "entry_addr":"0x...","args":["0x..","0x..",..]}
+{"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open",
+                  "retval":N,"elapsed_ns":N}
+```
+
+These records share the same `type` discriminator as `ares syscalls` / `ares lib`
+output, making them compatible with the ares-mcp unified schema. Requires `-o
+<file>.jsonl` to be set (records go into the same JSONL sink; existing text/legacy
+wrapper is preserved).
 
 Common flags: `-p PID` / `-P package` target · `-I module` · `-i func-regex` ·
 `-r func-regex` (return-only) · `-e spec` / `-F spec-file` · `-m proc-event|execve`
-modules · `-o file` (`.jsonl`/`.csv`).
+modules · `-o file` (`.jsonl`/`.csv`) · `-J` structured JSONL records (see below).
 
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.
@@ -247,9 +268,9 @@ loading privileges (often SELinux permissive), itself a RASP tell.
   pointers are missed).
 - `funcs`: uprobe instrumentation is detectable; spec-driven, so you must know
   which functions to target.
-- Today only `ares syscalls` emits **structured** JSONL that the MCP analyzes
-  with field-level tools. `ares funcs` emits log-line JSONL; structured funcs
-  output + MCP analysis is planned (see `DOCUMENTATION.md`).
+- `ares funcs` emits log-line JSONL by default; pass `-J` to also emit structured
+  CALL/RETURN records. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records and
+  unified MCP ingest are planned (see `DOCUMENTATION.md`).
 
 ---
 

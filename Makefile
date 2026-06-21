@@ -97,7 +97,7 @@ FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 LIB_CSRC := $(SRC)/lib/lib.c
 LIB_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(LIB_CSRC))
 
-CORR_CSRC := $(SRC)/correlate/correlate.c
+CORR_CSRC := $(SRC)/correlate/correlate.c $(SRC)/correlate/corr_emit.c
 CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
 CORR_PART := $(BUILD)/correlate.part.o
 
@@ -281,6 +281,8 @@ test:
 	$(BUILD)/test_decode
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
+	$(BUILD)/test_corr_emit
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

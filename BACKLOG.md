@@ -162,8 +162,10 @@ Follow-on (2d / future) for the engine shipped above:
 
 - **`--returns`** — opt-in uretprobe for return values + exact exit timing (loud —
   adds a stack trampoline, a second detection surface).
-- **Syscall arg/sockaddr decoding** in `correlate` (currently raw `args[0..5]`) —
-  reuse the heimdall decoder + string/sockaddr capture.
+- **Syscall arg/sockaddr decoding** in `correlate` — PARTIAL: userspace flag-decode
+  done (`flags_decode_arg` via `corr_emit_syscall`; args hex + parallel `decoded[]`
+  array). fd-path rendering, sockaddr blob capture, and string capture still need
+  BPF event-struct changes to carry the raw bytes.
 - **Regex (`-I/-i`) targeting** in `correlate` (currently custom specs `-e/-F` only).
 - **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
   `/proc/maps` scan); tighten the launch→attach timing so early calls aren't missed.

@@ -38,4 +38,9 @@ struct corr_syscall_event {
     __u64 args[CORR_SYS_ARGS];
 };
 
+struct jbuf;  /* common/emit.h */
+void corr_emit_func(struct jbuf *j, const struct corr_func_event *e);
+void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
+                       const char *syscall_name);
+
 #endif /* __ARES_CORRELATE_H */

@@ -145,6 +145,15 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 - **C5 — `resolve_uid()` + app launch/force-stop + install-UID-before-launch** —
   **DONE (2026-06-18, R1).** All engines now call the shared `ares_*` helpers in
   `src/common/launch.{c,h}`; the private per-engine copies are removed.
+- **C5.1 — Firewall-aware capability registry (single audit point)** — **DONE (2026-06-21).**
+  `src/common/capabilities.{c,h}` holds the static table of every BPF object and
+  whether it writes into the target's userspace memory (the detectability firewall
+  bit). Only uprobe-bearing capabilities (`funcs`, `correlate`) set
+  `writes_target_memory = true`. This is advisory today (no quiet-mode flag consumes it
+  yet) and exists as the single audit point + regression guard; the future thin-presets
+  work will use it to refuse a loud object in a quiet preset (call
+  `ares_quiet_config_ok` before loading engines). Backed by `tests/test_capabilities.c`
+  (9 checks, host-unit-testable).
 - **C6 — ELF reconstruction** — merged into `src/dump/rebuild.c` (the single
   `ares dump` engine); the old per-engine dump files are removed.
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.

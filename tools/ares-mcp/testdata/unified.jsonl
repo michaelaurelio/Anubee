@@ -1,0 +1,6 @@
+{"ts":"2026-06-21T00:00:00","stream":"out","tag":"probe","message":"[probe] > PID 100"}
+{"type":"call","pid":100,"tid":101,"module":"libc.so","symbol":"open","entry_addr":"0x6d270","args":["0x1","0x0"]}
+{"type":"return","pid":100,"tid":101,"module":"libc.so","symbol":"open","retval":7,"elapsed_ns":4096}
+{"ts":"2026-06-21T00:00:01","stream":"out","tag":"event","message":"[event] > [CALL] open"}
+{"type":"func","span":5,"parent_span":0,"pid":100,"tid":101,"entry_addr":"0xabc","args":["0x10"]}
+{"type":"syscall","span":5,"pid":100,"tid":101,"nr":56,"syscall":"openat","args":["0x1","0x0"],"decoded":["","O_RDONLY"]}

@@ -286,9 +286,11 @@ test:
 	$(BUILD)/test_corr_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_capabilities.c src/common/capabilities.c -o $(BUILD)/test_capabilities
 	$(BUILD)/test_capabilities
-	@command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null \
-	  && python3 tools/ares-mcp/test_unified_ingest.py \
-	  || echo "skip: python3+duckdb not available for ares-mcp ingest test"
+	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
+	  python3 tools/ares-mcp/test_unified_ingest.py; \
+	 else \
+	  echo "skip: python3+duckdb not available for ares-mcp ingest test"; \
+	 fi
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

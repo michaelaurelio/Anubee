@@ -247,16 +247,21 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
 - **Loader** (`src/correlate/correlate.c`): reuses `src/common/launch` and
   `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
   per resolved `(path,offset)` plus the one shared kprobe, then drains the ring.
-- **Output**: flat, type-discriminated JSONL —
-  `{"type":"func","span":N,"parent_span":M,...}` and
-  `{"type":"syscall","span":N,"syscall":..,...}` — one row per event, joinable on
-  `span`; syscalls are never nested inside a func record.
+- **Output**: flat, type-discriminated JSONL via the shared serializer
+  (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `func` records:
+  `{"type":"func","span":N,"parent_span":M,"pid":...,"tid":...,"entry_addr":"0x...","args":["0x...",...]}`
+  — args as hex strings. `syscall` records additionally carry a parallel
+  `"decoded"` array: each element is the human-readable flag expansion (from
+  `flags_decode_arg`) where a decoder applied, or `""` otherwise. One row per
+  event, joinable on `span`; syscalls are never nested inside a func record.
 - **Detectability**: this object carries the uprobe, so it is the **loud** path; the
   quiet engines never load it (see §9). Correlation is per-tid & synchronous
   (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by
   inlining and VM/virtualization.
 - **v1 scope**: custom specs (`-e`/`-F`) + `-p` (full) / `-P` (best-effort
-  post-launch); raw syscall args (no decode); SP-based close (no return values).
+  post-launch); SP-based close (no return values). Syscall args: hex + parallel
+  flag-decoded `decoded[]` array (fd/sockaddr/string capture requires BPF event-struct
+  changes — deferred).
   `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
   (see [BACKLOG.md](BACKLOG.md)).
 

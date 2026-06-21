@@ -23,6 +23,7 @@
 
 #include "correlate.skel.h"
 #include "correlate.h"
+#include "common/emit.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 
@@ -60,54 +61,44 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_li
     return vfprintf(stderr, fmt, args);
 }
 
-static void jstr_args(char *buf, size_t bufsz, const __u64 *args, int n)
-{
-    size_t off = 0;
-    off += snprintf(buf + off, bufsz - off, "[");
-    for (int i = 0; i < n && off < bufsz; i++)
-        off += snprintf(buf + off, bufsz - off, "%s%llu",
-                        i ? "," : "", (unsigned long long)args[i]);
-    if (off < bufsz)
-        snprintf(buf + off, bufsz - off, "]");
-}
-
 static int handle_event(void *ctx, void *data, size_t sz)
 {
     (void)ctx;
     if (sz < sizeof(struct corr_event_header))
         return 0;
     const struct corr_event_header *h = data;
-    char args[512];
 
     if (h->type == CORR_EV_FUNC) {
         if (sz < sizeof(struct corr_func_event)) return 0;
         const struct corr_func_event *e = data;
-        jstr_args(args, sizeof(args), e->args, CORR_NUM_ARGS);
         if (!g_quiet)
             printf("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
                    (unsigned long long)e->span, (unsigned long long)e->parent_span,
                    e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
-        if (g_jsonl)
-            fprintf(g_jsonl,
-                "{\"type\":\"func\",\"span\":%llu,\"parent_span\":%llu,\"pid\":%u,"
-                "\"tid\":%u,\"entry_addr\":\"0x%llx\",\"args\":%s}\n",
-                (unsigned long long)e->span, (unsigned long long)e->parent_span,
-                e->h.pid, e->h.tid, (unsigned long long)e->entry_addr, args);
+        if (g_jsonl) {
+            static struct jbuf cj;   // reused; handle_event is single-threaded (ring_buffer__poll)
+            cj.len = 0;
+            corr_emit_func(&cj, e);
+            fwrite(cj.b, 1, cj.len, g_jsonl);
+            fputc('\n', g_jsonl);
+            fflush(g_jsonl);
+        }
     } else if (h->type == CORR_EV_SYSCALL) {
         if (sz < sizeof(struct corr_syscall_event)) return 0;
         const struct corr_syscall_event *e = data;
         const char *name = syscall_name((long)e->nr);
-        jstr_args(args, sizeof(args), e->args, CORR_SYS_ARGS);
         if (!g_quiet)
             printf("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
-        if (g_jsonl)
-            fprintf(g_jsonl,
-                "{\"type\":\"syscall\",\"span\":%llu,\"pid\":%u,\"tid\":%u,"
-                "\"nr\":%llu,\"syscall\":\"%s\",\"args\":%s}\n",
-                (unsigned long long)e->span, e->h.pid, e->h.tid,
-                (unsigned long long)e->nr, name, args);
+        if (g_jsonl) {
+            static struct jbuf cj;   // reused; handle_event is single-threaded (ring_buffer__poll)
+            cj.len = 0;
+            corr_emit_syscall(&cj, e, name);
+            fwrite(cj.b, 1, cj.len, g_jsonl);
+            fputc('\n', g_jsonl);
+            fflush(g_jsonl);
+        }
     }
     return 0;
 }

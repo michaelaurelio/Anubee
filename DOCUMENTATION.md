@@ -61,6 +61,13 @@ flowchart TD
   (launchable activity) live once in `src/common/launch.*` as `ares_*` and are used
   by all five engines. They are linked once into `common.part.o`, exporting only the
   `ares_*` API (see `COMMON_API` in the Makefile).
+- **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
+  holds the static table of every BPF object and whether it writes into the target's
+  userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities
+  (`funcs`, `correlate`) set `writes_target_memory = true`; all others are `false`.
+  This is advisory today (no quiet-mode flag consumes it yet) and exists as the
+  single audit point + regression guard. The future thin-presets work will use it
+  to refuse a loud object in a quiet preset. See §9.
 
 ### Why partial-link + symbol localization
 

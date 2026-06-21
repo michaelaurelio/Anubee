@@ -23,10 +23,12 @@
 
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
+#include "ares-tracer-priv.h"
 #include "modules/module.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
+#include "common/emit.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -56,6 +58,7 @@ static const struct argp_option options[] = {
     { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
     { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
     { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
+    { "structured", 'J', 0, 0, "Emit structured JSONL records (one per event) into the -o sink alongside text" },
     { 0 }
 };
 
@@ -77,6 +80,7 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
+    bool structured_out;
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -148,6 +152,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'c':
             args->caller_only = true;
+            break;
+
+        case 'J':
+            args->structured_out = true;
             break;
 
         case 'm': {
@@ -430,6 +438,7 @@ int func_ret_re_count = 0;
 bool verbose = false;
 bool resolve_syms = false;
 bool caller_only = false;
+static bool structured_out = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -943,6 +952,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
                 e->h.pid, e->ppid, bname, target->func_name, target->offset,
                 used_fallback ? " (resolved from known offset)" : "");
+            if (structured_out && g_jsonl) {
+                static struct jbuf sj;
+                sj.len = 0;
+                funcs_emit_call(&sj, e, bname, target->func_name);
+                fwrite(sj.b, 1, sj.len, g_jsonl);
+                fputc('\n', g_jsonl);
+            }
         } else {
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
                 e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
@@ -1077,6 +1093,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             used_fallback ? " (resolved from known offset)" : "",
             elapsed_buf, retval_buf);
 
+        if (structured_out && g_jsonl) {
+            static struct jbuf sj;
+            sj.len = 0;
+            funcs_emit_return(&sj, e, bname, fname);
+            fwrite(sj.b, 1, sj.len, g_jsonl);
+            fputc('\n', g_jsonl);
+        }
+
         // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]
         // Only print S-typed args that yielded a string at return time
         if (arg_count >= 0) {
@@ -1132,6 +1156,7 @@ int cmd_funcs(int argc, char **argv)
     verbose = args.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
+    structured_out = args.structured_out;
 
     if (args.output_file[0] != '\0') {
         const char *ext = strrchr(args.output_file, '.');

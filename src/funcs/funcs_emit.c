@@ -36,7 +36,7 @@ void funcs_emit_return(struct jbuf *j, const struct event *e,
     jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
     jb_s(j, ",\"module\":\"");   jb_esc(j, module); jb_c(j, '"');
     jb_s(j, ",\"symbol\":\"");   jb_esc(j, symbol); jb_c(j, '"');
-    jb_s(j, ",\"retval\":");     jb_i64(j, (long long)e->retval);
+    jb_s(j, ",\"retval\":");     jb_i64(j, (long long)e->retval); // retval is ABI-signed; render signed so small negative error codes read naturally
     jb_s(j, ",\"elapsed_ns\":"); jb_u64(j, e->elapsed_ns);
     jb_s(j, "}");
 }

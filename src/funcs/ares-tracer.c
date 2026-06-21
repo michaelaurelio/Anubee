@@ -953,11 +953,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 e->h.pid, e->ppid, bname, target->func_name, target->offset,
                 used_fallback ? " (resolved from known offset)" : "");
             if (structured_out && g_jsonl) {
+                // reused across events; handle_event is single-threaded (ring_buffer__poll)
                 static struct jbuf sj;
                 sj.len = 0;
                 funcs_emit_call(&sj, e, bname, target->func_name);
                 fwrite(sj.b, 1, sj.len, g_jsonl);
                 fputc('\n', g_jsonl);
+                fflush(g_jsonl);
             }
         } else {
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
@@ -1094,11 +1096,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             elapsed_buf, retval_buf);
 
         if (structured_out && g_jsonl) {
+            // reused across events; handle_event is single-threaded (ring_buffer__poll)
             static struct jbuf sj;
             sj.len = 0;
             funcs_emit_return(&sj, e, bname, fname);
             fwrite(sj.b, 1, sj.len, g_jsonl);
             fputc('\n', g_jsonl);
+            fflush(g_jsonl);
         }
 
         // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]

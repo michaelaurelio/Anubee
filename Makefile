@@ -70,7 +70,7 @@ BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) 
 
 # ---- userspace objects (compiled per engine, then localized) --------------
 SYSC_CSRC := $(SRC)/syscalls/heimdall.c $(SRC)/syscalls/symbolize.c
-FUNC_CSRC := $(SRC)/funcs/ares-tracer.c \
+FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
              $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
              $(SRC)/funcs/modules/prop_read.c
 
@@ -279,6 +279,8 @@ test:
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
 	$(BUILD)/test_decode
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_funcs_emit
+	$(BUILD)/test_funcs_emit
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

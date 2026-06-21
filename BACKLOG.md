@@ -181,8 +181,15 @@ Follow-on (2d / future) for the engine shipped above:
 - **Thin presets over the formal core** — migrating `syscalls`/`funcs`/`lib` to thin
   presets and retiring the localization where no longer needed remains deferred
   (folds in the consolidation roadmap items above).
-- **MCP ingest** — teach `ares-mcp` to ingest `correlate` output (join syscalls by
-  `span`).
+- **MCP ingest** — ~~teach `ares-mcp` to ingest `correlate` output (join syscalls by
+  `span`)~~ — **DONE (Task 3 / step 7).** `load_structured` ingests `funcs -J` /
+  `correlate -o` JSONL into `calls`/`returns`/`func_spans`/`span_syscalls` tables;
+  `correlate_spans` joins them on `span`. Legacy wrapper lines (no `type` field)
+  are skipped and counted. Host test: `tools/ares-mcp/test_unified_ingest.py`
+  (5 checks, integrated into `make test`).
+  Follow-on MCP richness (histograms, timing tools, symbol/module filters, full
+  `server.py` tool surface for the new types) remains deferred — see "Planned"
+  section below.
 
 ---
 
@@ -200,10 +207,10 @@ Follow-on (2d / future) for the engine shipped above:
     consumer must skip lines without a `type`. Either the unified MCP filters on
     `type`, or add a wrapper-suppress mode so `-J` yields a clean structured-only
     stream.
-- **A unified `ares-mcp`** that treats `ares funcs` structured output as a
-  first-class trace source alongside syscalls (function-call histograms, filter by
-  symbol/module, call→return timing, distinct stacks, prop/exec/spawn views), sharing
-  the filtering layer. Depends on all funcs event types being structured (above).
+- **Unified `ares-mcp` ingest — DONE (Task 3).** `load_structured` + `correlate_spans`
+  land the minimal ingest + span join. Remaining richness (call histograms, timing
+  views, symbol/module filters, full `server.py` tool surface for the new types)
+  is follow-on.
 
 ---
 

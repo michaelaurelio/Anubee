@@ -1,4 +1,4 @@
-// flags.c — see flags.h.
+// decode.c — see decode.h. Shared syscall-argument decoders.
 //
 // Flag values are arch-specific (e.g. O_DIRECTORY, O_CLOEXEC differ across
 // arches). We reference them by macro name so the cross-compiler fills in the

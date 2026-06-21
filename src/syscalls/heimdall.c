@@ -40,7 +40,6 @@
 #include <sys/wait.h>
 #include <sys/syscall.h>            // __NR_* for the generated table
 #include <linux/types.h>
-#include <arpa/inet.h>              // inet_ntop / ntohs for sockaddr decode
 #include <stdint.h>
 #include <pthread.h>
 #include <bpf/libbpf.h>

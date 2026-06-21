@@ -9,10 +9,10 @@ It's backed by **DuckDB** (the trace is loaded into an in-memory columnar DB), a
 it reuses ares's loop-folding to collapse repetition.
 
 > **Scope today:** this server analyzes the **structured syscall JSONL** emitted by
-> `ares syscalls` (records with `"type":"syscall"`). The trace schema is
-> type-discriminated, so a future release adds tools for `ares funcs` structured
-> records to this same server — see the repo `DOCUMENTATION.md` ("Unified trace
-> schema").
+> `ares syscalls` (records with `"type":"syscall"`), and also ingests the
+> type-discriminated records emitted by `ares funcs -J` and `ares correlate -o`
+> via `load_structured` — exposing a span-join that correlates syscalls to their
+> enclosing function spans.
 
 ## Why DuckDB
 
@@ -57,6 +57,27 @@ Aggregation-first — the model is told to start broad, then drill down:
 | `get_event(id)` | Full detail of one event incl. backtrace. |
 | `search(text,limit)` | Events whose paths/args/symbols contain `text`. |
 | `diff_traces(baseline,compare,top,via)` | What fired only in `compare` vs `baseline` — new call stacks, probed paths, syscalls, errors, endpoints. Highest-leverage RASP triage (clean vs rooted run). |
+
+### Unified ingest (funcs / correlate)
+
+`load_structured(path)` ingests a type-discriminated JSONL file produced by
+`ares funcs -J` or `ares correlate -o` into four DuckDB tables:
+`calls`, `returns`, `func_spans`, and `span_syscalls`. It returns
+`(abspath, skipped_count)` where `skipped_count` counts lines without a `"type"`
+field — the legacy `{ts,stream,tag,message}` wrapper lines that `ares` emits
+alongside the structured records in the same output file.
+
+Key design notes:
+- `return` records from `ares funcs -J` already carry `elapsed_ns` — no
+  call→return join is needed for timing; the data is self-contained per record.
+- Lines with `"type":"syscall"` but **no** `"span"` field (plain `ares syscalls`
+  engine records) are counted as skipped, not ingested, keeping the two ingest
+  paths separate.
+
+`correlate_spans(top=50)` joins `span_syscalls` to `func_spans` on `span` and
+returns one row per in-span syscall: `[{span, tid, syscall, func_entry, decoded}]`.
+`func_entry` is the entry address of the enclosing function span; `decoded` is the
+space-joined decoded argument string (e.g. `"O_RDONLY"`).
 
 `via` matches a substring in any backtrace frame — i.e. *which library/function
 the syscall came from* (e.g. `via="librasp"`), the key dimension for RASP work.

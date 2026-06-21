@@ -78,7 +78,7 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c \
 # shared library-load tracing module (src/common), linked once; exports only its
 # ares_libtrace_* API (everything else localized, like the engines).
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
-               $(SRC)/common/probe_resolve.c
+               $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -86,7 +86,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                proc_mem_open proc_mem_read \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
                mod_matches is_duplicate resolve_targets resolve_targets_for_file \
-               parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path
+               parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path \
+               trace_type_name
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -202,7 +203,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
@@ -270,6 +271,8 @@ test:
 	@mkdir -p $(BUILD)
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c -o $(BUILD)/test_probe_spec -lelf
 	$(BUILD)/test_probe_spec
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
+	$(BUILD)/test_trace_schema
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

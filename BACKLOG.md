@@ -145,6 +145,15 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 - **C5 — `resolve_uid()` + app launch/force-stop + install-UID-before-launch** —
   **DONE (2026-06-18, R1).** All engines now call the shared `ares_*` helpers in
   `src/common/launch.{c,h}`; the private per-engine copies are removed.
+- **C5.1 — Firewall-aware capability registry (single audit point)** — **DONE (2026-06-21).**
+  `src/common/capabilities.{c,h}` holds the static table of every BPF object and
+  whether it writes into the target's userspace memory (the detectability firewall
+  bit). Only uprobe-bearing capabilities (`funcs`, `correlate`) set
+  `writes_target_memory = true`. This is advisory today (no quiet-mode flag consumes it
+  yet) and exists as the single audit point + regression guard; the future thin-presets
+  work will use it to refuse a loud object in a quiet preset (call
+  `ares_quiet_config_ok` before loading engines). Backed by `tests/test_capabilities.c`
+  (9 checks, host-unit-testable).
 - **C6 — ELF reconstruction** — merged into `src/dump/rebuild.c` (the single
   `ares dump` engine); the old per-engine dump files are removed.
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
@@ -162,16 +171,25 @@ Follow-on (2d / future) for the engine shipped above:
 
 - **`--returns`** — opt-in uretprobe for return values + exact exit timing (loud —
   adds a stack trampoline, a second detection surface).
-- **Syscall arg/sockaddr decoding** in `correlate` (currently raw `args[0..5]`) —
-  reuse the heimdall decoder + string/sockaddr capture.
+- **Syscall arg/sockaddr decoding** in `correlate` — PARTIAL: userspace flag-decode
+  done (`flags_decode_arg` via `corr_emit_syscall`; args hex + parallel `decoded[]`
+  array). fd-path rendering, sockaddr blob capture, and string capture still need
+  BPF event-struct changes to carry the raw bytes.
 - **Regex (`-I/-i`) targeting** in `correlate` (currently custom specs `-e/-F` only).
 - **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
   `/proc/maps` scan); tighten the launch→attach timing so early calls aren't missed.
 - **Thin presets over the formal core** — migrating `syscalls`/`funcs`/`lib` to thin
   presets and retiring the localization where no longer needed remains deferred
   (folds in the consolidation roadmap items above).
-- **MCP ingest** — teach `ares-mcp` to ingest `correlate` output (join syscalls by
-  `span`).
+- **MCP ingest** — ~~teach `ares-mcp` to ingest `correlate` output (join syscalls by
+  `span`)~~ — **DONE (Task 3 / step 7).** `load_structured` ingests `funcs -J` /
+  `correlate -o` JSONL into `calls`/`returns`/`func_spans`/`span_syscalls` tables;
+  `correlate_spans` joins them on `span`. Legacy wrapper lines (no `type` field)
+  are skipped and counted. Host test: `tools/ares-mcp/test_unified_ingest.py`
+  (5 checks, integrated into `make test`).
+  Follow-on MCP richness (histograms, timing tools, symbol/module filters, full
+  `server.py` tool surface for the new types) remains deferred — see "Planned"
+  section below.
 
 ---
 
@@ -189,10 +207,10 @@ Follow-on (2d / future) for the engine shipped above:
     consumer must skip lines without a `type`. Either the unified MCP filters on
     `type`, or add a wrapper-suppress mode so `-J` yields a clean structured-only
     stream.
-- **A unified `ares-mcp`** that treats `ares funcs` structured output as a
-  first-class trace source alongside syscalls (function-call histograms, filter by
-  symbol/module, call→return timing, distinct stacks, prop/exec/spawn views), sharing
-  the filtering layer. Depends on all funcs event types being structured (above).
+- **Unified `ares-mcp` ingest — DONE (Task 3).** `load_structured` + `correlate_spans`
+  land the minimal ingest + span join. Remaining richness (call histograms, timing
+  views, symbol/module filters, full `server.py` tool surface for the new types)
+  is follow-on.
 
 ---
 

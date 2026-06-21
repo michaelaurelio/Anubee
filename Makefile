@@ -78,7 +78,7 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
 # ares_libtrace_* API (everything else localized, like the engines).
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
-               $(SRC)/common/emit.c $(SRC)/common/decode.c
+               $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -89,7 +89,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
-               flags_decode_arg decode_sockaddr render_fd fdc_drop
+               flags_decode_arg decode_sockaddr render_fd fdc_drop \
+               ares_bpf_objects ares_object_writes_target ares_quiet_config_ok
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -97,7 +98,7 @@ FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
 LIB_CSRC := $(SRC)/lib/lib.c
 LIB_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(LIB_CSRC))
 
-CORR_CSRC := $(SRC)/correlate/correlate.c
+CORR_CSRC := $(SRC)/correlate/correlate.c $(SRC)/correlate/corr_emit.c
 CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
 CORR_PART := $(BUILD)/correlate.part.o
 
@@ -205,7 +206,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
@@ -281,6 +282,15 @@ test:
 	$(BUILD)/test_decode
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
+	$(BUILD)/test_corr_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_capabilities.c src/common/capabilities.c -o $(BUILD)/test_capabilities
+	$(BUILD)/test_capabilities
+	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
+	  python3 tools/ares-mcp/test_unified_ingest.py; \
+	 else \
+	  echo "skip: python3+duckdb not available for ares-mcp ingest test"; \
+	 fi
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)

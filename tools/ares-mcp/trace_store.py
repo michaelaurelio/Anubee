@@ -126,6 +126,83 @@ class TraceStore:
 
     # ---- loading ---------------------------------------------------------
 
+    def load_structured(self, path):
+        """Ingest a type-discriminated JSONL file (funcs -J / correlate -o) into
+        calls/returns/func_spans/span_syscalls tables. Lines without a "type"
+        (the legacy {ts,stream,tag,message} wrapper) are skipped and counted.
+        Leaves the syscalls ingest (load()) untouched."""
+        import json
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        calls, returns, fspans, syscalls = [], [], [], []
+        skipped = 0
+        with open(path, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    skipped += 1
+                    continue
+                t = rec.get("type")
+                if t == "call":
+                    calls.append(rec)
+                elif t == "return":
+                    returns.append(rec)
+                elif t == "func":
+                    fspans.append(rec)
+                elif t == "syscall" and "span" in rec:
+                    syscalls.append(rec)
+                else:
+                    # no "type" (legacy wrapper) or a plain syscalls-engine record
+                    skipped += 1
+        con = duckdb.connect()
+        con.execute("CREATE TABLE calls(pid INTEGER, tid INTEGER, module VARCHAR, "
+                    "symbol VARCHAR, entry_addr VARCHAR, args VARCHAR[])")
+        con.execute("CREATE TABLE returns(pid INTEGER, tid INTEGER, module VARCHAR, "
+                    "symbol VARCHAR, retval BIGINT, elapsed_ns BIGINT)")
+        con.execute("CREATE TABLE func_spans(span BIGINT, parent_span BIGINT, "
+                    "pid INTEGER, tid INTEGER, entry_addr VARCHAR, args VARCHAR[])")
+        con.execute("CREATE TABLE span_syscalls(span BIGINT, pid INTEGER, tid INTEGER, "
+                    "nr BIGINT, syscall VARCHAR, args VARCHAR[], decoded VARCHAR[])")
+        for c in calls:
+            con.execute("INSERT INTO calls VALUES (?,?,?,?,?,?)",
+                        [c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
+                         c.get("entry_addr"), c.get("args") or []])
+        for r in returns:
+            con.execute("INSERT INTO returns VALUES (?,?,?,?,?,?)",
+                        [r.get("pid"), r.get("tid"), r.get("module"), r.get("symbol"),
+                         r.get("retval"), r.get("elapsed_ns")])
+        for s in fspans:
+            con.execute("INSERT INTO func_spans VALUES (?,?,?,?,?,?)",
+                        [s.get("span"), s.get("parent_span"), s.get("pid"), s.get("tid"),
+                         s.get("entry_addr"), s.get("args") or []])
+        for s in syscalls:
+            con.execute("INSERT INTO span_syscalls VALUES (?,?,?,?,?,?,?)",
+                        [s.get("span"), s.get("pid"), s.get("tid"), s.get("nr"),
+                         s.get("syscall"), s.get("args") or [], s.get("decoded") or []])
+        self.con = con
+        self.path = path
+        return path, skipped
+
+    def correlate_spans(self, top=50):
+        """Join span syscalls to their enclosing function span. One row per
+        in-span syscall, carrying the func entry_addr it ran inside."""
+        self._require()
+        top = _clamp(top)
+        rows = self.con.execute(
+            "SELECT s.span AS span, s.tid AS tid, s.syscall AS syscall, "
+            "f.entry_addr AS func_entry, "
+            "array_to_string(s.decoded, ' ') AS decoded "
+            "FROM span_syscalls s LEFT JOIN func_spans f USING (span) "
+            "ORDER BY s.span LIMIT ?", [top]
+        ).fetchall()
+        cols = ["span", "tid", "syscall", "func_entry", "decoded"]
+        return [dict(zip(cols, r)) for r in rows]
+
     def load(self, path):
         con = duckdb.connect()
         con.execute("PRAGMA threads=4")

@@ -183,6 +183,12 @@ Follow-on (2d / future) for the engine shipped above:
   - MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records (extend `funcs_emit.c`,
     same pattern — one builder per type, each pinned by a host test).
   - The SEAM in `handle_event()` already routes all event types; hook each case.
+  - **Mixed-schema `-o` file (device-observed):** in `-J` mode the structured
+    records are *additive* — the legacy `{ts,stream,tag,message}` wrapper lines
+    (probe/spec/event text) still interleave in the same file. A `type`-keyed
+    consumer must skip lines without a `type`. Either the unified MCP filters on
+    `type`, or add a wrapper-suppress mode so `-J` yields a clean structured-only
+    stream.
 - **A unified `ares-mcp`** that treats `ares funcs` structured output as a
   first-class trace source alongside syscalls (function-call histograms, filter by
   symbol/module, call→return timing, distinct stacks, prop/exec/spawn views), sharing

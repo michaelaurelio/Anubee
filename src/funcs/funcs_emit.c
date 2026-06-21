@@ -2,6 +2,7 @@
 // Pure structured-record builders for ares funcs (no libbpf/skeleton deps, so
 // the host test can link them). Built on the shared serializer + schema.
 #include <linux/types.h>
+#include <stdbool.h>            // struct event uses bool (exit_event); not transitively guaranteed
 #include "common/emit.h"
 #include "common/trace_schema.h"
 #include "funcs/ares-tracer.h"

@@ -17,6 +17,16 @@ forward-looking items only.
 
 ## Shipped
 
+### Structured JSONL mode for `ares funcs` CALL/RETURN (Task 4) — 2026-06-21
+
+`-J`/`--structured` flag added to `ares funcs`. When a JSONL sink is open (`-o`),
+each CALL and RETURN event also emits a structured record via `src/funcs/funcs_emit.c`
+(pure, no libbpf deps, host-testable). Records use the shared `emit.h` serializer and
+`trace_schema.h` discriminator (`"type":"call"` / `"type":"return"`), compatible with
+the ares-mcp unified schema. Host test: `tests/test_funcs_emit.c` (9 checks). Additive
+— existing text output and legacy `{ts,stream,tag,message}` wrapper are unchanged.
+MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP records and unified MCP ingest remain planned.
+
 ### Testing flow — host unit tests + CI + device smoke (R8) — 2026-06-20
 
 R8 closed. Three tiers now exist, each runnable on its own:
@@ -167,14 +177,22 @@ Follow-on (2d / future) for the engine shipped above:
 
 ## Planned — structured emitter + unified MCP
 
-- **Structured JSONL emitter for `ares funcs`** so its events become first-class,
-  analyzable records under the same `type` discriminator. Hook point: the `SEAM`
-  comment atop `handle_event()` in `src/funcs/ares-tracer.c`; the event structs in
-  `src/funcs/ares-tracer.h` already carry the fields.
+- **Structured JSONL emitter for `ares funcs` — CALL/RETURN shipped (Task 4).**
+  `-J`/`--structured` now emits `{"type":"call",...}` / `{"type":"return",...}`
+  records via `src/funcs/funcs_emit.c` (pure, host-testable). Remaining:
+  - MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records (extend `funcs_emit.c`,
+    same pattern — one builder per type, each pinned by a host test).
+  - The SEAM in `handle_event()` already routes all event types; hook each case.
+  - **Mixed-schema `-o` file (device-observed):** in `-J` mode the structured
+    records are *additive* — the legacy `{ts,stream,tag,message}` wrapper lines
+    (probe/spec/event text) still interleave in the same file. A `type`-keyed
+    consumer must skip lines without a `type`. Either the unified MCP filters on
+    `type`, or add a wrapper-suppress mode so `-J` yields a clean structured-only
+    stream.
 - **A unified `ares-mcp`** that treats `ares funcs` structured output as a
   first-class trace source alongside syscalls (function-call histograms, filter by
   symbol/module, call→return timing, distinct stacks, prop/exec/spawn views), sharing
-  the filtering layer. Depends on the structured-funcs emitter.
+  the filtering layer. Depends on all funcs event types being structured (above).
 
 ---
 

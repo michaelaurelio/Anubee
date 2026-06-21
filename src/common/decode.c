@@ -1,4 +1,4 @@
-// flags.c — see flags.h.
+// decode.c — see decode.h. Shared syscall-argument decoders.
 //
 // Flag values are arch-specific (e.g. O_DIRECTORY, O_CLOEXEC differ across
 // arches). We reference them by macro name so the cross-compiler fills in the
@@ -9,9 +9,10 @@
 #define _GNU_SOURCE              // expose CLONE_*, O_*, MAP_*, MADV_* extensions
 #endif
 
-#include "flags.h"
+#include "common/decode.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -21,6 +22,8 @@
 #include <sched.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #ifdef __has_include
 #  if __has_include(<sys/prctl.h>)
 #    include <sys/prctl.h>
@@ -658,4 +661,157 @@ int flags_decode_arg(long nr, int arg, unsigned long long v, char *out, size_t o
 		break;
 	}
 	return 0;
+}
+
+// ---- sockaddr decoder -------------------------------------------------------
+
+// Decode a raw sockaddr (family + port + addr) to "ip:port" / "[ip6]:port" /
+// "unix:/path". Returns 1 on success.
+int decode_sockaddr(const unsigned char *sa, unsigned len, char *out, size_t outsz)
+{
+	if (len < 2)
+		return 0;
+	unsigned short fam;
+	memcpy(&fam, sa, 2);                     // sa_family is host byte order
+	if (fam == AF_INET && len >= 8) {
+		unsigned short port;
+		memcpy(&port, sa + 2, 2);
+		char ip[INET_ADDRSTRLEN];
+		if (!inet_ntop(AF_INET, sa + 4, ip, sizeof(ip)))
+			return 0;
+		snprintf(out, outsz, "%s:%u", ip, ntohs(port));
+		return 1;
+	}
+	if (fam == AF_INET6 && len >= 24) {
+		unsigned short port;
+		memcpy(&port, sa + 2, 2);
+		char ip[INET6_ADDRSTRLEN];
+		if (!inet_ntop(AF_INET6, sa + 8, ip, sizeof(ip)))   // skip family+port+flowinfo
+			return 0;
+		snprintf(out, outsz, "[%s]:%u", ip, ntohs(port));
+		return 1;
+	}
+	if (fam == AF_UNIX) {
+		const char *path = (const char *)(sa + 2);
+		unsigned plen = len - 2;
+#define DECODE_UNIX_PATH_MAX 64
+		if (plen == 0) {
+			snprintf(out, outsz, "unix:<unnamed>");
+		} else if (path[0] == '\0') {           // abstract namespace
+			char buf[DECODE_UNIX_PATH_MAX];
+			unsigned m = plen - 1 < sizeof(buf) - 1 ? plen - 1 : (unsigned)sizeof(buf) - 1;
+			memcpy(buf, path + 1, m);
+			buf[m] = '\0';
+			snprintf(out, outsz, "unix:@%s", buf);
+		} else {
+			char buf[DECODE_UNIX_PATH_MAX];
+			unsigned m = plen < sizeof(buf) ? plen : (unsigned)sizeof(buf) - 1;
+			memcpy(buf, path, m);
+			buf[m < sizeof(buf) ? m : sizeof(buf) - 1] = '\0';
+			snprintf(out, outsz, "unix:%s", buf);
+		}
+#undef DECODE_UNIX_PATH_MAX
+		return 1;
+	}
+	snprintf(out, outsz, "family=%u", fam);
+	return 1;
+}
+
+// ---- fd-path cache + renderer -----------------------------------------------
+
+// fd -> path cache: a readlink per fd arg per event is otherwise the dominant
+// per-event syscall cost under a firehose. Keyed by (pid,fd); invalidated when a
+// close on that fd is seen. Open addressing.
+struct fdc_ent { int used, pid, fd; char path[256]; };
+static struct fdc_ent *g_fdc;
+static size_t g_fdc_cap, g_fdc_used;
+
+static size_t fdc_hash(int pid, int fd)
+{
+	return ((size_t)(unsigned)pid * 2654435761u) ^ ((size_t)(unsigned)fd * 40503u);
+}
+
+static struct fdc_ent *fdc_slot(int pid, int fd)
+{
+	if (!g_fdc)
+		return NULL;
+	size_t mask = g_fdc_cap - 1, i = fdc_hash(pid, fd) & mask;
+	for (size_t probe = 0; probe < g_fdc_cap; probe++) {
+		struct fdc_ent *e = &g_fdc[i];
+		if (!e->used || (e->pid == pid && e->fd == fd))
+			return e;
+		i = (i + 1) & mask;
+	}
+	return NULL;
+}
+
+static void fdc_put(int pid, int fd, const char *path)
+{
+	if (!g_fdc) {
+		g_fdc_cap = 1u << 12;
+		g_fdc = calloc(g_fdc_cap, sizeof(*g_fdc));
+		if (!g_fdc) { g_fdc_cap = 0; return; }
+	}
+	if ((g_fdc_used + 1) * 4 >= g_fdc_cap * 3) {       // grow at 75%
+		size_t ncap = g_fdc_cap * 2, nmask = ncap - 1;
+		struct fdc_ent *ng = calloc(ncap, sizeof(*ng));
+		if (ng) {
+			for (size_t k = 0; k < g_fdc_cap; k++) {
+				if (!g_fdc[k].used)
+					continue;
+				size_t j = fdc_hash(g_fdc[k].pid, g_fdc[k].fd) & nmask;
+				while (ng[j].used)
+					j = (j + 1) & nmask;
+				ng[j] = g_fdc[k];
+			}
+			free(g_fdc);
+			g_fdc = ng;
+			g_fdc_cap = ncap;
+		}
+	}
+	struct fdc_ent *e = fdc_slot(pid, fd);
+	if (!e)
+		return;
+	if (!e->used)
+		g_fdc_used++;
+	e->used = 1;
+	e->pid = pid;
+	e->fd = fd;
+	snprintf(e->path, sizeof(e->path), "%s", path);
+}
+
+// Render an fd value: "AT_FDCWD", "fd=199 </proc/self/maps>", or "fd=5".
+void render_fd(int pid, unsigned long long val, char *out, size_t outsz)
+{
+	int fd = (int)val;
+	if (fd == -100) {                       // AT_FDCWD
+		snprintf(out, outsz, "AT_FDCWD");
+		return;
+	}
+	if (fd < 0) {
+		snprintf(out, outsz, "%d", fd);
+		return;
+	}
+	struct fdc_ent *c = fdc_slot(pid, fd);
+	if (c && c->used && c->pid == pid && c->fd == fd) {
+		snprintf(out, outsz, "fd=%d <%s>", fd, c->path);
+		return;
+	}
+	char p[64], tgt[256];
+	snprintf(p, sizeof(p), "/proc/%d/fd/%d", pid, fd);
+	ssize_t k = readlink(p, tgt, sizeof(tgt) - 1);
+	if (k > 0) {
+		tgt[k] = '\0';
+		fdc_put(pid, fd, tgt);
+		snprintf(out, outsz, "fd=%d <%s>", fd, tgt);
+	} else {
+		snprintf(out, outsz, "fd=%d", fd);
+	}
+}
+
+void fdc_drop(int pid, int fd)
+{
+	struct fdc_ent *e = fdc_slot(pid, fd);
+	if (e && e->used && e->pid == pid && e->fd == fd)
+		e->used = 0, g_fdc_used--;          // tombstone-free: ok for low churn
 }

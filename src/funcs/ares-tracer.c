@@ -1175,6 +1175,11 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (resolve_syms) ts_print("[info] > symbol resolution mode\n");
 
 
+    // Coordinator mode: the package is supplied via rc (the `trace` arg slice
+    // carries only funcs-specific options, no -P).
+    if (rc && rc->pkg && args.package_name[0] == '\0')
+        snprintf(args.package_name, sizeof(args.package_name), "%s", rc->pkg);
+
     // Resolve application UID (if spawn mode)
     if (args.package_name[0] != '\0') {
         // Remember the package so the caller can launch it after setup returns.

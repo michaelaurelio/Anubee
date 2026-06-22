@@ -940,7 +940,7 @@ static void *worker_main(void *arg)
 
 static int libbpf_quiet(enum libbpf_print_level level, const char *fmt, va_list args)
 {
-	if (level == LIBBPF_DEBUG && !getenv("HEIMDALL_DEBUG"))
+	if (level == LIBBPF_DEBUG && !getenv("ARES_DEBUG"))
 		return 0;
 	return vfprintf(stderr, fmt, args);
 }
@@ -1040,15 +1040,15 @@ static void usage(const char *argv0)
 
 int cmd_syscalls(int argc, char **argv)
 {
-	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
-	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
-	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
-	int capture_all = getenv("HEIMDALL_ALL") != NULL;
+	g_verbose = getenv("ARES_VERBOSE") != NULL;
+	g_quiet = getenv("ARES_QUIET") != NULL;
+	g_jsonl = getenv("ARES_JSONL") != NULL;
+	int capture_all = getenv("ARES_ALL") != NULL;
 	// Java frames are now symbolized on-device, so the off-device stack-snapshot
 	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
 	// packed/obfuscated code). --snapshot / HEIMDALL_SNAPSHOT enables it.
-	int want_snap = getenv("HEIMDALL_SNAPSHOT") != NULL;
-	const char *json_path = getenv("HEIMDALL_JSON");
+	int want_snap = getenv("ARES_SNAPSHOT") != NULL;
+	const char *json_path = getenv("ARES_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
 	int bufmb = 4;                           // kernel ring buffer size (MB)

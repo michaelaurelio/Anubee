@@ -17,6 +17,23 @@ forward-looking items only.
 
 ## Shipped
 
+### `ares trace` Phase 3 — combined kprobe+uprobe coordinator — 2026-06-22
+
+`ares trace` runs the `syscalls` and `funcs` engines together from one app launch.
+New `src/trace/trace.c` (`cmd_trace`): parses `-P <pkg>` / `-o <prefix>` and the
+`--syscalls` / `--funcs` arg sections, resolves the UID once, calls
+`syscalls_setup` + `funcs_setup` (both arm probes + UID via `struct ares_run_ctx`,
+no launch), launches once with `ares_launch_app`, then drains both ring buffers on
+two pthreads sharing a `volatile sig_atomic_t` stop flag, and tears both down.
+Output: `<prefix>.syscalls.jsonl` + `<prefix>.funcs.jsonl` (no shared `FILE*`;
+both MCP-ingestable). Small additive change: `syscalls_setup`/`funcs_setup` take
+the package from `rc->pkg` (NULL `rc` = unchanged standalone). Wiring: `main.c`
+dispatch + usage, `capabilities.c` `{ "trace", true }` (loud) + test, and the
+Makefile keeps `syscalls_setup/_run/_teardown` + `funcs_*` global through the
+partial-link so `trace.part.o` links them. `trace` owns no BPF object. Inherently
+LOUD — never stealthy. Remaining: pure host test for the argv split + on-device
+verification.
+
 ### `ares trace` Phase 2 — engine setup/run/teardown split — 2026-06-22
 
 Groundwork for the combined `trace` runner (see "Planned" below). `cmd_syscalls`
@@ -229,14 +246,15 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
 
 - **Phase 1 — DONE (2026-06-22):** shared `ares_launch_app` (see Shipped).
 - **Phase 2 — DONE (2026-06-22):** engine setup/run/teardown split (see Shipped).
-- **Phase 3 — next:** `src/trace/trace.c` coordinator — `syscalls_setup` +
-  `funcs_setup` with `external_launch`, install UID into both, one
-  `ares_launch_app`, two pthreads polling both ring buffers with a shared
-  `sig_atomic_t` stop flag, separate per-engine `-o` output files (both already
-  MCP-ingestable via `load_structured`).
-- **Phase 4:** Makefile/`main.c`/`capabilities.c` wiring (`trace` = loud) + docs +
-  host test (argv split). Add `trace`'s new engine entry points to the
-  `syscalls`/`funcs` `--keep-global-symbol` lists so the coordinator can link them.
+- **Phase 3 — DONE (2026-06-22):** `src/trace/trace.c` coordinator + build wiring
+  (see Shipped). `cmd_trace` resolves the UID once, calls `syscalls_setup` +
+  `funcs_setup` (package via `rc->pkg`, no per-section package), launches once via
+  `ares_launch_app`, then drains both ring buffers on two pthreads sharing a
+  `sig_atomic_t` stop flag, separate per-engine `-o` files (both MCP-ingestable).
+  `main.c`/`capabilities.c`/`Makefile` wired; engine driver symbols kept global.
+- **Phase 4 (remaining):** a pure host test for the argv-section split (currently
+  the split lives inline in `cmd_trace`; extract it to a testable helper), and the
+  on-device verification of a combined `trace` run.
 
 ## Planned — structured emitter + unified MCP
 

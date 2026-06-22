@@ -1,4 +1,4 @@
-// heimdall.bpf.c
+// syscalls.bpf.c
 //
 // Syscall tracer for a single Android app, filtered by native-library call
 // origin. A syscall event is emitted only when the issuing thread's user
@@ -32,11 +32,11 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#include "heimdall.h"
+#include "syscalls.h"
 #include "common/lib_trace.h"
 
-#define MAX_STACK_DEPTH HEIMDALL_MAX_STACK_DEPTH
-#define MAX_RANGES      HEIMDALL_MAX_RANGES
+#define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
+#define MAX_RANGES      SYSC_MAX_RANGES
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -84,7 +84,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 64);
 	__type(key, __u32);
-	__type(value, struct heimdall_lib_ranges);
+	__type(value, struct syscalls_lib_ranges);
 } lib_ranges SEC(".maps");
 
 // Per-syscall mask of which of args[0..3] are const char * (a string). Indexed
@@ -170,7 +170,7 @@ static __always_inline int syscall_wanted(__u64 nr)
 // Returns 1 if any captured user return address lands in a target range. Both
 // loops are fully unrolled over fixed bounds so every stack[i]/r[j] is a
 // constant offset the verifier accepts; `n`/`count` are runtime guards only.
-static __always_inline int stack_hits(struct heimdall_lib_ranges *lr, __u64 *stack, int n)
+static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *stack, int n)
 {
 	__u32 count = lr->count;
 	if (count > MAX_RANGES)
@@ -216,12 +216,12 @@ static __always_inline __u64 hash_stack(__u64 *stack, int n, __u32 tgid)
 static __always_inline void emit_snapshot(struct pt_regs *user_regs,
 					  __u32 tgid, __u32 tid, __u64 sid)
 {
-	struct heimdall_stack_snapshot *s = bpf_ringbuf_reserve(&events, sizeof(*s), 0);
+	struct syscalls_stack_snapshot *s = bpf_ringbuf_reserve(&events, sizeof(*s), 0);
 	if (!s) {
 		bump_dropped();
 		return;
 	}
-	s->h.type = HEIMDALL_EV_STACK;
+	s->h.type = SYSC_EV_STACK;
 	s->h.pid  = tgid;
 	s->h.tid  = tid;
 	s->h._pad = 0;
@@ -233,10 +233,10 @@ static __always_inline void emit_snapshot(struct pt_regs *user_regs,
 	s->_pad = 0;
 	s->snap_len = 0;
 	const void *sp = (const void *)s->sp;
-	if (s->sp && bpf_probe_read_user(s->snap, HEIMDALL_SNAP_MAX, sp) == 0)
-		s->snap_len = HEIMDALL_SNAP_MAX;
-	else if (s->sp && bpf_probe_read_user(s->snap, HEIMDALL_SNAP_SMALL, sp) == 0)
-		s->snap_len = HEIMDALL_SNAP_SMALL;
+	if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_MAX, sp) == 0)
+		s->snap_len = SYSC_SNAP_MAX;
+	else if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_SMALL, sp) == 0)
+		s->snap_len = SYSC_SNAP_SMALL;
 	bpf_ringbuf_submit(s, 0);
 }
 
@@ -258,7 +258,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// Library-filter mode: with no target-library range for this process yet
 	// the library isn't mapped, so nothing can have originated from it — skip
 	// before paying for a stack walk. Capture-all mode keeps every syscall.
-	struct heimdall_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
+	struct syscalls_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
 	if (!capture_all && (!lr || lr->count == 0))
 		return 0;
 
@@ -289,13 +289,13 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		}
 	}
 
-	struct heimdall_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	struct syscalls_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		bump_dropped();
 		return 0;
 	}
 
-	e->h.type = HEIMDALL_EV_SYSCALL;
+	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
 	e->h._pad = 0;
@@ -325,10 +325,10 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	__u8 mask = maskp ? *maskp : 0;
 	if (mask) {
 		#pragma clang loop unroll(full)
-		for (int i = 0; i < HEIMDALL_STR_SLOTS; i++) {
+		for (int i = 0; i < SYSC_STR_SLOTS; i++) {
 			if (!((mask >> i) & 1))
 				continue;
-			long r = bpf_probe_read_user_str(e->str[i], HEIMDALL_STR_MAX,
+			long r = bpf_probe_read_user_str(e->str[i], SYSC_STR_MAX,
 							 (const void *)e->args[i]);
 			if (r > 0)
 				e->str_present |= (1u << i);
@@ -348,7 +348,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		const void *ptr = NULL;
 		__u64 alen = 0;
 		#pragma clang loop unroll(full)
-		for (int j = 0; j < HEIMDALL_SYSCALL_NARGS - 1; j++) {
+		for (int j = 0; j < SYSC_SYSCALL_NARGS - 1; j++) {
 			if (sidx == (__u8)(j + 1)) {
 				ptr = (const void *)e->args[j];
 				alen = e->args[j + 1];
@@ -357,8 +357,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		if (ptr && alen) {
 			// Mask rather than clamp so the bound is on the exact size register
 			// the verifier checks (a conditional clamp left an unbounded copy).
-			// sock[] is HEIMDALL_SOCK_MAX (a power of two); never reads > alen.
-			__u32 cnt = (__u32)alen & (HEIMDALL_SOCK_MAX - 1);
+			// sock[] is SYSC_SOCK_MAX (a power of two); never reads > alen.
+			__u32 cnt = (__u32)alen & (SYSC_SOCK_MAX - 1);
 			if (cnt && bpf_probe_read_user(e->sock, cnt, ptr) == 0)
 				e->sock_len = cnt;
 		}
@@ -394,13 +394,13 @@ int BPF_KRETPROBE(on_sys_exit, long ret)
 		return 0;
 	bpf_map_delete_elem(&pending, &tid);
 
-	struct heimdall_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	struct syscalls_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		bump_dropped();
 		return 0;
 	}
 
-	e->h.type = HEIMDALL_EV_RETURN;
+	e->h.type = SYSC_EV_RETURN;
 	e->h.pid  = id >> 32;
 	e->h.tid  = tid;
 	e->h._pad = 0;
@@ -413,9 +413,9 @@ int BPF_KRETPROBE(on_sys_exit, long ret)
 // ---- module map: mmap / munmap of executable file mappings ---------------
 //
 // Shared capture (common/lib_trace.bpf.h) emits lib_map_event / lib_unmap_event
-// into `events`. heimdall numbers UNMAP as 3 (RETURN is 4), so map the shared
+// into `events`. syscalls numbers UNMAP as 3 (RETURN is 4), so map the shared
 // discriminators onto its enum, and route dropped reservations to bump_dropped().
-#define LIBTRACE_TYPE_MAP   HEIMDALL_EV_MAP
-#define LIBTRACE_TYPE_UNMAP HEIMDALL_EV_UNMAP
+#define LIBTRACE_TYPE_MAP   SYSC_EV_MAP
+#define LIBTRACE_TYPE_UNMAP SYSC_EV_UNMAP
 #define LIBTRACE_ON_DROP()  bump_dropped()
 #include "common/lib_trace.bpf.h"

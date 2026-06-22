@@ -10,6 +10,7 @@
 #include <string.h>
 #include <signal.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
 #include "trace/trace_args.h"
@@ -27,7 +28,7 @@ void funcs_teardown(void);
 // One stop flag shared by both engines' poll loops; set by the coordinator's
 // SIGINT handler (the engines do not install their own when driven here).
 static volatile sig_atomic_t g_stop;
-static void on_sigint(int sig) { (void)sig; g_stop = 1; }
+static void on_sigint(int sig) { (void)sig; if (g_stop) _exit(130); g_stop = 1; }
 
 static void usage(const char *argv0)
 {
@@ -74,6 +75,9 @@ int cmd_trace(int argc, char **argv)
 		fprintf(stderr, "trace: at least one of --syscalls / --funcs is required\n");
 		usage(argv[0]); return 1;
 	}
+	if (!prefix)
+		fprintf(stderr, "trace: no -o; the two engines' console output will interleave "
+		                "— use -o <prefix> for clean per-engine JSONL\n");
 
 	int uid = ares_resolve_uid(pkg);
 	if (uid < 0) {
@@ -94,8 +98,10 @@ int cmd_trace(int argc, char **argv)
 			sys_argv[sys_argc++] = "-o";
 			sys_argv[sys_argc++] = sysout;
 		}
-		for (int i = sys_start; i < sys_end && sys_argc < 63; i++)
+		int i = sys_start;
+		for (; i < sys_end && sys_argc < 63; i++)
 			sys_argv[sys_argc++] = argv[i];
+		if (i < sys_end) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
 		sys_argv[sys_argc] = NULL;
 	}
 	if (want_func) {
@@ -109,8 +115,10 @@ int cmd_trace(int argc, char **argv)
 			func_argv[func_argc++] = "-o";
 			func_argv[func_argc++] = funcout;
 		}
-		for (int i = func_start; i < func_end && func_argc < 63; i++)
+		int i = func_start;
+		for (; i < func_end && func_argc < 63; i++)
 			func_argv[func_argc++] = argv[i];
+		if (i < func_end) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
 		func_argv[func_argc] = NULL;
 	}
 

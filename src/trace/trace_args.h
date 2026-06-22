@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+// Pure arg-section splitter for `ares trace` (no libbpf/pthread deps) so it is
+// host-testable — see tests/test_trace_args.c.
+#ifndef ARES_TRACE_ARGS_H
+#define ARES_TRACE_ARGS_H
+
+struct trace_args {
+	const char *pkg;       // -P value, or NULL
+	const char *prefix;    // -o value, or NULL
+	int sys_start, sys_end;    // [start,end) slice into argv; start<0 = no --syscalls
+	int func_start, func_end;  // likewise for --funcs
+};
+
+// Parse the coordinator-level flags and locate the two engine sections.
+// argv[0] is the subcommand name. Returns 0 on success, 1 if -h/--help was seen
+// (caller prints usage, exits 0), -1 on a flag missing its value or an
+// unexpected token. A repeated section delimiter: the last one wins.
+int trace_parse_args(int argc, char **argv, struct trace_args *out);
+
+#endif

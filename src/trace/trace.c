@@ -12,6 +12,7 @@
 #include <pthread.h>
 
 #include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
+#include "trace/trace_args.h"
 
 // Engine driver entry points. Defined in the syscalls / funcs engines and kept
 // global through their partial-link (see the --keep-global-symbol lists in the
@@ -59,35 +60,13 @@ static void *run_thread(void *p)
 
 int cmd_trace(int argc, char **argv)
 {
-	const char *pkg = NULL, *prefix = NULL;
-	int sys_start = -1, sys_end = -1, func_start = -1, func_end = -1;
-
-	// Coordinator-level flags up front, then the two engine sections. A section
-	// runs until the next section delimiter or the end of argv.
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-P")) {
-			if (++i >= argc) { usage(argv[0]); return 1; }
-			pkg = argv[i];
-		} else if (!strcmp(argv[i], "-o")) {
-			if (++i >= argc) { usage(argv[0]); return 1; }
-			prefix = argv[i];
-		} else if (!strcmp(argv[i], "--syscalls")) {
-			sys_start = i + 1; sys_end = argc;
-			for (int j = sys_start; j < argc; j++)
-				if (!strcmp(argv[j], "--funcs")) { sys_end = j; break; }
-			i = sys_end - 1;
-		} else if (!strcmp(argv[i], "--funcs")) {
-			func_start = i + 1; func_end = argc;
-			for (int j = func_start; j < argc; j++)
-				if (!strcmp(argv[j], "--syscalls")) { func_end = j; break; }
-			i = func_end - 1;
-		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-			usage(argv[0]); return 0;
-		} else {
-			fprintf(stderr, "trace: unexpected argument '%s' (did -P/-o come before the sections?)\n", argv[i]);
-			usage(argv[0]); return 1;
-		}
-	}
+	struct trace_args ta;
+	int pr = trace_parse_args(argc, argv, &ta);
+	if (pr == 1) { usage(argv[0]); return 0; }   // -h/--help
+	if (pr < 0)  { usage(argv[0]); return 1; }
+	const char *pkg = ta.pkg, *prefix = ta.prefix;
+	int sys_start = ta.sys_start, sys_end = ta.sys_end;
+	int func_start = ta.func_start, func_end = ta.func_end;
 
 	if (!pkg) { fprintf(stderr, "trace: -P <package> is required\n"); usage(argv[0]); return 1; }
 	int want_sys = (sys_start >= 0), want_func = (func_start >= 0);

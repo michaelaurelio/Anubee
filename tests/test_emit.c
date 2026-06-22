@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the shared JSON buffer serializer. Pins the exact byte
-// output so the heimdall repoint is provably behavior-preserving.
+// output so the syscalls repoint is provably behavior-preserving.
 #include "common/emit.h"
 
 #include <stdio.h>

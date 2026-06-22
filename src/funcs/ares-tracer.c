@@ -1392,8 +1392,6 @@ int cmd_funcs(int argc, char **argv)
             }
         }
     } else {
-        char cmd[512], package_activity[256];
-
         // V4: scan Zygote's pre-loaded libs without ptrace; child inherits
         // BRK patches via CoW page table copy on fork
         pid_t zygote_pid = find_zygote_pid();
@@ -1465,27 +1463,8 @@ int cmd_funcs(int argc, char **argv)
             }
         }
 
-        // Force stop the package first
-        snprintf(cmd, sizeof(cmd), "am force-stop %s", args.package_name);
-        ares_sh_exec(cmd, NULL, 0);
-
-        // Make sure package is gone
-        snprintf(cmd, sizeof(cmd), "pidof %s", args.package_name);
-        for (int i = 0; i < 30; i++) {
-            char pid_buf[32] = "";
-            ares_sh_exec(cmd, pid_buf, sizeof(pid_buf));
-            if (pid_buf[0] == '\0') break;
-            usleep(100000);
-        }
-
-        // Resolve main activity
-        if (ares_resolve_component(args.package_name, package_activity, sizeof(package_activity)) != 0) {
-            err_print(" [spawn] > failed to resolve component for %s\n", args.package_name);
-            err = -1;
-            goto cleanup;
-        }
-
-        // Update target UIDs for BPF program (filtering)
+        // Arm the UID filter BEFORE launching (target_uids gates the uprobes)
+        // so the fresh process is caught from its first instruction.
         __u8 one = 1;
         __u32 vuid = (__u32)uid;
         if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
@@ -1493,10 +1472,10 @@ int cmd_funcs(int argc, char **argv)
             goto cleanup;
         }
 
+        // Shared clean-relaunch sequence (force-stop -> wait -> am start -S).
         ts_print("[spawn] > launching %s\n", args.package_name);
-        snprintf(cmd, sizeof(cmd), "am start -S -n %s", package_activity);
-        if (ares_sh_exec(cmd, NULL, 0) != 0) {
-            err_print(" [spawn] > failed to start %s\n", args.package_name);
+        if (ares_launch_app(args.package_name, NULL) != 0) {
+            err_print(" [spawn] > failed to launch %s\n", args.package_name);
             err = -1;
             goto cleanup;
         }

@@ -102,3 +102,33 @@ int ares_resolve_component(const char *pkg, char *out, size_t outsz)
 	}
 	return out[0] ? 0 : -1;
 }
+
+int ares_launch_app(const char *pkg, const char *activity)
+{
+	char cmd[512], comp[256];
+
+	// Kill any running instance, then wait for it to actually die so the
+	// relaunch starts from a clean state.
+	snprintf(cmd, sizeof(cmd), "am force-stop %s", pkg);
+	ares_sh_exec(cmd, NULL, 0);
+
+	snprintf(cmd, sizeof(cmd), "pidof %s", pkg);
+	for (int i = 0; i < 30; i++) {
+		char pid_buf[32] = "";
+		ares_sh_exec(cmd, pid_buf, sizeof(pid_buf));
+		if (pid_buf[0] == '\0')
+			break;
+		usleep(100000);
+	}
+
+	// Resolve the launchable component (or use the caller-supplied activity).
+	if (activity)
+		snprintf(comp, sizeof(comp), "%s/%s", pkg, activity);
+	else if (ares_resolve_component(pkg, comp, sizeof(comp)) != 0)
+		return -1;
+
+	snprintf(cmd, sizeof(cmd), "am start -S -n %s", comp);
+	if (ares_sh_exec(cmd, NULL, 0) < 0)
+		return -1;
+	return 0;
+}

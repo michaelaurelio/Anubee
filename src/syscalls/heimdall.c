@@ -1257,22 +1257,11 @@ int cmd_syscalls(int argc, char **argv)
 	printf("queue: %d MB, worker thread started\n", queue_mb);
 
 	// Fresh start: kill any running instance, then launch. Tracing is already
-	// armed, so we catch the new process from its first syscall.
-	char cmd[512], comp[256];
-	snprintf(cmd, sizeof(cmd), "am force-stop %s", g_pkg);
-	ares_sh_exec(cmd, NULL, 0);
-
-	if (activity)
-		snprintf(comp, sizeof(comp), "%s/%s", g_pkg, activity);
-	else if (ares_resolve_component(g_pkg, comp, sizeof(comp)) != 0) {
-		fprintf(stderr, "could not resolve launcher activity for '%s'; pass it explicitly\n", g_pkg);
-		goto out_rb;
-	}
-
-	snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-	printf("launching: %s\n", cmd);
-	if (ares_sh_exec(cmd, NULL, 0) < 0) {
-		fprintf(stderr, "launch failed\n");
+	// armed (UID filter installed above), so we catch the new process from its
+	// first syscall. Shared clean-relaunch sequence (src/common/launch).
+	printf("launching: %s\n", g_pkg);
+	if (ares_launch_app(g_pkg, activity) != 0) {
+		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
 		goto out_rb;
 	}
 

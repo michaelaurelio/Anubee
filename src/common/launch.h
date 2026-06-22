@@ -22,4 +22,11 @@ int ares_get_pid_uid(pid_t pid);
 // resolve-activity --brief`. Writes into `out`; returns 0 on success, -1 otherwise.
 int ares_resolve_component(const char *pkg, char *out, size_t outsz);
 
+// Clean relaunch of an app: force-stop -> wait for the old process to die ->
+// resolve the launchable component (or use `activity` verbatim if non-NULL) ->
+// `am start -S -n <component>`. The caller must have already armed tracing
+// (installed the UID filter / attached probes) so the fresh process is caught
+// from its first instruction. Returns 0 on success, -1 otherwise.
+int ares_launch_app(const char *pkg, const char *activity);
+
 #endif /* __ARES_COMMON_LAUNCH_H */

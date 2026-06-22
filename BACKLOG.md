@@ -132,7 +132,7 @@ duplicated logic. The library-load tracing slice is consolidated into
 unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 
 - **C1 — JSON/JSONL string escaping** — identical switch in both
-  (`src/syscalls/heimdall.c` `jb_*` vs `src/funcs/ares-tracer.c` `json_fwrite_str`);
+  (`src/syscalls/syscalls.c` `jb_*` vs `src/funcs/ares-tracer.c` `json_fwrite_str`);
   differs only in output sink → one `json_escape(sink)`.
 - **C2 — Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
   shared drain helper.
@@ -217,5 +217,4 @@ Follow-on (2d / future) for the engine shipped above:
 ## Deferred tech debt
 
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.
-- Rebranding the syscalls engine's internal `HEIMDALL_*` env vars / `heimdall.*`
-  filenames to `ares-*` (cosmetic; left to avoid churn during the merge).
+

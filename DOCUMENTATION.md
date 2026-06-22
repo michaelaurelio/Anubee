@@ -7,9 +7,8 @@ For user-facing build/usage instructions see [README.md](README.md).
 ares is the merger of two previously separate tools — a kprobe syscall tracer
 (formerly *heimdall*) and a uprobe function tracer (formerly *ares-tracer*) — into
 one binary with a shared build, a type-discriminated trace schema, and one MCP
-server. The internal source still uses the original names where it was not worth
-the churn to rename (e.g. the syscalls engine's `HEIMDALL_*` runtime env vars and
-`heimdall.*` source files).
+server. The syscalls engine now uses `ARES_*` runtime env vars and `syscalls.*`
+source files (rename completed).
 
 ---
 
@@ -89,7 +88,7 @@ former `main()` to its `cmd_*` name.
 1. **libbpf** — vendored at `third_party/libbpf`, cross-built static.
 2. **BPF objects + skeletons** — built with host clang (BPF is arch-neutral; CO-RE
    relocates against the device kernel at load). Two skeletons:
-   - `build/heimdall.skel.h` (name `heimdall`)
+   - `build/syscalls.skel.h` (name `syscalls`)
    - `src/funcs/ares-tracer.skel.h` (name `ares_tracer_bpf`) — lives next to its
      source because `ares-tracer.c` and `modules/*.c` include it via
      `"ares-tracer.skel.h"` / `"../ares-tracer.skel.h"`. (`ares-tracer.bpf.c`

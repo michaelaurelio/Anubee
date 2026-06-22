@@ -7,13 +7,15 @@
 // The single source of firewall truth. Only the uprobe-bearing capabilities
 // (funcs' entry BRK; correlate's entry uprobe, plus its --returns trampoline
 // when added) write into the target. syscalls (kprobe), lib (mmap-kprobe) and
-// dump (/proc/<pid>/mem reads) write nothing into the target.
+// dump (/proc/<pid>/mem reads) write nothing into the target. `trace` runs the
+// funcs uprobe alongside the syscalls kprobe, so it is loud by construction.
 static const struct ares_bpf_object g_objects[] = {
     { "syscalls",  false },
     { "funcs",     true  },
     { "lib",       false },
     { "dump",      false },
     { "correlate", true  },
+    { "trace",     true  },
 };
 
 const struct ares_bpf_object *ares_bpf_objects(int *count)

@@ -1119,21 +1119,34 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		}
 	}
 	// Need <package>; <lib-substring> is required only in the default
-	// library-filtered mode (not with -a).
+	// library-filtered mode (not with -a). In coordinator mode (rc->pkg set) the
+	// package is supplied by `trace`, so the positionals are just [lib] [activity].
 	int no_lib_needed = capture_all;
 	int npos = argc - ai;
-	if (npos < 1 || (!no_lib_needed && npos < 2)) {
-		usage(argv[0]);
-		return 1;
-	}
-	g_pkg = argv[ai];
 	const char *activity;
-	if (no_lib_needed) {
-		g_lib = "";                          // no library filter
-		activity = (npos > 1) ? argv[ai + 1] : NULL;
+	if (rc && rc->pkg) {
+		if (!no_lib_needed && npos < 1) { usage(argv[0]); return 1; }
+		g_pkg = rc->pkg;
+		if (no_lib_needed) {
+			g_lib = "";
+			activity = (npos > 0) ? argv[ai] : NULL;
+		} else {
+			g_lib = argv[ai];
+			activity = (npos > 1) ? argv[ai + 1] : NULL;
+		}
 	} else {
-		g_lib = argv[ai + 1];
-		activity = (npos > 2) ? argv[ai + 2] : NULL;
+		if (npos < 1 || (!no_lib_needed && npos < 2)) {
+			usage(argv[0]);
+			return 1;
+		}
+		g_pkg = argv[ai];
+		if (no_lib_needed) {
+			g_lib = "";                          // no library filter
+			activity = (npos > 1) ? argv[ai + 1] : NULL;
+		} else {
+			g_lib = argv[ai + 1];
+			activity = (npos > 2) ? argv[ai + 2] : NULL;
+		}
 	}
 
 	g_activity = activity;

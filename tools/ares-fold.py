@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# heimdall-fold — post-process a heimdall JSON trace by detecting loops in the
+# ares-fold — post-process a syscalls JSON trace by detecting loops in the
 # syscall sequence and folding each loop into a loop reference.
 #
 # Algorithm: per thread, tokenize each syscall by (name + call-stack signature),
@@ -9,8 +9,8 @@
 # folded per-thread timeline that references them. Original event ids are kept on
 # every loop so any iteration can be expanded; nothing is discarded.
 #
-#   heimdall-fold trace.json                 # text summary to stdout
-#   heimdall-fold trace.json --json out.json # write folded JSON
+#   ares-fold trace.json                 # text summary to stdout
+#   ares-fold trace.json --json out.json # write folded JSON
 #
 # Stdlib only.
 
@@ -244,8 +244,8 @@ def render_text(meta, registry, threads, top):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Fold loops in a heimdall syscall trace.")
-    ap.add_argument("trace", help="heimdall JSON (array) or JSONL trace")
+    ap = argparse.ArgumentParser(description="Fold loops in a syscalls trace.")
+    ap.add_argument("trace", help="syscalls JSON (array) or JSONL trace")
     ap.add_argument("--json", metavar="OUT", help="write folded JSON to OUT")
     ap.add_argument("--min-reps", type=int, default=2, help="min iterations to fold (default 2)")
     ap.add_argument("--max-period", type=int, default=64, help="max loop body length (default 64)")

@@ -9,7 +9,7 @@
 #include <string.h>
 
 // Engine entry points (renamed from each tool's former main()).
-int cmd_syscalls(int argc, char **argv);   // src/syscalls/heimdall.c
+int cmd_syscalls(int argc, char **argv);   // src/syscalls/syscalls.c
 int cmd_funcs(int argc, char **argv);      // src/funcs/ares-tracer.c
 int cmd_lib(int argc, char **argv);        // src/lib/lib.c
 int cmd_dump(int argc, char **argv);       // src/dump/dump.c

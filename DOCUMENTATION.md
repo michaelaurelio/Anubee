@@ -23,6 +23,7 @@ flowchart TD
     lib["lib — src/lib/<br/>kprobe lib-load engine<br/>+ own BPF skeleton"]
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
+    tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
     common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
@@ -33,6 +34,9 @@ flowchart TD
     main --> lib
     main --> dump
     main --> correlate
+    main --> tracecmd
+    tracecmd --> syscalls
+    tracecmd --> funcs
     syscalls --> common
     funcs --> common
     lib --> common
@@ -42,10 +46,12 @@ flowchart TD
     trace --> mcp
 ```
 
-- **One binary, five engines, selected by subcommand.** `main()` looks at
-  `argv[1]` and calls the matching engine entry (`cmd_syscalls` / `cmd_funcs` /
-  `cmd_lib` / `cmd_dump` / `cmd_correlate`), passing the remaining argv so each
-  engine keeps its own argument parser unchanged.
+- **One binary, six subcommands, selected by `argv[1]`.** `main()` calls the
+  matching entry (`cmd_syscalls` / `cmd_funcs` / `cmd_lib` / `cmd_dump` /
+  `cmd_correlate` / `cmd_trace`), passing the remaining argv so each keeps its own
+  argument parser unchanged. Five are BPF engines (each owns one BPF object); the
+  sixth, `trace`, owns no BPF object — it is a coordinator that drives the
+  `syscalls` and `funcs` engines together from one app launch (see §6.5).
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
   are *not* fused into a single always-on pass (see §9).
@@ -287,6 +293,37 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
   (see [BACKLOG.md](BACKLOG.md)).
 
+## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
+
+`ares trace` runs the `syscalls` (kprobe) and `funcs` (uprobe) engines together
+from a **single app launch**, emitting both engines' full output as two
+independent streams (no correlation — that is `correlate`'s job). It owns no BPF
+object: it is a thin coordinator (`src/trace/trace.c`) over the engines'
+setup/run/teardown phases (§1).
+
+- **Why a coordinator (not a fused probe):** each real engine keeps all its
+  features (return values, typed args, modules, sockaddr/fd decode, stack-origin
+  filter, snapshots). The blocker to running them as two processes was the launch
+  race — both force-stop + relaunch the app and arm their UID filter before
+  launch. `trace` resolves the UID once, calls `syscalls_setup` then `funcs_setup`
+  (both arm their probes/UID but **do not** launch), then `ares_launch_app` **once**,
+  then drains both ring buffers on two pthreads against a shared
+  `volatile sig_atomic_t` stop flag, and tears both down.
+- **Coordinator mode plumbing:** `struct ares_run_ctx` (`src/common/launch.h`)
+  carries the pre-resolved UID + package into each `*_setup`; the engines take the
+  package from `rc->pkg` so the per-engine arg slices carry only engine-specific
+  options. The driver symbols (`syscalls_setup`/`_run`/`_teardown`,
+  `funcs_*`) are kept global through the partial-link so `trace.part.o` can call
+  them (see the `--keep-global-symbol` lists in the Makefile).
+- **CLI:** `ares trace -P <pkg> [-o <prefix>] [--syscalls <args…>] [--funcs <args…>]`.
+  With `-o`, each engine writes its own file (`<prefix>.syscalls.jsonl` /
+  `<prefix>.funcs.jsonl`) — no shared `FILE*`, and both are ingestable by the
+  unified MCP today. Each `--…` section is that engine's normal options minus the
+  package.
+- **Detectability:** loud by construction — it loads the `funcs` uprobe (entry
+  `BRK`) alongside the `syscalls` kprobe, so it never sits on the stealthy side of
+  the firewall (§9). `capabilities.c` marks `trace` as writing target memory.
+
 ## 7. Unified trace schema
 
 Every record carries a **`type` discriminator** so one consumer can ingest a mixed
@@ -343,6 +380,11 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
   invisible to in-process RASP (no `TracerPid`, no target-memory modification,
   kernel-side filtering); `funcs` and `correlate` (uprobe) write a `BRK` into the
   target's executable pages and are detectable by prologue/code-integrity checks.
+- **`trace` is loud — it deliberately runs both mechanisms at once.** Because it
+  loads the `funcs` uprobe alongside the `syscalls` kprobe, the `BRK` is present, so
+  its syscall stream is no longer stealthy. Use `trace` only when you want both
+  layers in one run and the target is not RASP-sensitive; use bare `syscalls` for a
+  clean (uprobe-free) syscall trace.
 - **`correlate` is a loud engine by construction.** Its single BPF object carries
   the entry uprobe, so the whole engine is on the detectable side; the quiet
   engines never load it. Its default SP-based span close writes nothing extra to

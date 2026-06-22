@@ -320,6 +320,11 @@ setup/run/teardown phases (§1).
   `<prefix>.funcs.jsonl`) — no shared `FILE*`, and both are ingestable by the
   unified MCP today. Each `--…` section is that engine's normal options minus the
   package.
+- **Operational notes:** without `-o`, both engines print to stdout from two
+  threads and the text interleaves — `trace` warns and `-o` is recommended. A
+  first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the
+  standalone engines. The `syscalls` ring drain bails on the coordinator's stop
+  flag (`g_stopp`), so shutdown is prompt even under a syscall flood.
 - **Detectability:** loud by construction — it loads the `funcs` uprobe (entry
   `BRK`) alongside the `syscalls` kprobe, so it never sits on the stealthy side of
   the firewall (§9). `capabilities.c` marks `trace` as writing target memory.

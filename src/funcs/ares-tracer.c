@@ -206,13 +206,18 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 }
 
 
-// Ctrl + C handler
-static volatile bool exiting = false;
+// Ctrl + C handler. sig_atomic_t (not bool) so a stop flag of the same type can
+// be shared with the kprobe engine when both run under the `trace` coordinator.
+static volatile sig_atomic_t exiting = 0;
 static volatile int sig_count = 0;
+
+// Engine state shared across funcs_setup / funcs_run / funcs_teardown.
+static struct ring_buffer *g_events_rb;
+static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
 
 static void sig_handler(int sig)
 {
-    exiting = true;
+    exiting = 1;
     if (++sig_count > 1)
         _exit(1);
 }
@@ -1139,18 +1144,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 
 // La driver function
-int cmd_funcs(int argc, char **argv)
+int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
     // Boilerplate setup
-    struct ring_buffer *events_rb = NULL;
     int err = 0;
     int uid = -1;
 
     libbpf_set_print(libbpf_print_fn);
-
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
-    
 
     // Argument parsing
     struct args args = {
@@ -1177,7 +1177,9 @@ int cmd_funcs(int argc, char **argv)
 
     // Resolve application UID (if spawn mode)
     if (args.package_name[0] != '\0') {
-        uid = ares_resolve_uid(args.package_name);
+        // Remember the package so the caller can launch it after setup returns.
+        snprintf(g_funcs_pkg, sizeof(g_funcs_pkg), "%s", args.package_name);
+        uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(args.package_name);
         if (uid < 0) {
             err_print(" [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
             err = -1;
@@ -1288,8 +1290,8 @@ int cmd_funcs(int argc, char **argv)
         .log = err_print,
     };
 
-    events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &rctx, NULL);
-    if (!events_rb) {
+    g_events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &rctx, NULL);
+    if (!g_events_rb) {
         err = -1;
         err_print("    [rb] > failed to create ring buffer\n");
         goto cleanup;
@@ -1472,17 +1474,26 @@ int cmd_funcs(int argc, char **argv)
             goto cleanup;
         }
 
-        // Shared clean-relaunch sequence (force-stop -> wait -> am start -S).
-        ts_print("[spawn] > launching %s\n", args.package_name);
-        if (ares_launch_app(args.package_name, NULL) != 0) {
-            err_print(" [spawn] > failed to launch %s\n", args.package_name);
-            err = -1;
-            goto cleanup;
-        }
+        // The actual launch happens after setup returns (cmd_funcs standalone,
+        // or the trace coordinator) so a single launch serves all armed engines.
     }
 
-    while (!exiting) {
-        err = ring_buffer__poll(events_rb, 1);
+    // Setup complete. The caller owns the single app launch (after this returns).
+    return 0;
+
+    // Setup failure lands here: clean up the partial state and report. teardown
+    // is safe on partially-initialized state (everything it touches is global /
+    // NULL-checked), so reuse it.
+    cleanup:
+        funcs_teardown();
+        return err < 0 ? -err : 1;
+}
+
+int funcs_run(volatile sig_atomic_t *stop)
+{
+    int err = 0;
+    while (!*stop) {
+        err = ring_buffer__poll(g_events_rb, 1);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
     }
@@ -1491,24 +1502,56 @@ int cmd_funcs(int argc, char **argv)
         if (active_modules[i]->print_summary)
             active_modules[i]->print_summary();
 
-    // Cleanup mechanism
-    cleanup:
-        ring_buffer__free(events_rb);
+    return err < 0 ? -err : 0;
+}
 
-        for (int i = 0; i < probe_target_count; i++) {
-            if (probe_links[i])     bpf_link__destroy(probe_links[i]);
-            if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
-        }
-        for (int i = 0; i < active_module_count; i++)
-            if (active_modules[i]->detach)
-                active_modules[i]->detach();
-        for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
-        for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
-        for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
+void funcs_teardown(void)
+{
+    if (g_events_rb) {
+        ring_buffer__free(g_events_rb);
+        g_events_rb = NULL;
+    }
 
+    for (int i = 0; i < probe_target_count; i++) {
+        if (probe_links[i])     bpf_link__destroy(probe_links[i]);
+        if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
+    }
+    for (int i = 0; i < active_module_count; i++)
+        if (active_modules[i]->detach)
+            active_modules[i]->detach();
+    for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
+    for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
+    for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
+
+    if (skel) {
         ares_tracer_bpf__destroy(skel);
-        csv_close();
-        jsonl_close();
+        skel = NULL;
+    }
+    csv_close();
+    jsonl_close();
+}
 
-        return err < 0 ? -err : 0;
+int cmd_funcs(int argc, char **argv)
+{
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+
+    int ret = funcs_setup(argc, argv, NULL);
+    if (ret != 0)
+        return ret;             // setup already cleaned up on failure
+
+    // Standalone: launch the package now that probes + UID are armed (spawn mode
+    // only; -p PID attach mode has no package and never launches).
+    if (g_funcs_pkg[0]) {
+        ts_print("[spawn] > launching %s\n", g_funcs_pkg);
+        if (ares_launch_app(g_funcs_pkg, NULL) != 0) {
+            err_print(" [spawn] > failed to launch %s\n", g_funcs_pkg);
+            funcs_teardown();
+            return 1;
+        }
+    }
+
+    funcs_run(&exiting);
+    funcs_teardown();
+    return 0;
 }

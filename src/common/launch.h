@@ -8,6 +8,17 @@
 #include <sys/types.h>
 #include <stddef.h>
 
+// Per-run context handed to an engine's *_setup() so it can be driven either
+// standalone (cmd_<engine>) or by the `trace` coordinator. When `uid > 0` the
+// engine arms that UID instead of resolving it from the package; `external_launch`
+// tells the engine that the caller owns the single app launch (the coordinator),
+// so the engine must not force-stop/relaunch on its own.
+struct ares_run_ctx {
+	int uid;              // pre-resolved app UID to arm (<= 0 => resolve from pkg)
+	const char *pkg;      // coordinator-supplied package name, or NULL
+	int external_launch;  // 1 => caller launches the app; engine must not
+};
+
 // Run `cmd` via /system/bin/sh -c. If `out` != NULL, capture up to outsz-1 bytes
 // of stdout (NUL-terminated). Returns the child wait status, or -1 on spawn error.
 int ares_sh_exec(const char *cmd, char *out, size_t outsz);

@@ -97,4 +97,17 @@ struct heimdall_lib_ranges {
 	} r[HEIMDALL_MAX_RANGES];
 };
 
+/* ---- userspace engine driver (hidden from the BPF compile) ---------------
+ * The kprobe engine is split into three phases so it can run standalone
+ * (cmd_syscalls) or be driven by the `trace` coordinator alongside the uprobe
+ * engine. __VMLINUX_H__ is defined by vmlinux.h, which the BPF side includes
+ * first; userspace includers must have <signal.h> available (as here). */
+#ifndef __VMLINUX_H__
+#include <signal.h>
+struct ares_run_ctx;
+int  syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc);
+int  syscalls_run(volatile sig_atomic_t *stop);
+void syscalls_teardown(void);
+#endif
+
 #endif /* HEIMDALL_H */

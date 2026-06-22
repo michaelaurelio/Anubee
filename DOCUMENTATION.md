@@ -57,10 +57,23 @@ flowchart TD
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
   exporting only its `ares_libtrace_*` API. See §9.
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
-  shell command), `resolve_uid` (app UID from its data dir), and `resolve_component`
-  (launchable activity) live once in `src/common/launch.*` as `ares_*` and are used
-  by all five engines. They are linked once into `common.part.o`, exporting only the
-  `ares_*` API (see `COMMON_API` in the Makefile).
+  shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
+  (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
+  force-stop → wait-for-stop → `am start -S -n <component>`) live once in
+  `src/common/launch.*` as `ares_*` and are used by all five engines. They are
+  linked once into `common.part.o`, exporting only the `ares_*` API (see
+  `COMMON_API` in the Makefile).
+- **The `syscalls` and `funcs` engines are split into setup/run/teardown phases.**
+  Each engine's `cmd_<engine>` entry is a thin wrapper over
+  `<engine>_setup(argc, argv, rc)` (parse + open/load/attach + arm UID, stopping
+  *before* the app launch), `<engine>_run(stop)` (the ring-buffer poll loop, exits
+  when the shared `volatile sig_atomic_t *stop` is set), and
+  `<engine>_teardown()`. The launch is owned by the caller (the wrapper standalone,
+  or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
+  (`src/common/launch.h`) carries a pre-resolved UID + an `external_launch` flag.
+  Standalone behavior is unchanged; the split exists so both engines can be armed,
+  launched once, and polled together (the planned `trace` runner). See
+  [BACKLOG.md](BACKLOG.md).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities

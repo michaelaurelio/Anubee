@@ -121,6 +121,10 @@ int cmd_trace(int argc, char **argv)
 	}
 	if (want_func) {
 		func_argv[func_argc++] = "funcs";
+		// funcs uses argp, which requires -p/-P at parse time, so the package
+		// goes in via argv (not rc->pkg like the syscalls manual parser).
+		func_argv[func_argc++] = "-P";
+		func_argv[func_argc++] = (char *)pkg;
 		if (prefix) {
 			snprintf(funcout, sizeof(funcout), "%s.funcs.jsonl", prefix);
 			func_argv[func_argc++] = "-o";

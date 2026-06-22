@@ -127,6 +127,10 @@ static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static int g_quiet;                             // suppress per-event console output
 static volatile sig_atomic_t exiting;
+// Stop flag the run loop is draining against. In standalone this is &exiting; under
+// the `trace` coordinator it is the coordinator's flag. enqueue_event honors it so
+// the ring drain bails promptly on stop even when `exiting` was never set.
+static volatile sig_atomic_t *g_stopp;
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
 static FILE *g_json;                            // JSON output stream, or NULL
@@ -903,8 +907,8 @@ static void q_out(struct queue *q, void *dst, size_t n)
 static int enqueue_event(void *ctx, void *data, size_t sz)
 {
 	(void)ctx;
-	if (exiting)
-		return -1;                          // bail the drain promptly on Ctrl+C
+	if (exiting || (g_stopp && *g_stopp))
+		return -1;                          // bail the drain promptly on Ctrl+C / stop
 	struct queue *q = &g_q;
 	uint32_t s = (uint32_t)sz;
 	size_t total = 4 + sz;
@@ -1324,6 +1328,7 @@ out:
 
 int syscalls_run(volatile sig_atomic_t *stop)
 {
+	g_stopp = stop;
 	if (g_capture_all)
 		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", g_uid);
 	else

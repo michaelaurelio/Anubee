@@ -135,6 +135,19 @@ static int g_jsonl;                             // 1 = JSON Lines (one record/li
 static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
 static unsigned long long g_stack_count;        // snapshots written so far
 
+// ---- engine state shared across setup / run / teardown -------------------
+// Promoted from cmd_syscalls locals so the engine can be driven in three phases
+// (standalone via cmd_syscalls, or by the `trace` coordinator). See heimdall.h.
+static struct heimdall *g_skel;
+static struct ring_buffer *g_rb;
+static pthread_t g_worker;
+static int g_worker_started;
+static int g_dropfd = -1;
+static int g_uid;
+static int g_capture_all;
+static const char *g_activity;                  // optional launcher activity
+static const char *g_json_path;                 // for the teardown "wrote N" line
+
 static void on_sigint(int s)
 {
 	(void)s;
@@ -1038,7 +1051,11 @@ static void usage(const char *argv0)
 		argv0, argv0, argv0, argv0);
 }
 
-int cmd_syscalls(int argc, char **argv)
+// ---- engine driver, split into setup / run / teardown --------------------
+// cmd_syscalls below is a thin standalone wrapper; the `trace` coordinator drives
+// the same three phases so the kprobe engine runs alongside the uprobe engine
+// from a single app launch. Cross-phase state lives in the file-static g_* above.
+int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
 	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
 	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
@@ -1119,11 +1136,14 @@ int cmd_syscalls(int argc, char **argv)
 		activity = (npos > 2) ? argv[ai + 2] : NULL;
 	}
 
-	int uid = ares_resolve_uid(g_pkg);
+	g_activity = activity;
+	int uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
 	if (uid < 0) {
 		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
 		return 1;
 	}
+	g_uid = uid;
+	g_capture_all = capture_all;
 	if (capture_all)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
@@ -1135,6 +1155,7 @@ int cmd_syscalls(int argc, char **argv)
 	// A .jsonl output path implies JSON Lines framing.
 	if (json_path && ends_with(json_path, ".jsonl"))
 		g_jsonl = 1;
+	g_json_path = json_path;
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement).
@@ -1256,26 +1277,49 @@ int cmd_syscalls(int argc, char **argv)
 	}
 	printf("queue: %d MB, worker thread started\n", queue_mb);
 
-	// Fresh start: kill any running instance, then launch. Tracing is already
-	// armed (UID filter installed above), so we catch the new process from its
-	// first syscall. Shared clean-relaunch sequence (src/common/launch).
-	printf("launching: %s\n", g_pkg);
-	if (ares_launch_app(g_pkg, activity) != 0) {
-		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
-		goto out_rb;
+	// Setup complete: hand the live state to the run/teardown phases. The caller
+	// (cmd_syscalls standalone, or the trace coordinator) owns the app launch,
+	// which must happen AFTER this returns since the UID filter is already armed.
+	g_skel = skel;
+	g_rb = rb;
+	g_worker = worker;
+	g_worker_started = 1;
+	g_dropfd = bpf_map__fd(skel->maps.dropped);
+	return 0;
+
+out_rb:
+	ring_buffer__free(rb);
+out:
+	// Setup failed: clean up the partial state and report failure. teardown is
+	// NOT called for this path (globals were never published).
+	pend_flush_all();
+	if (g_json) {
+		if (!g_jsonl)
+			fputs("\n]\n", g_json);
+		fclose(g_json);
+		g_json = NULL;
 	}
+	if (g_stacks) {
+		fclose(g_stacks);
+		g_stacks = NULL;
+	}
+	free(g_pend);
+	g_pend = NULL;
+	heimdall__destroy(skel);
+	return 1;
+}
 
-	signal(SIGINT, on_sigint);
-	if (capture_all)
-		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", uid);
+int syscalls_run(volatile sig_atomic_t *stop)
+{
+	if (g_capture_all)
+		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", g_uid);
 	else
-		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", uid, g_lib);
+		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", g_uid, g_lib);
 
-	int dropfd = bpf_map__fd(skel->maps.dropped);
 	unsigned long long last_drops = 0;
 	int ticks = 0;
-	while (!exiting) {
-		int err = ring_buffer__poll(rb, 200 /* ms */);
+	while (!*stop) {
+		int err = ring_buffer__poll(g_rb, 200 /* ms */);
 		if (err < 0 && err != -EINTR)
 			break;
 		// ~every second: surface drops live (kernel ring + userspace queue).
@@ -1284,33 +1328,42 @@ int cmd_syscalls(int argc, char **argv)
 			pthread_mutex_lock(&g_q.m);
 			unsigned long long qd = g_q.qdropped;
 			pthread_mutex_unlock(&g_q.m);
-			unsigned long long d = read_dropped(dropfd) + qd;
+			unsigned long long d = read_dropped(g_dropfd) + qd;
 			if (d > last_drops) {
 				fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
 				last_drops = d;
 			}
 		}
 	}
+	return 0;
+}
 
-	// Stop the worker and let it drain whatever is still queued.
-	pthread_mutex_lock(&g_q.m);
-	g_q.done = 1;
-	pthread_cond_signal(&g_q.cv);
-	pthread_mutex_unlock(&g_q.m);
-	pthread_join(worker, NULL);
+void syscalls_teardown(void)
+{
+	if (g_worker_started) {
+		// Stop the worker and let it drain whatever is still queued.
+		pthread_mutex_lock(&g_q.m);
+		g_q.done = 1;
+		pthread_cond_signal(&g_q.cv);
+		pthread_mutex_unlock(&g_q.m);
+		pthread_join(g_worker, NULL);
+		g_worker_started = 0;
 
-	// Always report the final tally, so "no message" never means "didn't check".
-	unsigned long long kdrops = read_dropped(dropfd), qdrops = g_q.qdropped;
-	unsigned long long drops = kdrops + qdrops;
-	if (drops)
-		fprintf(stderr, "%llu event(s) dropped (%llu kernel ring, %llu queue) — "
-				"trace is incomplete\n", drops, kdrops, qdrops);
-	else
-		fprintf(stderr, "no events dropped\n");
+		// Always report the final tally, so "no message" never means "didn't check".
+		unsigned long long kdrops = read_dropped(g_dropfd), qdrops = g_q.qdropped;
+		unsigned long long drops = kdrops + qdrops;
+		if (drops)
+			fprintf(stderr, "%llu event(s) dropped (%llu kernel ring, %llu queue) — "
+					"trace is incomplete\n", drops, kdrops, qdrops);
+		else
+			fprintf(stderr, "no events dropped\n");
+	}
 
-out_rb:
-	ring_buffer__free(rb);
-out:
+	if (g_rb) {
+		ring_buffer__free(g_rb);
+		g_rb = NULL;
+	}
+
 	pend_flush_all();                       // emit any entries whose return we never saw
 	if (g_json) {
 		if (!g_jsonl)
@@ -1318,14 +1371,38 @@ out:
 		fclose(g_json);
 		printf("wrote %llu %s record%s to %s\n",
 		       g_json_count, "syscall",
-		       g_json_count == 1 ? "" : "s", json_path);
+		       g_json_count == 1 ? "" : "s", g_json_path);
+		g_json = NULL;
 	}
 	if (g_stacks) {
 		fclose(g_stacks);
 		printf("wrote %llu stack snapshot%s to %s.stacks\n",
-		       g_stack_count, g_stack_count == 1 ? "" : "s", json_path);
+		       g_stack_count, g_stack_count == 1 ? "" : "s", g_json_path);
+		g_stacks = NULL;
 	}
 	free(g_pend);
-	heimdall__destroy(skel);
+	g_pend = NULL;
+	if (g_skel) {
+		heimdall__destroy(g_skel);
+		g_skel = NULL;
+	}
+}
+
+int cmd_syscalls(int argc, char **argv)
+{
+	if (syscalls_setup(argc, argv, NULL) != 0)
+		return 1;
+
+	// Standalone: tracing is armed (UID installed in setup); launch and own SIGINT.
+	signal(SIGINT, on_sigint);
+	printf("launching: %s\n", g_pkg);
+	if (ares_launch_app(g_pkg, g_activity) != 0) {
+		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
+		syscalls_teardown();
+		return 1;
+	}
+
+	syscalls_run(&exiting);
+	syscalls_teardown();
 	return 0;
 }

@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <linux/types.h>
 
@@ -11,6 +12,15 @@
 extern bool verbose;
 extern bool caller_only;
 extern bool resolve_syms;
+
+// Engine driver, split into three phases so the uprobe engine runs standalone
+// (cmd_funcs) or under the `trace` coordinator alongside the kprobe engine from
+// a single app launch. funcs_setup arms probes + UID but does NOT launch; the
+// caller owns the launch. On failure funcs_setup cleans up and returns nonzero.
+struct ares_run_ctx;   // common/launch.h
+int  funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc);
+int  funcs_run(volatile sig_atomic_t *stop);
+void funcs_teardown(void);
 
 // Functions defined in ares-tracer.c, shared with modules
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

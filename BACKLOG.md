@@ -17,6 +17,30 @@ forward-looking items only.
 
 ## Shipped
 
+### `ares trace` Phase 2 — engine setup/run/teardown split — 2026-06-22
+
+Groundwork for the combined `trace` runner (see "Planned" below). `cmd_syscalls`
+(`src/syscalls/heimdall.c`) and `cmd_funcs` (`src/funcs/ares-tracer.c`) are each
+split into `<engine>_setup(argc, argv, rc)` / `<engine>_run(volatile sig_atomic_t
+*stop)` / `<engine>_teardown()`, with `cmd_<engine>` reduced to a thin wrapper that
+preserves standalone behavior exactly. Cross-phase locals (`skel`, ring buffer,
+worker thread, dropfd) were promoted to file-static globals; the app launch was
+lifted out of `setup` into the caller; funcs' `exiting` flag changed
+`bool`→`sig_atomic_t` so both engines' run-loops share one stop-flag type. New
+`struct ares_run_ctx` (`src/common/launch.h`) carries a pre-resolved UID +
+`external_launch`. Driver prototypes live in `heimdall.h` (guarded
+`#ifndef __VMLINUX_H__`) and `ares-tracer-priv.h`. This is the partial landing of
+"thin presets over the formal core" for these two engines.
+
+### `ares trace` Phase 1 — shared app-launch helper — 2026-06-22
+
+`ares_launch_app(pkg, activity)` added to `src/common/launch.{c,h}` (exported via
+`COMMON_API`): the canonical clean relaunch — force-stop → wait-for-stop → resolve
+component (or use explicit activity) → `am start -S -n <component>`. The `syscalls`
+and `funcs` engines now call it instead of inlining their own divergent sequences.
+Benign harmonization: `syscalls` gained the wait-for-stop + `-S` flag (more
+reliable relaunch); `funcs` behavior unchanged. Device-verified on both paths.
+
 ### Structured JSONL mode for `ares funcs` CALL/RETURN (Task 4) — 2026-06-21
 
 `-J`/`--structured` flag added to `ares funcs`. When a JSONL sink is open (`-o`),
@@ -178,9 +202,11 @@ Follow-on (2d / future) for the engine shipped above:
 - **Regex (`-I/-i`) targeting** in `correlate` (currently custom specs `-e/-F` only).
 - **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
   `/proc/maps` scan); tighten the launch→attach timing so early calls aren't missed.
-- **Thin presets over the formal core** — migrating `syscalls`/`funcs`/`lib` to thin
-  presets and retiring the localization where no longer needed remains deferred
-  (folds in the consolidation roadmap items above).
+- **Thin presets over the formal core** — PARTIAL: `syscalls` and `funcs` are now
+  split into setup/run/teardown phases (shipped 2026-06-22, see above), the first
+  step toward thin presets. Migrating `lib` likewise and retiring the localization
+  where no longer needed remains deferred (folds in the consolidation roadmap items
+  above). The immediate consumer is the combined `trace` runner (see "Planned").
 - **MCP ingest** — ~~teach `ares-mcp` to ingest `correlate` output (join syscalls by
   `span`)~~ — **DONE (Task 3 / step 7).** `load_structured` ingests `funcs -J` /
   `correlate -o` JSONL into `calls`/`returns`/`func_spans`/`span_syscalls` tables;
@@ -192,6 +218,25 @@ Follow-on (2d / future) for the engine shipped above:
   section below.
 
 ---
+
+## Planned — combined `trace` runner (kprobe + uprobe in one run)
+
+New `ares trace` subcommand: run the `syscalls` (kprobe) and `funcs` (uprobe)
+engines together from a **single app launch**, full feature parity, uncorrelated.
+A *coordinator* reuses both real engines (no re-implemented combined probe), which
+is why Phases 1–2 (shared `ares_launch_app`, setup/run/teardown split) landed
+first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
+
+- **Phase 1 — DONE (2026-06-22):** shared `ares_launch_app` (see Shipped).
+- **Phase 2 — DONE (2026-06-22):** engine setup/run/teardown split (see Shipped).
+- **Phase 3 — next:** `src/trace/trace.c` coordinator — `syscalls_setup` +
+  `funcs_setup` with `external_launch`, install UID into both, one
+  `ares_launch_app`, two pthreads polling both ring buffers with a shared
+  `sig_atomic_t` stop flag, separate per-engine `-o` output files (both already
+  MCP-ingestable via `load_structured`).
+- **Phase 4:** Makefile/`main.c`/`capabilities.c` wiring (`trace` = loud) + docs +
+  host test (argv split). Add `trace`'s new engine entry points to the
+  `syscalls`/`funcs` `--keep-global-symbol` lists so the coordinator can link them.
 
 ## Planned — structured emitter + unified MCP
 

@@ -1,15 +1,15 @@
-// heimdall.c
+// syscalls.c
 //
-// Userspace loader for heimdall.bpf.c. Traces the syscalls of a single Android
+// Userspace loader for syscalls.bpf.c. Traces the syscalls of a single Android
 // app, emitting only those whose user backtrace passes through a chosen native
 // library (e.g. a RASP .so).
 //
-//   usage: heimdall <package> <lib> [activity]
+//   usage: syscalls <package> <lib> [activity]
 //   where <lib> is a substring of the native library's mapped name, or a glob
 //   (* ? []) over it for a randomized per-run name (e.g. 'e_[0-9]*').
-//   e.g.   heimdall com.example.app librasp.so
-//          heimdall com.example.app 'e_[0-9]*'
-//          heimdall com.example.app libtoyguard.so com.example.app.MainActivity
+//   e.g.   syscalls com.example.app librasp.so
+//          syscalls com.example.app 'e_[0-9]*'
+//          syscalls com.example.app libtoyguard.so com.example.app.MainActivity
 //
 // What it does, in order:
 //   1. Resolves the package's app-UID by stat'ing its data dir.
@@ -45,8 +45,8 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
-#include "heimdall.h"
-#include "heimdall.skel.h"
+#include "syscalls.h"
+#include "syscalls.skel.h"
 #include "symbolize.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
@@ -81,7 +81,7 @@ static int arg_count(unsigned long long nr)
 	for (int i = 0; i < g_nargc; i++)
 		if ((unsigned long long)g_argc[i].nr == nr)
 			return g_argc[i].count;
-	return HEIMDALL_SYSCALL_NARGS;
+	return SYSC_SYSCALL_NARGS;
 }
 
 // Syscall name -> number (reverse of the generated table), or -1 if unknown.
@@ -137,8 +137,8 @@ static unsigned long long g_stack_count;        // snapshots written so far
 
 // ---- engine state shared across setup / run / teardown -------------------
 // Promoted from cmd_syscalls locals so the engine can be driven in three phases
-// (standalone via cmd_syscalls, or by the `trace` coordinator). See heimdall.h.
-static struct heimdall *g_skel;
+// (standalone via cmd_syscalls, or by the `trace` coordinator). See syscalls.h.
+static struct syscalls *g_skel;
 static struct ring_buffer *g_rb;
 static pthread_t g_worker;
 static int g_worker_started;
@@ -187,15 +187,15 @@ static int lib_name_matches(const char *name)
 // concrete per-run name — reported so the user sees what actually armed).
 static void push_lib_range(__u32 tgid, __u64 start, __u64 end, const char *name)
 {
-	struct heimdall_lib_ranges lr;
+	struct syscalls_lib_ranges lr;
 	memset(&lr, 0, sizeof(lr));
 	bpf_map_lookup_elem(g_lib_ranges_fd, &tgid, &lr);    // ENOENT leaves it zeroed
 
-	for (__u32 i = 0; i < lr.count && i < HEIMDALL_MAX_RANGES; i++)
+	for (__u32 i = 0; i < lr.count && i < SYSC_MAX_RANGES; i++)
 		if (lr.r[i].start == start && lr.r[i].end == end)
 			return;                                       // already known
 
-	if (lr.count >= HEIMDALL_MAX_RANGES)
+	if (lr.count >= SYSC_MAX_RANGES)
 		return;
 
 	lr.r[lr.count].start = start;
@@ -323,9 +323,9 @@ static void install_arg_types(int fd)
 	}
 }
 
-static const char *arg_string(const struct heimdall_syscall_event *e, int i)
+static const char *arg_string(const struct syscalls_syscall_event *e, int i)
 {
-	if (i < HEIMDALL_STR_SLOTS && (e->str_present & (1u << i)))
+	if (i < SYSC_STR_SLOTS && (e->str_present & (1u << i)))
 		return e->str[i];
 	return NULL;
 }
@@ -519,7 +519,7 @@ static void install_sock_args(int fd)
 }
 
 // Render argument i of a syscall: string > fd > decoded flags/enum > raw hex.
-static void render_arg(const struct heimdall_syscall_event *e, int i, char *out, size_t outsz)
+static void render_arg(const struct syscalls_syscall_event *e, int i, char *out, size_t outsz)
 {
 	const char *s = arg_string(e, i);
 	if (s) {
@@ -562,7 +562,7 @@ static struct jbuf g_jb;
 // Write one stack snapshot (registers + base64 stack bytes) to the sidecar
 // stream. Always JSON Lines — this is consumed by the off-device unwinder, not
 // the main trace. Deduped in-kernel, so these are comparatively rare.
-static void json_emit_stack(const struct heimdall_stack_snapshot *s)
+static void json_emit_stack(const struct syscalls_stack_snapshot *s)
 {
 	if (!g_stacks)
 		return;
@@ -600,7 +600,7 @@ static int is_interp_frame(const char *sym)
 	       strstr(sym, "artInterpreterToCompiledCodeBridge");
 }
 
-static void json_emit(const struct heimdall_syscall_event *e, unsigned long long id,
+static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,
 		      int has_ret, long long ret)
 {
 	struct jbuf *j = &g_jb;
@@ -632,7 +632,7 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 	if (has_ret) jb_i64(j, ret); else jb_s(j, "null");
 
 	jb_s(j, ",\"string_args\":{");
-	for (int i = 0, first = 1; i < HEIMDALL_STR_SLOTS; i++) {
+	for (int i = 0, first = 1; i < SYSC_STR_SLOTS; i++) {
 		const char *s = arg_string(e, i);
 		if (!s) continue;
 		if (!first)
@@ -642,7 +642,7 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 	}
 	jb_s(j, "},\"fd_args\":{");
 	unsigned fdm = arg_fd_mask(e->nr);
-	for (int i = 0, first = 1; i < HEIMDALL_SYSCALL_NARGS; i++) {
+	for (int i = 0, first = 1; i < SYSC_SYSCALL_NARGS; i++) {
 		if (!(fdm & (1u << i))) continue;
 		char fdbuf[320];
 		render_fd((int)e->h.pid, e->args[i], fdbuf, sizeof(fdbuf));
@@ -678,7 +678,7 @@ static void json_emit(const struct heimdall_syscall_event *e, unsigned long long
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
 	char sym[320];
-	for (int i = 0, first = 1; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
+	for (int i = 0, first = 1; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 		if (e->stack[i] == 0) break;
 		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
 		if (!first)
@@ -708,7 +708,7 @@ struct pend_entry {
 	int used;
 	__u32 tid;
 	unsigned long long id;
-	struct heimdall_syscall_event ev;
+	struct syscalls_syscall_event ev;
 };
 
 static struct pend_entry *g_pend;
@@ -722,7 +722,7 @@ static struct pend_entry *pend_find(__u32 tid)
 	return NULL;
 }
 
-static void pend_store(const struct heimdall_syscall_event *e, unsigned long long id)
+static void pend_store(const struct syscalls_syscall_event *e, unsigned long long id)
 {
 	struct pend_entry *p = pend_find(e->h.tid);
 	if (p) {
@@ -761,7 +761,7 @@ static void pend_flush_all(void)
 
 // ---- ring buffer handling ------------------------------------------------
 
-static void handle_syscall(const struct heimdall_syscall_event *e)
+static void handle_syscall(const struct syscalls_syscall_event *e)
 {
 	unsigned long long id = g_next_id++;
 
@@ -782,7 +782,7 @@ static void handle_syscall(const struct heimdall_syscall_event *e)
 
 		int n = e->stack_sz / (int)sizeof(__u64);
 		char sym[320];
-		for (int i = 0; i < n && i < HEIMDALL_MAX_STACK_DEPTH; i++) {
+		for (int i = 0; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 			if (e->stack[i] == 0)
 				break;
 			sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
@@ -794,7 +794,7 @@ static void handle_syscall(const struct heimdall_syscall_event *e)
 	pend_store(e, id);          // JSON emitted once the return value arrives
 }
 
-static void handle_return(const struct heimdall_return_event *r)
+static void handle_return(const struct syscalls_return_event *r)
 {
 	struct pend_entry *p = pend_find(r->h.tid);
 	if (!p)
@@ -818,12 +818,12 @@ static void handle_return(const struct heimdall_return_event *r)
 // worker thread, so all the caches/pending state it touches stay single-threaded.
 static void process_event(const void *data, size_t sz)
 {
-	if (sz < sizeof(struct heimdall_hdr))
+	if (sz < sizeof(struct syscalls_hdr))
 		return;
-	const struct heimdall_hdr *h = data;
+	const struct syscalls_hdr *h = data;
 
 	switch (h->type) {
-	case HEIMDALL_EV_MAP: {
+	case SYSC_EV_MAP: {
 		if (sz < sizeof(struct lib_map_event))
 			return;
 		const struct lib_map_event *m = data;
@@ -836,25 +836,25 @@ static void process_event(const void *data, size_t sz)
 			push_lib_range(m->h.pid, m->start, m->end, m->name);
 		break;
 	}
-	case HEIMDALL_EV_UNMAP: {
+	case SYSC_EV_UNMAP: {
 		if (sz < sizeof(struct lib_unmap_event))
 			return;
 		const struct lib_unmap_event *u = data;
 		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
 		break;
 	}
-	case HEIMDALL_EV_SYSCALL:
-		if (sz < sizeof(struct heimdall_syscall_event))
+	case SYSC_EV_SYSCALL:
+		if (sz < sizeof(struct syscalls_syscall_event))
 			return;
 		handle_syscall(data);
 		break;
-	case HEIMDALL_EV_RETURN:
-		if (sz < sizeof(struct heimdall_return_event))
+	case SYSC_EV_RETURN:
+		if (sz < sizeof(struct syscalls_return_event))
 			return;
 		handle_return(data);
 		break;
-	case HEIMDALL_EV_STACK:
-		if (sz < sizeof(struct heimdall_stack_snapshot))
+	case SYSC_EV_STACK:
+		if (sz < sizeof(struct syscalls_stack_snapshot))
 			return;
 		json_emit_stack(data);
 		break;
@@ -925,7 +925,7 @@ static void *worker_main(void *arg)
 	(void)arg;
 	struct queue *q = &g_q;
 	// Sized to the largest record (the stack snapshot), so nothing is truncated.
-	static char rec[sizeof(struct heimdall_stack_snapshot) + 64];
+	static char rec[sizeof(struct syscalls_stack_snapshot) + 64];
 	unsigned long flushed = 0;
 	for (;;) {
 		pthread_mutex_lock(&q->m);
@@ -953,7 +953,7 @@ static void *worker_main(void *arg)
 
 static int libbpf_quiet(enum libbpf_print_level level, const char *fmt, va_list args)
 {
-	if (level == LIBBPF_DEBUG && !getenv("HEIMDALL_DEBUG"))
+	if (level == LIBBPF_DEBUG && !getenv("ARES_DEBUG"))
 		return 0;
 	return vfprintf(stderr, fmt, args);
 }
@@ -980,7 +980,7 @@ static const char *g_ret_syscalls[] = {
 // Attach the return-value program as a classic kretprobe to each syscall above.
 // Returns the count that attached. Links are intentionally left to the process
 // lifetime (detached on exit). Missing functions on this ABI are skipped quietly.
-static int attach_return_probes(struct heimdall *skel)
+static int attach_return_probes(struct syscalls *skel)
 {
 	libbpf_print_fn_t prev = libbpf_set_print(NULL);    // hush per-function misses
 	int n = 0;
@@ -1057,15 +1057,15 @@ static void usage(const char *argv0)
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-	g_verbose = getenv("HEIMDALL_VERBOSE") != NULL;
-	g_quiet = getenv("HEIMDALL_QUIET") != NULL;
-	g_jsonl = getenv("HEIMDALL_JSONL") != NULL;
-	int capture_all = getenv("HEIMDALL_ALL") != NULL;
+	g_verbose = getenv("ARES_VERBOSE") != NULL;
+	g_quiet = getenv("ARES_QUIET") != NULL;
+	g_jsonl = getenv("ARES_JSONL") != NULL;
+	int capture_all = getenv("ARES_ALL") != NULL;
 	// Java frames are now symbolized on-device, so the off-device stack-snapshot
 	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
-	// packed/obfuscated code). --snapshot / HEIMDALL_SNAPSHOT enables it.
-	int want_snap = getenv("HEIMDALL_SNAPSHOT") != NULL;
-	const char *json_path = getenv("HEIMDALL_JSON");
+	// packed/obfuscated code). --snapshot / ARES_SNAPSHOT enables it.
+	int want_snap = getenv("ARES_SNAPSHOT") != NULL;
+	const char *json_path = getenv("ARES_JSON");
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
 	int bufmb = 4;                           // kernel ring buffer size (MB)
@@ -1167,7 +1167,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 	libbpf_set_print(libbpf_quiet);
 
-	struct heimdall *skel = heimdall__open();
+	struct syscalls *skel = syscalls__open();
 	if (!skel) {
 		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
@@ -1181,9 +1181,9 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;
 	bpf_map__set_max_entries(skel->maps.events, bufbytes);
-	if (heimdall__load(skel)) {
+	if (syscalls__load(skel)) {
 		fprintf(stderr, "load failed (run as root? SELinux permissive?)\n");
-		heimdall__destroy(skel);
+		syscalls__destroy(skel);
 		return 1;
 	}
 	printf("ring buffer: %zu MB%s\n", bufbytes >> 20, g_quiet ? ", console output suppressed" : "");
@@ -1239,7 +1239,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	// so disable its autoattach.
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
 
-	if (heimdall__attach(skel)) {
+	if (syscalls__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
 	}
@@ -1305,7 +1305,7 @@ out:
 	}
 	free(g_pend);
 	g_pend = NULL;
-	heimdall__destroy(skel);
+	syscalls__destroy(skel);
 	return 1;
 }
 
@@ -1383,7 +1383,7 @@ void syscalls_teardown(void)
 	free(g_pend);
 	g_pend = NULL;
 	if (g_skel) {
-		heimdall__destroy(g_skel);
+		syscalls__destroy(g_skel);
 		g_skel = NULL;
 	}
 }

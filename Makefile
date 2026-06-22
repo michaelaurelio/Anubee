@@ -52,8 +52,8 @@ LIBBPF_INC  := $(LIBBPF_DEST)/include
 BIN         := $(BUILD)/ares
 
 # ---- BPF objects + skeletons ----------------------------------------------
-SYSC_BPF_OBJ := $(BUILD)/heimdall.bpf.o
-SYSC_SKEL    := $(BUILD)/heimdall.skel.h
+SYSC_BPF_OBJ := $(BUILD)/syscalls.bpf.o
+SYSC_SKEL    := $(BUILD)/syscalls.skel.h
 FUNC_BPF_OBJ := $(BUILD)/ares-tracer.bpf.o
 # funcs skeleton lives next to its source: ares-tracer.c and modules/*.c include
 # it via "ares-tracer.skel.h" / "../ares-tracer.skel.h".
@@ -69,7 +69,7 @@ SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
 
 # ---- userspace objects (compiled per engine, then localized) --------------
-SYSC_CSRC := $(SRC)/syscalls/heimdall.c $(SRC)/syscalls/symbolize.c
+SYSC_CSRC := $(SRC)/syscalls/syscalls.c $(SRC)/syscalls/symbolize.c
 FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
              $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
              $(SRC)/funcs/modules/prop_read.c
@@ -144,13 +144,13 @@ $(LIBBPF_A):
 		CC=$(CC) AR=$(AR) install install_uapi_headers
 
 # ---- BPF objects + skeletons (host clang) ---------------------------------
-$(SYSC_BPF_OBJ): $(SRC)/syscalls/heimdall.bpf.c $(SRC)/syscalls/heimdall.h vmlinux.h $(LIBBPF_A) \
+$(SYSC_BPF_OBJ): $(SRC)/syscalls/syscalls.bpf.c $(SRC)/syscalls/syscalls.h vmlinux.h $(LIBBPF_A) \
                  $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/syscalls -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(SYSC_SKEL): $(SYSC_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name heimdall > $@
+	$(BPFTOOL) gen skeleton $< name syscalls > $@
 
 # ares-tracer.bpf.c #includes its module .bpf.c files and the shared lib_trace
 # probe; one compilation unit.

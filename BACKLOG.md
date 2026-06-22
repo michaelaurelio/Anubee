@@ -20,7 +20,7 @@ forward-looking items only.
 ### `ares trace` Phase 2 — engine setup/run/teardown split — 2026-06-22
 
 Groundwork for the combined `trace` runner (see "Planned" below). `cmd_syscalls`
-(`src/syscalls/heimdall.c`) and `cmd_funcs` (`src/funcs/ares-tracer.c`) are each
+(`src/syscalls/syscalls.c`) and `cmd_funcs` (`src/funcs/ares-tracer.c`) are each
 split into `<engine>_setup(argc, argv, rc)` / `<engine>_run(volatile sig_atomic_t
 *stop)` / `<engine>_teardown()`, with `cmd_<engine>` reduced to a thin wrapper that
 preserves standalone behavior exactly. Cross-phase locals (`skel`, ring buffer,
@@ -28,7 +28,7 @@ worker thread, dropfd) were promoted to file-static globals; the app launch was
 lifted out of `setup` into the caller; funcs' `exiting` flag changed
 `bool`→`sig_atomic_t` so both engines' run-loops share one stop-flag type. New
 `struct ares_run_ctx` (`src/common/launch.h`) carries a pre-resolved UID +
-`external_launch`. Driver prototypes live in `heimdall.h` (guarded
+`external_launch`. Driver prototypes live in `syscalls.h` (guarded
 `#ifndef __VMLINUX_H__`) and `ares-tracer-priv.h`. This is the partial landing of
 "thin presets over the formal core" for these two engines.
 
@@ -156,7 +156,7 @@ duplicated logic. The library-load tracing slice is consolidated into
 unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 
 - **C1 — JSON/JSONL string escaping** — identical switch in both
-  (`src/syscalls/heimdall.c` `jb_*` vs `src/funcs/ares-tracer.c` `json_fwrite_str`);
+  (`src/syscalls/syscalls.c` `jb_*` vs `src/funcs/ares-tracer.c` `json_fwrite_str`);
   differs only in output sink → one `json_escape(sink)`.
 - **C2 — Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
   shared drain helper.
@@ -262,5 +262,4 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
 ## Deferred tech debt
 
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.
-- Rebranding the syscalls engine's internal `HEIMDALL_*` env vars / `heimdall.*`
-  filenames to `ares-*` (cosmetic; left to avoid churn during the merge).
+

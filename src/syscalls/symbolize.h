@@ -7,8 +7,8 @@
  * This is display-only. The in-kernel syscall filter does not depend on it and
  * stays driven purely by uprobe_mmap/munmap events.
  */
-#ifndef HEIMDALL_SYMBOLIZE_H
-#define HEIMDALL_SYMBOLIZE_H
+#ifndef SYSCALLS_SYMBOLIZE_H
+#define SYSCALLS_SYMBOLIZE_H
 
 #include <stddef.h>
 
@@ -20,4 +20,4 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz);
  * on the next resolve. Safe to call for unknown pids. */
 void sym_flush_pid(int pid);
 
-#endif /* HEIMDALL_SYMBOLIZE_H */
+#endif /* SYSCALLS_SYMBOLIZE_H */

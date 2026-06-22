@@ -7,8 +7,8 @@ For user-facing build/usage instructions see [README.md](README.md).
 ares is the merger of two previously separate tools — a kprobe syscall tracer
 (formerly *heimdall*) and a uprobe function tracer (formerly *ares-tracer*) — into
 one binary with a shared build, a type-discriminated trace schema, and one MCP
-server. The syscalls engine now uses `ARES_*` runtime env vars and `syscalls.*`
-source files (rename completed).
+server. The syscalls engine now uses `ARES_*` naming and `syscalls.*` source files
+(rename completed).
 
 ---
 
@@ -167,6 +167,10 @@ expensive one:
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
+- All capture behavior is flag-driven (`-a`/`-q`/`-v`/`-J`/`-o`/`--snapshot`, see
+  README). The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's
+  verbose load/relocation logging (otherwise suppressed) — the first thing to check
+  on a BPF load `-EPERM` or CO-RE/relocation error.
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 

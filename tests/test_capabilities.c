@@ -25,6 +25,7 @@ int main(void)
     // Uprobe-bearing capabilities are loud.
     CHECK(ares_object_writes_target("funcs"),      "funcs loud");
     CHECK(ares_object_writes_target("correlate"),  "correlate loud");
+    CHECK(ares_object_writes_target("trace"),      "trace loud");
     // Unknown name is treated as non-writing (safe default for lookup).
     CHECK(!ares_object_writes_target("nonexistent"), "unknown -> false");
 

@@ -17,6 +17,21 @@ forward-looking items only.
 
 ## Shipped
 
+### `ares trace` audit fixes — 2026-06-22
+
+Post-Phase-4 audit (coordinator logic, engine integration, build wiring). Build
+wiring, symbol exports, capabilities, UID-arming order, and the arg parser verified
+sound; "setup-failure leak" reports were false (both setups self-clean). Applied
+four low-risk fixes: (1) second Ctrl-C force-quits the coordinator (`on_sigint` →
+`_exit(130)`); (2) warn when `-o` is absent (two engines' console output
+interleaves); (3) `syscalls` ring drain (`enqueue_event`) now bails on the
+coordinator's stop flag via a file-static `g_stopp` set in `syscalls_run` (no-op
+standalone); (4) warn on `--syscalls`/`--funcs` section arg-overflow instead of
+silent truncation. Skipped as cosmetic/YAGNI: `libbpf_set_print` last-wins, the
+`(char *)pkg` cast, `verbose` naming, output-mutex/dispatcher abstractions. Files:
+`src/trace/trace.c`, `src/syscalls/syscalls.c`. On-device verification of a combined
+run still pending.
+
 ### `ares trace` Phase 3 — combined kprobe+uprobe coordinator — 2026-06-22
 
 `ares trace` runs the `syscalls` and `funcs` engines together from one app launch.
@@ -252,9 +267,9 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
   `ares_launch_app`, then drains both ring buffers on two pthreads sharing a
   `sig_atomic_t` stop flag, separate per-engine `-o` files (both MCP-ingestable).
   `main.c`/`capabilities.c`/`Makefile` wired; engine driver symbols kept global.
-- **Phase 4 (remaining):** a pure host test for the argv-section split (currently
-  the split lives inline in `cmd_trace`; extract it to a testable helper), and the
-  on-device verification of a combined `trace` run.
+- **Phase 4:** argv-section split extracted to `src/trace/trace_args.c` (pure,
+  host-tested via `tests/test_trace_args.c`, in `make test`) — DONE 2026-06-22.
+  Remaining: on-device verification of a combined `trace` run.
 
 ## Planned — structured emitter + unified MCP
 

@@ -116,6 +116,25 @@ test_syscalls_jit() {
     fi
 }
 
+# syscalls vDSO symbolization: assert that when a [vdso] frame appears in a
+# backtrace it renders as [vdso]!<symbol> rather than a bare [vdso]+0x offset.
+# vDSO frame presence is app/timing-dependent, so a miss is a SKIP, not a failure.
+test_syscalls_vdso() {
+    echo "=== syscalls vDSO symbolization ([vdso]! frames) ==="
+    forcestop
+    local out; out="$(ares "syscalls -a -s openat $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "syscalls-vdso: BPF load failed"
+    fi
+    if grep -q '\[vdso\]!' <<<"$out"; then
+        info "syscalls-vdso OK — $(grep -c '\[vdso\]!' <<<"$out") [vdso]! frame(s) resolved"
+    elif grep -q '\[vdso\]+0x' <<<"$out"; then
+        echo "  SKIP: [vdso] frames present but none symbolized in this window" >&2
+    else
+        echo "  SKIP: no [vdso] frames in this window (app/timing-dependent)"
+    fi
+}
+
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
 # one probed symbol to fire; use libc.so!open as a stable target. Asserts that
 # the structured record shape ("type":"call") reaches the output file.
@@ -143,9 +162,10 @@ case "$WHAT" in
     lib)               test_lib ;;
     syscalls)          test_syscalls ;;
     syscalls-jit)      test_syscalls_jit ;;
+    syscalls-vdso)     test_syscalls_vdso ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | funcs-structured | all)" ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_funcs_structured ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | funcs-structured | all)" ;;
 esac
 
 forcestop

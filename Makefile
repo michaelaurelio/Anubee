@@ -79,7 +79,7 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
-               $(SRC)/common/runtime.c
+               $(SRC)/common/runtime.c $(SRC)/common/evqueue.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -94,6 +94,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_sink_open ares_sink_emit ares_sink_flush \
                ares_sink_close ares_sink_report \
                ares_drops_report ares_install_stop_handler ares_round_pow2 \
+               ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off
@@ -219,7 +220,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
@@ -325,6 +326,8 @@ test:
 	$(BUILD)/test_trace_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_runtime.c src/common/runtime.c -o $(BUILD)/test_runtime
 	$(BUILD)/test_runtime
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread
+	$(BUILD)/test_evqueue
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

@@ -45,6 +45,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "common/runtime.h"
+#include "common/evqueue.h"
 
 #include "syscalls.h"
 #include "syscalls.skel.h"
@@ -856,35 +857,7 @@ static void process_event(const void *data, size_t sz)
 // per-event work. This absorbs bursts in ordinary RAM (the queue can be far
 // bigger than a kernel ring) and parallelizes copy vs processing.
 
-struct queue {
-	char *buf;
-	size_t cap, head, tail, used;
-	pthread_mutex_t m;
-	pthread_cond_t cv;
-	int done;
-	unsigned long long qdropped;
-};
-static struct queue g_q;
-
-static void q_in(struct queue *q, const void *src, size_t n)
-{
-	size_t f = q->cap - q->head;
-	if (f > n) f = n;
-	memcpy(q->buf + q->head, src, f);
-	if (n > f) memcpy(q->buf, (const char *)src + f, n - f);
-	q->head = (q->head + n) % q->cap;
-	q->used += n;
-}
-
-static void q_out(struct queue *q, void *dst, size_t n)
-{
-	size_t f = q->cap - q->tail;
-	if (f > n) f = n;
-	memcpy(dst, q->buf + q->tail, f);
-	if (n > f) memcpy((char *)dst + f, q->buf, n - f);
-	q->tail = (q->tail + n) % q->cap;
-	q->used -= n;
-}
+static struct ares_evq g_q;
 
 // ring_buffer callback (drain thread): copy the raw event into the queue.
 static int enqueue_event(void *ctx, void *data, size_t sz)
@@ -892,42 +865,18 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 	(void)ctx;
 	if (exiting || (g_stopp && *g_stopp))
 		return -1;                          // bail the drain promptly on Ctrl+C / stop
-	struct queue *q = &g_q;
-	uint32_t s = (uint32_t)sz;
-	size_t total = 4 + sz;
-	pthread_mutex_lock(&q->m);
-	if (q->cap - q->used < total) {
-		q->qdropped++;                      // queue full: worker fell behind
-	} else {
-		q_in(q, &s, 4);
-		q_in(q, data, sz);
-		pthread_cond_signal(&q->cv);
-	}
-	pthread_mutex_unlock(&q->m);
+	ares_evq_push(&g_q, data, sz);
 	return 0;
 }
 
 static void *worker_main(void *arg)
 {
 	(void)arg;
-	struct queue *q = &g_q;
 	// Sized to the largest record (the stack snapshot), so nothing is truncated.
 	static char rec[sizeof(struct syscalls_stack_snapshot) + 64];
 	unsigned long flushed = 0;
-	for (;;) {
-		pthread_mutex_lock(&q->m);
-		while (q->used == 0 && !q->done)
-			pthread_cond_wait(&q->cv, &q->m);
-		if (q->used == 0 && q->done) {
-			pthread_mutex_unlock(&q->m);
-			break;
-		}
-		uint32_t sz;
-		q_out(q, &sz, 4);
-		if (sz > sizeof(rec))
-			sz = sizeof(rec);               // safety clamp
-		q_out(q, rec, sz);
-		pthread_mutex_unlock(&q->m);
+	size_t sz;
+	while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
 		process_event(rec, sz);
 		// Periodic flush so a hard-kill loses little (JSONL stays valid).
 		if (g_sink.f && (++flushed & 0x3fff) == 0)
@@ -1226,18 +1175,14 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	// Decoupled processing: a worker thread drains the in-RAM queue and does all
 	// the heavy per-event work, so this (drain) thread only copies events out of
 	// the kernel ring. The queue absorbs bursts the kernel ring can't.
-	g_q.cap = (size_t)queue_mb << 20;
-	g_q.buf = malloc(g_q.cap);
-	if (!g_q.buf) {
+	if (ares_evq_init(&g_q, (size_t)queue_mb << 20) != 0) {
 		fprintf(stderr, "cannot allocate %d MB queue\n", queue_mb);
 		goto out_rb;
 	}
-	pthread_mutex_init(&g_q.m, NULL);
-	pthread_cond_init(&g_q.cv, NULL);
 	pthread_t worker;
-	int worker_ok = (pthread_create(&worker, NULL, worker_main, NULL) == 0);
-	if (!worker_ok) {
+	if (pthread_create(&worker, NULL, worker_main, NULL) != 0) {
 		fprintf(stderr, "cannot start worker thread\n");
+		ares_evq_destroy(&g_q);
 		goto out_rb;
 	}
 	printf("queue: %d MB, worker thread started\n", queue_mb);
@@ -1287,7 +1232,7 @@ int syscalls_run(volatile sig_atomic_t *stop)
 		if (++ticks >= 5) {
 			ticks = 0;
 			pthread_mutex_lock(&g_q.m);
-			unsigned long long qd = g_q.qdropped;
+			unsigned long long qd = g_q.dropped;
 			pthread_mutex_unlock(&g_q.m);
 			unsigned long long d = ares_drops_read(g_dropfd) + qd;
 			if (d > last_drops) {
@@ -1311,7 +1256,8 @@ void syscalls_teardown(void)
 		g_worker_started = 0;
 
 		// Always report the final tally, so "no message" never means "didn't check".
-		ares_drops_report(ares_drops_read(g_dropfd), g_q.qdropped);
+		ares_drops_report(ares_drops_read(g_dropfd), g_q.dropped);
+		ares_evq_destroy(&g_q);
 	}
 
 	if (g_rb) {

@@ -60,6 +60,7 @@ static const struct argp_option options[] = {
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                  0 },
     { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",              0 },
     { "structured",     'J', 0,              0, "No-op (structured JSONL is now the default -o format)",                             0 },
+    { "bufsize",        'b', "MB",           0, "Ring buffer size in MB (default: 4; rounded up to next power of two)",              0 },
     { 0 }
 };
 
@@ -81,6 +82,7 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
+    int  bufmb;          // ring buffer size in MB (0 → default 4)
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -156,6 +158,13 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'J':
             break; // no-op: structured JSONL is the default -o format
+
+        case 'b': {
+            int mb = atoi(arg);
+            if (mb < 1) { argp_error(state, "bufsize must be >= 1 MB"); return ARGP_ERR_UNKNOWN; }
+            args->bufmb = mb;
+            break;
+        }
 
         case 'm': {
             for (int i = 0; all_modules[i]; i++) {
@@ -1069,10 +1078,11 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
 
 
-    // Open, load, attach BPF skeleton
-    skel = ares_tracer_bpf__open_and_load();
+    // Open, configure, load, attach BPF skeleton.
+    // set_max_entries and set_autoattach must happen after open, before load.
+    skel = ares_tracer_bpf__open();
     if (!skel) {
-        err_print("   [bpf] > failed to load skeleton\n");
+        err_print("   [bpf] > failed to open skeleton\n");
         err = 1;
         goto cleanup;
     }
@@ -1083,6 +1093,20 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     for (int i = 0; all_modules[i]; i++)
         if (all_modules[i]->pre_attach)
             all_modules[i]->pre_attach(skel);
+
+    {
+        int bufmb = args.bufmb > 0 ? args.bufmb : 4;
+        size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
+        bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
+        if (ares_tracer_bpf__load(skel)) {
+            err_print("   [bpf] > failed to load skeleton\n");
+            ares_tracer_bpf__destroy(skel);
+            skel = NULL;
+            err = 1;
+            goto cleanup;
+        }
+        ts_print("  [bpf] > ring buffer: %zu MB\n", bufbytes >> 20);
+    }
 
     err = ares_tracer_bpf__attach(skel);
     if (err) {

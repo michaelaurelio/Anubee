@@ -25,7 +25,6 @@
 // Intended to run as root from a plain `adb shell` on a rooted device.
 
 #include "common/emit.h"
-#include "common/runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +44,7 @@
 #include <pthread.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include "common/runtime.h"
 
 #include "syscalls.h"
 #include "syscalls.skel.h"
@@ -1292,7 +1292,7 @@ int syscalls_run(volatile sig_atomic_t *stop)
 			pthread_mutex_lock(&g_q.m);
 			unsigned long long qd = g_q.qdropped;
 			pthread_mutex_unlock(&g_q.m);
-			unsigned long long d = read_dropped(g_dropfd) + qd;
+			unsigned long long d = ares_drops_read(g_dropfd) + qd;
 			if (d > last_drops) {
 				fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
 				last_drops = d;

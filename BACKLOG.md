@@ -337,6 +337,15 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
 
 ## Planned — managed-frame symbolization (OAT / ODEX / VDEX)
 
+**Status update (2026-06-24).** OAT/ODEX Java methods already resolve in practice
+via the `.gnu_debugdata` mini-debug-info `dex2oat` embeds in `.odex`/`.oat` (the
+existing ELF symbol path), so a dedicated OAT-header parser is **not** needed for
+the common case. vDSO frames are now named (`[vdso]!`, Phase 1 — see spec
+`docs/superpowers/specs/2026-06-24-vdso-symbolization-and-frame-audit-design.md`).
+The remaining real work is **Phase 2: a shared dex method-name resolver** for
+`base.vdex` and `[anon:dalvik-DEX data]` frames; `[anon:dalvik-main space]` frames
+are unwind noise and out of scope.
+
 Follow-on to the JIT method-name work (spec
 `docs/superpowers/specs/2026-06-23-jit-named-cache-symbolization-design.md`, which
 covers **JIT only**). Goal: name the Java method behind a native backtrace frame

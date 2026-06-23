@@ -311,6 +311,31 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
 
 ---
 
+## Planned — managed-frame symbolization (OAT / ODEX / VDEX)
+
+Follow-on to the JIT method-name work (spec
+`docs/superpowers/specs/2026-06-23-jit-named-cache-symbolization-design.md`, which
+covers **JIT only**). Goal: name the Java method behind a native backtrace frame
+that lands in AOT-compiled or interpreter-adjacent regions, not just the JIT cache.
+
+- **OAT / ODEX native PC → Java method.** `boot.oat` already symbolizes via the
+  normal ELF dynsym path (e.g. `boot.oat!art_jni_trampoline+0x70`) because it ships
+  ELF symbols. App `.odex`/`.oat` AOT method code is **method-index-keyed, not ELF
+  symbols**, so resolving a PC to a method name needs real OAT parsing: walk the OAT
+  header → `OatDexFile` → per-method `OatMethod` code-offset table to map the PC to
+  a `dex_method_idx`, then resolve that index against the embedded dex
+  (class/name/signature). This is oatdump-class work and **ART-version-coupled** (OAT
+  version differs across Android releases) — the main risk.
+- **VDEX PC → dex method.** A frame landing in `base.vdex+0x..` is the open research
+  item: vdex holds **verified dex bytecode + quickening info, not native code**, so a
+  native PC there is unexpected (likely an interpreter / quickened bridge path).
+  Needs investigation into what the PC actually is before a resolution strategy can
+  be picked; mapping it to a method still bottoms out in dex method tables.
+- **Shared concern:** all three (JIT, OAT, VDEX) ultimately resolve a `dex_method_idx`
+  → human name through an embedded dex parser. If/when OAT/VDEX land, factor a small
+  dex method-name resolver shared with any future dex-aware feature rather than
+  duplicating per source.
+
 ## Deferred tech debt
 
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.

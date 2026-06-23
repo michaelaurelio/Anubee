@@ -82,6 +82,25 @@ int main(void)
     CHECK(parse("!open") == -1,                  "err: empty module");
     CHECK(parse("libc.so!") == -1,               "err: no func name or offset");
 
+    // --- seg_vaddr_to_off: vaddr-to-file-offset conversion ---
+    // standard: p_vaddr == p_offset → no change
+    {
+        struct load_seg segs[] = {{ .vaddr = 0x0, .offset = 0x0, .filesz = 0x100000 }};
+        CHECK(seg_vaddr_to_off(segs, 1, 0x1234) == 0x1234, "seg: identity (p_vaddr==p_offset)");
+    }
+    // packed .so: text at file 0x10000, mapped at vaddr 0x11000
+    {
+        struct load_seg segs[] = {{ .vaddr = 0x11000, .offset = 0x10000, .filesz = 0x8000 }};
+        CHECK(seg_vaddr_to_off(segs, 1, 0x11abc) == 0x10abc, "seg: packed vaddr->off");
+    }
+    // vaddr outside all segments → returned unchanged
+    {
+        struct load_seg segs[] = {{ .vaddr = 0x1000, .offset = 0x1000, .filesz = 0x100 }};
+        CHECK(seg_vaddr_to_off(segs, 1, 0x9000) == 0x9000, "seg: no match passthrough");
+    }
+    // empty segment table → passthrough
+    CHECK(seg_vaddr_to_off(NULL, 0, 0x5678) == 0x5678, "seg: empty table passthrough");
+
     printf("\n%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

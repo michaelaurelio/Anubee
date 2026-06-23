@@ -69,4 +69,13 @@ int  resolve_custom_spec_for_path(pid_t pid, const char *path,
                                   const custom_probe_spec_t *spec, probe_target_t *out);
 bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path);
 
+// Segment descriptor for vaddr→file-offset conversion. Plain ints; no libelf
+// types so it can be used in host tests without pulling in gelf.h.
+struct load_seg { unsigned long vaddr, offset, filesz; };
+// Convert a symbol virtual address to its file offset using a PT_LOAD table.
+// Returns vaddr unchanged if no segment contains it (covers the common
+// p_vaddr == p_offset case with no behaviour change).
+unsigned long seg_vaddr_to_off(const struct load_seg *segs, int n,
+                                unsigned long vaddr);
+
 #endif /* __ARES_COMMON_PROBE_RESOLVE_H */

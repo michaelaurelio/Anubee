@@ -107,6 +107,12 @@ DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c
 DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
 DUMP_PART := $(BUILD)/dump.part.o
 
+# trace: thin coordinator, no BPF object of its own — it drives the syscalls and
+# funcs engines' setup/run/teardown phases (kept global in their part-links below).
+TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
+TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
+TRACE_PART := $(BUILD)/trace.part.o
+
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
 LIB_PART  := $(BUILD)/lib.part.o
@@ -114,10 +120,11 @@ MAIN_OBJ  := $(BUILD)/main.o
 
 # -I$(SRC) lets engines and the common module resolve "common/lib_trace.h".
 SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
-FUNC_CFLAGS := -O2 -Wall -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
+FUNC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
 LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC)
 CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC)
 DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC)
+TRACE_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/trace -I$(LIBBPF_INC)
 COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
 
 # Static link: libelf (zstd-enabled) pulls in zstd+zlib; liblzma decodes
@@ -223,18 +230,32 @@ $(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(SRC)/common/proc_mem.h $(SRC)/
 	mkdir -p $(dir $@)
 	$(CC) $(DUMP_CFLAGS) -c $< -o $@
 
+# trace has no BPF skeleton; it only needs the shared launch header + the engine
+# driver symbols (resolved at the final link from the syscalls/funcs parts).
+$(BUILD)/trace/%.o: $(SRC)/trace/%.c $(SRC)/common/launch.h $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(TRACE_CFLAGS) -c $< -o $@
+
 $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
 
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
+# syscalls/funcs also export their setup/run/teardown phases so the `trace`
+# coordinator can drive both engines from one process (everything else localized).
 $(SYSC_PART): $(SYSC_OBJ)
 	$(LD) -r -o $@ $(SYSC_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_syscalls $@
+	$(OBJCOPY) --keep-global-symbol=cmd_syscalls \
+	           --keep-global-symbol=syscalls_setup \
+	           --keep-global-symbol=syscalls_run \
+	           --keep-global-symbol=syscalls_teardown $@
 
 $(FUNC_PART): $(FUNC_OBJ)
 	$(LD) -r -o $@ $(FUNC_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_funcs $@
+	$(OBJCOPY) --keep-global-symbol=cmd_funcs \
+	           --keep-global-symbol=funcs_setup \
+	           --keep-global-symbol=funcs_run \
+	           --keep-global-symbol=funcs_teardown $@
 
 $(COMMON_PART): $(COMMON_OBJ)
 	$(LD) -r -o $@ $(COMMON_OBJ)
@@ -252,9 +273,13 @@ $(DUMP_PART): $(DUMP_OBJ)
 	$(LD) -r -o $@ $(DUMP_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_dump $@
 
+$(TRACE_PART): $(TRACE_OBJ)
+	$(LD) -r -o $@ $(TRACE_OBJ)
+	$(OBJCOPY) --keep-global-symbol=cmd_trace $@
+
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)
@@ -273,8 +298,12 @@ device-test: $(BIN)
 HOST_CC ?= cc
 test:
 	@mkdir -p $(BUILD)
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c -o $(BUILD)/test_probe_spec -lelf
-	$(BUILD)/test_probe_spec
+	@if $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null </dev/null; then \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c -o $(BUILD)/test_probe_spec -lelf && \
+	  $(BUILD)/test_probe_spec; \
+	 else \
+	  echo "skip: libelf-dev not installed, skipping test_probe_spec (apt install libelf-dev)"; \
+	 fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit
@@ -287,6 +316,8 @@ test:
 	$(BUILD)/test_corr_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_capabilities.c src/common/capabilities.c -o $(BUILD)/test_capabilities
 	$(BUILD)/test_capabilities
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_args.c src/trace/trace_args.c -o $(BUILD)/test_trace_args
+	$(BUILD)/test_trace_args
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

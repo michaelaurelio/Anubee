@@ -11,6 +11,37 @@
 #include <string.h>
 #include <unistd.h>
 
+unsigned long seg_vaddr_to_off(const struct load_seg *segs, int n,
+                                unsigned long vaddr)
+{
+    for (int i = 0; i < n; i++) {
+        if (vaddr >= segs[i].vaddr && vaddr < segs[i].vaddr + segs[i].filesz)
+            return vaddr - segs[i].vaddr + segs[i].offset;
+    }
+    return vaddr; // not in any PT_LOAD; caller gets vaddr back unchanged
+}
+
+// Build a PT_LOAD table from the open Elf handle and convert vaddr to file
+// offset. Cap at 32 segments (enough for any real .so).
+static unsigned long vaddr_to_file_off(Elf *elf, unsigned long vaddr)
+{
+    size_t phnum;
+    if (elf_getphdrnum(elf, &phnum) != 0)
+        return vaddr;
+    struct load_seg segs[32];
+    int n = 0;
+    for (size_t i = 0; i < phnum && n < 32; i++) {
+        GElf_Phdr phdr;
+        if (!gelf_getphdr(elf, (int)i, &phdr)) continue;
+        if (phdr.p_type != PT_LOAD) continue;
+        segs[n].vaddr  = (unsigned long)phdr.p_vaddr;
+        segs[n].offset = (unsigned long)phdr.p_offset;
+        segs[n].filesz = (unsigned long)phdr.p_filesz;
+        n++;
+    }
+    return seg_vaddr_to_off(segs, n, vaddr);
+}
+
 static void copy_str(char *dst, const char *src, size_t dstsz)
 {
     if (dstsz == 0)
@@ -150,7 +181,7 @@ int resolve_targets(const struct probe_resolve_ctx *ctx, pid_t pid,
                     targets[count].pid = pid;
                     copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                     copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
-                    targets[count].offset = (unsigned long)sym.st_value;
+                    targets[count].offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
                     targets[count].arg_count = -1;
                     memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                     targets[count].ret_only = !entry_match && ret_match;
@@ -239,7 +270,7 @@ int resolve_targets_for_file(const struct probe_resolve_ctx *ctx,
                 targets[count].pid = pid;
                 copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                 copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
-                targets[count].offset = (unsigned long)sym.st_value;
+                targets[count].offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
                 targets[count].arg_count = -1;
                 memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                 targets[count].ret_only = !entry_match && ret_match;
@@ -402,7 +433,7 @@ int resolve_custom_spec_for_path(pid_t pid, const char *path,
             if (sym.st_value == 0) continue;
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (name && strcmp(name, spec->func) == 0) {
-                out->offset = (unsigned long)sym.st_value;
+                out->offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
                 found = 0;
             }
         }

@@ -17,6 +17,30 @@ forward-looking items only.
 
 ## Shipped
 
+### Engine unification round 2 — 2026-06-23
+
+**Phases A, B, C1, C2 shipped.**
+
+- **Phase A — shared runtime plumbing.** `src/common/runtime.{c,h}` — shared
+  `ares_install_stop_handler`, `ares_drops_report`, `ares_round_pow2`, and the
+  inline BPF helpers `ares_libbpf_quiet`/`ares_drops_read` (gated on
+  `__LIBBPF_LIBBPF_H`). Both `syscalls` and `funcs` private copies deleted;
+  `tests/test_runtime.c` (12 checks).
+- **Phase B — configurable ring size for `funcs`.** `-b/--bufsize MB` flag; ring
+  rounded to next power of two via `ares_round_pow2`; `bpf_map__set_max_entries`
+  called before BPF load. Default unchanged (4 MiB).
+- **Phase C1 — shared byte-queue.** `src/common/evqueue.{c,h}` — `struct ares_evq`
+  SPSC ring with `[4-byte len][payload]` framing, cond-var handoff, and `dropped`
+  counter. `syscalls` migrated; private `struct queue` deleted.
+  `tests/test_evqueue.c` (19 checks).
+- **Phase C2 — decoupled drain for `funcs`.** CALL/RETURN events pushed into
+  `struct ares_evq g_q` (16 MiB) from `handle_event` and processed on a dedicated
+  `funcs_worker_main` thread. MAP/UNMAP/module events stay inline (race the
+  mmap). `g_targets_lock` guards `probe_targets[]` between the MAP attach path
+  and the worker's `find_target_by_entry_addr`; `g_out_lock` serializes
+  stdout/stderr lines between threads. `g_sink` is worker-only during run; the
+  poll-thread flush removed. Drop report now includes queue drops.
+
 ### Shared output sink + funcs output unification — 2026-06-23
 
 **C1 (JSON escaping dup) + funcs mixed-schema resolved.**
@@ -339,4 +363,9 @@ that lands in AOT-compiled or interpreter-adjacent regions, not just the JIT cac
 ## Deferred tech debt
 
 - Dropping the 6 MB committed `vmlinux.btf` in favor of regenerate-on-demand.
+- **`rctx` use-after-return in `funcs_setup`** — `struct probe_resolve_ctx rctx`
+  is declared as a stack local in `funcs_setup` (ares-tracer.c:~1172) and passed
+  to `ring_buffer__new`; the MAP handler dereferences it after `funcs_setup`
+  returns. Pre-existing; unrelated to the C2 worker split (the worker never
+  touches `rctx`). Fix: promote `rctx` to file-static.
 

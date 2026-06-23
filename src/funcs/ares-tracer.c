@@ -30,6 +30,7 @@
 #include "common/probe_resolve.h"
 #include "common/emit.h"
 #include "common/runtime.h"
+#include "common/evqueue.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -216,12 +217,24 @@ static char g_funcs_pkg[256];           // package to launch (spawn mode), else 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
 
+// Worker-thread drain: ring callback pushes CALL/RETURN; worker pops + processes.
+#define FUNCS_QUEUE_MB 16  // ponytail: fixed queue; add -q only if queue drops appear
+static struct ares_evq g_q;
+static pthread_t       g_worker;
+static int             g_worker_started;
+
+// ponytail: two independent mutexes, never nested (disjoint critical sections).
+static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
+static pthread_mutex_t g_out_lock     = PTHREAD_MUTEX_INITIALIZER; // stdout/stderr line serializer
+
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void out_print(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
+    pthread_mutex_lock(&g_out_lock);
     vprintf(fmt, ap);
+    pthread_mutex_unlock(&g_out_lock);
     va_end(ap);
 }
 
@@ -230,7 +243,9 @@ void err_print(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
+    pthread_mutex_lock(&g_out_lock);
     vfprintf(stderr, fmt, ap);
+    pthread_mutex_unlock(&g_out_lock);
     va_end(ap);
 }
 
@@ -241,11 +256,13 @@ void ts_print(const char *fmt, ...)
     time_t t; time(&t);
     char ts_buf[16];
     strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", localtime(&t));
+    pthread_mutex_lock(&g_out_lock);
     printf("%s ", ts_buf);
     va_list ap;
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
+    pthread_mutex_unlock(&g_out_lock);
 }
 
 
@@ -311,40 +328,44 @@ static int caller_cache_count = 0;
 static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
 {
     *used_fallback = false;
-
-    for (int i = 0; i < probe_target_count; i++) {
-        if (probe_targets[i].runtime_entry_addr == entry_addr)
-            return &probe_targets[i];
-    }
-
-    char maps_path[64];
-    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
-    FILE *f = fopen(maps_path, "r");
     probe_target_t *result = NULL;
 
-    if (f) {
-        char line[512];
-        while (fgets(line, sizeof(line), f) && !result) {
-            unsigned long long start, end, pgoff;
-            char perms[5], path[256] = "";
+    // ponytail: coarse mutex, held across the /proc miss path; per-entry locking only if contention shows.
+    pthread_mutex_lock(&g_targets_lock);
 
-            if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
-                       &start, &end, perms, &pgoff, path) < 4) continue;
-            if (entry_addr < start || entry_addr >= end) continue;
-            if (!strchr(perms, 'x') || path[0] != '/') continue;
+    for (int i = 0; i < probe_target_count && !result; i++) {
+        if (probe_targets[i].runtime_entry_addr == entry_addr)
+            result = &probe_targets[i];
+    }
 
-            unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
+    if (!result) {
+        char maps_path[64];
+        snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+        FILE *f = fopen(maps_path, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof(line), f) && !result) {
+                unsigned long long start, end, pgoff;
+                char perms[5], path[256] = "";
 
-            for (int i = 0; i < probe_target_count; i++) {
-                if (probe_targets[i].offset == file_offset &&
-                    strcmp(probe_targets[i].mod_path, path) == 0) {
-                    probe_targets[i].runtime_entry_addr = entry_addr;
-                    result = &probe_targets[i];
-                    break;
+                if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
+                           &start, &end, perms, &pgoff, path) < 4) continue;
+                if (entry_addr < start || entry_addr >= end) continue;
+                if (!strchr(perms, 'x') || path[0] != '/') continue;
+
+                unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
+
+                for (int i = 0; i < probe_target_count; i++) {
+                    if (probe_targets[i].offset == file_offset &&
+                        strcmp(probe_targets[i].mod_path, path) == 0) {
+                        probe_targets[i].runtime_entry_addr = entry_addr;
+                        result = &probe_targets[i];
+                        break;
+                    }
                 }
             }
+            fclose(f);
         }
-        fclose(f);
     }
 
     // Fallback: use the lower-12-bit invariant. ASLR keeps the base page-aligned
@@ -376,6 +397,7 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
         }
     }
 
+    pthread_mutex_unlock(&g_targets_lock);
     return result;
 }
 
@@ -663,6 +685,206 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
     }
 }
 
+// Worker thread: pop CALL/RETURN records and process them off the poll thread.
+static void process_call_return(const void *data, size_t data_sz)
+{
+    const struct event_header *header = data;
+    if (data_sz < sizeof(*header)) return;
+
+    if (header->type == ARES_EVENT_CALL) {
+        if (data_sz < sizeof(struct event)) return;
+        const struct event *e = data;
+
+        bool used_fallback = false;
+        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
+        if (target) {
+            const char *bname = strrchr(target->mod_path, '/');
+            bname = bname ? bname + 1 : target->mod_path;
+            ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
+                e->h.pid, e->ppid, bname, target->func_name, target->offset,
+                used_fallback ? " (resolved from known offset)" : "");
+            if (g_sink.f) {
+                g_sink.jb.len = 0;
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name);
+                ares_sink_emit(&g_sink);
+            }
+        } else {
+            ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
+                e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
+            return;
+        }
+
+        if (target->arg_count >= 0) {
+            for (int i = 0; i < target->arg_count; i++) {
+                if (target->arg_types[i] == ARG_STR) {
+                    if (e->is_str[i])
+                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                    else
+                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
+                } else if (target->arg_types[i] == ARG_FD) {
+                    long fd_val = (long)e->args[i];
+                    if (fd_val == -100L) {
+                        char cwd[256], cwd_link[32];
+                        snprintf(cwd_link, sizeof(cwd_link), "/proc/%d/cwd", (int)e->h.pid);
+                        ssize_t rn = readlink(cwd_link, cwd, sizeof(cwd) - 1);
+                        if (rn > 0) { cwd[rn] = '\0'; out_print("         [event]   | args[%d] AT_FDCWD (%s)\n", i, cwd); }
+                        else         out_print("         [event]   | args[%d] AT_FDCWD\n", i);
+                    } else {
+                        char fpath[256], fd_link[64];
+                        snprintf(fd_link, sizeof(fd_link), "/proc/%d/fd/%ld", (int)e->h.pid, fd_val);
+                        ssize_t rn = readlink(fd_link, fpath, sizeof(fpath) - 1);
+                        if (rn > 0) { fpath[rn] = '\0'; out_print("         [event]   | args[%d] %ld -> \"%s\"\n", i, fd_val, fpath); }
+                        else         out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)fd_val);
+                    }
+                } else {
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                }
+            }
+            for (int i = 0; i + 1 < target->arg_count; i++) {
+                if (target->arg_types[i] == ARG_FD &&
+                    target->arg_types[i + 1] == ARG_STR &&
+                    e->is_str[i + 1] &&
+                    e->strings[i + 1][0] != '\0' && e->strings[i + 1][0] != '/') {
+                    long fd_val = (long)e->args[i];
+                    char dir[256], link_path[64];
+                    if (fd_val == -100L)
+                        snprintf(link_path, sizeof(link_path), "/proc/%d/cwd", (int)e->h.pid);
+                    else
+                        snprintf(link_path, sizeof(link_path), "/proc/%d/fd/%ld", (int)e->h.pid, fd_val);
+                    ssize_t rn = readlink(link_path, dir, sizeof(dir) - 1);
+                    if (rn > 0) {
+                        dir[rn] = '\0';
+                        out_print("         [event]   | full path: \"%s/%s\"\n", dir, e->strings[i + 1]);
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < NUM_ARGS; i++) {
+                if (e->is_str[i])
+                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                else
+                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+            }
+        }
+
+        if (e->caller_addr) {
+            char caller_mod[128] = "";
+            unsigned long caller_off = 0;
+            if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
+                out_print("         [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
+            else
+                out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
+        }
+
+        if (!caller_only) {
+            for (__u32 i = 2; i < e->stack_depth; i++) {
+                if (!e->call_stack[i]) break;
+                char frame_mod[128] = "";
+                unsigned long frame_off = 0;
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                else
+                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+            }
+        }
+        return;
+    }
+
+    if (header->type == ARES_EVENT_RETURN) {
+        if (data_sz < sizeof(struct event)) return;
+        const struct event *e = data;
+
+        bool used_fallback = false;
+        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
+
+        const char *bname = "???";
+        const char *fname = "???";
+        unsigned long offset = 0;
+        uint8_t ret_type = ARG_VAL;
+        int arg_count = -1;
+        uint8_t *arg_types = NULL;
+
+        if (target) {
+            const char *b = strrchr(target->mod_path, '/');
+            bname    = b ? b + 1 : target->mod_path;
+            fname    = target->func_name;
+            offset   = target->offset;
+            ret_type = (target->ret_type != ARG_NONE) ? target->ret_type : ARG_VAL;
+            arg_count = target->arg_count;
+            arg_types = target->arg_types;
+        }
+
+        char elapsed_buf[32] = "";
+        if (e->elapsed_ns > 0) {
+            if (e->elapsed_ns < 1000)
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%lluns",
+                         (unsigned long long)e->elapsed_ns);
+            else if (e->elapsed_ns < 1000000)
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fus",
+                         (double)e->elapsed_ns / 1000.0);
+            else
+                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fms",
+                         (double)e->elapsed_ns / 1000000.0);
+        }
+
+        char retval_buf[MAX_STR_LEN + 4];
+        if (ret_type == ARG_STR && e->is_str[0])
+            snprintf(retval_buf, sizeof(retval_buf), "\"%s\"", e->strings[0]);
+        else
+            snprintf(retval_buf, sizeof(retval_buf), "0x%lx", (unsigned long)e->retval);
+
+        ts_print("[event] > [RET]  PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
+            header->pid, bname, fname, offset,
+            used_fallback ? " (resolved from known offset)" : "",
+            elapsed_buf, retval_buf);
+
+        if (g_sink.f) {
+            g_sink.jb.len = 0;
+            funcs_emit_return(&g_sink.jb, e, bname, fname);
+            ares_sink_emit(&g_sink);
+        }
+
+        if (arg_count >= 0) {
+            for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
+                if (arg_types[i] == ARG_STR && e->is_str[i + 1])
+                    out_print("         [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
+            }
+        }
+
+        __u32 stack_limit = caller_only ? 2 : e->stack_depth;
+        for (__u32 i = 1; i < stack_limit; i++) {
+            if (!e->call_stack[i]) break;
+            char frame_mod[128] = "";
+            unsigned long frame_off = 0;
+            if (i == 1) {
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print("         [event]   | caller: %s+0x%lx\n", frame_mod, frame_off);
+                else
+                    out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->call_stack[i]);
+            } else {
+                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
+                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
+                else
+                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
+            }
+        }
+    }
+}
+
+static void *funcs_worker_main(void *arg)
+{
+    (void)arg;
+    static char rec[sizeof(struct event)];
+    size_t sz;
+    unsigned long flushed = 0;
+    while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
+        process_call_return(rec, sz);
+        if (g_sink.f && (++flushed & 0x3fff) == 0)
+            ares_sink_flush(&g_sink);
+    }
+    return NULL;
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     const struct event_header *header = data;
@@ -702,7 +924,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                                                      probe_targets + prev_count, max_targets);
 
             if (resolved > 0) {
+                pthread_mutex_lock(&g_targets_lock);
                 probe_target_count += resolved;
+                pthread_mutex_unlock(&g_targets_lock);
 
                 for (int i = prev_count; i < probe_target_count && !exiting; i++) {
                     const char *bname = strrchr(probe_targets[i].mod_path, '/');
@@ -787,192 +1011,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
 
-    if (header->type == ARES_EVENT_CALL) {
-        if (resolve_syms) return 0;
-        const struct event *e = data;
-
-        if (data_sz < sizeof(*e)) return 0;
-
-        bool used_fallback = false;
-        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
-        if (target) {
-            const char *bname = strrchr(target->mod_path, '/');
-            bname = bname ? bname + 1 : target->mod_path;
-            ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
-                e->h.pid, e->ppid, bname, target->func_name, target->offset,
-                used_fallback ? " (resolved from known offset)" : "");
-            if (g_sink.f) {
-                g_sink.jb.len = 0;
-                funcs_emit_call(&g_sink.jb, e, bname, target->func_name);
-                ares_sink_emit(&g_sink);
-            }
-        } else {
-            ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
-                e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
-            return 0;
-        }
-
-        if (target->arg_count >= 0) {
-            for (int i = 0; i < target->arg_count; i++) {
-                if (target->arg_types[i] == ARG_STR) {
-                    if (e->is_str[i])
-                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
-                    else
-                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
-                } else if (target->arg_types[i] == ARG_FD) {
-                    long fd_val = (long)e->args[i];
-                    if (fd_val == -100L) {
-                        char cwd[256], cwd_link[32];
-                        snprintf(cwd_link, sizeof(cwd_link), "/proc/%d/cwd", (int)e->h.pid);
-                        ssize_t rn = readlink(cwd_link, cwd, sizeof(cwd) - 1);
-                        if (rn > 0) { cwd[rn] = '\0'; out_print("         [event]   | args[%d] AT_FDCWD (%s)\n", i, cwd); }
-                        else         out_print("         [event]   | args[%d] AT_FDCWD\n", i);
-                    } else {
-                        char fpath[256], fd_link[64];
-                        snprintf(fd_link, sizeof(fd_link), "/proc/%d/fd/%ld", (int)e->h.pid, fd_val);
-                        ssize_t rn = readlink(fd_link, fpath, sizeof(fpath) - 1);
-                        if (rn > 0) { fpath[rn] = '\0'; out_print("         [event]   | args[%d] %ld -> \"%s\"\n", i, fd_val, fpath); }
-                        else         out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)fd_val);
-                    }
-                } else {
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
-                }
-            }
-            // F arg at [i] followed by relative S at [i+1]: show fully resolved path.
-            // Safe for read(F,S,...): buffer is unfilled at CALL time → is_str[i+1]=0.
-            for (int i = 0; i + 1 < target->arg_count; i++) {
-                if (target->arg_types[i] == ARG_FD &&
-                    target->arg_types[i + 1] == ARG_STR &&
-                    e->is_str[i + 1] &&
-                    e->strings[i + 1][0] != '\0' && e->strings[i + 1][0] != '/') {
-                    long fd_val = (long)e->args[i];
-                    char dir[256], link_path[64];
-                    if (fd_val == -100L)
-                        snprintf(link_path, sizeof(link_path), "/proc/%d/cwd", (int)e->h.pid);
-                    else
-                        snprintf(link_path, sizeof(link_path), "/proc/%d/fd/%ld", (int)e->h.pid, fd_val);
-                    ssize_t rn = readlink(link_path, dir, sizeof(dir) - 1);
-                    if (rn > 0) {
-                        dir[rn] = '\0';
-                        out_print("         [event]   | full path: \"%s/%s\"\n", dir, e->strings[i + 1]);
-                    }
-                }
-            }
-        } else {
-            for (int i = 0; i < NUM_ARGS; i++) {
-                if (e->is_str[i])
-                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
-                else
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
-            }
-        }
-
-        if (e->caller_addr) {
-            char caller_mod[128] = "";
-            unsigned long caller_off = 0;
-            if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
-                out_print("         [event]   | caller: %s+0x%lx\n", caller_mod, caller_off);
-            else
-                out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
-        }
-
-        if (!caller_only) {
-            for (__u32 i = 2; i < e->stack_depth; i++) {
-                if (!e->call_stack[i]) break;
-                char frame_mod[128] = "";
-                unsigned long frame_off = 0;
-                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
-                else
-                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
-            }
-        }
-    }
-
-    if (header->type == ARES_EVENT_RETURN) {
-        if (resolve_syms) return 0;
-        const struct event *e = data;
-        if (data_sz < sizeof(*e)) return 0;
-
-        bool used_fallback = false;
-        probe_target_t *target = find_target_by_entry_addr(e->entry_addr, header->pid, &used_fallback);
-
-        const char *bname = "???";
-        const char *fname = "???";
-        unsigned long offset = 0;
-        uint8_t ret_type = ARG_VAL;
-        int arg_count = -1;
-        uint8_t *arg_types = NULL;
-
-        if (target) {
-            const char *b = strrchr(target->mod_path, '/');
-            bname    = b ? b + 1 : target->mod_path;
-            fname    = target->func_name;
-            offset   = target->offset;
-            ret_type = (target->ret_type != ARG_NONE) ? target->ret_type : ARG_VAL;
-            arg_count = target->arg_count;
-            arg_types = target->arg_types;
-        }
-
-        // Elapsed time
-        char elapsed_buf[32] = "";
-        if (e->elapsed_ns > 0) {
-            if (e->elapsed_ns < 1000)
-                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%lluns",
-                         (unsigned long long)e->elapsed_ns);
-            else if (e->elapsed_ns < 1000000)
-                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fus",
-                         (double)e->elapsed_ns / 1000.0);
-            else
-                snprintf(elapsed_buf, sizeof(elapsed_buf), " +%.1fms",
-                         (double)e->elapsed_ns / 1000000.0);
-        }
-
-        // Return value: strings[0]/is_str[0] holds the string read from retval pointer
-        char retval_buf[MAX_STR_LEN + 4];
-        if (ret_type == ARG_STR && e->is_str[0])
-            snprintf(retval_buf, sizeof(retval_buf), "\"%s\"", e->strings[0]);
-        else
-            snprintf(retval_buf, sizeof(retval_buf), "0x%lx", (unsigned long)e->retval);
-
-        ts_print("[event] > [RET]  PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
-            header->pid, bname, fname, offset,
-            used_fallback ? " (resolved from known offset)" : "",
-            elapsed_buf, retval_buf);
-
-        if (g_sink.f) {
-            g_sink.jb.len = 0;
-            funcs_emit_return(&g_sink.jb, e, bname, fname);
-            ares_sink_emit(&g_sink);
-        }
-
-        // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]
-        // Only print S-typed args that yielded a string at return time
-        if (arg_count >= 0) {
-            for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
-                if (arg_types[i] == ARG_STR && e->is_str[i + 1])
-                    out_print("         [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
-            }
-        }
-
-        // Call stack (frame 1 = direct caller printed as "caller:", frames 2+ as "#N")
-        __u32 stack_limit = caller_only ? 2 : e->stack_depth;
-        for (__u32 i = 1; i < stack_limit; i++) {
-            if (!e->call_stack[i]) break;
-            char frame_mod[128] = "";
-            unsigned long frame_off = 0;
-            if (i == 1) {
-                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print("         [event]   | caller: %s+0x%lx\n", frame_mod, frame_off);
-                else
-                    out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->call_stack[i]);
-            } else {
-                if (lookup_caller(header->pid, e->call_stack[i], frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print("         [event]   | #%u %s+0x%lx\n", i, frame_mod, frame_off);
-                else
-                    out_print("         [event]   | #%u 0x%llx\n", i, (unsigned long long)e->call_stack[i]);
-            }
-        }
+    if (header->type == ARES_EVENT_CALL || header->type == ARES_EVENT_RETURN) {
+        if (!resolve_syms)
+            ares_evq_push(&g_q, data, data_sz);
+        return 0;
     }
 
     return 0;
@@ -1326,6 +1368,21 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         // or the trace coordinator) so a single launch serves all armed engines.
     }
 
+    // Start the worker drain thread last — probe_targets[] is now fully populated,
+    // so the worker can look up targets without racing the setup-time resolve loops.
+    if (ares_evq_init(&g_q, (size_t)FUNCS_QUEUE_MB << 20) != 0) {
+        err_print(" [work] > cannot allocate %d MB worker queue\n", FUNCS_QUEUE_MB);
+        err = -1;
+        goto cleanup;
+    }
+    if (pthread_create(&g_worker, NULL, funcs_worker_main, NULL) != 0) {
+        err_print(" [work] > cannot start worker thread\n");
+        ares_evq_destroy(&g_q);
+        err = -1;
+        goto cleanup;
+    }
+    g_worker_started = 1;
+
     // Setup complete. The caller owns the single app launch (after this returns).
     return 0;
 
@@ -1345,7 +1402,7 @@ int funcs_run(volatile sig_atomic_t *stop)
         err = ring_buffer__poll(g_events_rb, 1);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
-        if (g_sink.f && ++ticks >= 200) { ticks = 0; ares_sink_flush(&g_sink); } // ~200ms periodic flush
+        (void)ticks;  // g_sink flush moved to the worker thread
     }
 
     for (int i = 0; i < active_module_count; i++)
@@ -1357,6 +1414,17 @@ int funcs_run(volatile sig_atomic_t *stop)
 
 void funcs_teardown(void)
 {
+    // Join the worker first: it reads probe_targets[] and writes g_sink.
+    // Freeing links or closing the sink before the join would be a use-after-free.
+    if (g_worker_started) {
+        pthread_mutex_lock(&g_q.m);
+        g_q.done = 1;
+        pthread_cond_signal(&g_q.cv);
+        pthread_mutex_unlock(&g_q.m);
+        pthread_join(g_worker, NULL);
+        g_worker_started = 0;
+    }
+
     if (g_events_rb) {
         ring_buffer__free(g_events_rb);
         g_events_rb = NULL;
@@ -1374,10 +1442,11 @@ void funcs_teardown(void)
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
     if (skel) {
-        ares_drops_report(ares_drops_read(bpf_map__fd(skel->maps.dropped)), 0);
+        ares_drops_report(ares_drops_read(bpf_map__fd(skel->maps.dropped)), g_q.dropped);
         ares_tracer_bpf__destroy(skel);
         skel = NULL;
     }
+    ares_evq_destroy(&g_q);
     ares_sink_close(&g_sink);
     ares_sink_report(&g_sink);
 }

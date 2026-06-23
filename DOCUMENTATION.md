@@ -61,6 +61,16 @@ flowchart TD
   is *source*-shared (`#include`d into each engine's own skeleton, preserving the
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
   exporting only its `ares_libtrace_*` API. See §9.
+- **Engine-runtime plumbing is shared, not duplicated.** `src/common/runtime.{c,h}`
+  provides `ares_install_stop_handler` (2-stage SIGINT/SIGTERM → flag/`_exit(130)`),
+  `ares_drops_report` (unified teardown tally), `ares_round_pow2` (BPF ring sizing),
+  and the BPF-dependent inline helpers `ares_libbpf_quiet` / `ares_drops_read` (gated
+  on `__LIBBPF_LIBBPF_H` so the header is host-testable without libbpf).
+- **The decoupled drain queue is shared, not duplicated.** `src/common/evqueue.{c,h}`
+  provides `struct ares_evq` — a SPSC byte ring with `[4-byte len][payload]` framing,
+  cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
+  use it to decouple the ring-buffer drain thread from the heavy per-event work
+  (symbolization, JSON emit). The kernel ring stays empty; bursts are absorbed in RAM.
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
   shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
   (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
@@ -182,6 +192,18 @@ expensive one:
   `pre_attach`/`attach`/`detach`/`print_summary`/`handle_event`. Built-in modules:
   `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
   (Android `__system_property_*` hooks).
+- **Configurable ring buffer size** (`-b/--bufsize MB`): sets the BPF ring buffer
+  (`events_rb`) to `MB` MiB (rounded up to the next power of two). Default: 4 MiB.
+  The ring holds raw kernel events before userspace drains them; a larger ring
+  absorbs bursts without dropping events at the BPF side.
+- **Decoupled drain:** MAP/UNMAP/module events are handled inline on the poll
+  thread (they attach uprobes and must race the just-mmap'd library). CALL and
+  RETURN events are pushed into a 16 MiB `struct ares_evq` userspace queue and
+  processed on a dedicated worker thread, so the kernel ring stays drained
+  regardless of symbolization/JSON latency. Synchronized with two independent
+  mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
+  and the worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes
+  stdout/stderr lines between the two threads.
 - Output: human-readable text to stdout; when `-o FILE` is passed, structured
   JSONL records for CALL and RETURN events via the shared `ares_sink` (see §3.1
   and §7). `-J`/`--structured` is accepted but is a no-op (structured is the
@@ -213,9 +235,10 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
 - Builders live in `src/funcs/funcs_emit.c` (pure file, no libbpf/skeleton deps)
   so the host unit test (`tests/test_funcs_emit.c`) can link them without
   cross-toolchain.
-- Builders are declared in `src/funcs/ares-tracer-priv.h` and called from the
-  `handle_event` SEAM in `src/funcs/ares-tracer.c` at the CALL and RETURN cases,
-  building directly into `g_sink.jb` then calling `ares_sink_emit`.
+- Builders are declared in `src/funcs/ares-tracer-priv.h` and called from
+  `process_call_return` in `src/funcs/ares-tracer.c`, which runs on the worker
+  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`;
+  `g_sink` is single-writer (worker-only) during the run phase.
 - MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on; the
   hook point is already in `handle_event` at the SEAM.
 

@@ -257,6 +257,32 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   the dump engine's rebuild pipeline and the syscalls engine's stack symbolizer
   (which walks ART's in-process JIT debug descriptor).
 
+### 2.1 Stack symbolizer — JIT resolution
+
+The `syscalls` engine resolves backtrace frames host-side after each event. For
+each frame address the symbolizer:
+
+1. Looks up the mapping in the tracked library table (`/proc/<pid>/maps` snapshot).
+2. If the mapping has a file path and the file opens as a valid ELF, resolves via
+   the ELF symbol table (`.dynsym` / `.symtab`, with `.gnu_debugdata` mini-debug-info
+   if present).
+3. **JIT fallback — fires for *any* executable mapping with no openable ELF**, whether
+   the mapping is anonymous (empty name) or carries a kernel-assigned bracket name
+   such as `[anon_shmem:dalvik-jit-code-cache]`. In both cases the symbolizer calls
+   `jit_resolve`, which walks ART's in-process `__jit_debug_descriptor` linked list
+   via `/proc/<pid>/mem` to find a JIT-compiled method covering the frame address.
+   A successful lookup emits the frame as `[JIT]!<method>+0x<offset>`.
+4. **JIT miss on an executable bracket-name region is intentionally left uncached.**
+   If `jit_resolve` finds no entry (ART has not yet published the method), the frame
+   is emitted as `<mapping>+0x<offset>` without caching the negative result. This
+   allows the frame to resolve correctly on a subsequent event once ART registers the
+   compiled method — the descriptor is re-walked each time rather than locking in a
+   miss.
+
+AOT-compiled frames backed by OAT/ODEX/VDEX files (e.g. `base.vdex+0x..`, app
+`.odex`) are shown as `file+offset`; managed-method resolution for those formats
+is deferred (see [BACKLOG.md](BACKLOG.md)).
+
 ## 6. The `correlate` engine (uprobe + span-gated kprobe, loud)
 
 Function→syscall correlation on a live run. One BPF object

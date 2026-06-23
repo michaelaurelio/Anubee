@@ -95,6 +95,27 @@ test_syscalls() {
     fi
 }
 
+# syscalls JIT symbolization: assert that when a JIT-compiled frame appears in a
+# backtrace it renders as [JIT]!<method> rather than a bare cache-region offset.
+# JIT presence is app/timing-dependent, so a miss is a SKIP, not a failure.
+test_syscalls_jit() {
+    echo "=== syscalls JIT symbolization ([JIT]! frames) ==="
+    forcestop
+    local out; out="$(ares "syscalls -a -s openat $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "syscalls-jit: BPF load failed"
+    fi
+    if grep -q '\[anon_shmem:dalvik-jit-code-cache\]+0x' <<<"$out"; then
+        tail -5 <<<"$out" >&2
+        fail "syscalls-jit: cache region still shows bare offset (trigger not broadened?)"
+    fi
+    if grep -q '\[JIT\]!' <<<"$out"; then
+        info "syscalls-jit OK — $(grep -c '\[JIT\]!' <<<"$out") [JIT]! frame(s) resolved"
+    else
+        echo "  SKIP: no JIT frames in this window (app/timing-dependent) — path not exercised"
+    fi
+}
+
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
 # one probed symbol to fire; use libc.so!open as a stable target. Asserts that
 # the structured record shape ("type":"call") reaches the output file.
@@ -121,9 +142,10 @@ test_funcs_structured() {
 case "$WHAT" in
     lib)               test_lib ;;
     syscalls)          test_syscalls ;;
+    syscalls-jit)      test_syscalls_jit ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | funcs-structured | all)" ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_funcs_structured ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | funcs-structured | all)" ;;
 esac
 
 forcestop

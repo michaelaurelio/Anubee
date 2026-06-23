@@ -1064,10 +1064,21 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 	uint64_t vaddr = (uint64_t)addr - load_base;
 
 	// Kernel-named anonymous regions ("[anon:scudo:primary]", "[stack]", ...)
-	// aren't openable as ELF — show the region name + offset so its nature is
-	// visible. (A deleted/renamed real library still has '/' first and is
-	// recovered below via /proc/<pid>/map_files.)
+	// aren't openable as ELF. An *executable* one is most often ART's JIT code
+	// cache mapped under a name (e.g. "[anon_shmem:dalvik-jit-code-cache]"): try
+	// the in-process JIT descriptor first, exactly as for the empty-name exec
+	// case above. A miss on an executable region is returned NOT cacheable (0) so
+	// the frame can upgrade once ART compiles/publishes the method; a
+	// non-executable region is stable, cached, and just shows name + offset.
+	// (A deleted/renamed real library still has '/' first and is recovered below
+	// via /proc/<pid>/map_files.)
 	if (hit->path[0] == '[') {
+		if (hit->exec) {
+			if (jit_resolve(pid, (uint64_t)addr, out, outsz))
+				return 1;
+			snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
+			return 0;
+		}
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
 		return 1;
 	}

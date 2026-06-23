@@ -1,6 +1,35 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "trace/trace_args.h"
+#include <stdio.h>
 #include <string.h>
+
+int trace_build_argv(struct trace_argv *out, const char *engine,
+                     const char *pkg,    int inject_pkg,
+                     const char *prefix, const char *suffix,
+                     char **src_argv, int start, int end,
+                     int *truncated)
+{
+	int argc = 0;
+	if (truncated) *truncated = 0;
+
+	out->argv[argc++] = (char *)engine;
+	if (inject_pkg) {
+		out->argv[argc++] = "-P";
+		out->argv[argc++] = (char *)pkg;
+	}
+	if (prefix) {
+		snprintf(out->outbuf, sizeof(out->outbuf), "%s.%s", prefix, suffix);
+		out->argv[argc++] = "-o";
+		out->argv[argc++] = out->outbuf;
+	}
+	int i = start;
+	for (; i < end && argc < 63; i++)
+		out->argv[argc++] = src_argv[i];
+	if (i < end && truncated)
+		*truncated = 1;
+	out->argv[argc] = NULL;
+	return argc;
+}
 
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
 {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host check for the `ares trace` arg-section splitter.
+// Host check for the `ares trace` arg-section splitter and argv builder.
 #include "trace/trace_args.h"
 #include <assert.h>
 #include <string.h>
@@ -41,6 +41,44 @@ int main(void)
 	assert(trace_parse_args(2, e, &t) == 1);
 	char *f[] = { A("trace"), A("bogus") };
 	assert(trace_parse_args(2, f, &t) < 0);          // unexpected token
+
+	// --- trace_build_argv ---
+	struct trace_argv v;
+
+	// syscalls, no prefix, no inject_pkg
+	char *s1[] = { A("trace"), A("-a") };
+	int na = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, s1, 1, 2, NULL);
+	assert(na == 2);
+	assert(strcmp(v.argv[0], "syscalls") == 0);
+	assert(strcmp(v.argv[1], "-a") == 0);
+	assert(v.argv[2] == NULL);
+
+	// funcs, with prefix and inject_pkg
+	char *s2[] = { A("trace"), A("-e"), A("lib!fn") };
+	int trunc = 0;
+	int nb = trace_build_argv(&v, "funcs", "com.app", 1, "run", "funcs.jsonl",
+	                          s2, 1, 3, &trunc);
+	assert(trunc == 0);
+	assert(nb == 7);  // engine + -P pkg + -o file + 2 section args
+	assert(strcmp(v.argv[0], "funcs") == 0);
+	assert(strcmp(v.argv[1], "-P") == 0);
+	assert(strcmp(v.argv[2], "com.app") == 0);
+	assert(strcmp(v.argv[3], "-o") == 0);
+	assert(strcmp(v.argv[4], "run.funcs.jsonl") == 0);
+	assert(strcmp(v.argv[5], "-e") == 0 && strcmp(v.argv[6], "lib!fn") == 0);
+	assert(v.argv[7] == NULL);
+
+	// empty section (start == end) — only header entries
+	int nc = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, s1, 2, 2, NULL);
+	assert(nc == 1 && strcmp(v.argv[0], "syscalls") == 0 && v.argv[1] == NULL);
+
+	// truncation: fill past 63-arg limit
+	char *big[128]; for (int i = 0; i < 128; i++) big[i] = A("x");
+	trunc = 0;
+	int nd = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, big, 0, 128, &trunc);
+	assert(trunc == 1);
+	assert(nd == 63);         // 1 engine name + 62 section args
+	assert(v.argv[63] == NULL);
 
 	printf("trace_args: ok\n");
 	return 0;

@@ -86,49 +86,31 @@ int cmd_trace(int argc, char **argv)
 	}
 	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg, .external_launch = 1 };
 
-	// Build each engine's argv: ["<engine>", (-o <file>)?, <section args...>].
-	char sysout[512], funcout[512];
-	char *sys_argv[64]; int sys_argc = 0;
-	char *func_argv[64]; int func_argc = 0;
+	// Build each engine's argv: ["<engine>", (-P pkg)?, (-o <file>)?, <section args...>].
+	// funcs uses argp which requires -P at parse time; syscalls takes pkg via rc->pkg.
+	struct trace_argv sysv, funcv;
+	int sys_argc = 0, func_argc = 0;
 
 	if (want_sys) {
-		sys_argv[sys_argc++] = "syscalls";
-		if (prefix) {
-			snprintf(sysout, sizeof(sysout), "%s.syscalls.jsonl", prefix);
-			sys_argv[sys_argc++] = "-o";
-			sys_argv[sys_argc++] = sysout;
-		}
-		int i = sys_start;
-		for (; i < sys_end && sys_argc < 63; i++)
-			sys_argv[sys_argc++] = argv[i];
-		if (i < sys_end) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
-		sys_argv[sys_argc] = NULL;
+		int tr = 0;
+		sys_argc = trace_build_argv(&sysv, "syscalls", pkg, 0, prefix,
+		                            "syscalls.jsonl", argv, sys_start, sys_end, &tr);
+		if (tr) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
 	}
 	if (want_func) {
-		func_argv[func_argc++] = "funcs";
-		// funcs uses argp, which requires -p/-P at parse time, so the package
-		// goes in via argv (not rc->pkg like the syscalls manual parser).
-		func_argv[func_argc++] = "-P";
-		func_argv[func_argc++] = (char *)pkg;
-		if (prefix) {
-			snprintf(funcout, sizeof(funcout), "%s.funcs.jsonl", prefix);
-			func_argv[func_argc++] = "-o";
-			func_argv[func_argc++] = funcout;
-		}
-		int i = func_start;
-		for (; i < func_end && func_argc < 63; i++)
-			func_argv[func_argc++] = argv[i];
-		if (i < func_end) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
-		func_argv[func_argc] = NULL;
+		int tr = 0;
+		func_argc = trace_build_argv(&funcv, "funcs", pkg, 1, prefix,
+		                             "funcs.jsonl", argv, func_start, func_end, &tr);
+		if (tr) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
 	}
 
 	// Arm both engines BEFORE the single launch. Neither launches on its own —
 	// setup only opens/loads/attaches and installs the UID filter (via rc->uid).
-	if (want_sys && syscalls_setup(sys_argc, sys_argv, &rc) != 0) {
+	if (want_sys && syscalls_setup(sys_argc, sysv.argv, &rc) != 0) {
 		fprintf(stderr, "trace: syscalls setup failed\n");
 		return 1;
 	}
-	if (want_func && funcs_setup(func_argc, func_argv, &rc) != 0) {
+	if (want_func && funcs_setup(func_argc, funcv.argv, &rc) != 0) {
 		fprintf(stderr, "trace: funcs setup failed\n");
 		if (want_sys) syscalls_teardown();
 		return 1;

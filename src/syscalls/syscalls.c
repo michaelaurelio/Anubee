@@ -806,9 +806,9 @@ static void handle_return(const struct syscalls_return_event *r)
 // worker thread, so all the caches/pending state it touches stay single-threaded.
 static void process_event(const void *data, size_t sz)
 {
-	if (sz < sizeof(struct syscalls_hdr))
+	if (sz < sizeof(struct trace_event_header))
 		return;
-	const struct syscalls_hdr *h = data;
+	const struct trace_event_header *h = data;
 
 	switch (h->type) {
 	case SYSC_EV_MAP: {
@@ -879,7 +879,7 @@ static void *worker_main(void *arg)
 	while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
 		process_event(rec, sz);
 		// Periodic flush so a hard-kill loses little (JSONL stays valid).
-		if (g_sink.f && (++flushed & 0x3fff) == 0)
+		if (g_sink.f && (++flushed & ARES_FLUSH_MASK) == 0)
 			ares_sink_flush(&g_sink);
 	}
 	return NULL;

@@ -879,7 +879,7 @@ static void *funcs_worker_main(void *arg)
     unsigned long flushed = 0;
     while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
         process_call_return(rec, sz);
-        if (g_sink.f && (++flushed & 0x3fff) == 0)
+        if (g_sink.f && (++flushed & ARES_FLUSH_MASK) == 0)
             ares_sink_flush(&g_sink);
     }
     return NULL;

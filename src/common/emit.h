@@ -12,6 +12,9 @@
 
 struct jbuf { char *b; size_t len, cap; };
 
+// Flush the output sink every N records to limit loss on hard kill.
+#define ARES_FLUSH_MASK 0x3fff
+
 void jb_s(struct jbuf *j, const char *s);                 // append raw string
 void jb_c(struct jbuf *j, char c);                        // append one char
 void jb_u64(struct jbuf *j, unsigned long long v);        // decimal unsigned

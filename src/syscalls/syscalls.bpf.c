@@ -34,6 +34,7 @@
 
 #include "syscalls.h"
 #include "common/lib_trace.h"
+#include "common/bpf_drop.bpf.h"
 
 #define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
 #define MAX_RANGES      SYSC_MAX_RANGES
@@ -60,15 +61,6 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 22);                 // 4 MB
 } events SEC(".maps");
-
-// Count of events dropped because the ring buffer was full. Per-CPU so the hot
-// path needs no atomics; the loader sums across CPUs.
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, __u64);
-} dropped SEC(".maps");
 
 // Single-slot: the app UID to trace, installed by the loader before launch.
 struct {
@@ -135,14 +127,6 @@ struct {
 } stack_seen SEC(".maps");
 
 // ---- helpers -------------------------------------------------------------
-
-static __always_inline void bump_dropped(void)
-{
-	__u32 k = 0;
-	__u64 *c = bpf_map_lookup_elem(&dropped, &k);
-	if (c)
-		(*c)++;
-}
 
 static __always_inline int uid_matches(void)
 {

@@ -24,7 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -178,16 +178,16 @@ expensive one:
   `pre_attach`/`attach`/`detach`/`print_summary`/`handle_event`. Built-in modules:
   `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
   (Android `__system_property_*` hooks).
-- Output: human-readable text wrapped as log-line JSONL/CSV (see §7), plus an
-  opt-in **structured JSONL mode** (`-J` / `--structured`) for CALL and RETURN
-  events (see §7 and §3.1).
+- Output: human-readable text to stdout; when `-o FILE` is passed, structured
+  JSONL records for CALL and RETURN events via the shared `ares_sink` (see §3.1
+  and §7). `-J`/`--structured` is accepted but is a no-op (structured is the
+  default `-o` format).
 
-### 3.1 Structured JSONL mode (`-J`)
+### 3.1 Structured JSONL output (`-o`)
 
-When `-J` is passed together with a JSONL sink (`-o <file>.jsonl`), the funcs
-engine emits one structured record per CALL or RETURN event into that file,
-interleaved with the existing text-wrapper records. This is opt-in and additive
-— the text output and the legacy `{ts,stream,tag,message}` wrapper are unchanged.
+`-o FILE` opens a shared `ares_sink` (8 MB buffered, JSONL) and emits one
+structured record per CALL or RETURN event. Human-readable stdout text is
+unchanged; no legacy `{ts,stream,tag,message}` wrapper is written to the file.
 
 Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 `trace_schema.h`):
@@ -203,7 +203,7 @@ Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 The `module` field is the library basename (no path). `args` always has `NUM_ARGS`
 (8) elements in hex. `elapsed_ns` is 0 if the uretprobe was not attached. These
 records share the same `type` discriminator as `ares syscalls` / `ares lib` output
-(see §7), making them compatible with downstream ares-mcp ingest.
+(see §7), making them directly compatible with downstream ares-mcp ingest.
 
 **Implementation notes:**
 - Builders live in `src/funcs/funcs_emit.c` (pure file, no libbpf/skeleton deps)
@@ -211,9 +211,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   cross-toolchain.
 - Builders are declared in `src/funcs/ares-tracer-priv.h` and called from the
   `handle_event` SEAM in `src/funcs/ares-tracer.c` at the CALL and RETURN cases,
-  reusing the already-computed `bname`/`func_name` strings (no extra symbol lookup).
-- Static `struct jbuf` per branch, reset `len=0` before each call, flushed with
-  `fwrite` + `fputc('\n', g_jsonl)`.
+  building directly into `g_sink.jb` then calling `ares_sink_emit`.
 - MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on; the
   hook point is already in `handle_event` at the SEAM.
 
@@ -338,23 +336,26 @@ stream:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
   "backtrace":[{frame,addr,symbol}..]}`, plus `{"type":"stack",...}` snapshots.
-- `ares funcs` emits **log-line** records by default:
-  `{"ts":..,"stream":"out|err","tag":"event|map|...","message":".."}` — the
-  rendered human-readable output. With `-J` (`--structured`), it also emits
-  **structured** per-event records for CALL and RETURN events (see §3.1):
+- `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
   "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "retval":..,"elapsed_ns":..}`. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured
-  records are a follow-on.
+  "retval":..,"elapsed_ns":..}` (see §3.1). Human-readable text goes to stdout
+  only. `-J` is accepted as a no-op for compatibility. MAP/UNMAP/SPAWN/PROC_EXIT/
+  EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`
   (from the shared emitter):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
   "pgoff":..,"inode":..}` and `{"type":"unlib","pid":..,"tid":..,"start":..,
   "end":..}`.
 
-**Shipped (Task 4):** opt-in structured emitter for `funcs` CALL/RETURN events
-via `-J`/`--structured` (see §3.1). MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP records
-and unified MCP ingest remain; see [BACKLOG.md](BACKLOG.md).
+**Shared output sink (`src/common/emit.h` — `struct ares_sink`):** all file
+output for `syscalls` and `funcs` is now routed through `ares_sink_open` /
+`ares_sink_emit` / `ares_sink_close` / `ares_sink_report`. The sink owns the
+`FILE*`, an 8 MB `_IOFBF` write buffer, the reused `jbuf`, the record count, the
+JSONL/array framing, periodic flush, and the "wrote N records to PATH" report.
+Single-writer per sink (no lock); each engine's drain/worker thread is the sole
+writer. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
+ingest remain; see [BACKLOG.md](BACKLOG.md).
 
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)
 

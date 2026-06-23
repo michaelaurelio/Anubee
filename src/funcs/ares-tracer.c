@@ -36,7 +36,7 @@ static const ares_module_t *const all_modules[] = {
     &module_prop_read,
     NULL,
 };
-static const ares_module_t *active_modules[16];
+static const ares_module_t *active_modules[sizeof(all_modules)/sizeof(all_modules[0])];
 static int active_module_count = 0;
 
 // Argument parser module using argp.h
@@ -54,11 +54,11 @@ static const struct argp_option options[] = {
     { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",            0 },
     { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",          0 },
     { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",              0 },
-    { "output",         'o', "FILE",         0, "Export output to file (.csv -> CSV, .jsonl/.ndjson -> JSONL)",                       0 },
+    { "output",         'o', "FILE",         0, "Export structured JSONL to FILE",                                                    0 },
     { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                  0 },
     { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",              0 },
-    { "structured",     'J', 0,              0, "Emit structured JSONL records (one per event) into the -o sink alongside text",      0 },
+    { "structured",     'J', 0,              0, "No-op (structured JSONL is now the default -o format)",                             0 },
     { 0 }
 };
 
@@ -80,7 +80,6 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
-    bool structured_out;
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -155,8 +154,7 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'J':
-            args->structured_out = true;
-            break;
+            break; // no-op: structured JSONL is the default -o format
 
         case 'm': {
             for (int i = 0; all_modules[i]; i++) {
@@ -223,167 +221,28 @@ static void sig_handler(int sig)
 }
 
 
-// CSV output and print wrappers
-static FILE *g_csv = NULL;
-static FILE *g_jsonl = NULL;
-static void jsonl_write(const char *stream, const char *buf);
-
-static void csv_write(const char *stream, const char *buf)
-{
-    char msg[4096];
-    copy_str(msg, buf, sizeof(msg));
-    size_t len = strlen(msg);
-    while (len > 0 && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
-        msg[--len] = '\0';
-    if (len == 0) return;
-
-    char tag[32] = "";
-    const char *p = msg;
-    while (*p == ' ') p++;
-    if (*p == '[') {
-        const char *end = strchr(p + 1, ']');
-        if (end) {
-            size_t tlen = (size_t)(end - p - 1);
-            if (tlen < sizeof(tag)) { memcpy(tag, p + 1, tlen); tag[tlen] = '\0'; }
-        }
-    }
-
-    time_t t; time(&t);
-    struct tm *tmi = localtime(&t);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%H:%M:%S", tmi);
-
-    fprintf(g_csv, "%s,%s,%s,\"", ts, stream, tag);
-    for (const char *c = msg; *c; c++) {
-        if (*c == '"') fputc('"', g_csv);
-        fputc(*c, g_csv);
-    }
-    fputs("\"\n", g_csv);
-    fflush(g_csv);
-}
+// Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
+static struct ares_sink g_sink;
 
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void out_print(const char *fmt, ...)
 {
-    va_list ap1, ap2;
-    va_start(ap1, fmt);
-    va_copy(ap2, ap1);
-    vprintf(fmt, ap1);
-    va_end(ap1);
-    if (g_csv || g_jsonl) {
-        char buf[4096];
-        vsnprintf(buf, sizeof(buf), fmt, ap2);
-        if (g_csv)   csv_write("out", buf);
-        if (g_jsonl) jsonl_write("out", buf);
-    }
-    va_end(ap2);
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
 }
 
 void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void err_print(const char *fmt, ...)
 {
-    va_list ap1, ap2;
-    va_start(ap1, fmt);
-    va_copy(ap2, ap1);
-    FILE *se = stderr;
-    vfprintf(se, fmt, ap1);
-    va_end(ap1);
-    if (g_csv || g_jsonl) {
-        char buf[4096];
-        vsnprintf(buf, sizeof(buf), fmt, ap2);
-        if (g_csv)   csv_write("err", buf);
-        if (g_jsonl) jsonl_write("err", buf);
-    }
-    va_end(ap2);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
 }
 
-static int csv_open(const char *path)
-{
-    g_csv = fopen(path, "w");
-    if (!g_csv) {
-        err_print("   [err] > cannot open CSV output '%s': %s\n", path, strerror(errno));
-        return -1;
-    }
-    fputs("timestamp,stream,tag,message\n", g_csv);
-    fflush(g_csv);
-    return 0;
-}
-
-static void csv_close(void)
-{
-    if (g_csv) { fclose(g_csv); g_csv = NULL; }
-}
-
-static void json_fwrite_str(FILE *f, const char *s)
-{
-    fputc('"', f);
-    for (; *s; s++) {
-        switch (*s) {
-            case '"':  fputs("\\\"", f); break;
-            case '\\': fputs("\\\\", f); break;
-            case '\n': fputs("\\n",  f); break;
-            case '\r': fputs("\\r",  f); break;
-            case '\t': fputs("\\t",  f); break;
-            default:
-                if ((unsigned char)*s < 0x20)
-                    fprintf(f, "\\u%04x", (unsigned char)*s);
-                else
-                    fputc(*s, f);
-        }
-    }
-    fputc('"', f);
-}
-
-static void jsonl_write(const char *stream, const char *buf)
-{
-    char msg[4096];
-    copy_str(msg, buf, sizeof(msg));
-    size_t len = strlen(msg);
-    while (len > 0 && (msg[len-1] == '\n' || msg[len-1] == '\r'))
-        msg[--len] = '\0';
-    if (len == 0) return;
-
-    char tag[32] = "";
-    const char *p = msg;
-    while (*p == ' ') p++;
-    if (*p == '[') {
-        const char *end = strchr(p + 1, ']');
-        if (end) {
-            size_t tlen = (size_t)(end - p - 1);
-            if (tlen < sizeof(tag)) { memcpy(tag, p + 1, tlen); tag[tlen] = '\0'; }
-        }
-    }
-
-    time_t t; time(&t);
-    struct tm *tmi = localtime(&t);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", tmi);
-
-    fprintf(g_jsonl, "{\"ts\":\"%s\",\"stream\":\"%s\",\"tag\":\"%s\",\"message\":",
-            ts, stream, tag);
-    json_fwrite_str(g_jsonl, msg);
-    fputs("}\n", g_jsonl);
-    // ponytail: no per-message fflush; setvbuf batches writes, flushed periodically
-    //           in funcs_run and on close — matches syscalls' 8MB-buffer approach.
-}
-
-static int jsonl_open(const char *path)
-{
-    g_jsonl = fopen(path, "w");
-    if (!g_jsonl) {
-        err_print("   [err] > cannot open JSONL output '%s': %s\n", path, strerror(errno));
-        return -1;
-    }
-    setvbuf(g_jsonl, NULL, _IOFBF, 1 << 20); // 1 MB batch buffer
-    return 0;
-}
-
-static void jsonl_close(void)
-{
-    if (g_jsonl) { fflush(g_jsonl); fclose(g_jsonl); g_jsonl = NULL; }
-}
-
-// Top-level event line, prepends "HH:MM:SS  " to stdout; CSV receives message only.
+// Top-level event line, prepends "HH:MM:SS " to stdout.
 void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ts_print(const char *fmt, ...)
 {
@@ -391,18 +250,10 @@ void ts_print(const char *fmt, ...)
     char ts_buf[16];
     strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", localtime(&t));
     printf("%s ", ts_buf);
-    va_list ap1, ap2;
-    va_start(ap1, fmt);
-    va_copy(ap2, ap1);
-    vprintf(fmt, ap1);
-    va_end(ap1);
-    if (g_csv || g_jsonl) {
-        char buf[4096];
-        vsnprintf(buf, sizeof(buf), fmt, ap2);
-        if (g_csv)   csv_write("out", buf);
-        if (g_jsonl) jsonl_write("out", buf);
-    }
-    va_end(ap2);
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
 }
 
 
@@ -445,7 +296,6 @@ int func_ret_re_count = 0;
 bool verbose = false;
 bool resolve_syms = false;
 bool caller_only = false;
-static bool structured_out = false;
 
 custom_probe_spec_t custom_probe_specs[64];
 int custom_probe_spec_count = 0;
@@ -959,13 +809,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
                 e->h.pid, e->ppid, bname, target->func_name, target->offset,
                 used_fallback ? " (resolved from known offset)" : "");
-            if (structured_out && g_jsonl) {
-                // reused across events; handle_event is single-threaded (ring_buffer__poll)
-                static struct jbuf sj;
-                sj.len = 0;
-                funcs_emit_call(&sj, e, bname, target->func_name);
-                fwrite(sj.b, 1, sj.len, g_jsonl);
-                fputc('\n', g_jsonl);
+            if (g_sink.f) {
+                g_sink.jb.len = 0;
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name);
+                ares_sink_emit(&g_sink);
             }
         } else {
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
@@ -1101,13 +948,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             used_fallback ? " (resolved from known offset)" : "",
             elapsed_buf, retval_buf);
 
-        if (structured_out && g_jsonl) {
-            // reused across events; handle_event is single-threaded (ring_buffer__poll)
-            static struct jbuf sj;
-            sj.len = 0;
-            funcs_emit_return(&sj, e, bname, fname);
-            fwrite(sj.b, 1, sj.len, g_jsonl);
-            fputc('\n', g_jsonl);
+        if (g_sink.f) {
+            g_sink.jb.len = 0;
+            funcs_emit_return(&g_sink.jb, e, bname, fname);
+            ares_sink_emit(&g_sink);
         }
 
         // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]
@@ -1160,15 +1004,12 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     verbose = args.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
-    structured_out = args.structured_out;
 
     if (args.output_file[0] != '\0') {
-        const char *ext = strrchr(args.output_file, '.');
-        const char *slash = strrchr(args.output_file, '/');
-        bool is_jsonl = ext && (!slash || ext > slash) &&
-                        (strcmp(ext, ".jsonl") == 0 || strcmp(ext, ".ndjson") == 0);
-        if ((is_jsonl ? jsonl_open(args.output_file) : csv_open(args.output_file)) != 0)
+        if (ares_sink_open(&g_sink, args.output_file, "event", /*jsonl=*/1) != 0) {
+            fprintf(stderr, "cannot open '%s': %s\n", args.output_file, strerror(errno));
             return 1;
+        }
     }
 
     if (verbose) err_print("  [verb] > mode ON\n");
@@ -1497,7 +1338,7 @@ int funcs_run(volatile sig_atomic_t *stop)
         err = ring_buffer__poll(g_events_rb, 1);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
-        if (g_jsonl && ++ticks >= 200) { ticks = 0; fflush(g_jsonl); } // ~200ms periodic flush
+        if (g_sink.f && ++ticks >= 200) { ticks = 0; ares_sink_flush(&g_sink); } // ~200ms periodic flush
     }
 
     for (int i = 0; i < active_module_count; i++)
@@ -1552,8 +1393,8 @@ void funcs_teardown(void)
         ares_tracer_bpf__destroy(skel);
         skel = NULL;
     }
-    csv_close();
-    jsonl_close();
+    ares_sink_close(&g_sink);
+    ares_sink_report(&g_sink);
 }
 
 int cmd_funcs(int argc, char **argv)

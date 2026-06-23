@@ -363,7 +363,8 @@ static void jsonl_write(const char *stream, const char *buf)
             ts, stream, tag);
     json_fwrite_str(g_jsonl, msg);
     fputs("}\n", g_jsonl);
-    fflush(g_jsonl);
+    // ponytail: no per-message fflush; setvbuf batches writes, flushed periodically
+    //           in funcs_run and on close — matches syscalls' 8MB-buffer approach.
 }
 
 static int jsonl_open(const char *path)
@@ -373,12 +374,13 @@ static int jsonl_open(const char *path)
         err_print("   [err] > cannot open JSONL output '%s': %s\n", path, strerror(errno));
         return -1;
     }
+    setvbuf(g_jsonl, NULL, _IOFBF, 1 << 20); // 1 MB batch buffer
     return 0;
 }
 
 static void jsonl_close(void)
 {
-    if (g_jsonl) { fclose(g_jsonl); g_jsonl = NULL; }
+    if (g_jsonl) { fflush(g_jsonl); fclose(g_jsonl); g_jsonl = NULL; }
 }
 
 // Top-level event line, prepends "HH:MM:SS  " to stdout; CSV receives message only.
@@ -964,7 +966,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 funcs_emit_call(&sj, e, bname, target->func_name);
                 fwrite(sj.b, 1, sj.len, g_jsonl);
                 fputc('\n', g_jsonl);
-                fflush(g_jsonl);
             }
         } else {
             ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
@@ -1107,7 +1108,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             funcs_emit_return(&sj, e, bname, fname);
             fwrite(sj.b, 1, sj.len, g_jsonl);
             fputc('\n', g_jsonl);
-            fflush(g_jsonl);
         }
 
         // Output buffer args: args[i+1]/is_str[i+1]/strings[i+1] = re-read of entry arg[i]
@@ -1492,10 +1492,12 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 int funcs_run(volatile sig_atomic_t *stop)
 {
     int err = 0;
+    int ticks = 0;
     while (!*stop) {
         err = ring_buffer__poll(g_events_rb, 1);
         if (err == -EINTR) { err = 0; break; }
         if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
+        if (g_jsonl && ++ticks >= 200) { ticks = 0; fflush(g_jsonl); } // ~200ms periodic flush
     }
 
     for (int i = 0; i < active_module_count; i++)
@@ -1503,6 +1505,24 @@ int funcs_run(volatile sig_atomic_t *stop)
             active_modules[i]->print_summary();
 
     return err < 0 ? -err : 0;
+}
+
+// Sum the per-CPU dropped-event counters from the BPF `dropped` map.
+static unsigned long long read_dropped_count(void)
+{
+    int fd = bpf_map__fd(skel->maps.dropped);
+    if (fd < 0) return 0;
+    int ncpu = libbpf_num_possible_cpus();
+    if (ncpu < 1) ncpu = 1;
+    __u64 *vals = calloc(ncpu, sizeof(__u64));
+    if (!vals) return 0;
+    __u32 k = 0;
+    unsigned long long total = 0;
+    if (bpf_map_lookup_elem(fd, &k, vals) == 0)
+        for (int i = 0; i < ncpu; i++)
+            total += vals[i];
+    free(vals);
+    return total;
 }
 
 void funcs_teardown(void)
@@ -1524,6 +1544,11 @@ void funcs_teardown(void)
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
     if (skel) {
+        unsigned long long drops = read_dropped_count();
+        if (drops)
+            fprintf(stderr, "%llu event(s) dropped (ring buffer full) — trace incomplete\n", drops);
+        else
+            fprintf(stderr, "no events dropped\n");
         ares_tracer_bpf__destroy(skel);
         skel = NULL;
     }

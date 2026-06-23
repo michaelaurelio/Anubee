@@ -25,6 +25,7 @@
 // Intended to run as root from a plain `adb shell` on a rooted device.
 
 #include "common/emit.h"
+#include "common/runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,14 +150,6 @@ static int g_dropfd = -1;
 static int g_uid;
 static int g_capture_all;
 static const char *g_activity;                  // optional launcher activity
-
-static void on_sigint(int s)
-{
-	(void)s;
-	if (exiting)            // second Ctrl+C: force quit even if stuck in a write()
-		_exit(130);
-	exiting = 1;
-}
 
 // Device launch/UID helpers (sh_exec / resolve_uid / resolve_component) now live
 // in src/common/launch.{c,h} as ares_*; shared with funcs/correlate/dump/lib.
@@ -945,13 +938,6 @@ static void *worker_main(void *arg)
 
 // ---- main ----------------------------------------------------------------
 
-static int libbpf_quiet(enum libbpf_print_level level, const char *fmt, va_list args)
-{
-	if (level == LIBBPF_DEBUG && !getenv("ARES_DEBUG"))
-		return 0;
-	return vfprintf(stderr, fmt, args);
-}
-
 // Syscalls we attach classic kretprobes to for return values. Focused on the
 // file / proc / memory / process calls relevant to RASP analysis. Most are
 // non-blocking, so the default per-function kretprobe maxactive suffices;
@@ -995,24 +981,6 @@ static int ends_with(const char *s, const char *suf)
 {
 	size_t ls = strlen(s), lf = strlen(suf);
 	return ls >= lf && !strcmp(s + ls - lf, suf);
-}
-
-// Sum the per-CPU dropped-event counters.
-static unsigned long long read_dropped(int fd)
-{
-	int ncpu = libbpf_num_possible_cpus();
-	if (ncpu < 1)
-		ncpu = 1;
-	__u64 *vals = calloc(ncpu, sizeof(__u64));
-	if (!vals)
-		return 0;
-	__u32 k = 0;
-	unsigned long long total = 0;
-	if (bpf_map_lookup_elem(fd, &k, vals) == 0)
-		for (int i = 0; i < ncpu; i++)
-			total += vals[i];
-	free(vals);
-	return total;
 }
 
 static void usage(const char *argv0)
@@ -1171,7 +1139,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		p2 <<= 1;
 	bufbytes = p2;
 
-	libbpf_set_print(libbpf_quiet);
+	libbpf_set_print(ares_libbpf_quiet);
 
 	struct syscalls *skel = syscalls__open();
 	if (!skel) {
@@ -1346,13 +1314,7 @@ void syscalls_teardown(void)
 		g_worker_started = 0;
 
 		// Always report the final tally, so "no message" never means "didn't check".
-		unsigned long long kdrops = read_dropped(g_dropfd), qdrops = g_q.qdropped;
-		unsigned long long drops = kdrops + qdrops;
-		if (drops)
-			fprintf(stderr, "%llu event(s) dropped (%llu kernel ring, %llu queue) — "
-					"trace is incomplete\n", drops, kdrops, qdrops);
-		else
-			fprintf(stderr, "no events dropped\n");
+		ares_drops_report(ares_drops_read(g_dropfd), g_q.qdropped);
 	}
 
 	if (g_rb) {
@@ -1382,8 +1344,8 @@ int cmd_syscalls(int argc, char **argv)
 	if (syscalls_setup(argc, argv, NULL) != 0)
 		return 1;
 
-	// Standalone: tracing is armed (UID installed in setup); launch and own SIGINT.
-	signal(SIGINT, on_sigint);
+	// Standalone: tracing is armed (UID installed in setup); launch and own signals.
+	ares_install_stop_handler(&exiting);
 	printf("launching: %s\n", g_pkg);
 	if (ares_launch_app(g_pkg, g_activity) != 0) {
 		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);

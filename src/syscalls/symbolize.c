@@ -1007,9 +1007,14 @@ static void vdso_build(struct vdso_ctx *vc, uint64_t base, uint64_t end)
 		if ((sh[i].sh_type != SHT_DYNSYM && sh[i].sh_type != SHT_SYMTAB) ||
 		    sh[i].sh_link >= eh.e_shnum)
 			continue;
-		if (sh[i].sh_size > span || sh[sh[i].sh_link].sh_size > span)
-			continue;                // malformed: section larger than the image
-		ingest_fd_section(&vc->ds, fd, base, &sh[i], &sh[sh[i].sh_link]);
+		Elf64_Shdr *link = &sh[sh[i].sh_link];
+		// Bound both sections fully within the mapped image. Size first so the
+		// (span - size) subtractions below cannot underflow; then the offset.
+		if (sh[i].sh_size > span || link->sh_size > span ||
+		    sh[i].sh_offset > span - sh[i].sh_size ||
+		    link->sh_offset > span - link->sh_size)
+			continue;
+		ingest_fd_section(&vc->ds, fd, base, &sh[i], link);
 	}
 	free(sh);
 

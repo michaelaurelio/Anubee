@@ -5,6 +5,7 @@
 #include <bpf/bpf_core_read.h>
 #include "ares-tracer.h"
 #include "common/lib_trace.h"
+#include "common/bpf_drop.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -19,20 +20,6 @@ struct {
     __type(key, __u32);
     __type(value, __u8);
 } target_uids SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, __u64);
-} dropped SEC(".maps");
-
-static __always_inline void bump_dropped(void)
-{
-    __u32 k = 0;
-    __u64 *c = bpf_map_lookup_elem(&dropped, &k);
-    if (c) __sync_fetch_and_add(c, 1);
-}
 
 // Per-tid span stack (shared with the correlate engine; see header).
 #include "common/span_stack.bpf.h"

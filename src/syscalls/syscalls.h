@@ -7,6 +7,8 @@
 #ifndef SYSCALLS_H
 #define SYSCALLS_H
 
+#include "common/trace_schema.h"
+
 #define SYSC_MAX_STACK_DEPTH 32
 #define SYSC_MAX_RANGES      8
 #define SYSC_SYSCALL_NARGS   6
@@ -38,18 +40,9 @@ enum syscalls_event_type {
 	SYSC_EV_STACK   = 5,        /* one stack snapshot (first sight of a stack) */
 };
 
-/* Common 16-byte header at the front of every ring-buffer record. `pid` is the
- * thread-group id (process), `tid` the thread. */
-struct syscalls_hdr {
-	__u32 type;
-	__u32 pid;
-	__u32 tid;
-	__u32 _pad;
-};
-
 /* Entry-only syscall record: number + raw args + resolved string args + stack. */
 struct syscalls_syscall_event {
-	struct syscalls_hdr h;
+	struct trace_event_header h;
 	__u64 nr;
 	__u64 args[SYSC_SYSCALL_NARGS];
 	__s32 stack_sz;                              /* bytes valid in stack[] */
@@ -66,7 +59,7 @@ struct syscalls_syscall_event {
  * the user registers and a bounded copy of the thread's stack for off-device
  * DWARF unwinding. The largest ring record — but deduped, so rare. */
 struct syscalls_stack_snapshot {
-	struct syscalls_hdr h;
+	struct trace_event_header h;
 	__u64 stack_id;
 	__u64 pc, sp, fp, lr;                        /* user pc / sp / x29 / x30 */
 	__u32 snap_len;                              /* bytes valid in snap[] (from sp up) */
@@ -81,7 +74,7 @@ struct syscalls_stack_snapshot {
 /* Return value of a previously-emitted syscall, paired by tid (from the
  * kretprobe.multi on __arm64_sys_*). */
 struct syscalls_return_event {
-	struct syscalls_hdr h;
+	struct trace_event_header h;
 	__s64 retval;
 };
 

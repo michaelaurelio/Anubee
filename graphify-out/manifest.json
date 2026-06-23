@@ -1,0 +1,927 @@
+{
+  "/home/lyo/self-project/migration/ARES/.claude/settings.local.json": {
+    "mtime": 1782104893.0792642,
+    "ast_hash": "1a2db9800685108b78fccf09b17e6010",
+    "semantic_hash": "1a2db9800685108b78fccf09b17e6010"
+  },
+  "/home/lyo/self-project/migration/ARES/scripts/build.sh": {
+    "mtime": 1781728361.993051,
+    "ast_hash": "f18e07cf99dc01aab67cd82856720c92",
+    "semantic_hash": "f18e07cf99dc01aab67cd82856720c92"
+  },
+  "/home/lyo/self-project/migration/ARES/scripts/deploy.sh": {
+    "mtime": 1781584390.6636045,
+    "ast_hash": "d477b47d193629691e7c74530cb92ce9",
+    "semantic_hash": "d477b47d193629691e7c74530cb92ce9"
+  },
+  "/home/lyo/self-project/migration/ARES/scripts/device-test.sh": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "4284164f6cd61ed5eeeceb5dd817d761",
+    "semantic_hash": "4284164f6cd61ed5eeeceb5dd817d761"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/capabilities.c": {
+    "mtime": 1782200726.6342828,
+    "ast_hash": "9b493cf973d0c714f8bf1cf269155e19",
+    "semantic_hash": "9b493cf973d0c714f8bf1cf269155e19"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/capabilities.h": {
+    "mtime": 1782034898.798936,
+    "ast_hash": "9f76a81a32d8981168032a5a5518539b",
+    "semantic_hash": "9f76a81a32d8981168032a5a5518539b"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/decode.c": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "8b92b5c0c305fad79ac2bdbd32724774",
+    "semantic_hash": "8b92b5c0c305fad79ac2bdbd32724774"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/decode.h": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "a91c0e6268edae00649b4cd672f893f0",
+    "semantic_hash": "a91c0e6268edae00649b4cd672f893f0"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/emit.c": {
+    "mtime": 1782204904.2146802,
+    "ast_hash": "ce50c47657c6b0e7d9ab1c29780d3c4a",
+    "semantic_hash": "ce50c47657c6b0e7d9ab1c29780d3c4a"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/emit.h": {
+    "mtime": 1782204904.2146802,
+    "ast_hash": "a45f303ed2389137f2e68423d70b3ec7",
+    "semantic_hash": "a45f303ed2389137f2e68423d70b3ec7"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/launch.c": {
+    "mtime": 1782200726.6342828,
+    "ast_hash": "93af3ce8a53f909db44f21fef3a6a342",
+    "semantic_hash": "93af3ce8a53f909db44f21fef3a6a342"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/launch.h": {
+    "mtime": 1782200726.6342828,
+    "ast_hash": "955a8db4b95794bd4edcbb42ee30b19f",
+    "semantic_hash": "955a8db4b95794bd4edcbb42ee30b19f"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/lib_trace.bpf.h": {
+    "mtime": 1781560964.6723154,
+    "ast_hash": "3274ef9fea7dbb31b0cb3ca8d9034dcb",
+    "semantic_hash": "3274ef9fea7dbb31b0cb3ca8d9034dcb"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/lib_trace.c": {
+    "mtime": 1781560964.67531,
+    "ast_hash": "d7931d428ea4a2fcda8120cf136d8a82",
+    "semantic_hash": "d7931d428ea4a2fcda8120cf136d8a82"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/lib_trace.h": {
+    "mtime": 1781560964.67531,
+    "ast_hash": "1aa428a75e1d639076f710cf3b83e2d0",
+    "semantic_hash": "1aa428a75e1d639076f710cf3b83e2d0"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/probe_resolve.c": {
+    "mtime": 1782204904.2146802,
+    "ast_hash": "a87662d9b2dcb0ea81278d580a15f140",
+    "semantic_hash": "a87662d9b2dcb0ea81278d580a15f140"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/probe_resolve.h": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "818ec9bc199beaa96c1dbeb70d0ad48a",
+    "semantic_hash": "818ec9bc199beaa96c1dbeb70d0ad48a"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/proc_mem.c": {
+    "mtime": 1781591776.988073,
+    "ast_hash": "cf94b81e4a5df0c4c3cf57f246fb3061",
+    "semantic_hash": "cf94b81e4a5df0c4c3cf57f246fb3061"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/proc_mem.h": {
+    "mtime": 1781591776.988073,
+    "ast_hash": "adc41896f374fbc5f3208cd8cea7daa1",
+    "semantic_hash": "adc41896f374fbc5f3208cd8cea7daa1"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/span_stack.bpf.h": {
+    "mtime": 1781703586.3211246,
+    "ast_hash": "859f06ea3a0963d89c056c9ec3b6d801",
+    "semantic_hash": "859f06ea3a0963d89c056c9ec3b6d801"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/trace_schema.c": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "7431e19c8834bdb8df83204ce60c711f",
+    "semantic_hash": "7431e19c8834bdb8df83204ce60c711f"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/trace_schema.h": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "b06872df8c365777ebb6a2c51308faeb",
+    "semantic_hash": "b06872df8c365777ebb6a2c51308faeb"
+  },
+  "/home/lyo/self-project/migration/ARES/src/correlate/corr_emit.c": {
+    "mtime": 1782034898.798936,
+    "ast_hash": "fda966f90505cf07d93a54e9e2689c3a",
+    "semantic_hash": "fda966f90505cf07d93a54e9e2689c3a"
+  },
+  "/home/lyo/self-project/migration/ARES/src/correlate/correlate.bpf.c": {
+    "mtime": 1781703586.325125,
+    "ast_hash": "35d387599c12418048ba7cc6c801cbdf",
+    "semantic_hash": "35d387599c12418048ba7cc6c801cbdf"
+  },
+  "/home/lyo/self-project/migration/ARES/src/correlate/correlate.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "be32d07f9eead9debe113d676a104b24",
+    "semantic_hash": "be32d07f9eead9debe113d676a104b24"
+  },
+  "/home/lyo/self-project/migration/ARES/src/correlate/correlate.h": {
+    "mtime": 1782034898.798936,
+    "ast_hash": "8d1836b954a1ad0da0ba682744f4790a",
+    "semantic_hash": "8d1836b954a1ad0da0ba682744f4790a"
+  },
+  "/home/lyo/self-project/migration/ARES/src/dump/dump.bpf.c": {
+    "mtime": 1781591776.988073,
+    "ast_hash": "7bb4ea06dcf17737158da924b548a66d",
+    "semantic_hash": "7bb4ea06dcf17737158da924b548a66d"
+  },
+  "/home/lyo/self-project/migration/ARES/src/dump/dump.c": {
+    "mtime": 1781728361.993051,
+    "ast_hash": "315c39c2b70213a59a38fb4ed024aaa4",
+    "semantic_hash": "315c39c2b70213a59a38fb4ed024aaa4"
+  },
+  "/home/lyo/self-project/migration/ARES/src/dump/rebuild.c": {
+    "mtime": 1781591776.9903667,
+    "ast_hash": "92dd8060ea533a62a962401671943182",
+    "semantic_hash": "92dd8060ea533a62a962401671943182"
+  },
+  "/home/lyo/self-project/migration/ARES/src/dump/rebuild.h": {
+    "mtime": 1781591776.9903667,
+    "ast_hash": "f3430eb82ec060c780bb71575c1e2f92",
+    "semantic_hash": "f3430eb82ec060c780bb71575c1e2f92"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/ares-tracer-priv.h": {
+    "mtime": 1782200726.6342828,
+    "ast_hash": "42932fdb32894e0b4e40ab9b08a1dcbf",
+    "semantic_hash": "42932fdb32894e0b4e40ab9b08a1dcbf"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/ares-tracer.bpf.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "19ce1068b0303c3c14a7c74acfc6d1a5",
+    "semantic_hash": "19ce1068b0303c3c14a7c74acfc6d1a5"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/ares-tracer.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "41d78b05c7f990a783e44d106161cdee",
+    "semantic_hash": "41d78b05c7f990a783e44d106161cdee"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/ares-tracer.h": {
+    "mtime": 1781560964.67531,
+    "ast_hash": "2d260db07b982f687ad78692275df9a4",
+    "semantic_hash": "2d260db07b982f687ad78692275df9a4"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/funcs_emit.c": {
+    "mtime": 1782014719.9410164,
+    "ast_hash": "6eec82e43814c1962ca865b2088ee8eb",
+    "semantic_hash": "6eec82e43814c1962ca865b2088ee8eb"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/execve.bpf.c": {
+    "mtime": 1781532712.5595284,
+    "ast_hash": "5fb342126bc756ad1a877d2ba8583c87",
+    "semantic_hash": "5fb342126bc756ad1a877d2ba8583c87"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/execve.c": {
+    "mtime": 1781532712.5597827,
+    "ast_hash": "81ac28d49cb60cd5f52a775a051481aa",
+    "semantic_hash": "81ac28d49cb60cd5f52a775a051481aa"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/module.h": {
+    "mtime": 1781532712.5610266,
+    "ast_hash": "c80786c69c407d0c1d722e914a2bdbb7",
+    "semantic_hash": "c80786c69c407d0c1d722e914a2bdbb7"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/proc_event.bpf.c": {
+    "mtime": 1781685097.4374208,
+    "ast_hash": "33a333318b17b6a492ef6c2a468f160b",
+    "semantic_hash": "33a333318b17b6a492ef6c2a468f160b"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/proc_event.c": {
+    "mtime": 1781532712.5602074,
+    "ast_hash": "005cfde31d398f264fdeff5881ac3b33",
+    "semantic_hash": "005cfde31d398f264fdeff5881ac3b33"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/prop_read.bpf.c": {
+    "mtime": 1781532712.560363,
+    "ast_hash": "766d7f5df303a2ffedfd517c0d662a44",
+    "semantic_hash": "766d7f5df303a2ffedfd517c0d662a44"
+  },
+  "/home/lyo/self-project/migration/ARES/src/funcs/modules/prop_read.c": {
+    "mtime": 1782207190.2890377,
+    "ast_hash": "9ffad54837a5d2a728c880840c724b5f",
+    "semantic_hash": "9ffad54837a5d2a728c880840c724b5f"
+  },
+  "/home/lyo/self-project/migration/ARES/src/lib/lib.bpf.c": {
+    "mtime": 1781560964.6763158,
+    "ast_hash": "171fa66b3b1f849c04b1aea2194f4805",
+    "semantic_hash": "171fa66b3b1f849c04b1aea2194f4805"
+  },
+  "/home/lyo/self-project/migration/ARES/src/lib/lib.c": {
+    "mtime": 1781728361.993051,
+    "ast_hash": "838523bbd886b6f5bafcb118c4ac3c7b",
+    "semantic_hash": "838523bbd886b6f5bafcb118c4ac3c7b"
+  },
+  "/home/lyo/self-project/migration/ARES/src/main.c": {
+    "mtime": 1782200726.636598,
+    "ast_hash": "c1e1a6a7a90cdc69c3794755847c4f65",
+    "semantic_hash": "c1e1a6a7a90cdc69c3794755847c4f65"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/symbolize.c": {
+    "mtime": 1782105841.9764538,
+    "ast_hash": "725ffbe1fba1eab5a0827df7bed70731",
+    "semantic_hash": "725ffbe1fba1eab5a0827df7bed70731"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/symbolize.h": {
+    "mtime": 1782106754.1554859,
+    "ast_hash": "b797de190aa5bdefb83e251308247b63",
+    "semantic_hash": "b797de190aa5bdefb83e251308247b63"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/syscall_argc.h": {
+    "mtime": 1782105841.9900098,
+    "ast_hash": "17bc33c7577f0c476c107f6046c5aa34",
+    "semantic_hash": "17bc33c7577f0c476c107f6046c5aa34"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/syscalls.bpf.c": {
+    "mtime": 1782106754.1554859,
+    "ast_hash": "e7bfcc3fdf0dc77c6af6e1e5d7bd7284",
+    "semantic_hash": "e7bfcc3fdf0dc77c6af6e1e5d7bd7284"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/syscalls.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "b262a3e9b63c6c1a238e531e7f1e0d34",
+    "semantic_hash": "b262a3e9b63c6c1a238e531e7f1e0d34"
+  },
+  "/home/lyo/self-project/migration/ARES/src/syscalls/syscalls.h": {
+    "mtime": 1782200726.636598,
+    "ast_hash": "a301abc0584be0fc54554696f2a3ce32",
+    "semantic_hash": "a301abc0584be0fc54554696f2a3ce32"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_capabilities.c": {
+    "mtime": 1782200726.6402504,
+    "ast_hash": "7104a76ed3051211791a2e9ebac28b2c",
+    "semantic_hash": "7104a76ed3051211791a2e9ebac28b2c"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_corr_emit.c": {
+    "mtime": 1782034898.802936,
+    "ast_hash": "f705a027e14ef2bb316383ef2cc44ff1",
+    "semantic_hash": "f705a027e14ef2bb316383ef2cc44ff1"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_decode.c": {
+    "mtime": 1782014405.9364743,
+    "ast_hash": "5e62bf30b2f153f3d6c196271bd4b747",
+    "semantic_hash": "5e62bf30b2f153f3d6c196271bd4b747"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_emit.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "e2bf1e026f1107394efc48a2ea4da6e2",
+    "semantic_hash": "e2bf1e026f1107394efc48a2ea4da6e2"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_funcs_emit.c": {
+    "mtime": 1782014405.9364743,
+    "ast_hash": "16c76d98d5854dc6202911a07638af2c",
+    "semantic_hash": "16c76d98d5854dc6202911a07638af2c"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_probe_spec.c": {
+    "mtime": 1782204904.2226806,
+    "ast_hash": "3c25f613df6f8012814bd0d17d971367",
+    "semantic_hash": "3c25f613df6f8012814bd0d17d971367"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_trace_schema.c": {
+    "mtime": 1782014405.9364743,
+    "ast_hash": "8e37dbd2b5abab3b360f721feff8fd4f",
+    "semantic_hash": "8e37dbd2b5abab3b360f721feff8fd4f"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/actions/build-selftests/vmlinux.h": {
+    "mtime": 1781543130.631562,
+    "ast_hash": "5da4c85221d24a7beafaacf3c0d8c537",
+    "semantic_hash": "5da4c85221d24a7beafaacf3c0d8c537"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/ci/build-in-docker.sh": {
+    "mtime": 1781543130.6515634,
+    "ast_hash": "de47abb3eadc1a0789bb9da5ea861781",
+    "semantic_hash": "de47abb3eadc1a0789bb9da5ea861781"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/ci/managers/debian.sh": {
+    "mtime": 1781543130.6578078,
+    "ast_hash": "83644930e7119eb0c0e6dc4741c89875",
+    "semantic_hash": "83644930e7119eb0c0e6dc4741c89875"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/ci/managers/test_compile.sh": {
+    "mtime": 1781543130.6585586,
+    "ast_hash": "a514007aff9a3c78d1d7a434d918f668",
+    "semantic_hash": "a514007aff9a3c78d1d7a434d918f668"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/ci/managers/travis_wait.bash": {
+    "mtime": 1781543130.6585586,
+    "ast_hash": "a59615e22ac60c1f5c6472a41ed1dd66",
+    "semantic_hash": "a59615e22ac60c1f5c6472a41ed1dd66"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/ci/managers/ubuntu.sh": {
+    "mtime": 1781543130.6585586,
+    "ast_hash": "559dd7e882115f832174ca6f9b14a081",
+    "semantic_hash": "559dd7e882115f832174ca6f9b14a081"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/fuzz/bpf-object-fuzzer.c": {
+    "mtime": 1781543130.6634445,
+    "ast_hash": "40988c7fe8aa1b56851737735dc55a51",
+    "semantic_hash": "40988c7fe8aa1b56851737735dc55a51"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/asm/barrier.h": {
+    "mtime": 1781543130.6660602,
+    "ast_hash": "6a5be97646dc3345c8c200ec46643601",
+    "semantic_hash": "6a5be97646dc3345c8c200ec46643601"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/compiler.h": {
+    "mtime": 1781543130.6660602,
+    "ast_hash": "0c4c24fcb416695f71fd9a0073dd887c",
+    "semantic_hash": "0c4c24fcb416695f71fd9a0073dd887c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/err.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "3d668ba396af30cd303968597a3b49f7",
+    "semantic_hash": "3d668ba396af30cd303968597a3b49f7"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/filter.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "d00568ebfc2eb09bda95d9f87d9edf26",
+    "semantic_hash": "d00568ebfc2eb09bda95d9f87d9edf26"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/kernel.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "f611ccee77541c88fc857592a3c0e4fb",
+    "semantic_hash": "f611ccee77541c88fc857592a3c0e4fb"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/list.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "71c578d543e6afe84ac36552c1cabfb5",
+    "semantic_hash": "71c578d543e6afe84ac36552c1cabfb5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/overflow.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "8cc0355e8f01dc1120663c9dc902f9a5",
+    "semantic_hash": "8cc0355e8f01dc1120663c9dc902f9a5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/ring_buffer.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "72282884dde9eb62781c6375169b2baa",
+    "semantic_hash": "72282884dde9eb62781c6375169b2baa"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/linux/types.h": {
+    "mtime": 1781543130.6668787,
+    "ast_hash": "878b4740e88c7ce300106252440a010e",
+    "semantic_hash": "878b4740e88c7ce300106252440a010e"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/bpf.h": {
+    "mtime": 1781543130.6693323,
+    "ast_hash": "af3577c2b1c2566ad76f1bd2c69dbe37",
+    "semantic_hash": "af3577c2b1c2566ad76f1bd2c69dbe37"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/bpf_common.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "591fed2bf512ac123137e00a6a79d5a5",
+    "semantic_hash": "591fed2bf512ac123137e00a6a79d5a5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/btf.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "f245849d703887a330e292c0ebfebb15",
+    "semantic_hash": "f245849d703887a330e292c0ebfebb15"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/fcntl.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "f9628a77734ec90a681514cbe730cc1a",
+    "semantic_hash": "f9628a77734ec90a681514cbe730cc1a"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/if_link.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "55c13220cec8c237f70628a50ef04ff7",
+    "semantic_hash": "55c13220cec8c237f70628a50ef04ff7"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/if_xdp.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "4ab9fc3ef17513d7f5c23b06e36d0b42",
+    "semantic_hash": "4ab9fc3ef17513d7f5c23b06e36d0b42"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/netdev.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "d88ebb7e17e29c23877a26fa7f5ca227",
+    "semantic_hash": "d88ebb7e17e29c23877a26fa7f5ca227"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/netlink.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "3994350c2d4d44c7a8a3bf3a53245350",
+    "semantic_hash": "3994350c2d4d44c7a8a3bf3a53245350"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/openat2.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "46c95584a637eced5af2cb8fbd6ca377",
+    "semantic_hash": "46c95584a637eced5af2cb8fbd6ca377"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/perf_event.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "91730abeb91387e5d27129a836589234",
+    "semantic_hash": "91730abeb91387e5d27129a836589234"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/pkt_cls.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "ea08e8f57c2ecd5d5b664363abaa241c",
+    "semantic_hash": "ea08e8f57c2ecd5d5b664363abaa241c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/pkt_sched.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "5e297c5136df89bd40ca37a02a5534aa",
+    "semantic_hash": "5e297c5136df89bd40ca37a02a5534aa"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/include/uapi/linux/stddef.h": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "286a6e4aae6ae448951af42c41865d49",
+    "semantic_hash": "286a6e4aae6ae448951af42c41865d49"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/scripts/build-fuzzers.sh": {
+    "mtime": 1781543130.6710472,
+    "ast_hash": "0e22169acaa6f33bd7adc1905d3f4cca",
+    "semantic_hash": "0e22169acaa6f33bd7adc1905d3f4cca"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/scripts/coverity.sh": {
+    "mtime": 1781543130.674031,
+    "ast_hash": "444b4ca585d1d70c8a2474fe00337de7",
+    "semantic_hash": "444b4ca585d1d70c8a2474fe00337de7"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/scripts/mailmap-update.sh": {
+    "mtime": 1781543130.674031,
+    "ast_hash": "69852f70da1d5101443ac9198a44bcc8",
+    "semantic_hash": "69852f70da1d5101443ac9198a44bcc8"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/scripts/sync-kernel.sh": {
+    "mtime": 1781543130.674031,
+    "ast_hash": "e0209da83ba5d94427d344b139354617",
+    "semantic_hash": "e0209da83ba5d94427d344b139354617"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf.c": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "f621e983c60e79eedfe451c8675bdaaf",
+    "semantic_hash": "f621e983c60e79eedfe451c8675bdaaf"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "a9b0b4c49fee72661f5d75746ea98bc6",
+    "semantic_hash": "a9b0b4c49fee72661f5d75746ea98bc6"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_core_read.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "49d9af875c9c8f223ca557144129f9bf",
+    "semantic_hash": "49d9af875c9c8f223ca557144129f9bf"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_endian.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "0eb66ce775803560ffb4fb414e9180c4",
+    "semantic_hash": "0eb66ce775803560ffb4fb414e9180c4"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_gen_internal.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "3bc5dc4b3cff78ec519e2934166c62ee",
+    "semantic_hash": "3bc5dc4b3cff78ec519e2934166c62ee"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_helper_defs.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "1a4f9d7387ea7d9b92f499307bdf712e",
+    "semantic_hash": "1a4f9d7387ea7d9b92f499307bdf712e"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_helpers.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "b792ff27d9a45c2f25c14ecd3c6c3ebd",
+    "semantic_hash": "b792ff27d9a45c2f25c14ecd3c6c3ebd"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_prog_linfo.c": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "1143ec6838c45ba89c32c47fc091ff63",
+    "semantic_hash": "1143ec6838c45ba89c32c47fc091ff63"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/bpf_tracing.h": {
+    "mtime": 1781543130.6750126,
+    "ast_hash": "ae43731f06fbcfa15da7d55eca989fbd",
+    "semantic_hash": "ae43731f06fbcfa15da7d55eca989fbd"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/btf.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "cfc7953fb11d132299c4028afc27efe3",
+    "semantic_hash": "cfc7953fb11d132299c4028afc27efe3"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/btf.h": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "1a92b13f322bee146dce004381a00758",
+    "semantic_hash": "1a92b13f322bee146dce004381a00758"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/btf_dump.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "3fb00b36cf3e7c44f65a6b73c38ebd81",
+    "semantic_hash": "3fb00b36cf3e7c44f65a6b73c38ebd81"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/btf_iter.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "3f51d61bb5d7adc27df4c896e399d4f1",
+    "semantic_hash": "3f51d61bb5d7adc27df4c896e399d4f1"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/btf_relocate.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "4e42970bd2851ad2c433ba31d36acfe3",
+    "semantic_hash": "4e42970bd2851ad2c433ba31d36acfe3"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/elf.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "8bc47efe5e66ca7bfe6ab99b00f7b4a5",
+    "semantic_hash": "8bc47efe5e66ca7bfe6ab99b00f7b4a5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/features.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "edd95a1af16c50aace9c138187f8e49f",
+    "semantic_hash": "edd95a1af16c50aace9c138187f8e49f"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/gen_loader.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "1b429dd518ee9a09977e0b43904f12fc",
+    "semantic_hash": "1b429dd518ee9a09977e0b43904f12fc"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/hashmap.c": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "4baeaed8695e32904c71d1b5b4537513",
+    "semantic_hash": "4baeaed8695e32904c71d1b5b4537513"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/hashmap.h": {
+    "mtime": 1781543130.675565,
+    "ast_hash": "bb62c1980bd7681dcc37850c3b4a93f5",
+    "semantic_hash": "bb62c1980bd7681dcc37850c3b4a93f5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf.c": {
+    "mtime": 1781543130.6795652,
+    "ast_hash": "44185ec638a8ff5eaa64736a00934aa2",
+    "semantic_hash": "44185ec638a8ff5eaa64736a00934aa2"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf.h": {
+    "mtime": 1781543130.6795652,
+    "ast_hash": "5e2a25d519fedfdbd1d3dea765514c9e",
+    "semantic_hash": "5e2a25d519fedfdbd1d3dea765514c9e"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_common.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "46d6dd03720f009bb1dd0951943ddacf",
+    "semantic_hash": "46d6dd03720f009bb1dd0951943ddacf"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_internal.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "49b1dac38d35fe2be5f4358bbb5e8d90",
+    "semantic_hash": "49b1dac38d35fe2be5f4358bbb5e8d90"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_legacy.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "1b01a2bc089e081ad8bb1b688a3e2742",
+    "semantic_hash": "1b01a2bc089e081ad8bb1b688a3e2742"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_probes.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "714095aba54d2f3d18a9a3e047c073a8",
+    "semantic_hash": "714095aba54d2f3d18a9a3e047c073a8"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_utils.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "151d21cca6116a015eba829297fdc464",
+    "semantic_hash": "151d21cca6116a015eba829297fdc464"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/libbpf_version.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "282133d229476bbcb8b5e07bc083dc74",
+    "semantic_hash": "282133d229476bbcb8b5e07bc083dc74"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/linker.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "7862f9fa21c373abb295a5e8326690e3",
+    "semantic_hash": "7862f9fa21c373abb295a5e8326690e3"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/netlink.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "b7c4f59ad440838a89eb7dcd08fc4652",
+    "semantic_hash": "b7c4f59ad440838a89eb7dcd08fc4652"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/nlattr.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "8f1f5fbae9c194cf7fd12aa18816b29a",
+    "semantic_hash": "8f1f5fbae9c194cf7fd12aa18816b29a"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/nlattr.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "4a499d52f391593f2fd917998da41305",
+    "semantic_hash": "4a499d52f391593f2fd917998da41305"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/relo_core.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "b505e69df112e86b0fe2d62e04686eeb",
+    "semantic_hash": "b505e69df112e86b0fe2d62e04686eeb"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/relo_core.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "260b65b379753a07cefa7240056ca40c",
+    "semantic_hash": "260b65b379753a07cefa7240056ca40c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/ringbuf.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "156be46c99b2937b844edbf29017c359",
+    "semantic_hash": "156be46c99b2937b844edbf29017c359"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/skel_internal.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "da37eda006f37a6088f4c3b63940dd8c",
+    "semantic_hash": "da37eda006f37a6088f4c3b63940dd8c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/strset.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "793fbd00cf98420682e8fa777a3ec819",
+    "semantic_hash": "793fbd00cf98420682e8fa777a3ec819"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/strset.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "93d055b1d063b62e375c069f821df65a",
+    "semantic_hash": "93d055b1d063b62e375c069f821df65a"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/usdt.bpf.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "23cd209651ecb82b74819d72ce7851bf",
+    "semantic_hash": "23cd209651ecb82b74819d72ce7851bf"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/usdt.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "d89f67c9f8dd2668a2ba01337c7b5a2c",
+    "semantic_hash": "d89f67c9f8dd2668a2ba01337c7b5a2c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/zip.c": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "7ed6b90ef240b631cad57488d3bdace1",
+    "semantic_hash": "7ed6b90ef240b631cad57488d3bdace1"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/src/zip.h": {
+    "mtime": 1781543130.6835654,
+    "ast_hash": "21a25a932602539c675edef878c7b5ef",
+    "semantic_hash": "21a25a932602539c675edef878c7b5ef"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-fold.py": {
+    "mtime": 1782106754.1572206,
+    "ast_hash": "30dac54a3ba23c236e1b43324500791e",
+    "semantic_hash": "30dac54a3ba23c236e1b43324500791e"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/device.py": {
+    "mtime": 1781591776.9903667,
+    "ast_hash": "db86c6445efe4bc75fe698df76672b1a",
+    "semantic_hash": "db86c6445efe4bc75fe698df76672b1a"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/pyproject.toml": {
+    "mtime": 1781532712.5763845,
+    "ast_hash": "8a8c3f42e2600c50fda75f807e96c2b1",
+    "semantic_hash": "8a8c3f42e2600c50fda75f807e96c2b1"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/server.py": {
+    "mtime": 1781591776.9903667,
+    "ast_hash": "4933bb22a8d5ef5109839f52df3eb45d",
+    "semantic_hash": "4933bb22a8d5ef5109839f52df3eb45d"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/test_unified_ingest.py": {
+    "mtime": 1782034898.802936,
+    "ast_hash": "d88bccafb24bddec844bb3bb96465221",
+    "semantic_hash": "d88bccafb24bddec844bb3bb96465221"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/trace_store.py": {
+    "mtime": 1782034898.8069363,
+    "ast_hash": "b6692102a85263cd8352e3c9055f7dac",
+    "semantic_hash": "b6692102a85263cd8352e3c9055f7dac"
+  },
+  "/home/lyo/self-project/migration/ARES/vmlinux.h": {
+    "mtime": 1781532712.7040455,
+    "ast_hash": "b115ddbb282a6051fcbd9a929304c5d8",
+    "semantic_hash": "b115ddbb282a6051fcbd9a929304c5d8"
+  },
+  "/home/lyo/self-project/migration/ARES/.github/workflows/ci.yml": {
+    "mtime": 1781965241.8814352,
+    "ast_hash": "d5fdca67a2cff4ab2459c9cf0a7293ab",
+    "semantic_hash": "d5fdca67a2cff4ab2459c9cf0a7293ab"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/progress.md": {
+    "mtime": 1782207210.1332164,
+    "ast_hash": "95d4321bfa59725a5c531f0f4340b78b",
+    "semantic_hash": "95d4321bfa59725a5c531f0f4340b78b"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-1-brief.md": {
+    "mtime": 1782125514.7109127,
+    "ast_hash": "23efd658892d32dea754687bc9201a2a",
+    "semantic_hash": "23efd658892d32dea754687bc9201a2a"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-1-report.md": {
+    "mtime": 1782125661.9944518,
+    "ast_hash": "9762b48c45adac4aff69aaaca9c1dda0",
+    "semantic_hash": "9762b48c45adac4aff69aaaca9c1dda0"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-2-brief.md": {
+    "mtime": 1782125742.8496587,
+    "ast_hash": "7cf0c37573f7933bfd5325c0541e29bb",
+    "semantic_hash": "7cf0c37573f7933bfd5325c0541e29bb"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-2-report.md": {
+    "mtime": 1782125958.6691601,
+    "ast_hash": "f3d197e96fd81a4da51ee684aa38520d",
+    "semantic_hash": "f3d197e96fd81a4da51ee684aa38520d"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-3-brief.md": {
+    "mtime": 1782126062.9652295,
+    "ast_hash": "5623e16ea22d484eab8082120aabdd1f",
+    "semantic_hash": "5623e16ea22d484eab8082120aabdd1f"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-3-report.md": {
+    "mtime": 1782126179.866086,
+    "ast_hash": "e72d0065916ddcad34fa2f7c1ad00c9c",
+    "semantic_hash": "e72d0065916ddcad34fa2f7c1ad00c9c"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-4-brief.md": {
+    "mtime": 1782012878.0712633,
+    "ast_hash": "bf4b74001c60a98c80b9bf90f8acfc5e",
+    "semantic_hash": "bf4b74001c60a98c80b9bf90f8acfc5e"
+  },
+  "/home/lyo/self-project/migration/ARES/.superpowers/sdd/task-4-report.md": {
+    "mtime": 1782013650.3754585,
+    "ast_hash": "24d464adcfcab3638e9d26dc710f2e07",
+    "semantic_hash": "24d464adcfcab3638e9d26dc710f2e07"
+  },
+  "/home/lyo/self-project/migration/ARES/BACKLOG.md": {
+    "mtime": 1782204904.2146802,
+    "ast_hash": "ce1db50f7cf9a291d07844b08308b73e",
+    "semantic_hash": "ce1db50f7cf9a291d07844b08308b73e"
+  },
+  "/home/lyo/self-project/migration/ARES/CLAUDE.md": {
+    "mtime": 1782123413.1760163,
+    "ast_hash": "d3d7c0bce8d3457e520131c2aba88211",
+    "semantic_hash": "d3d7c0bce8d3457e520131c2aba88211"
+  },
+  "/home/lyo/self-project/migration/ARES/DOCUMENTATION.md": {
+    "mtime": 1782204904.2146802,
+    "ast_hash": "414379dc14912d970b40ad7d0eca1cea",
+    "semantic_hash": "414379dc14912d970b40ad7d0eca1cea"
+  },
+  "/home/lyo/self-project/migration/ARES/README.md": {
+    "mtime": 1782014405.9308379,
+    "ast_hash": "b29097393f81c0d6cf349f45c6491770",
+    "semantic_hash": "b29097393f81c0d6cf349f45c6491770"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/actions/debian/action.yml": {
+    "mtime": 1781543130.6355624,
+    "ast_hash": "34779604b883a41276370ccf00747b12",
+    "semantic_hash": "34779604b883a41276370ccf00747b12"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/actions/setup/action.yml": {
+    "mtime": 1781543130.6355624,
+    "ast_hash": "37073811e9e5bf0c6ec5fd33ebb49286",
+    "semantic_hash": "37073811e9e5bf0c6ec5fd33ebb49286"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/build.yml": {
+    "mtime": 1781543130.6355624,
+    "ast_hash": "1c1f94a0321bf49e601f2d43995af551",
+    "semantic_hash": "1c1f94a0321bf49e601f2d43995af551"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/cifuzz.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "6e8996ff4e08bccd6820e589cfff70ef",
+    "semantic_hash": "6e8996ff4e08bccd6820e589cfff70ef"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/codeql.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "2c87db48e170cc38f11dc829cddc1686",
+    "semantic_hash": "2c87db48e170cc38f11dc829cddc1686"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/coverity.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "6fa9584b9a49caa5694a37d4958e4922",
+    "semantic_hash": "6fa9584b9a49caa5694a37d4958e4922"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/lint.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "efe79bb23e94da774f48ca68dc1abdd5",
+    "semantic_hash": "efe79bb23e94da774f48ca68dc1abdd5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/ondemand.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "79ecda7b6bc839ec336e53c4ce8a0279",
+    "semantic_hash": "79ecda7b6bc839ec336e53c4ce8a0279"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/test.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "3217f900f4fb15e7870417e9fbf333b2",
+    "semantic_hash": "3217f900f4fb15e7870417e9fbf333b2"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.github/workflows/vmtest.yml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "4863def0c4f78c642df2c76427885775",
+    "semantic_hash": "4863def0c4f78c642df2c76427885775"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/.readthedocs.yaml": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "0e00c15ee60413a8c2c1e225674566b5",
+    "semantic_hash": "0e00c15ee60413a8c2c1e225674566b5"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/README.md": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "7ce1472bce9c50f1dd10968303015e59",
+    "semantic_hash": "7ce1472bce9c50f1dd10968303015e59"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/SYNC.md": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "b824e415cf4b78da50f18fa0dd211dc2",
+    "semantic_hash": "b824e415cf4b78da50f18fa0dd211dc2"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/fuzz/readme.md": {
+    "mtime": 1781543130.664827,
+    "ast_hash": "6998b7b524f1116ca4d7116204b911ba",
+    "semantic_hash": "6998b7b524f1116ca4d7116204b911ba"
+  },
+  "/home/lyo/self-project/migration/ARES/tools/ares-mcp/README.md": {
+    "mtime": 1782034898.802936,
+    "ast_hash": "de9d7e337508a56c8b2ea5b63d36fa04",
+    "semantic_hash": "de9d7e337508a56c8b2ea5b63d36fa04"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-compact-darkbg.png": {
+    "mtime": 1781543130.6422608,
+    "ast_hash": "9d3c1cb6234d18ff43acccc16701f59a",
+    "semantic_hash": "9d3c1cb6234d18ff43acccc16701f59a"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-compact-mono.png": {
+    "mtime": 1781543130.646133,
+    "ast_hash": "963587e2868b85f4a793d41d37a08c6c",
+    "semantic_hash": "963587e2868b85f4a793d41d37a08c6c"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-compact.png": {
+    "mtime": 1781543130.646133,
+    "ast_hash": "9b0a6205c9033be2d3396abdfa77ed86",
+    "semantic_hash": "9b0a6205c9033be2d3396abdfa77ed86"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sideways-darkbg.png": {
+    "mtime": 1781543130.646133,
+    "ast_hash": "64ef09263727431fbfb8c49f0166de29",
+    "semantic_hash": "64ef09263727431fbfb8c49f0166de29"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sideways-mono.png": {
+    "mtime": 1781543130.646133,
+    "ast_hash": "6c9eaf63e303381789e33e778e8b92f9",
+    "semantic_hash": "6c9eaf63e303381789e33e778e8b92f9"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sideways.png": {
+    "mtime": 1781543130.6475632,
+    "ast_hash": "b5e3aeb637915ac1edeb8ec7f723da65",
+    "semantic_hash": "b5e3aeb637915ac1edeb8ec7f723da65"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sparse-darkbg.png": {
+    "mtime": 1781543130.6475632,
+    "ast_hash": "6c3ce82710f9fb5ede5494113d5831a1",
+    "semantic_hash": "6c3ce82710f9fb5ede5494113d5831a1"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sparse-mono.png": {
+    "mtime": 1781543130.6475632,
+    "ast_hash": "3425cdb49cedc83c1afb3d56995d93d4",
+    "semantic_hash": "3425cdb49cedc83c1afb3d56995d93d4"
+  },
+  "/home/lyo/self-project/migration/ARES/third_party/libbpf/assets/libbpf-logo-sparse.png": {
+    "mtime": 1781543130.6515634,
+    "ast_hash": "6c3a282c10cfb3f6660f7baa1be580b7",
+    "semantic_hash": "6c3a282c10cfb3f6660f7baa1be580b7"
+  },
+  "/home/lyo/self-project/migration/ARES/.claude/settings.json": {
+    "mtime": 1782123399.8832576,
+    "ast_hash": "e1073342e958ac9f00716938c8f165e3",
+    "semantic_hash": "e1073342e958ac9f00716938c8f165e3"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/runtime.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "9d1566ad9674668a5f1b6de180e8d73b",
+    "semantic_hash": "9d1566ad9674668a5f1b6de180e8d73b"
+  },
+  "/home/lyo/self-project/migration/ARES/src/common/runtime.h": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "eee42b0d53ae5a140f5c377c6ae0883e",
+    "semantic_hash": "eee42b0d53ae5a140f5c377c6ae0883e"
+  },
+  "/home/lyo/self-project/migration/ARES/src/trace/trace.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "aee980cc48845f986c5416305542312d",
+    "semantic_hash": "aee980cc48845f986c5416305542312d"
+  },
+  "/home/lyo/self-project/migration/ARES/src/trace/trace_args.c": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "7bcf941c61d230d3fb60039ce2b31598",
+    "semantic_hash": "7bcf941c61d230d3fb60039ce2b31598"
+  },
+  "/home/lyo/self-project/migration/ARES/src/trace/trace_args.h": {
+    "mtime": 1782204904.2186804,
+    "ast_hash": "b8e2726f022329a407978b86591165f6",
+    "semantic_hash": "b8e2726f022329a407978b86591165f6"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_runtime.c": {
+    "mtime": 1782204904.2226806,
+    "ast_hash": "3a59e97354f967e81634b5b505b5ce0a",
+    "semantic_hash": "3a59e97354f967e81634b5b505b5ce0a"
+  },
+  "/home/lyo/self-project/migration/ARES/tests/test_trace_args.c": {
+    "mtime": 1782204904.2226806,
+    "ast_hash": "f1082dd2b26721585e5d7bb6fc8bbcd5",
+    "semantic_hash": "f1082dd2b26721585e5d7bb6fc8bbcd5"
+  }
+}

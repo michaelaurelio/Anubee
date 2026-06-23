@@ -26,18 +26,11 @@ enum event_type {
 };
 
 
-// General header for events
-struct event_header {
-    __u32 type;
-    __u32 pid;
-    __u32 tid;
-    __u32 _pad; // Padding for alignment based on recs 
-};
-
+#include "common/trace_schema.h"
 
 // Event for native function calls (ARES_EVENT_CALL) and returns (ARES_EVENT_RETURN).
 struct event {
-    struct event_header h;
+    struct trace_event_header h;
     __u64 entry_addr;
     __u64 caller_addr;    // x30 (LR) at function entry; unused in RETURN events
     __u64 elapsed_ns;     // time from entry to return (RETURN only; 0 in CALL)
@@ -55,7 +48,7 @@ struct event {
 
 // Event for process fork (ARES_EVENT_SPAWN).
 struct spawn_event {
-    struct event_header h;
+    struct trace_event_header h;
     __u32 child_pid;
     char  comm[TASK_COMM_LEN];  // parent comm at fork time
 };
@@ -63,7 +56,7 @@ struct spawn_event {
 
 // Event for process exit (ARES_EVENT_PROC_EXIT).
 struct proc_exit_event {
-    struct event_header h;
+    struct trace_event_header h;
     char comm[TASK_COMM_LEN];
     int  exit_code;
 };
@@ -71,7 +64,7 @@ struct proc_exit_event {
 
 // Event for execve syscall (ARES_EVENT_EXECVE).
 struct execve_event {
-    struct event_header h;
+    struct trace_event_header h;
     __u32 argc;
     __u32 stack_depth;
     char  comm[TASK_COMM_LEN];
@@ -86,7 +79,7 @@ struct execve_event {
 #define PROP_VALUE_LEN  96
 
 struct prop_event {
-    struct event_header h;
+    struct trace_event_header h;
     char  comm[TASK_COMM_LEN];
     char  name[PROP_NAME_LEN];
     char  value[PROP_VALUE_LEN];

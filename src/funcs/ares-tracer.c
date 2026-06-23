@@ -688,7 +688,7 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
 // Worker thread: pop CALL/RETURN records and process them off the poll thread.
 static void process_call_return(const void *data, size_t data_sz)
 {
-    const struct event_header *header = data;
+    const struct trace_event_header *header = data;
     if (data_sz < sizeof(*header)) return;
 
     if (header->type == ARES_EVENT_CALL) {
@@ -887,7 +887,7 @@ static void *funcs_worker_main(void *arg)
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-    const struct event_header *header = data;
+    const struct trace_event_header *header = data;
     if (data_sz < sizeof(*header)) return 0;
     struct probe_resolve_ctx *rctx = ctx;  // routed via ring_buffer__new (see cmd_funcs)
 

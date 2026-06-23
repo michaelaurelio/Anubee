@@ -266,7 +266,7 @@ static void pr_detach(void)
     if (pr_link_cb)       { bpf_link__destroy(pr_link_cb);       pr_link_cb       = NULL; }
 }
 
-static int pr_handle_event(const struct event_header *hdr, const void *data, size_t sz)
+static int pr_handle_event(const struct trace_event_header *hdr, const void *data, size_t sz)
 {
     if (sz < sizeof(struct prop_event)) return -1;
     const struct prop_event *e = data;

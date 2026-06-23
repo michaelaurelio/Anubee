@@ -16,7 +16,7 @@ typedef struct {
     void (*detach)(void);
     void (*print_summary)(void);  // called once on exit; may be NULL
     // Returns 0 if handled, -1 if event type not recognised by this module.
-    int  (*handle_event)(const struct event_header *hdr, const void *data, size_t sz);
+    int  (*handle_event)(const struct trace_event_header *hdr, const void *data, size_t sz);
 } ares_module_t;
 
 extern ares_module_t module_proc_event;

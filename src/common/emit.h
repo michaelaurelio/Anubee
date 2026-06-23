@@ -29,7 +29,6 @@ struct ares_sink {
     const char         *path;         // for the "wrote N" report
     const char         *noun;         // "syscall" / "event"
     int                 jsonl;        // 1 = newline-per-record; 0 = JSON array with commas
-    unsigned long       flush_every;  // 0 → default 8192
     unsigned long       since_flush;
 };
 

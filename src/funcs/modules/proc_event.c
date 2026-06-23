@@ -34,7 +34,7 @@ static void pe_detach(void)
     if (exit_link) { bpf_link__destroy(exit_link); exit_link = NULL; }
 }
 
-static int pe_handle_event(const struct event_header *hdr, const void *data, size_t sz)
+static int pe_handle_event(const struct trace_event_header *hdr, const void *data, size_t sz)
 {
     if (hdr->type == ARES_EVENT_SPAWN) {
         const struct spawn_event *e = data;

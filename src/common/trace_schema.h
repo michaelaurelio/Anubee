@@ -17,7 +17,9 @@ struct trace_event_header {
 };
 
 // The single discriminator vocabulary. Host-side ares-mcp keys ingest on the
-// string form (see trace_type_name).
+// string form (see trace_type_name). Not compiled into BPF objects (vmlinux.h
+// defines conflicting enum members such as TRACE_STACK).
+#ifndef __bpf__
 enum trace_event_type {
     TRACE_CALL = 1,   // native function entry (funcs)
     TRACE_RETURN,     // native function return (funcs)
@@ -33,7 +35,8 @@ enum trace_event_type {
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.
-// Defined in trace_schema.c (userspace only — not compiled into BPF objects).
+// Defined in trace_schema.c.
 const char *trace_type_name(unsigned type);
+#endif /* __bpf__ */
 
 #endif /* __ARES_TRACE_SCHEMA_H */

@@ -64,9 +64,10 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_li
 static int handle_event(void *ctx, void *data, size_t sz)
 {
     (void)ctx;
-    if (sz < sizeof(struct corr_event_header))
+    if (sz < sizeof(struct trace_event_header))
         return 0;
-    const struct corr_event_header *h = data;
+    const struct trace_event_header *h = data;
+    static struct jbuf cj;  // reused; handle_event is single-threaded (ring_buffer__poll)
 
     if (h->type == CORR_EV_FUNC) {
         if (sz < sizeof(struct corr_func_event)) return 0;
@@ -76,7 +77,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->span, (unsigned long long)e->parent_span,
                    e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
         if (g_jsonl) {
-            static struct jbuf cj;   // reused; handle_event is single-threaded (ring_buffer__poll)
             cj.len = 0;
             corr_emit_func(&cj, e);
             fwrite(cj.b, 1, cj.len, g_jsonl);
@@ -92,7 +92,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
         if (g_jsonl) {
-            static struct jbuf cj;   // reused; handle_event is single-threaded (ring_buffer__poll)
             cj.len = 0;
             corr_emit_syscall(&cj, e, name);
             fwrite(cj.b, 1, cj.len, g_jsonl);

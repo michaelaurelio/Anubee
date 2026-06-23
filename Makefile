@@ -90,6 +90,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
+               ares_sink_open ares_sink_emit ares_sink_flush \
+               ares_sink_close ares_sink_report \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok
 
@@ -257,7 +259,7 @@ $(FUNC_PART): $(FUNC_OBJ)
 	           --keep-global-symbol=funcs_run \
 	           --keep-global-symbol=funcs_teardown $@
 
-$(COMMON_PART): $(COMMON_OBJ)
+$(COMMON_PART): $(COMMON_OBJ) Makefile
 	$(LD) -r -o $@ $(COMMON_OBJ)
 	$(OBJCOPY) $(foreach s,$(COMMON_API),--keep-global-symbol=$(s)) $@
 

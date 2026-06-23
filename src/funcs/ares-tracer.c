@@ -197,12 +197,11 @@ static const struct argp argp = { options, parse_opts, args_doc, doc };
 // moved to src/common/launch.{c,h} as ares_*; shared with the correlate engine.
 
 
-// eBPF debug print
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
-    // if (level == LIBBPF_DEBUG) return 0;
-    // return vfprintf(stderr, format, args);
-    return 0; // Suppress output
+    if (level == LIBBPF_DEBUG && !getenv("ARES_DEBUG"))
+        return 0;
+    return vfprintf(stderr, format, args);
 }
 
 
@@ -219,7 +218,7 @@ static void sig_handler(int sig)
 {
     exiting = 1;
     if (++sig_count > 1)
-        _exit(1);
+        _exit(130);
 }
 
 

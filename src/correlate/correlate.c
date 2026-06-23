@@ -41,7 +41,7 @@ static const char *syscall_name(long nr)
 }
 
 static volatile sig_atomic_t exiting = 0;
-static void on_sigint(int sig) { (void)sig; exiting = 1; }
+static void on_sigint(int sig) { (void)sig; if (exiting) _exit(130); exiting = 1; }
 
 static FILE *g_jsonl = NULL;
 static int   g_quiet = 0;

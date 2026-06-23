@@ -11,3 +11,6 @@ tmp/
 
 # local knowledge graph (regenerated via `graphify update .`)
 graphify-out/
+
+# local graphify context exclusions
+.graphifyignore

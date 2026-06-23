@@ -37,8 +37,9 @@ void jb_u64(struct jbuf *j, unsigned long long v)
 
 void jb_i64(struct jbuf *j, long long v)
 {
-	if (v < 0) { jb_c(j, '-'); jb_u64(j, (unsigned long long)(-(v + 1)) + 1); }
-	else jb_u64(j, (unsigned long long)v);
+	char t[24];
+	int n = snprintf(t, sizeof t, "%lld", v);
+	jb_raw(j, t, (size_t)n);
 }
 
 void jb_hex(struct jbuf *j, unsigned long long v)
@@ -113,8 +114,7 @@ void ares_sink_emit(struct ares_sink *s)
     }
     s->count++;
     s->jb.len = 0;
-    unsigned long every = s->flush_every ? s->flush_every : SINK_FLUSH_DEFAULT;
-    if (++s->since_flush >= every) {
+    if (++s->since_flush >= SINK_FLUSH_DEFAULT) {
         fflush(s->f);
         s->since_flush = 0;
     }

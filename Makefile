@@ -169,7 +169,7 @@ $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 # probe; one compilation unit.
 $(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c $(SRC)/funcs/ares-tracer.h vmlinux.h $(LIBBPF_A) \
                  $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h \
-                 $(SRC)/common/span_stack.bpf.h \
+                 $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h \
                  $(wildcard $(SRC)/funcs/modules/*.bpf.c)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@
@@ -186,7 +186,7 @@ $(LIB_SKEL): $(LIB_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_lib > $@
 
 # correlate engine BPF: span stack + entry uprobe + span-gated do_el0_svc kprobe.
-$(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c $(SRC)/correlate/correlate.h $(SRC)/common/span_stack.bpf.h vmlinux.h $(LIBBPF_A)
+$(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c $(SRC)/correlate/correlate.h $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/correlate -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true

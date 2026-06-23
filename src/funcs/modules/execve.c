@@ -45,7 +45,7 @@ static void ex_detach(void)
     if (exec_link)     { bpf_link__destroy(exec_link);     exec_link     = NULL; }
 }
 
-static int ex_handle_event(const struct event_header *hdr, const void *data, size_t sz)
+static int ex_handle_event(const struct trace_event_header *hdr, const void *data, size_t sz)
 {
     if (hdr->type != ARES_EVENT_EXECVE)
         return -1;

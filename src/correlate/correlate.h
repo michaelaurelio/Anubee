@@ -13,17 +13,12 @@ enum corr_event_type {
     CORR_EV_SYSCALL = 2,     // a syscall issued while inside a probed function
 };
 
-struct corr_event_header {
-    __u32 type;
-    __u32 pid;
-    __u32 tid;
-    __u32 _pad;
-};
+#include "common/trace_schema.h"
 
 // A probed-function entry. `span` is this frame's id; `parent_span` links to the
 // enclosing probed frame (0 = outermost).
 struct corr_func_event {
-    struct corr_event_header h;
+    struct trace_event_header h;
     __u64 span;
     __u64 parent_span;
     __u64 entry_addr;
@@ -32,7 +27,7 @@ struct corr_func_event {
 
 // A syscall attributed to the innermost open span on its thread.
 struct corr_syscall_event {
-    struct corr_event_header h;
+    struct trace_event_header h;
     __u64 span;
     __u64 nr;
     __u64 args[CORR_SYS_ARGS];

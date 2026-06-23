@@ -265,10 +265,11 @@ loading privileges (often SELinux permissive), itself a RASP tell.
 - **Rooted device required**; needs eBPF + BTF and (usually) SELinux permissive.
 - `syscalls`: string args captured for a built-in syscall set; return values for
   a curated set of syscalls; frame-pointer-based stack walks (omitted frame
-  pointers are missed). Backtrace frames in ART JIT-compiled Java methods resolve
-  to `[JIT]!<method>+0x..` via the in-process `__jit_debug_descriptor`; AOT frames
-  in OAT/ODEX/VDEX files (e.g. `base.vdex+0x..`, app `.odex`) are still shown as
-  `file+offset` — managed-method resolution for those formats is on the backlog.
+  pointers are missed). `syscalls` backtraces name on-disk libraries, AOT app methods (`base.odex`,
+  via embedded mini-debug-info), ART JIT methods (`[JIT]!`), and kernel vDSO
+  calls (`[vdso]!`). Still shown as file+offset: interpreter/quickened dex frames
+  (`base.vdex`, `[anon:dalvik-DEX data]` — planned). `[anon:dalvik-main space]`
+  frames are GC-heap addresses surfaced by frame-pointer unwinding, not methods.
 - `funcs`: uprobe instrumentation is detectable; spec-driven, so you must know
   which functions to target.
 - `ares funcs` emits log-line JSONL by default; pass `-J` to also emit structured

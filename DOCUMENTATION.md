@@ -283,6 +283,28 @@ AOT-compiled frames backed by OAT/ODEX/VDEX files (e.g. `base.vdex+0x..`, app
 `.odex`) are shown as `file+offset`; managed-method resolution for those formats
 is deferred (see [BACKLOG.md](BACKLOG.md)).
 
+#### vDSO frames
+
+`[vdso]` frames are named from the vDSO's `.dynsym`, read out of the target's
+live memory (the vDSO is a complete, immutable ELF the kernel maps with no
+backing file). A frame renders as `[vdso]!__kernel_clock_gettime+0x..`. The
+parse reuses the on-disk symbol machinery (`ingest_fd_section` → `add_symbols`
+→ `sym_lookup`) via `pread` on `/proc/<pid>/mem`; it writes nothing into the
+target (firewall-clean) and is built once per pid.
+
+#### Backtrace frame classification (what resolves, what does not)
+
+| Region | What it is | Resolution |
+|---|---|---|
+| `<lib>.so!sym+off` | on-disk ELF | `.dynsym` / `.symtab` / `.gnu_debugdata` |
+| `base.odex!Class.method+off` | AOT-compiled app code | **already named** via `.gnu_debugdata` mini-debug-info embedded by `dex2oat` |
+| `[JIT]!method+off` | ART JIT code cache | GDB JIT descriptor walk (live memory) |
+| `[vdso]!__kernel_*+off` | kernel vDSO | vDSO `.dynsym` (live memory) |
+| `<lib>.so+off` (no `!`) | stripped / past-symbol-end native | no symbol exists — bare offset is the ceiling |
+| `[anon:dalvik-main space]+off` | GC object heap | **not a method** — a return address here is frame-pointer-unwind noise |
+| `[anon:dalvik-DEX data]+off` | dex bytecode (nterp) | **deferred** — needs the dex method resolver (Phase 2) |
+| `base.vdex+off` | interpreter / quickened dex | **deferred** — dex resolver + PC-meaning research (Phase 2) |
+
 ## 6. The `correlate` engine (uprobe + span-gated kprobe, loud)
 
 Function→syscall correlation on a live run. One BPF object

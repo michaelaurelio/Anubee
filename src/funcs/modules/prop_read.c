@@ -7,6 +7,7 @@
 #include <bpf/libbpf.h>
 #include "module.h"
 #include "ares-tracer-priv.h"
+#include "common/probe_resolve.h"   // struct load_seg, seg_vaddr_to_off
 
 // ── per-property access counters ─────────────────────────────────────────────
 
@@ -146,6 +147,26 @@ static unsigned long find_symbol_in_elf(const char *path, const char *sym_name)
     Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
     if (!elf) { close(fd); return 0; }
 
+    // PT_LOAD table for vaddr->file-offset conversion (uprobes want a file
+    // offset; st_value is a vaddr). libc maps p_vaddr == p_offset so this is a
+    // no-op there today, but keeps prop_read correct for any skewed library.
+    struct load_seg segs[32];
+    int nseg = 0;
+    {
+        size_t phnum = 0;
+        if (elf_getphdrnum(elf, &phnum) == 0) {
+            for (size_t i = 0; i < phnum && nseg < 32; i++) {
+                GElf_Phdr phdr;
+                if (!gelf_getphdr(elf, (int)i, &phdr)) continue;
+                if (phdr.p_type != PT_LOAD) continue;
+                segs[nseg].vaddr  = (unsigned long)phdr.p_vaddr;
+                segs[nseg].offset = (unsigned long)phdr.p_offset;
+                segs[nseg].filesz = (unsigned long)phdr.p_filesz;
+                nseg++;
+            }
+        }
+    }
+
     unsigned long offset = 0;
     Elf_Scn *scn = NULL;
     while ((scn = elf_nextscn(elf, scn)) != NULL && !offset) {
@@ -163,7 +184,7 @@ static unsigned long find_symbol_in_elf(const char *path, const char *sym_name)
             if (sym.st_value == 0) continue;
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (name && strcmp(name, sym_name) == 0) {
-                offset = (unsigned long)sym.st_value;
+                offset = seg_vaddr_to_off(segs, nseg, (unsigned long)sym.st_value);
                 break;
             }
         }

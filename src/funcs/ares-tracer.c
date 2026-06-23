@@ -46,19 +46,19 @@ static const char doc[] = "Android native function calls proof of concept using 
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
-    { "pid", 'p', "PID[,PID...]", 0, "Process ID(s) to inspect" },
-    { "package", 'P', "PACKAGE", 0, "Package to spawn" },
-    { "include-module", 'I', "MODULE", 0, "Target module to trace (path, name)" },
-    { "include", 'i', "FUNCTION", 0, "Target function to trace (regex)" },
-    { "verbose", 'v', NULL, 0, "Verbose debug output (modules scanned, symbols matched)" },
-    { "resolve-syms", 'S', NULL, 0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment" },
-    { "entry", 'e', "SPEC", 0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
-    { "spec-file", 'F', "FILE", 0, "Load custom probe specs from file (one spec per line, # for comments)" },
-    { "output", 'o', "FILE", 0, "Export output to file (.csv -> CSV, .jsonl/.ndjson -> JSONL)" },
-    { "include-ret", 'r', "FUNCTION", 0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
-    { "caller-only", 'c', NULL, 0, "Print only the direct caller, suppress the rest of the call stack" },
-    { "module", 'm', "NAME", 0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
-    { "structured", 'J', 0, 0, "Emit structured JSONL records (one per event) into the -o sink alongside text" },
+    { "pid",            'p', "PID[,PID...]", 0, "Process ID(s) to inspect",                                                          0 },
+    { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
+    { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
+    { "include",        'i', "FUNCTION",     0, "Target function to trace (regex)",                                                   0 },
+    { "verbose",        'v', NULL,           0, "Verbose debug output (modules scanned, symbols matched)",                            0 },
+    { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",            0 },
+    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",          0 },
+    { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",              0 },
+    { "output",         'o', "FILE",         0, "Export output to file (.csv -> CSV, .jsonl/.ndjson -> JSONL)",                       0 },
+    { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
+    { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                  0 },
+    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",              0 },
+    { "structured",     'J', 0,              0, "Emit structured JSONL records (one per event) into the -o sink alongside text",      0 },
     { 0 }
 };
 
@@ -189,7 +189,7 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
     return 0;
 }
 
-static const struct argp argp = { options, parse_opts, args_doc, doc };
+static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 
 
 // Application UID resolver 
@@ -216,6 +216,7 @@ static char g_funcs_pkg[256];           // package to launch (spawn mode), else 
 
 static void sig_handler(int sig)
 {
+    (void)sig;
     exiting = 1;
     if (++sig_count > 1)
         _exit(130);

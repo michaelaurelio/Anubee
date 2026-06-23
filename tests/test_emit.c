@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for the shared JSON buffer serializer. Pins the exact byte
-// output so the syscalls repoint is provably behavior-preserving.
+// Host unit tests for the shared JSON buffer serializer and ares_sink.
 #include "common/emit.h"
 
 #include <stdio.h>
@@ -16,6 +15,22 @@ static int checks = 0, failures = 0;
                msg, (int)(j).len, (j).b, want);                            \
     }                                                                       \
 } while (0)
+#define CHECK(cond, msg) do { checks++; if (!(cond)) { failures++; printf("  FAIL: %s\n", msg); } } while (0)
+
+// Read the entire contents of a file into a malloc'd buffer (NUL-terminated).
+static char *slurp(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    char *buf = malloc((size_t)sz + 1);
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+    return buf;
+}
 
 int main(void)
 {
@@ -38,7 +53,36 @@ int main(void)
     j.len = 0; jb_b64(&j, (const unsigned char *)"ab", 2);  CHECK_STR(j, "YWI=", "b64 1pad");
     j.len = 0; jb_b64(&j, (const unsigned char *)"a", 1);   CHECK_STR(j, "YQ==", "b64 2pad");
 
-    free(j.b);
+    free(j.b); j = (struct jbuf){0};
+
+    // ares_sink: JSONL mode — each record on its own line, no array framing.
+    {
+        const char *path = "/tmp/test_sink_jsonl.jsonl";
+        struct ares_sink s = {0};
+        CHECK(ares_sink_open(&s, path, "event", 1) == 0, "sink jsonl open");
+        jb_s(&s.jb, "{\"a\":1}"); ares_sink_emit(&s);
+        jb_s(&s.jb, "{\"b\":2}"); ares_sink_emit(&s);
+        ares_sink_close(&s);
+        CHECK(s.count == 2, "sink jsonl count");
+        char *got = slurp(path);
+        CHECK(got && strcmp(got, "{\"a\":1}\n{\"b\":2}\n") == 0, "sink jsonl content");
+        free(got);
+    }
+
+    // ares_sink: array mode — JSON array with comma-sep records.
+    {
+        const char *path = "/tmp/test_sink_array.json";
+        struct ares_sink s = {0};
+        CHECK(ares_sink_open(&s, path, "syscall", 0) == 0, "sink array open");
+        jb_s(&s.jb, "{\"x\":1}"); ares_sink_emit(&s);
+        jb_s(&s.jb, "{\"x\":2}"); ares_sink_emit(&s);
+        ares_sink_close(&s);
+        CHECK(s.count == 2, "sink array count");
+        char *got = slurp(path);
+        CHECK(got && strcmp(got, "[\n  {\"x\":1},\n  {\"x\":2}\n]\n") == 0, "sink array content");
+        free(got);
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

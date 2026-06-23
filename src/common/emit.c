@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-// Shared JSON serializer — see emit.h. Moved verbatim from the syscalls engine.
+// Shared JSON serializer + output sink — see emit.h.
 #include "common/emit.h"
 
-#include <stdlib.h>   // realloc
+#include <stdlib.h>   // realloc, malloc, free
 #include <string.h>   // memcpy, strlen
-#include <stdio.h>    // snprintf
+#include <stdio.h>    // snprintf, fwrite, fputs, fputc, fflush, fclose, fprintf
 
 static void jb_need(struct jbuf *j, size_t n)
 {
@@ -74,6 +74,77 @@ void jb_esc(struct jbuf *j, const char *s)
 		}
 		p++;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ares_sink — shared file-output sink
+// ---------------------------------------------------------------------------
+
+#define SINK_BUF_SIZE (8u << 20)           // 8 MB write buffer
+#define SINK_FLUSH_DEFAULT 8192u           // flush every N emitted records
+
+int ares_sink_open(struct ares_sink *s, const char *path,
+                   const char *noun, int jsonl)
+{
+    s->f = fopen(path, "w");
+    if (!s->f)
+        return -1;
+    setvbuf(s->f, malloc(SINK_BUF_SIZE), _IOFBF, SINK_BUF_SIZE);
+    s->path   = path;
+    s->noun   = noun;
+    s->jsonl  = jsonl;
+    s->count  = 0;
+    s->since_flush = 0;
+    if (!jsonl)
+        fputc('[', s->f);
+    return 0;
+}
+
+void ares_sink_emit(struct ares_sink *s)
+{
+    if (!s->f || !s->jb.b || !s->jb.len)
+        return;
+    if (s->jsonl) {
+        fwrite(s->jb.b, 1, s->jb.len, s->f);
+        fputc('\n', s->f);
+    } else {
+        fputs(s->count ? ",\n  " : "\n  ", s->f);
+        fwrite(s->jb.b, 1, s->jb.len, s->f);
+    }
+    s->count++;
+    s->jb.len = 0;
+    unsigned long every = s->flush_every ? s->flush_every : SINK_FLUSH_DEFAULT;
+    if (++s->since_flush >= every) {
+        fflush(s->f);
+        s->since_flush = 0;
+    }
+}
+
+void ares_sink_flush(struct ares_sink *s)
+{
+    if (s->f)
+        fflush(s->f);
+}
+
+void ares_sink_close(struct ares_sink *s)
+{
+    if (!s->f)
+        return;
+    if (!s->jsonl)
+        fputs("\n]\n", s->f);
+    fflush(s->f);
+    fclose(s->f);
+    s->f = NULL;
+    free(s->jb.b);
+    s->jb.b = NULL; s->jb.len = s->jb.cap = 0;
+}
+
+void ares_sink_report(const struct ares_sink *s)
+{
+    if (!s->path || !s->noun)
+        return;
+    fprintf(stderr, "wrote %llu %s%s to %s\n",
+            s->count, s->noun, s->count == 1 ? "" : "s", s->path);
 }
 
 // Base64-encode a byte run into the json buffer (for the stack snapshot blob).

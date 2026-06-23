@@ -133,9 +133,8 @@ static volatile sig_atomic_t exiting;
 static volatile sig_atomic_t *g_stopp;
 
 static unsigned long long g_next_id = 1;       // monotonic per-syscall id
-static FILE *g_json;                            // JSON output stream, or NULL
-static unsigned long long g_json_count;         // objects written so far
-static int g_jsonl;                             // 1 = JSON Lines (one record/line)
+static int g_jsonl;                             // 1 = JSON Lines (one record/line); set during setup
+static struct ares_sink g_sink;                 // output file sink (inactive when g_sink.f == NULL)
 static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
 static unsigned long long g_stack_count;        // snapshots written so far
 
@@ -150,7 +149,6 @@ static int g_dropfd = -1;
 static int g_uid;
 static int g_capture_all;
 static const char *g_activity;                  // optional launcher activity
-static const char *g_json_path;                 // for the teardown "wrote N" line
 
 static void on_sigint(int s)
 {
@@ -561,8 +559,6 @@ static void render_ret(long long ret, char *out, size_t outsz)
 // every call), then written with a single fwrite. This is the dominant per-event
 // cost on the drain path once symbolization is cached.
 
-static struct jbuf g_jb;
-
 // Write one stack snapshot (registers + base64 stack bytes) to the sidecar
 // stream. Always JSON Lines — this is consumed by the off-device unwinder, not
 // the main trace. Deduped in-kernel, so these are comparatively rare.
@@ -570,7 +566,7 @@ static void json_emit_stack(const struct syscalls_stack_snapshot *s)
 {
 	if (!g_stacks)
 		return;
-	struct jbuf *j = &g_jb;
+	struct jbuf *j = &g_sink.jb;
 	j->len = 0;
 
 	jb_s(j, "{\"type\":\"stack\",\"pid\":"); jb_u64(j, s->h.pid);
@@ -607,13 +603,9 @@ static int is_interp_frame(const char *sym)
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,
 		      int has_ret, long long ret)
 {
-	struct jbuf *j = &g_jb;
+	struct jbuf *j = &g_sink.jb;
 	j->len = 0;
-
-	if (g_jsonl)
-		jb_c(j, '{');
-	else { jb_s(j, g_json_count ? "," : ""); jb_s(j, "\n  {"); }
-	g_json_count++;
+	jb_c(j, '{');
 
 	// Discriminator for the unified ares trace schema: every record carries a
 	// "type". Syscall events are "syscall"; stack snapshots are "stack" (see
@@ -695,10 +687,8 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 			jb_s(j, ",\"java\":\"interpreted (managed frame elided)\"");
 		jb_c(j, '}');
 	}
-	jb_s(j, g_jsonl ? "]}\n" : "]}");
-
-	if (j->b && j->len)
-		fwrite(j->b, 1, j->len, g_json);
+	jb_s(j, "]}");
+	ares_sink_emit(&g_sink);
 }
 
 // ---- entry/return pairing ------------------------------------------------
@@ -730,7 +720,7 @@ static void pend_store(const struct syscalls_syscall_event *e, unsigned long lon
 {
 	struct pend_entry *p = pend_find(e->h.tid);
 	if (p) {
-		if (g_json)                     // previous syscall on this tid never returned
+		if (g_sink.f)                   // previous syscall on this tid never returned
 			json_emit(&p->ev, p->id, 0, 0);
 	} else {
 		for (size_t i = 0; i < g_pend_n; i++)
@@ -757,7 +747,7 @@ static void pend_flush_all(void)
 {
 	for (size_t i = 0; i < g_pend_n; i++)
 		if (g_pend[i].used) {
-			if (g_json)
+			if (g_sink.f)
 				json_emit(&g_pend[i].ev, g_pend[i].id, 0, 0);
 			g_pend[i].used = 0;
 		}
@@ -809,7 +799,7 @@ static void handle_return(const struct syscalls_return_event *r)
 		printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr), rb);
 		fflush(stdout);
 	}
-	if (g_json)
+	if (g_sink.f)
 		json_emit(&p->ev, p->id, 1, r->retval);
 #ifdef __NR_close
 	if (p->ev.nr == __NR_close && r->retval == 0)
@@ -947,8 +937,8 @@ static void *worker_main(void *arg)
 		pthread_mutex_unlock(&q->m);
 		process_event(rec, sz);
 		// Periodic flush so a hard-kill loses little (JSONL stays valid).
-		if (g_json && (++flushed & 0x3fff) == 0)
-			fflush(g_json);
+		if (g_sink.f && (++flushed & 0x3fff) == 0)
+			ares_sink_flush(&g_sink);
 	}
 	return NULL;
 }
@@ -1172,7 +1162,6 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	// A .jsonl output path implies JSON Lines framing.
 	if (json_path && ends_with(json_path, ".jsonl"))
 		g_jsonl = 1;
-	g_json_path = json_path;
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement).
@@ -1214,16 +1203,10 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_lib_ranges_fd = bpf_map__fd(skel->maps.lib_ranges);
 
 	if (json_path) {
-		g_json = fopen(json_path, "w");
-		if (!g_json) {
+		if (ares_sink_open(&g_sink, json_path, "syscall", g_jsonl) != 0) {
 			fprintf(stderr, "cannot open '%s': %s\n", json_path, strerror(errno));
 			goto out;
 		}
-		// Large output buffer: batch the worker's writes into big flash writes
-		// so it doesn't stall on small I/O during a burst.
-		setvbuf(g_json, malloc(8u << 20), _IOFBF, 8u << 20);
-		if (!g_jsonl)
-			fputc('[', g_json);     // JSONL needs no array framing
 	}
 
 	// Stack-snapshot sidecar (JSON Lines) next to the trace, for the off-device
@@ -1310,12 +1293,7 @@ out:
 	// Setup failed: clean up the partial state and report failure. teardown is
 	// NOT called for this path (globals were never published).
 	pend_flush_all();
-	if (g_json) {
-		if (!g_jsonl)
-			fputs("\n]\n", g_json);
-		fclose(g_json);
-		g_json = NULL;
-	}
+	ares_sink_close(&g_sink);
 	if (g_stacks) {
 		fclose(g_stacks);
 		g_stacks = NULL;
@@ -1383,19 +1361,12 @@ void syscalls_teardown(void)
 	}
 
 	pend_flush_all();                       // emit any entries whose return we never saw
-	if (g_json) {
-		if (!g_jsonl)
-			fputs("\n]\n", g_json);
-		fclose(g_json);
-		printf("wrote %llu %s record%s to %s\n",
-		       g_json_count, "syscall",
-		       g_json_count == 1 ? "" : "s", g_json_path);
-		g_json = NULL;
-	}
+	ares_sink_close(&g_sink);
+	ares_sink_report(&g_sink);
 	if (g_stacks) {
 		fclose(g_stacks);
-		printf("wrote %llu stack snapshot%s to %s.stacks\n",
-		       g_stack_count, g_stack_count == 1 ? "" : "s", g_json_path);
+		fprintf(stderr, "wrote %llu stack snapshot%s to %s.stacks\n",
+		        g_stack_count, g_stack_count == 1 ? "" : "s", g_sink.path);
 		g_stacks = NULL;
 	}
 	free(g_pend);

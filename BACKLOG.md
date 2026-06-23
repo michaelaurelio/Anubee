@@ -17,6 +17,31 @@ forward-looking items only.
 
 ## Shipped
 
+### Shared output sink + funcs output unification — 2026-06-23
+
+**C1 (JSON escaping dup) + funcs mixed-schema resolved.**
+
+`src/common/emit.h` now exports `struct ares_sink` and `ares_sink_{open,emit,
+flush,close,report}`. The sink owns: the output `FILE*`, an 8 MB `_IOFBF` write
+buffer, a reused `jbuf`, the record count, JSONL/array framing, periodic flush,
+and the "wrote N records to PATH" report. Single-writer, no lock.
+
+- **`syscalls`** migrated: `g_json`/`g_json_count`/`g_json_path`/`g_jb` replaced
+  by `static struct ares_sink g_sink`. Output format byte-identical to before;
+  "wrote N" now goes to stderr (was stdout). Framing (comma sep / array brackets)
+  moved from `json_emit` into the sink.
+- **`funcs`** fully unified: `g_csv`, `g_jsonl`, `csv_write/open/close`,
+  `json_fwrite_str`, `jsonl_write/open/close`, and the legacy
+  `{ts,stream,tag,message}` wrapper deleted. `-o FILE` now opens a structured
+  JSONL sink; CALL/RETURN records built into `g_sink.jb` via `funcs_emit_call`/
+  `funcs_emit_return` and emitted via `ares_sink_emit`. `-J`/`--structured`
+  accepted as a no-op (structured is the default). "wrote N event(s)" report
+  added (was absent). Per-write CSV `fflush` removed; uses the sink's periodic
+  8192-emit flush instead.
+- CSV export removed (no known consumer).
+- Host tests: 6 new sink cases in `tests/test_emit.c` (JSONL + array framing,
+  record count, exact byte content).
+
 ### `ares trace` audit fixes — 2026-06-22
 
 Post-Phase-4 audit (coordinator logic, engine integration, build wiring). Build
@@ -187,9 +212,9 @@ duplicated logic. The library-load tracing slice is consolidated into
 `src/common/lib_trace.*` (mmap/munmap capture, `/proc` resolution, `[lib]` emitter,
 unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 
-- **C1 — JSON/JSONL string escaping** — identical switch in both
-  (`src/syscalls/syscalls.c` `jb_*` vs `src/funcs/ares-tracer.c` `json_fwrite_str`);
-  differs only in output sink → one `json_escape(sink)`.
+- **C1 — JSON/JSONL string escaping** — **DONE (2026-06-23).** `funcs`'
+  `json_fwrite_str` deleted; both engines use `jb_esc` from `src/common/emit.c`
+  through the shared `ares_sink`.
 - **C2 — Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
   shared drain helper.
 - **C3 — `/proc/<pid>/maps` parsing + basename→fullpath cache** — now in
@@ -273,18 +298,12 @@ first. Inherently LOUD (uprobe BRK + kprobe) — never a stealthy engine.
 
 ## Planned — structured emitter + unified MCP
 
-- **Structured JSONL emitter for `ares funcs` — CALL/RETURN shipped (Task 4).**
-  `-J`/`--structured` now emits `{"type":"call",...}` / `{"type":"return",...}`
-  records via `src/funcs/funcs_emit.c` (pure, host-testable). Remaining:
+- **Structured JSONL emitter for `ares funcs` — CALL/RETURN unified (2026-06-23).**
+  `-o FILE` now emits pure structured JSONL via the shared `ares_sink`; the legacy
+  wrapper and CSV are removed (see Shipped above). Remaining:
   - MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records (extend `funcs_emit.c`,
     same pattern — one builder per type, each pinned by a host test).
   - The SEAM in `handle_event()` already routes all event types; hook each case.
-  - **Mixed-schema `-o` file (device-observed):** in `-J` mode the structured
-    records are *additive* — the legacy `{ts,stream,tag,message}` wrapper lines
-    (probe/spec/event text) still interleave in the same file. A `type`-keyed
-    consumer must skip lines without a `type`. Either the unified MCP filters on
-    `type`, or add a wrapper-suppress mode so `-J` yields a clean structured-only
-    stream.
 - **Unified `ares-mcp` ingest — DONE (Task 3).** `load_structured` + `correlate_spans`
   land the minimal ingest + span join. Remaining richness (call histograms, timing
   views, symbol/module filters, full `server.py` tool surface for the new types)

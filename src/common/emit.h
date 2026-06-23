@@ -8,6 +8,7 @@
 #define __ARES_EMIT_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 struct jbuf { char *b; size_t len, cap; };
 
@@ -18,5 +19,29 @@ void jb_i64(struct jbuf *j, long long v);                 // decimal signed
 void jb_hex(struct jbuf *j, unsigned long long v);        // 0x-prefixed hex
 void jb_esc(struct jbuf *j, const char *s);               // JSON-escaped string body
 void jb_b64(struct jbuf *j, const unsigned char *p, size_t n);  // base64 blob
+
+// Shared output sink: owns FILE*, jbuf, count, flush policy, and framing.
+// ponytail: single-writer, no lock; caller ensures one thread drives it.
+struct ares_sink {
+    FILE               *f;
+    struct jbuf         jb;           // engine builds a bare {…} object into jb, then calls emit
+    unsigned long long  count;
+    const char         *path;         // for the "wrote N" report
+    const char         *noun;         // "syscall" / "event"
+    int                 jsonl;        // 1 = newline-per-record; 0 = JSON array with commas
+    unsigned long       flush_every;  // 0 → default 8192
+    unsigned long       since_flush;
+};
+
+// Open sink: fopen("w") + 8 MB _IOFBF buffer. Array mode: writes opening '['.
+int  ares_sink_open(struct ares_sink *s, const char *path,
+                    const char *noun, int jsonl);
+// Write jb as the next record (with framing); reset jb.len; periodic flush.
+void ares_sink_emit(struct ares_sink *s);
+void ares_sink_flush(struct ares_sink *s);
+// Array mode: writes "\n]\n". Flushes and fcloses.
+void ares_sink_close(struct ares_sink *s);
+// Prints "wrote N <noun>(s) to PATH\n" to stderr. Safe to call after close.
+void ares_sink_report(const struct ares_sink *s);
 
 #endif /* __ARES_EMIT_H */

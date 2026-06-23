@@ -29,6 +29,7 @@
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 #include "common/emit.h"
+#include "common/runtime.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -195,18 +196,9 @@ static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 // moved to src/common/launch.{c,h} as ares_*; shared with the correlate engine.
 
 
-static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
-{
-    if (level == LIBBPF_DEBUG && !getenv("ARES_DEBUG"))
-        return 0;
-    return vfprintf(stderr, format, args);
-}
-
-
-// Ctrl + C handler. sig_atomic_t (not bool) so a stop flag of the same type can
-// be shared with the kprobe engine when both run under the `trace` coordinator.
+// Ctrl-C / SIGTERM → ares_install_stop_handler (cmd_funcs only, not under trace).
+// sig_atomic_t so the same type can be shared with the kprobe engine under trace.
 static volatile sig_atomic_t exiting = 0;
-static volatile int sig_count = 0;
 
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
@@ -994,7 +986,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     int err = 0;
     int uid = -1;
 
-    libbpf_set_print(libbpf_print_fn);
+    libbpf_set_print(ares_libbpf_quiet);
 
     // Argument parsing
     struct args args = {
@@ -1348,24 +1340,6 @@ int funcs_run(volatile sig_atomic_t *stop)
     return err < 0 ? -err : 0;
 }
 
-// Sum the per-CPU dropped-event counters from the BPF `dropped` map.
-static unsigned long long read_dropped_count(void)
-{
-    int fd = bpf_map__fd(skel->maps.dropped);
-    if (fd < 0) return 0;
-    int ncpu = libbpf_num_possible_cpus();
-    if (ncpu < 1) ncpu = 1;
-    __u64 *vals = calloc(ncpu, sizeof(__u64));
-    if (!vals) return 0;
-    __u32 k = 0;
-    unsigned long long total = 0;
-    if (bpf_map_lookup_elem(fd, &k, vals) == 0)
-        for (int i = 0; i < ncpu; i++)
-            total += vals[i];
-    free(vals);
-    return total;
-}
-
 void funcs_teardown(void)
 {
     if (g_events_rb) {
@@ -1385,11 +1359,7 @@ void funcs_teardown(void)
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
     if (skel) {
-        unsigned long long drops = read_dropped_count();
-        if (drops)
-            fprintf(stderr, "%llu event(s) dropped (ring buffer full) — trace incomplete\n", drops);
-        else
-            fprintf(stderr, "no events dropped\n");
+        ares_drops_report(ares_drops_read(bpf_map__fd(skel->maps.dropped)), 0);
         ares_tracer_bpf__destroy(skel);
         skel = NULL;
     }
@@ -1399,8 +1369,7 @@ void funcs_teardown(void)
 
 int cmd_funcs(int argc, char **argv)
 {
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
+    ares_install_stop_handler(&exiting);
 
     int ret = funcs_setup(argc, argv, NULL);
     if (ret != 0)

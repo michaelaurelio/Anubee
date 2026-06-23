@@ -78,7 +78,8 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
 # ares_libtrace_* API (everything else localized, like the engines).
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
-               $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c
+               $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
+               $(SRC)/common/runtime.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -92,6 +93,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
                ares_sink_open ares_sink_emit ares_sink_flush \
                ares_sink_close ares_sink_report \
+               ares_drops_report ares_install_stop_handler ares_round_pow2 \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok
 
@@ -216,7 +218,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
@@ -320,6 +322,8 @@ test:
 	$(BUILD)/test_capabilities
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_args.c src/trace/trace_args.c -o $(BUILD)/test_trace_args
 	$(BUILD)/test_trace_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_runtime.c src/common/runtime.c -o $(BUILD)/test_runtime
+	$(BUILD)/test_runtime
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

@@ -1019,15 +1019,12 @@ static void usage(const char *argv0)
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-	g_verbose = getenv("ARES_VERBOSE") != NULL;
-	g_quiet = getenv("ARES_QUIET") != NULL;
-	g_jsonl = getenv("ARES_JSONL") != NULL;
-	int capture_all = getenv("ARES_ALL") != NULL;
+	int capture_all = 0;
 	// Java frames are now symbolized on-device, so the off-device stack-snapshot
 	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
-	// packed/obfuscated code). --snapshot / ARES_SNAPSHOT enables it.
-	int want_snap = getenv("ARES_SNAPSHOT") != NULL;
-	const char *json_path = getenv("ARES_JSON");
+	// packed/obfuscated code). --snapshot enables it.
+	int want_snap = 0;
+	const char *json_path = NULL;
 	const char *syscall_list = NULL;
 	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
 	int bufmb = 4;                           // kernel ring buffer size (MB)

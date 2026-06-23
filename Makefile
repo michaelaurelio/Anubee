@@ -95,7 +95,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_sink_close ares_sink_report \
                ares_drops_report ares_install_stop_handler ares_round_pow2 \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
-               ares_bpf_objects ares_object_writes_target ares_quiet_config_ok
+               ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
+               seg_vaddr_to_off
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))

@@ -8,3 +8,6 @@ src/funcs/ares-tracer.skel.h
 __pycache__/
 *.pyc
 tmp/
+
+# local knowledge graph (regenerated via `graphify update .`)
+graphify-out/

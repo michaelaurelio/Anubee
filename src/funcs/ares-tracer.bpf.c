@@ -20,6 +20,20 @@ struct {
     __type(value, __u8);
 } target_uids SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} dropped SEC(".maps");
+
+static __always_inline void bump_dropped(void)
+{
+    __u32 k = 0;
+    __u64 *c = bpf_map_lookup_elem(&dropped, &k);
+    if (c) __sync_fetch_and_add(c, 1);
+}
+
 // Per-tid span stack (shared with the correlate engine; see header).
 #include "common/span_stack.bpf.h"
 
@@ -65,6 +79,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
         span_stack_pop(tid);       // undo the push (matches old delete-on-fail)
+        bump_dropped();
         return 0;
     }
 
@@ -147,6 +162,7 @@ int BPF_KRETPROBE(uretprobe_open)
     if (!e) {
         bpf_map_delete_elem(&span_frames, &fk);
         span_depth_set(tid, top);
+        bump_dropped();
         return 0;
     }
 

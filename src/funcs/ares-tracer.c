@@ -204,15 +204,6 @@ static volatile sig_atomic_t exiting = 0;
 static struct ring_buffer *g_events_rb;
 static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
 
-static void sig_handler(int sig)
-{
-    (void)sig;
-    exiting = 1;
-    if (++sig_count > 1)
-        _exit(130);
-}
-
-
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
 

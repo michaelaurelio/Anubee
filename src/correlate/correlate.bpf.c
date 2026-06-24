@@ -22,19 +22,7 @@ struct {
     __uint(max_entries, 4 * 1024 * 1024);
 } events SEC(".maps");
 
-// Set of app UIDs to trace, installed by the loader before launch/attach.
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 32);
-    __type(key, __u32);
-    __type(value, __u8);
-} target_uids SEC(".maps");
-
-static __always_inline int uid_matches(void)
-{
-    __u32 uid = (__u32)bpf_get_current_uid_gid();
-    return bpf_map_lookup_elem(&target_uids, &uid) != NULL;
-}
+#include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
 
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"

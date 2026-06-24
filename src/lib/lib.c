@@ -151,8 +151,8 @@ int cmd_lib(int argc, char **argv)
     }
 
     // Install the target UID BEFORE launching, so the first mapping is caught.
-    __u32 key = 0, vuid = (__u32)uid;
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+    __u32 vuid = (__u32)uid; __u8 one = 1;
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
         fprintf(stderr, "lib: failed to install target UID\n");
         goto err_skel;
     }

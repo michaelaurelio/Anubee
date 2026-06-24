@@ -14,28 +14,16 @@ struct {
     __uint(max_entries, 4 * 1024 * 1024);
 } events_rb SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 32);
-    __type(key, __u32);
-    __type(value, __u8);
-} target_uids SEC(".maps");
+#include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
 
 // Per-tid span stack (shared with the correlate engine; see header).
 #include "common/span_stack.bpf.h"
-
 
 // Determine if a value is a user-space pointer (heuristic)
 static __always_inline bool is_user_ptr(unsigned long val)
 {
     unsigned long untagged = val & 0x00FFFFFFFFFFFFFFUL;
     return untagged > 0x10000UL && untagged < 0x800000000000UL;
-}
-
-static __always_inline int uid_matches(void)
-{
-    __u32 uid = (__u32)bpf_get_current_uid_gid();
-    return bpf_map_lookup_elem(&target_uids, &uid) != NULL;
 }
 
 

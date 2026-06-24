@@ -1110,8 +1110,8 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	install_arg_types(bpf_map__fd(skel->maps.arg_types));
 	install_sock_args(bpf_map__fd(skel->maps.sock_args));
 
-	__u32 key = 0, vuid = (__u32)uid;
-	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+	__u32 vuid = (__u32)uid; __u8 one = 1;
+	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
 		fprintf(stderr, "failed to set target uid: %s\n", strerror(errno));
 		goto out;
 	}

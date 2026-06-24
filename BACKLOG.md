@@ -319,8 +319,10 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   `src/common/lib_trace.c` (`ares_libtrace_resolve_path`), shared by all three
   engines. *Remaining:* `symbolize.c`'s own maps parsing (for stack symbolization)
   is still separate → fold into one maps/symbol module.
-- **C4 — Kernel-side UID filter** — `uid_matches()` + target-uid BPF map
-  (`target_uid` vs `target_uids`) → shared BPF header.
+- **C4 — Kernel-side UID filter** — **DONE (2026-06-24).** Created
+  `src/common/uid_filter.bpf.h` with the `target_uids` HASH-set map + `uid_matches()`.
+  All five `.bpf.c` files now include it; `syscalls`/`lib`/`dump` loaders converted
+  from key-0 ARRAY write to uid-keyed set insert (`target_uid` → `target_uids`).
 - **C5 — `resolve_uid()` + app launch/force-stop + install-UID-before-launch** —
   **DONE (2026-06-18, R1).** All engines now call the shared `ares_*` helpers in
   `src/common/launch.{c,h}`; the private per-engine copies are removed.

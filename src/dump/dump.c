@@ -218,8 +218,8 @@ int cmd_dump(int argc, char **argv)
         goto err_skel;
     }
 
-    __u32 key = 0, vuid = (__u32)uid;
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+    __u32 vuid = (__u32)uid; __u8 one = 1;
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
         fprintf(stderr, "dump: failed to install target UID\n");
         goto err_skel;
     }

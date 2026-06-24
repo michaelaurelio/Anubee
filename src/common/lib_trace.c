@@ -3,6 +3,7 @@
 // full-path resolution (with a basename->path fallback cache) and the unified
 // "[lib]" text / JSONL emitter. See lib_trace.h for the public API.
 #include "common/lib_trace.h"
+#include "common/emit.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -117,21 +118,6 @@ int ares_libtrace_resolve_path(pid_t pid, unsigned long long start,
 
 // ---- unified emitter ------------------------------------------------------
 
-static void json_write_str(FILE *f, const char *s)
-{
-	fputc('"', f);
-	for (; *s; s++) {
-		unsigned char c = (unsigned char)*s;
-		if (c == '"' || c == '\\')
-			fprintf(f, "\\%c", c);
-		else if (c < 0x20)
-			fprintf(f, "\\u%04x", c);
-		else
-			fputc(c, f);
-	}
-	fputc('"', f);
-}
-
 void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_event *e,
                               const char *fullpath, const char *soname)
 {
@@ -144,7 +130,7 @@ void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_even
 		snprintf(buf + n, bufsz - (size_t)n, " -> %s", soname);
 }
 
-void ares_libtrace_emit_lib(FILE *jsonl, int quiet, const struct lib_map_event *e,
+void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_map_event *e,
                             const char *fullpath, const char *soname)
 {
 	if (!quiet) {
@@ -152,28 +138,38 @@ void ares_libtrace_emit_lib(FILE *jsonl, int quiet, const struct lib_map_event *
 		ares_libtrace_format_lib(line, sizeof(line), e, fullpath, soname);
 		printf("%s\n", line);
 	}
-	if (jsonl) {
-		fprintf(jsonl, "{\"type\":\"lib\",\"pid\":%u,\"tid\":%u,\"ppid\":%d,\"library\":",
-		        e->h.pid, e->h.tid, e->ppid);
-		json_write_str(jsonl, fullpath);
-		fprintf(jsonl,
-		        ",\"start\":\"0x%llx\",\"end\":\"0x%llx\",\"pgoff\":%llu,\"inode\":%llu}\n",
-		        (unsigned long long)e->start, (unsigned long long)e->end,
-		        (unsigned long long)e->pgoff, (unsigned long long)e->inode);
-		fflush(jsonl);
+	if (sink && sink->f) {
+		struct jbuf *j = &sink->jb;
+		j->len = 0;
+		jb_s(j, "{\"type\":\"lib\",\"pid\":"); jb_u64(j, e->h.pid);
+		jb_s(j, ",\"tid\":");                  jb_u64(j, e->h.tid);
+		jb_s(j, ",\"ppid\":");                 jb_i64(j, e->ppid);
+		jb_s(j, ",\"library\":\"");            jb_esc(j, fullpath); jb_c(j, '"');
+		jb_s(j, ",\"start\":\"");              jb_hex(j, e->start); jb_c(j, '"');
+		jb_s(j, ",\"end\":\"");                jb_hex(j, e->end);   jb_c(j, '"');
+		jb_s(j, ",\"pgoff\":");                jb_u64(j, e->pgoff);
+		jb_s(j, ",\"inode\":");                jb_u64(j, e->inode);
+		if (soname && soname[0]) {
+			jb_s(j, ",\"soname\":\""); jb_esc(j, soname); jb_c(j, '"');
+		}
+		jb_c(j, '}');
+		ares_sink_emit(sink);
 	}
 }
 
-void ares_libtrace_emit_unlib(FILE *jsonl, int quiet, const struct lib_unmap_event *e)
+void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e)
 {
 	if (!quiet)
 		printf("[unlib] pid %u [0x%llx, 0x%llx)\n",
 		       e->h.pid, (unsigned long long)e->start, (unsigned long long)e->end);
-	if (jsonl) {
-		fprintf(jsonl,
-		        "{\"type\":\"unlib\",\"pid\":%u,\"tid\":%u,\"start\":\"0x%llx\",\"end\":\"0x%llx\"}\n",
-		        e->h.pid, e->h.tid,
-		        (unsigned long long)e->start, (unsigned long long)e->end);
-		fflush(jsonl);
+	if (sink && sink->f) {
+		struct jbuf *j = &sink->jb;
+		j->len = 0;
+		jb_s(j, "{\"type\":\"unlib\",\"pid\":"); jb_u64(j, e->h.pid);
+		jb_s(j, ",\"tid\":");                    jb_u64(j, e->h.tid);
+		jb_s(j, ",\"start\":\"");                jb_hex(j, e->start); jb_c(j, '"');
+		jb_s(j, ",\"end\":\"");                  jb_hex(j, e->end);   jb_c(j, '"');
+		jb_c(j, '}');
+		ares_sink_emit(sink);
 	}
 }

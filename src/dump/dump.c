@@ -31,6 +31,7 @@
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/engine_args.h"
+#include "common/runtime.h"
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -120,12 +121,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	return 0;
 }
 
-static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list args)
-{
-	if (level == LIBBPF_DEBUG)
-		return 0;
-	return vfprintf(stderr, fmt, args);
-}
+// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
 
 // ---- argp parser ----------------------------------------------------------
 
@@ -210,7 +206,7 @@ int cmd_dump(int argc, char **argv)
         return 1;
     }
 
-    libbpf_set_print(libbpf_print_fn);
+    libbpf_set_print(ares_libbpf_quiet);
 
     struct ares_dump *skel = ares_dump__open();
     if (!skel) {

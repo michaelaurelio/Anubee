@@ -15,6 +15,7 @@
 
 #ifndef __bpf__
 #include <linux/types.h>   // __u32/__u64/__s32 in userspace; BPF gets them from vmlinux.h
+#include "common/emit.h"   // struct ares_sink (used in emitter signatures)
 #endif
 
 #define LIBTRACE_MAX_NAME 128
@@ -73,13 +74,13 @@ void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_even
                               const char *fullpath, const char *soname);
 
 // Emit one library-load record: the unified line (see format_lib) to stdout unless
-// `quiet`; if `jsonl` != NULL also writes a {"type":"lib",...} record.
-void ares_libtrace_emit_lib(FILE *jsonl, int quiet, const struct lib_map_event *e,
+// `quiet`; if `sink->f` != NULL also writes a {"type":"lib",...} record via ares_sink.
+void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_map_event *e,
                             const char *fullpath, const char *soname);
 
 // Emit one unmap record: "[unlib] pid <N> [0x<start>, 0x<end>)" unless `quiet`;
-// {"type":"unlib",...} if `jsonl` != NULL.
-void ares_libtrace_emit_unlib(FILE *jsonl, int quiet, const struct lib_unmap_event *e);
+// {"type":"unlib",...} if `sink->f` != NULL.
+void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e);
 #endif /* __bpf__ */
 
 #endif /* ARES_COMMON_LIB_TRACE_H */

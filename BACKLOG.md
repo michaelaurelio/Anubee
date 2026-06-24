@@ -491,13 +491,14 @@ Shipped in order: Tier 1 (A1, A4, A2, A7), Tier 2 minus A5 (A3, X3, X4, C1), the
   no configurable ring size or worker queue; advertising the flags would recreate the A1
   dead-flag bug.
 
-### X2 — Three structured-output code paths (Tier 3)
+### X2 — Three structured-output code paths — DONE 2026-06-24
 
-`syscalls`/`funcs` use `ares_sink` (framing-aware, drop reporting, `-J`, periodic
-flush). `lib` and `correlate` write a raw `FILE*` opened with `fopen` — always
-line-framed, no `-J`, no "wrote N records" report at teardown. `dump` writes binary ELF
-files. Fix: migrate `lib` and `correlate` onto `ares_sink`. A.0 is now done, so X2 can
-be done independently.
+`lib` and `correlate` migrated onto `ares_sink` (periodic flush, "wrote N records"
+report at teardown, `jb_esc` escaper). `ares_libtrace_emit_lib/unlib` signatures
+changed from `FILE *jsonl` to `struct ares_sink *sink`; `json_write_str` in `lib_trace.c`
+removed. `C8`: three local `libbpf_print_fn` copies (lib/dump/correlate) replaced by
+`ares_libbpf_quiet` from `common/runtime.h`. New host test: `tests/test_lib_trace_emit.c`
+(11 checks). `make test` green (11/11 suites).
 
 ### U1/U2 — Console style diverges between engines (Tier 3)
 

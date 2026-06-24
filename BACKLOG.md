@@ -313,8 +313,12 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 - **C1 — JSON/JSONL string escaping** — **DONE (2026-06-23).** `funcs`'
   `json_fwrite_str` deleted; both engines use `jb_esc` from `src/common/emit.c`
   through the shared `ares_sink`.
-- **C2 — Ring-buffer setup + poll loop** — `ring_buffer__new`/`__poll` in both →
-  shared drain helper.
+- **C2 — Ring-buffer poll loop** — **DONE (2026-06-24).** Added `ares_rb_poll_until`
+  to `src/common/runtime.h` (inside the libbpf guard); `lib`/`dump`/`correlate` each
+  replaced their identical 4-line poll loop with one call. `syscalls`/`funcs` subsequently
+  consolidated via `ares_rb_poll_until_cb` (2026-06-24): `funcs`' near-busy 1ms poll
+  raised to 200ms (−200× idle wakeups, no effect on drain latency); `syscalls`' periodic
+  drops report extracted to a tick callback so all five engines now share the same loop.
 - **C3 — `/proc/<pid>/maps` parsing + basename→fullpath cache** — now in
   `src/common/lib_trace.c` (`ares_libtrace_resolve_path`), shared by all three
   engines. *Remaining:* `symbolize.c`'s own maps parsing (for stack symbolization)

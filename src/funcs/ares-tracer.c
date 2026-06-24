@@ -1407,14 +1407,9 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 int funcs_run(volatile sig_atomic_t *stop)
 {
-    int err = 0;
-    int ticks = 0;
-    while (!*stop) {
-        err = ring_buffer__poll(g_events_rb, 1);
-        if (err == -EINTR) { err = 0; break; }
-        if (err < 0) { err_print("   [err] > ring buffer poll error: %d\n", err); break; }
-        (void)ticks;  // g_sink flush moved to the worker thread
-    }
+    int err = ares_rb_poll_until_cb(g_events_rb, stop, NULL, NULL);
+    if (err < 0)
+        err_print("   [err] > ring buffer poll error: %d\n", err);
 
     for (int i = 0; i < active_module_count; i++)
         if (active_modules[i]->print_summary)

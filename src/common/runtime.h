@@ -45,6 +45,33 @@ static inline int ares_libbpf_quiet(enum libbpf_print_level lvl,
     return vfprintf(stderr, fmt, ap);
 }
 
+// Poll rb until *stop is set. Benign EINTR is ignored; any other poll error ends the
+// loop and is returned (<0). tick (if non-NULL) is called once per poll return — used
+// for periodic status work that self-throttles via its own counter.
+// ponytail: one loop for all engines; 200ms bounds Ctrl-C latency and epoll wakes
+// immediately on data so the timeout never delays draining.
+static inline int ares_rb_poll_until_cb(struct ring_buffer *rb,
+                                        volatile sig_atomic_t *stop,
+                                        void (*tick)(void *), void *ctx)
+{
+	int err = 0;
+	while (!*stop) {
+		err = ring_buffer__poll(rb, 200);
+		if (err < 0 && err != -EINTR)
+			break;
+		err = 0;
+		if (tick)
+			tick(ctx);
+	}
+	return err;
+}
+
+static inline void ares_rb_poll_until(struct ring_buffer *rb,
+                                      volatile sig_atomic_t *stop)
+{
+	(void)ares_rb_poll_until_cb(rb, stop, NULL, NULL);
+}
+
 // Sum per-CPU dropped-event counters from a BPF PERCPU_ARRAY at key 0.
 static inline unsigned long long ares_drops_read(int map_fd)
 {

@@ -248,11 +248,7 @@ int cmd_dump(int argc, char **argv)
     printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
            uid, g_pattern, g_on_map ? "on map" : "on exit");
 
-    while (!exiting) {
-        int err = ring_buffer__poll(rb, 200 /* ms */);
-        if (err < 0 && err != -EINTR)
-            break;
-    }
+    ares_rb_poll_until(rb, &exiting);
 
     // dump-on-exit: rescan each recorded pid's maps and dump matching modules.
     if (!g_on_map) {

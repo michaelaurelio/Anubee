@@ -7,7 +7,7 @@ forward-looking items only.
 **Contents**
 
 - [Shipped](#shipped)
-- [Open issues — review 2026-06-17 (R2–R7, R9)](#open-issues--review-2026-06-17)
+- [Open issues — review 2026-06-17 (R3, R4, R5, R9)](#open-issues--review-2026-06-17)
 - [Consolidation roadmap — shared-code de-dup (C1–C9)](#consolidation-roadmap--shared-code-de-dup)
 - [`correlate` — remaining work](#correlate--remaining-work)
 - [Planned — structured emitter + unified MCP](#planned--structured-emitter--unified-mcp)
@@ -16,6 +16,54 @@ forward-looking items only.
 ---
 
 ## Shipped
+
+### CLI consistency / asymmetry — 2026-06-24
+
+All six engines now use GNU argp (auto `--help`/`--usage`/`--version`). `lib`, `dump`,
+and `correlate` migrated from hand-rolled `argv` loops to argp (A.0). During the
+migration: `lib`/`dump` gained `-P`/`-A` flags with positional aliases kept for
+back-compat (A5); `lib`/`dump` launch now routes through `ares_launch_app()` deleting
+the inline force-stop/resolve/start sequences and gaining the death-wait loop and
+`am start -S`; `correlate` -q is now documented in `--help` (R6 closed). All six
+engines report identity via `--version` (syscalls: `ares syscalls`; others likewise).
+`funcs --help` documents the dual console+file output mode (U3). The `argp_program_bug_address`
+fields reflect the two-author split: `funcs` → `vincent.kwee@binus.ac.id`; all others
+→ `michael.windarta@binus.ac.id`. Won't-do items noted (dump -v, lib/dump/correlate
+`-b`/`-Q` — no behavior to attach; would recreate the A1 dead-flag bug).
+
+### BPF de-dup + argument-parsing normalization — 2026-06-24
+
+**BPF infrastructure de-dup:**
+
+- `src/common/bpf_drop.bpf.h` — consolidated the identical `dropped`
+  PERCPU_ARRAY map and `bump_dropped()` helper that `syscalls.bpf.c` and
+  `ares-tracer.bpf.c` each defined locally. syscalls had a non-atomic
+  `(*c)++`; both now use `__sync_fetch_and_add` uniformly.
+- `struct syscalls_hdr` in `src/syscalls/syscalls.h` replaced with
+  `struct trace_event_header` (identical layout, removes the local alias).
+- `#define ARES_FLUSH_MASK 0x3fff` added to `src/common/emit.h`; both
+  worker threads' flush intervals now reference the named constant.
+
+**Argument parsing normalization (syscalls + funcs + trace coordinator):**
+
+- `src/common/engine_args.h` (new) — `struct common_args` (six shared
+  flags), `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS` macro, and
+  `parse_common_arg()` inline delegate. Single source of truth for
+  `-o`/`-v`/`-q`/`-J`/`-b`/`-Q`.
+- `syscalls.c` — replaced hand-rolled strcmp loop + positional parsing
+  with GNU argp (`struct sysc_args`, `sysc_options[]`, `parse_sysc_opts()`).
+  Option ordering no longer matters; `--help` is auto-generated. Positional
+  `<lib>` replaced with `-l <selector>`. `COMMON_ARGP_OPTIONS` embedded.
+- `ares-tracer.c` — `struct args` embeds `struct common_args c`; `options[]`
+  uses `COMMON_ARGP_OPTIONS`; `parse_opts` delegates common keys via
+  `parse_common_arg()`. Added `-q` (quiet: gates all console prints via
+  `g_quiet` global). Added `-Q <MB>` (configurable worker queue size,
+  replaces hardcoded 16 MiB; default 256 MiB). Package pre-filled from
+  `rc->pkg` before `argp_parse`.
+- `inject_pkg` removed from `trace_build_argv()` (`trace_args.h`,
+  `trace_args.c`, both call sites in `trace.c`, assertions in
+  `tests/test_trace_args.c`). Both engines pre-fill the package from
+  `rc->pkg`; the coordinator no longer injects `-P` into either section.
 
 ### Engine unification round 2 — 2026-06-23
 
@@ -186,18 +234,15 @@ shared `ares_*` implementations (already used by `funcs`/`correlate`), removing
 ## Open issues — review 2026-06-17
 
 Repo-wide review pass. Ordered by severity; most are small and self-contained.
+R2, R6, R7 closed — see Shipped above.
 
 ### Correctness / robustness
 
-- **R2 — uprobe offset uses `sym.st_value` (a virtual address) directly as the
-  uprobe file offset** in both `correlate` (`resolve_custom_spec_for_path` /
-  `resolve_targets*` in `src/common/probe_resolve.c`) and `funcs`. libbpf's
-  `bpf_program__attach_uprobe` wants a **file offset**; `st_value == file_offset`
-  only when the containing `PT_LOAD`'s `p_vaddr == p_offset` (true for most Android
-  `.so`s, so on-device tests pass). For libraries whose executable segment has
-  `p_vaddr != p_offset` the probe lands at the wrong address. Fix: convert via the
-  program headers (`file_off = st_value - (seg.p_vaddr - seg.p_offset)` for the
-  segment that contains `st_value`).
+- **R2 — DONE (2026-06-23).** `vaddr_to_file_off()` added to `src/common/probe_resolve.c`:
+  builds a `PT_LOAD` table from the open ELF handle and converts `sym.st_value` (virtual
+  address) to a file offset via `file_off = vaddr - (seg.p_vaddr - seg.p_offset)` for the
+  containing segment. All three resolution paths in `probe_resolve.c` now call it (lines
+  ~184, ~273, ~436). Verified device-side on a `.so` with non-zero `p_vaddr − p_offset`.
 - **R3 — `correlate` leaks its uprobe `bpf_link`s.** `attach_uprobes_for_pid` stores
   each `bpf_program__attach_uprobe` result in a local `link` that is never tracked or
   `bpf_link__destroy`'d (only the syscall kprobe `kp` is). Cleanup relies on process
@@ -215,11 +260,9 @@ Repo-wide review pass. Ordered by severity; most are small and self-contained.
 
 ### Consistency / docs
 
-- **R6 — `correlate -q` is parsed but undocumented** — `usage()` omits the `-q`
-  (quiet) flag that `cmd_correlate` handles.
-- **R7 — `FUNC_CFLAGS` lacks `-Wextra`** (Makefile) while every other engine's CFLAGS
-  has it. `funcs` is the largest C unit (1.5k lines) and gets the *weakest* warning
-  coverage. Align it to `-Wall -Wextra`.
+- **R6 — DONE (2026-06-24).** `correlate` migrated to argp; `-q` is now in
+  `corr_options[]` and appears in `--help` automatically. No separate `usage()` remains.
+- **R7 — DONE (2026-06-23).** `FUNC_CFLAGS` aligned to `-Wall -Wextra` in the Makefile.
 
 ### Perf (minor)
 
@@ -264,7 +307,8 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
 - **C8 — Misc duplication** — `libbpf_print_fn` + signal handlers; duplicate
   `vmlinux.h`. (Near-identical `map_event` struct and vendored libbpf are already
-  unified.)
+  unified.) BPF dropped-counter dup (`dropped` map + `bump_dropped()`) and the
+  `syscalls_hdr` alias resolved (2026-06-24). Remaining: `libbpf_print_fn`, `vmlinux.h`.
 - **C9 — Capability the funcs engine could borrow:** the syscalls engine's
   `decode_sockaddr` (the funcs engine has no sockaddr decoding).
 
@@ -402,6 +446,49 @@ that lands in AOT-compiled or interpreter-adjacent regions, not just the JIT cac
   → human name through an embedded dex parser. If/when OAT/VDEX land, factor a small
   dex method-name resolver shared with any future dex-aware feature rather than
   duplicating per source.
+
+## CLI consistency — deferred items
+
+From the full consistency audit documented in `CONSISTENCY_AUDIT.md` (2026-06-24).
+Shipped in order: Tier 1 (A1, A4, A2, A7), Tier 2 minus A5 (A3, X3, X4, C1), then
+2026-06-24: Quick wins + A.0 keystone (see below). Items still deferred follow.
+
+### Shipped 2026-06-24
+
+- **A5** — `-P`/`-A` flags on `lib`/`dump` (keeping positionals as aliases): done
+  as part of the A.0 argp migration.
+- **A.0** — `lib`/`dump`/`correlate` migrated to GNU argp + `argp_program_version`.
+  `lib` and `dump` also route launch through `ares_launch_app()` (launch dedup, gains
+  death-wait + `am start -S`). Correlate launch stays inline (needs pid back from pidof).
+- **`syscalls --version`** — `argp_program_version = "ares syscalls"` added; all six
+  engines now report an identity string via `--version`.
+- **U3 doc** — `funcs --help` now documents the dual console+file output mode and the
+  intentional difference from `syscalls -o ⇒ quiet`.
+
+### Won't do (dead-flag trap — see evaluation in plan)
+
+- `dump -v` — dump has no verbose-tier output to gate; a flag would be wired to nothing.
+- `lib`/`dump`/`correlate` `-b`/`-Q` — these engines poll the ring buffer directly with
+  no configurable ring size or worker queue; advertising the flags would recreate the A1
+  dead-flag bug.
+
+### X2 — Three structured-output code paths (Tier 3)
+
+`syscalls`/`funcs` use `ares_sink` (framing-aware, drop reporting, `-J`, periodic
+flush). `lib` and `correlate` write a raw `FILE*` opened with `fopen` — always
+line-framed, no `-J`, no "wrote N records" report at teardown. `dump` writes binary ELF
+files. Fix: migrate `lib` and `correlate` onto `ares_sink`. A.0 is now done, so X2 can
+be done independently.
+
+### U1/U2 — Console style diverges between engines (Tier 3)
+
+`funcs` uses timestamped tagged lines (`[spawn] >`, `[work] >`, `[uprobe] >`,
+`[event] >`). All other engines use plain prose banners. Under `trace -o` the interleave
+is masked, but standalone runs feel like two different tools. Fix: pick one convention
+and align. `[lib]` / `[unlib]` in `lib` are output lines, not banners — keep their
+format. Note: low value / high cosmetic churn across 5 files; not recommended.
+
+---
 
 ## Deferred tech debt
 

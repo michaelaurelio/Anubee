@@ -26,6 +26,10 @@
 #include "common/emit.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
+#include "common/engine_args.h"
+
+const char *argp_program_version     = "ares correlate";
+const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 // nr -> name table (generated for the device's arm64 ABI).
 static const struct { long nr; const char *name; } syscall_names[] = {
@@ -165,72 +169,96 @@ static int install_uid(struct ares_correlate *skel, int uid)
     return bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
 }
 
-static void usage(void)
+// ---- argp parser ----------------------------------------------------------
+
+static const char corr_doc[] =
+    "Attach entry uprobes to spec'd functions + a span-gated syscall kprobe;\n"
+    "emit each in-span syscall tagged with the enclosing function's span.\v"
+    "Exactly one of -p or -P must be given. At least one -e or -F is required.\n"
+    "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
+static const char corr_args_doc[] = "";
+
+struct corr_args {
+    const char        *pkg;
+    const char        *out_path;
+    int                quiet;
+    pid_t              pids[64];
+    int                pid_count;
+    custom_probe_spec_t specs[64];
+    int                nspec;
+};
+
+// Only the flags actually wired. -J/-b/-Q have nothing to attach here.
+static const struct argp_option corr_options[] = {
+    { "pid",     'p', "PID[,...]", 0, "Attach to running PID(s); comma-separated, repeatable", 0 },
+    { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
+    { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable)", 0 },
+    { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
+    { "output",  'o', "FILE",      0, "Write structured JSONL", 0 },
+    { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
+    { 0 }
+};
+
+static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
 {
-    fprintf(stderr,
-        "usage: ares correlate [options] (-p PID | -P PACKAGE)\n"
-        "\n"
-        "Attach entry uprobes to spec'd functions + a span-gated syscall kprobe;\n"
-        "emit each in-span syscall tagged with the enclosing function's span.\n"
-        "\n"
-        "options:\n"
-        "  -p PID[,PID...]   attach to running PID(s)\n"
-        "  -P PACKAGE        launch a package fresh and attach to it\n"
-        "  -e SPEC           probe spec MODULE!FUNC[(S|V,...)] (repeatable)\n"
-        "  -F FILE           load probe specs from a file (one per line, # = comment)\n"
-        "  -o FILE           write structured JSONL\n"
-        "  -h                show this help\n");
+    struct corr_args *a = state->input;
+    switch (key) {
+    case 'P': a->pkg      = arg; break;
+    case 'o': a->out_path = arg; break;
+    case 'q': a->quiet    = 1;   break;
+    case 'p': {
+        char *tok = strtok(arg, ",");
+        while (tok && a->pid_count < 64) {
+            a->pids[a->pid_count++] = (pid_t)atoi(tok);
+            tok = strtok(NULL, ",");
+        }
+        break;
+    }
+    case 'e':
+        if (a->nspec < 64 && parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) == 0)
+            a->nspec++;
+        break;
+    case 'F': {
+        FILE *sf = fopen(arg, "r");
+        if (!sf) argp_error(state, "cannot open '%s': %s", arg, strerror(errno));
+        char line[512];
+        while (fgets(line, sizeof(line), sf) && a->nspec < 64) {
+            char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
+            if (line[0] == '\0' || line[0] == '#') continue;
+            if (parse_custom_probe_spec(line, &a->specs[a->nspec], log_stderr) == 0) a->nspec++;
+        }
+        fclose(sf);
+        break;
+    }
+    case ARGP_KEY_END:
+        if ((a->pid_count == 0 && !a->pkg) || (a->pid_count > 0 && a->pkg))
+            argp_error(state, "specify exactly one of -p or -P");
+        if (a->nspec == 0)
+            argp_error(state, "no probe specs given (-e SPEC or -F FILE)");
+        break;
+    default:
+        return ARGP_ERR_UNKNOWN;
+    }
+    return 0;
 }
+
+static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_doc, corr_doc, 0, 0, 0 };
+
+// ---- entry point ----------------------------------------------------------
 
 int cmd_correlate(int argc, char **argv)
 {
-    pid_t pids[64]; int pid_count = 0;
-    const char *pkg = NULL, *out_path = NULL;
-    custom_probe_spec_t specs[64]; int nspec = 0;
-
-    for (int i = 1; i < argc; i++) {
-        const char *a = argv[i];
-        if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
-        else if (!strcmp(a, "-q")) g_quiet = 1;
-        else if (!strcmp(a, "-p")) {
-            if (++i >= argc) { fprintf(stderr, "correlate: -p needs PID\n"); return 1; }
-            char *tok = strtok(argv[i], ",");
-            while (tok && pid_count < 64) { pids[pid_count++] = (pid_t)atoi(tok); tok = strtok(NULL, ","); }
-        } else if (!strcmp(a, "-P")) {
-            if (++i >= argc) { fprintf(stderr, "correlate: -P needs PACKAGE\n"); return 1; }
-            pkg = argv[i];
-        } else if (!strcmp(a, "-e")) {
-            if (++i >= argc) { fprintf(stderr, "correlate: -e needs SPEC\n"); return 1; }
-            if (nspec < 64 && parse_custom_probe_spec(argv[i], &specs[nspec], log_stderr) == 0)
-                nspec++;
-        } else if (!strcmp(a, "-F")) {
-            if (++i >= argc) { fprintf(stderr, "correlate: -F needs FILE\n"); return 1; }
-            FILE *sf = fopen(argv[i], "r");
-            if (!sf) { fprintf(stderr, "correlate: cannot open %s\n", argv[i]); return 1; }
-            char line[512];
-            while (fgets(line, sizeof(line), sf) && nspec < 64) {
-                char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
-                if (line[0] == '\0' || line[0] == '#') continue;
-                if (parse_custom_probe_spec(line, &specs[nspec], log_stderr) == 0) nspec++;
-            }
-            fclose(sf);
-        } else if (!strcmp(a, "-o")) {
-            if (++i >= argc) { fprintf(stderr, "correlate: -o needs FILE\n"); return 1; }
-            out_path = argv[i];
-        } else { fprintf(stderr, "correlate: unknown arg '%s'\n", a); usage(); return 1; }
-    }
-
-    if ((pid_count == 0 && !pkg) || (pid_count > 0 && pkg)) {
-        fprintf(stderr, "correlate: specify exactly one of -p or -P\n");
+    struct corr_args ca = { 0 };
+    if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
         return 1;
-    }
-    if (nspec == 0) {
-        fprintf(stderr, "correlate: no probe specs (-e / -F)\n");
-        return 1;
-    }
-    if (out_path) {
-        g_jsonl = fopen(out_path, "w");
-        if (!g_jsonl) { fprintf(stderr, "correlate: cannot open %s: %s\n", out_path, strerror(errno)); return 1; }
+
+    g_quiet = ca.quiet;
+    if (ca.out_path) {
+        g_jsonl = fopen(ca.out_path, "w");
+        if (!g_jsonl) {
+            fprintf(stderr, "correlate: cannot open %s: %s\n", ca.out_path, strerror(errno));
+            return 1;
+        }
     }
 
     libbpf_set_print(libbpf_print_fn);
@@ -243,33 +271,34 @@ int cmd_correlate(int argc, char **argv)
     }
 
     // -P: install UID before launch so the kprobe gates from the start.
-    if (pkg) {
-        int uid = ares_resolve_uid(pkg);
-        if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", pkg); goto err_skel; }
+    // Launch stays inline (we need the pid back via pidof; ares_launch_app doesn't return it).
+    if (ca.pkg) {
+        int uid = ares_resolve_uid(ca.pkg);
+        if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", ca.pkg); goto err_skel; }
         if (install_uid(skel, uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
         char cmd[512], comp[256];
-        snprintf(cmd, sizeof(cmd), "am force-stop %s", pkg); ares_sh_exec(cmd, NULL, 0);
-        if (ares_resolve_component(pkg, comp, sizeof(comp)) != 0) {
-            fprintf(stderr, "correlate: cannot resolve launcher for %s\n", pkg); goto err_skel;
+        snprintf(cmd, sizeof(cmd), "am force-stop %s", ca.pkg); ares_sh_exec(cmd, NULL, 0);
+        if (ares_resolve_component(ca.pkg, comp, sizeof(comp)) != 0) {
+            fprintf(stderr, "correlate: cannot resolve launcher for %s\n", ca.pkg); goto err_skel;
         }
         snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-        printf("launching: %s\n", cmd);
+        ares_launch_banner(ca.pkg, uid);
         ares_sh_exec(cmd, NULL, 0);
         sleep(1);  // let the process spawn + map its libs
         char pidbuf[32] = "";
-        snprintf(cmd, sizeof(cmd), "pidof %s", pkg);
+        snprintf(cmd, sizeof(cmd), "pidof %s", ca.pkg);
         ares_sh_exec(cmd, pidbuf, sizeof(pidbuf));
         pid_t p = (pid_t)atoi(pidbuf);
-        if (p <= 0) { fprintf(stderr, "correlate: could not find launched PID for %s\n", pkg); goto err_skel; }
-        pids[pid_count++] = p;
+        if (p <= 0) { fprintf(stderr, "correlate: could not find launched PID for %s\n", ca.pkg); goto err_skel; }
+        ca.pids[ca.pid_count++] = p;
     } else {
         // -p: install each pid's UID.
-        for (int i = 0; i < pid_count; i++) {
-            int uid = ares_get_pid_uid(pids[i]);
+        for (int i = 0; i < ca.pid_count; i++) {
+            int uid = ares_get_pid_uid(ca.pids[i]);
             if (install_uid(skel, uid) != 0)
-                fprintf(stderr, "correlate: install UID for PID %d failed\n", pids[i]);
+                fprintf(stderr, "correlate: install UID for PID %d failed\n", ca.pids[i]);
             else
-                printf("[probe] > PID %d UID %d\n", pids[i], uid);
+                printf("[probe] > PID %d UID %d\n", ca.pids[i], uid);
         }
     }
 
@@ -278,8 +307,8 @@ int cmd_correlate(int argc, char **argv)
     if (!kp) { fprintf(stderr, "correlate: attach do_el0_svc kprobe failed\n"); goto err_skel; }
 
     int total = 0;
-    for (int i = 0; i < pid_count; i++) {
-        int n = attach_uprobes_for_pid(skel, pids[i], specs, nspec);
+    for (int i = 0; i < ca.pid_count; i++) {
+        int n = attach_uprobes_for_pid(skel, ca.pids[i], ca.specs, ca.nspec);
         if (n > 0) total += n;
     }
     if (total == 0)

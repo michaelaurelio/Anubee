@@ -39,6 +39,7 @@ static void usage(const char *argv0)
 		"single app launch (LOUD: the uprobe writes a BRK into the target).\n"
 		"\n"
 		"  -P <package>    app to launch and trace (required)\n"
+		"  -A <activity>   override launch activity component (default: auto-resolve)\n"
 		"  -o <prefix>     write <prefix>.syscalls.jsonl and <prefix>.funcs.jsonl\n"
 		"                  (recommended: keeps the two structured streams separate and\n"
 		"                  silences the syscalls console output)\n"
@@ -47,7 +48,7 @@ static void usage(const char *argv0)
 		"  --funcs ...     options for the funcs engine, e.g. \"-e 'libc.so!open' -J\"\n"
 		"                  (no -P — the package comes from -P above)\n"
 		"\n"
-		"-P and -o must come before the --syscalls / --funcs sections.\n",
+		"-P, -A, and -o must come before the --syscalls / --funcs sections.\n",
 		argv0);
 }
 
@@ -65,7 +66,7 @@ int cmd_trace(int argc, char **argv)
 	int pr = trace_parse_args(argc, argv, &ta);
 	if (pr == 1) { usage(argv[0]); return 0; }   // -h/--help
 	if (pr < 0)  { usage(argv[0]); return 1; }
-	const char *pkg = ta.pkg, *prefix = ta.prefix;
+	const char *pkg = ta.pkg, *prefix = ta.prefix, *activity = ta.activity;
 	int sys_start = ta.sys_start, sys_end = ta.sys_end;
 	int func_start = ta.func_start, func_end = ta.func_end;
 
@@ -84,24 +85,30 @@ int cmd_trace(int argc, char **argv)
 		fprintf(stderr, "trace: cannot resolve UID for '%s' (installed? run as root?)\n", pkg);
 		return 1;
 	}
-	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg, .external_launch = 1 };
+	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg };
 
-	// Build each engine's argv: ["<engine>", (-P pkg)?, (-o <file>)?, <section args...>].
-	// funcs uses argp which requires -P at parse time; syscalls takes pkg via rc->pkg.
+	// Build each engine's argv: ["<engine>", ("-o" file)?, <section args...>].
+	// Both engines read the package name from rc->pkg (pre-filled before argp_parse).
 	struct trace_argv sysv, funcv;
 	int sys_argc = 0, func_argc = 0;
 
 	if (want_sys) {
 		int tr = 0;
-		sys_argc = trace_build_argv(&sysv, "syscalls", pkg, 0, prefix,
+		sys_argc = trace_build_argv(&sysv, "syscalls", prefix,
 		                            "syscalls.jsonl", argv, sys_start, sys_end, &tr);
 		if (tr) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
 	}
 	if (want_func) {
 		int tr = 0;
-		func_argc = trace_build_argv(&funcv, "funcs", pkg, 1, prefix,
+		func_argc = trace_build_argv(&funcv, "funcs", prefix,
 		                             "funcs.jsonl", argv, func_start, func_end, &tr);
 		if (tr) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
+		// ponytail: -o implies quiet in syscalls; mirror that for funcs under trace
+		// so "trace -o prefix" silences both engines' consoles symmetrically.
+		if (prefix && func_argc < 63) {
+			funcv.argv[func_argc++] = "-q";
+			funcv.argv[func_argc]   = NULL;
+		}
 	}
 
 	// Arm both engines BEFORE the single launch. Neither launches on its own —
@@ -118,8 +125,8 @@ int cmd_trace(int argc, char **argv)
 
 	signal(SIGINT, on_sigint);
 
-	printf("trace: launching %s (uid %d) — Ctrl-C to stop\n", pkg, uid);
-	if (ares_launch_app(pkg, NULL) != 0) {
+	ares_launch_banner(pkg, uid);
+	if (ares_launch_app(pkg, activity) != 0) {
 		fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
 		if (want_func) funcs_teardown();
 		if (want_sys) syscalls_teardown();

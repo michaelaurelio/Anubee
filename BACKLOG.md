@@ -231,6 +231,45 @@ shared `ares_*` implementations (already used by `funcs`/`correlate`), removing
 
 ---
 
+## Device-test findings — 2026-06-24
+
+From testing against `com.bmri.kopramobile` / `libpb88.so`. F1/F3/F4 are root-caused;
+F2 is open pending repro details.
+
+- **F1 — FD & string resolution not written to output file. DONE 2026-06-24.**
+  `funcs_emit_call` / `funcs_emit_return` (`src/funcs/funcs_emit.c`) now accept a
+  `probe_target_t *target` and emit `string_args` (BPF-captured strings), `fd_args`
+  (FD→path via `render_fd`), `retval_str`, and `out_args` into the JSONL record.
+  `syscalls` was already correct (not affected). `test_funcs_emit` extended to 15 checks
+  covering string, FD, and retval_str resolution. `make test` green (10/10).
+
+- **F2 — PID attach mode error in `ares funcs` (and others). P1 bug. NEEDS REPRO.**
+  The `-p` parse (`src/funcs/ares-tracer.c:105`) and uprobe attach loop (`:1206-1280`)
+  are structurally sound; the failure is likely runtime (attach perms / per-PID `/proc`
+  symbol resolution). *Action required:* share the exact `stderr` output + invocation
+  before assigning a root cause. Also check `correlate -p` (`src/correlate/correlate.c`).
+
+- **F3 — `--version` not recognized (all engines). P2 regression.** ← cross-ref C1
+  The Makefile partial-link + `objcopy --keep-global-symbol=cmd_*` (`Makefile:254-284`)
+  **localizes every non-entry global**, including `argp_program_version`. libc's argp
+  never sees a version symbol, so `--version` is not registered → "unrecognized option".
+  In addition: since the combined binary is one process, a single per-engine global can't
+  express `"ares funcs"` vs `"ares syscalls"` — the five defs are dead. C1 was marked
+  "SHIPPED" prematurely; only the version *strings* exist, not the dispatch.
+  *Fix sketch:* handle `--version`/`-V` explicitly in each `cmd_<engine>` (2-line print
+  + exit), or intercept in `src/main.c` dispatch before handing off to `cmd_*`. Drop the
+  dead `argp_program_version` globals afterward.
+
+- **F4 — `-o` ⇒ quiet inconsistent across engines. P2.** ← cross-ref U3
+  `syscalls` sets `g_quiet |= output_file`; `funcs` does not (console stays live with
+  `-o`). **Decision: unify on `-o` ⇒ quiet** (syscalls behavior) — `-o` silences the
+  console on every engine; `-q` is no longer needed for silent file runs. Revisitable if
+  dual-output is explicitly desired.
+  *Fix sketch:* add `g_quiet |= (args.c.output_file != NULL)` in funcs after argp_parse;
+  update the funcs `doc[]` note that currently advertises dual-output as intentional.
+
+---
+
 ## Open issues — review 2026-06-17
 
 Repo-wide review pass. Ordered by severity; most are small and self-contained.
@@ -446,10 +485,12 @@ Shipped in order: Tier 1 (A1, A4, A2, A7), Tier 2 minus A5 (A3, X3, X4, C1), the
 - **A.0** — `lib`/`dump`/`correlate` migrated to GNU argp + `argp_program_version`.
   `lib` and `dump` also route launch through `ares_launch_app()` (launch dedup, gains
   death-wait + `am start -S`). Correlate launch stays inline (needs pid back from pidof).
-- **`syscalls --version`** — `argp_program_version = "ares syscalls"` added; all six
-  engines now report an identity string via `--version`.
-- **U3 doc** — `funcs --help` now documents the dual console+file output mode and the
-  intentional difference from `syscalls -o ⇒ quiet`.
+- **`syscalls --version` (partial)** — `argp_program_version = "ares syscalls"` added to
+  all five argp engines. The version *strings* exist but `--version` dispatch is broken
+  at runtime due to Makefile symbol localization (see F3 in Device-test findings).
+- **U3 doc** — `funcs --help` now documents the dual console+file output mode. **Decision
+  revised (F4, 2026-06-24):** unify on `-o` ⇒ quiet across all engines; implementation
+  pending (see F4 in Device-test findings).
 
 ### Won't do (dead-flag trap — see evaluation in plan)
 

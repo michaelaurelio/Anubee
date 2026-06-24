@@ -316,7 +316,7 @@ test:
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
 	$(BUILD)/test_decode
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_funcs_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c src/common/decode.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
 	$(BUILD)/test_corr_emit

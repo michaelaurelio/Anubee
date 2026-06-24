@@ -711,7 +711,7 @@ static void process_call_return(const void *data, size_t data_sz)
                     used_fallback ? " (resolved from known offset)" : "");
             if (g_sink.f) {
                 g_sink.jb.len = 0;
-                funcs_emit_call(&g_sink.jb, e, bname, target->func_name);
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target);
                 ares_sink_emit(&g_sink);
             }
         } else {
@@ -848,7 +848,7 @@ static void process_call_return(const void *data, size_t data_sz)
 
         if (g_sink.f) {
             g_sink.jb.len = 0;
-            funcs_emit_return(&g_sink.jb, e, bname, fname);
+            funcs_emit_return(&g_sink.jb, e, bname, fname, target);
             ares_sink_emit(&g_sink);
         }
 

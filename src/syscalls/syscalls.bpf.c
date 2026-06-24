@@ -217,13 +217,16 @@ static __always_inline void emit_snapshot(struct pt_regs *user_regs,
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < 31; i++)
 		s->regs[i] = BPF_CORE_READ(user_regs, regs[i]);
-	s->_pad = 0;
+	s->truncated = 0;
+	s->_pad[0] = 0; s->_pad[1] = 0; s->_pad[2] = 0;
 	s->snap_len = 0;
 	const void *sp = (const void *)s->sp;
 	if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_MAX, sp) == 0)
 		s->snap_len = SYSC_SNAP_MAX;
-	else if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_SMALL, sp) == 0)
+	else if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_SMALL, sp) == 0) {
 		s->snap_len = SYSC_SNAP_SMALL;
+		s->truncated = 1;
+	}
 	bpf_ringbuf_submit(s, 0);
 }
 

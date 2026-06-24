@@ -577,6 +577,7 @@ static void json_emit_stack(const struct syscalls_stack_snapshot *s)
 	}
 	jb_c(j, ']');
 	jb_s(j, ",\"snap_len\":"); jb_u64(j, s->snap_len);
+	jb_s(j, ",\"truncated\":"); jb_u64(j, s->truncated);
 	jb_s(j, ",\"snapshot\":\"");
 	if (s->snap_len <= sizeof(s->snap))
 		jb_b64(j, s->snap, s->snap_len);

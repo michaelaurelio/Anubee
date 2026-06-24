@@ -365,7 +365,9 @@ the caller's bytes) plus a sorted array of method bytecode ranges; lookup
 binary-searches the ranges, then resolves names through the
 `method_ids`/`type_ids`/`string_ids` tables. The DEX is target-controlled, so
 every read is bounds-checked and every table index validated — a malformed entry
-is skipped, a malformed header fails the build (`NULL`), and no input can fault.
+is skipped, a malformed header (or an allocation failure mid-build) fails the
+build (`NULL`), overlapping method ranges from a crafted DEX are pruned so the
+binary search stays deterministic, and no input can fault.
 It has **no libbpf / `/proc` / ELF dependency and no detectability surface** (pure
 parsing of bytes the caller already holds), and is host-tested against a committed
 `.dex` fixture (`tests/test_dex.c`, `tests/fixtures/sample.dex`).

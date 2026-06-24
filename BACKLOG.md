@@ -398,14 +398,28 @@ capability** (no caller; compiled only by `make test`, absent from `build/ares`)
 Spec: `docs/superpowers/specs/2026-06-24-dex-method-resolver-core-design.md`.
 Remaining phases, in dependency order:
 
-- **Phase 2b — on-device research spike** (needs the rooted device): capture
-  `base.vdex` / `[anon:dalvik-DEX data]` frames, dump bytes at the offsets,
-  determine dex-vs-cdex, vdex version, and whether the PC is a `code_item.insns`
-  offset. Greenlights or kills integration.
-- **Phase 2c — vdex container + anon-region locate:** find the DEX image inside
-  `base.vdex` (version-gated) and in `[anon:dalvik-DEX data]`; feed it to
-  `dex_map_build`. CompactDex (`cdex001`) support lands here if 2b shows the device
-  uses it.
+- **Phase 2b — on-device research spike — DONE (2026-06-24, A15/POCO/KernelSU):
+  PARK both frame types; 2c/2d NOT greenlit.** Captured `classes.vdex+0x..` frames
+  (note: app vdex is named `classes.vdex`, not `base.vdex`) on AOT-compiled
+  `com.android.deskclock`. vdex version `027`, embedded DEX is **standard `dex\n038`,
+  no CompactDex** (Android 12 removed cdex) — so the Phase-2a parser applies. But all
+  5 distinct captured frame offsets land in DEX **data** (string/type tables), past
+  every `code_item`, and `dex_map_lookup` correctly misses on all of them; a known
+  code_item offset in the same device DEX resolves fine (parser verified). These PCs
+  are **FP-unwinder mis-captures of DEX data pointers, not bytecode `dex_pc`s**.
+  `[anon:dalvik-DEX data]` frames never occurred (DEX is vdex-embedded on A15).
+  Conclusion: naming these frames needs a proper ART managed-stack (ShadowFrame)
+  walk, **not** the DEX resolver. Full evidence:
+  `docs/superpowers/research/2026-06-24-vdex-dex-frame-spike-findings.md`.
+  Phase-2a core stays valuable for the JIT/OAT method-index→name paths (genuine
+  method indices, not unwind noise). Revisit 2c/2d only for a debuggable /
+  force-interpreted / JIT-heavy target where the captured PC is a real bytecode
+  pointer, and improve unwind quality first.
+- **Phase 2c — vdex container + anon-region locate (PARKED by 2b):** find the DEX
+  image inside `base.vdex` (version-gated) and in `[anon:dalvik-DEX data]`; feed it
+  to `dex_map_build`. On A15 the embedded DEX is standard (no cdex needed), single
+  `file_offset 0` mapping, symbol offset == vdex file offset — but parked: 2b showed
+  the captured PCs aren't code_item offsets, so a locator would feed garbage.
 - **Phase 2d — `symbolize.c` integration:** wire the two frame types through the
   resolver with a per-image cache (mirroring the vDSO per-pid holder), emitting
   `base.vdex!pkg.Class.method+0x..`. MCP-format note + device-test assertion.

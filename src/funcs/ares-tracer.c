@@ -44,8 +44,12 @@ static int active_module_count = 0;
 
 // Argument parser module using argp.h
 const char *argp_program_version = "ares funcs";
-const char *argp_program_bug_address = "<vincentferdinand.k@gmail.com>";
-static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)";
+const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
+static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
+    "\v"
+    "Note: -o writes structured JSONL *and* keeps the console live (dual output).\n"
+    "Use -q to silence the console when only the file stream is needed.\n"
+    "(syscalls -o implies quiet; funcs -o does not — this is intentional.)";
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {

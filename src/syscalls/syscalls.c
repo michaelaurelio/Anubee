@@ -952,6 +952,9 @@ struct sysc_args {
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
 };
 
+const char *argp_program_version     = "ares syscalls";
+const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
+
 static const struct argp_option sysc_options[] = {
 	{ "package",     'P', "PACKAGE",  0, "App package to trace (required in standalone mode)", 0 },
 	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*')",  0 },

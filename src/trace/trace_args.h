@@ -7,6 +7,7 @@
 struct trace_args {
 	const char *pkg;       // -P value, or NULL
 	const char *prefix;    // -o value, or NULL
+	const char *activity;  // -A value, or NULL
 	int sys_start, sys_end;    // [start,end) slice into argv; start<0 = no --syscalls
 	int func_start, func_end;  // likewise for --funcs
 };
@@ -24,13 +25,11 @@ struct trace_argv {
 };
 
 // Build one engine's argv into *out:
-//   [ engine, ("-P" pkg)?, ("-o" prefix.suffix)?, src_argv[start..end) ]
-// inject_pkg != 0: prepend "-P" pkg (funcs needs -P at argp-parse time).
-// prefix != NULL: insert "-o" "<prefix>.<suffix>" after any "-P".
+//   [ engine, ("-o" prefix.suffix)?, src_argv[start..end) ]
+// prefix != NULL: insert "-o" "<prefix>.<suffix>" before the section args.
 // If the section overflows 63 slots the remainder is dropped and
 // *truncated is set to 1 (caller warns). Returns argc (not counting NULL).
 int trace_build_argv(struct trace_argv *out, const char *engine,
-                     const char *pkg,    int inject_pkg,
                      const char *prefix, const char *suffix,
                      char **src_argv, int start, int end,
                      int *truncated);

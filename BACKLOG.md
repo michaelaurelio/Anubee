@@ -249,24 +249,16 @@ F2 is open pending repro details.
   symbol resolution). *Action required:* share the exact `stderr` output + invocation
   before assigning a root cause. Also check `correlate -p` (`src/correlate/correlate.c`).
 
-- **F3 — `--version` not recognized (all engines). P2 regression.** ← cross-ref C1
-  The Makefile partial-link + `objcopy --keep-global-symbol=cmd_*` (`Makefile:254-284`)
-  **localizes every non-entry global**, including `argp_program_version`. libc's argp
-  never sees a version symbol, so `--version` is not registered → "unrecognized option".
-  In addition: since the combined binary is one process, a single per-engine global can't
-  express `"ares funcs"` vs `"ares syscalls"` — the five defs are dead. C1 was marked
-  "SHIPPED" prematurely; only the version *strings* exist, not the dispatch.
-  *Fix sketch:* handle `--version`/`-V` explicitly in each `cmd_<engine>` (2-line print
-  + exit), or intercept in `src/main.c` dispatch before handing off to `cmd_*`. Drop the
-  dead `argp_program_version` globals afterward.
+- **F3 — `--version` not recognized (all engines). DONE 2026-06-24.**
+  Handled centrally in `src/main.c`: before dispatch, intercept `--version`/`-V` for any
+  known subcommand and print `ares <cmd>`. Deleted five dead `argp_program_version`
+  globals (funcs, syscalls, lib, dump, correlate). `make test` 10/10.
 
-- **F4 — `-o` ⇒ quiet inconsistent across engines. P2.** ← cross-ref U3
-  `syscalls` sets `g_quiet |= output_file`; `funcs` does not (console stays live with
-  `-o`). **Decision: unify on `-o` ⇒ quiet** (syscalls behavior) — `-o` silences the
-  console on every engine; `-q` is no longer needed for silent file runs. Revisitable if
-  dual-output is explicitly desired.
-  *Fix sketch:* add `g_quiet |= (args.c.output_file != NULL)` in funcs after argp_parse;
-  update the funcs `doc[]` note that currently advertises dual-output as intentional.
+- **F4 — `-o` ⇒ quiet inconsistent across engines. DONE 2026-06-24.**
+  Added `|| (output_file != NULL)` to the quiet assignment in funcs, lib, and correlate
+  (syscalls already had it). Updated `-o` help text (`(implies -q)`) in all four engines
+  via `COMMON_ARGP_OPTIONS` + lib/correlate option tables. Updated funcs `doc[]` to drop
+  the "dual output intentional" note. `make test` 10/10.
 
 ---
 

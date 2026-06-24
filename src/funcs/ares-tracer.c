@@ -43,13 +43,10 @@ static const ares_module_t *active_modules[sizeof(all_modules)/sizeof(all_module
 static int active_module_count = 0;
 
 // Argument parser module using argp.h
-const char *argp_program_version = "ares funcs";
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
 static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
     "\v"
-    "Note: -o writes structured JSONL *and* keeps the console live (dual output).\n"
-    "Use -q to silence the console when only the file stream is needed.\n"
-    "(syscalls -o implies quiet; funcs -o does not — this is intentional.)";
+    "Note: -o implies quiet; console output is suppressed when writing a file.";
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
@@ -1049,7 +1046,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     verbose = args.c.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
-    g_quiet = args.c.quiet;
+    g_quiet = args.c.quiet || (args.c.output_file != NULL);
 
     if (args.c.output_file) {
         int jsonl = args.c.jsonl || ends_with(args.c.output_file, ".jsonl");

@@ -33,7 +33,6 @@
 #include "common/engine_args.h"
 #include "rebuild.h"
 
-const char *argp_program_version     = "ares dump";
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;

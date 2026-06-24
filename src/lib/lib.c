@@ -27,7 +27,6 @@
 #include "common/launch.h"
 #include "common/engine_args.h"
 
-const char *argp_program_version     = "ares lib";
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;
@@ -89,7 +88,7 @@ struct lib_args {
 static const struct argp_option lib_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity component (default: auto-resolve)", 0 },
-    { "output",   'o', "FILE",     0, "Write structured JSONL ({\"type\":\"lib\",...})", 0 },
+    { "output",   'o', "FILE",     0, "Write structured JSONL ({\"type\":\"lib\",...}) (implies -q)", 0 },
     { "verbose",  'v', NULL,       0, "Also print [unlib] unmap lines (default: [lib] only)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress human-readable [lib] console lines", 0 },
     { 0 }
@@ -128,7 +127,7 @@ int cmd_lib(int argc, char **argv)
 
     const char *pkg      = la.pkg;
     const char *activity = la.activity;
-    g_quiet   = la.c.quiet;
+    g_quiet   = la.c.quiet || (la.c.output_file != NULL);
     g_verbose = la.c.verbose;
 
     int uid = ares_resolve_uid(pkg);

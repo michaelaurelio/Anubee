@@ -69,7 +69,7 @@ SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
 
 # ---- userspace objects (compiled per engine, then localized) --------------
-SYSC_CSRC := $(SRC)/syscalls/syscalls.c $(SRC)/syscalls/symbolize.c
+SYSC_CSRC := $(SRC)/syscalls/syscalls.c
 FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
              $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
              $(SRC)/funcs/modules/prop_read.c
@@ -79,7 +79,7 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
-               $(SRC)/common/runtime.c $(SRC)/common/evqueue.c
+               $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -97,7 +97,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
-               seg_vaddr_to_off
+               seg_vaddr_to_off \
+               sym_resolve sym_flush_pid
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -220,7 +221,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(SRC)/common/symbolize.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 

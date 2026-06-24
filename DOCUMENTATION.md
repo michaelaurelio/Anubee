@@ -24,7 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -83,6 +83,19 @@ flowchart TD
   cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
   use it to decouple the ring-buffer drain thread from the heavy per-event work
   (symbolization, JSON emit). The kernel ring stays empty; bursts are absorbed in RAM.
+- **The call-stack symbolizer is shared, not duplicated.** `src/common/symbolize.{c,h}`
+  implements `sym_resolve(pid, addr, out, sz)` and `sym_flush_pid(pid)`, used by
+  both `syscalls` (backtrace JSON) and `funcs` (console stack frames). Resolution
+  sources: `.dynsym` / `.symtab` / `.gnu_debugdata` (LZMA mini-debug-info, covers
+  most Android system libraries and `dex2oat`-compiled app code); ART/JIT method
+  names via `__jit_debug_descriptor` over `/proc/<pid>/mem`; vDSO `.dynsym`; and
+  APK-embedded stored `.so` display names (ZIP central-dir parse). Per-pid
+  `/proc/<pid>/maps` snapshots are cached with binary search and a throttled refresh.
+  Results are cached in an open-addressing hash table keyed by `(pid, addr)`.
+  `funcs` previously had a simpler local resolver (`lookup_caller`) that only
+  produced module+offset with no symbol names; the merge gives `funcs` real function
+  names, JIT/vDSO resolution, and `.gnu_debugdata` for free, while `syscalls` gains
+  APK-embedded `.so` naming.
 - **The argument-parsing contract is shared, not duplicated.** All six engines use
   GNU argp (auto `--help`/`--usage`/`--version`). `src/common/engine_args.h` provides
   `struct common_args`, `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS`, and
@@ -123,7 +136,7 @@ flowchart TD
 
 The two engines were independent programs that each assumed they owned the global
 namespace (e.g. both define `verbose`; the funcs engine exposes
-bare globals like `skel`, `out_print`, `lookup_caller`). Naively linking their
+bare globals like `skel`, `out_print`). Naively linking their
 objects together fails with `multiple definition` errors.
 
 The Makefile solves this without rewriting either engine: it compiles each
@@ -319,10 +332,10 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   the dump engine's rebuild pipeline and the syscalls engine's stack symbolizer
   (which walks ART's in-process JIT debug descriptor).
 
-### 2.1 Stack symbolizer — JIT resolution
+### 2.1 Stack symbolizer — shared (`common/symbolize.c`)
 
-The `syscalls` engine resolves backtrace frames host-side after each event. For
-each frame address the symbolizer:
+Both `syscalls` and `funcs` resolve backtrace addresses using the shared
+`sym_resolve` call. For each frame address the symbolizer:
 
 1. Looks up the mapping in the tracked library table (`/proc/<pid>/maps` snapshot).
 2. If the mapping has a file path and the file opens as a valid ELF, resolves via

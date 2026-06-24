@@ -177,7 +177,7 @@ int cmd_lib(int argc, char **argv)
 	}
 
 	snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-	printf("launching: %s\n", cmd);
+	ares_launch_banner(pkg, uid);
 	if (ares_sh_exec(cmd, NULL, 0) < 0) {
 		fprintf(stderr, "lib: launch failed\n");
 		goto err_rb;

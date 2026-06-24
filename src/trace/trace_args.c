@@ -28,13 +28,16 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
 {
-	o->pkg = o->prefix = NULL;
+	o->pkg = o->prefix = o->activity = NULL;
 	o->sys_start = o->sys_end = o->func_start = o->func_end = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-P")) {
 			if (++i >= argc) return -1;
 			o->pkg = argv[i];
+		} else if (!strcmp(argv[i], "-A")) {
+			if (++i >= argc) return -1;
+			o->activity = argv[i];
 		} else if (!strcmp(argv[i], "-o")) {
 			if (++i >= argc) return -1;
 			o->prefix = argv[i];

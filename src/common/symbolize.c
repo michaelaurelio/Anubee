@@ -28,6 +28,7 @@
 #include <time.h>
 #include <elf.h>
 #include <lzma.h>
+#include <pthread.h>
 
 #define MAX_PATH_LEN 256
 #define REFRESH_MS   250
@@ -1276,16 +1277,23 @@ static void sc_put(int pid, uint64_t addr, const char *sym)
 	snprintf(g_sc[i].sym, sizeof(g_sc[i].sym), "%s", sym);
 }
 
+// ponytail: one global lock; split per-cache only if profiling shows contention.
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
 // Returns 1 if the result is stable enough to cache (a real mapping), 0 for an
 // unmapped/transient address (which a later mmap could turn into a real symbol).
 static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz);
 
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 {
-	if (sc_get(pid, (uint64_t)addr, out, outsz))
+	pthread_mutex_lock(&g_lock);
+	if (sc_get(pid, (uint64_t)addr, out, outsz)) {
+		pthread_mutex_unlock(&g_lock);
 		return;
+	}
 	if (sym_resolve_uncached(pid, addr, out, outsz))
 		sc_put(pid, (uint64_t)addr, out);
+	pthread_mutex_unlock(&g_lock);
 }
 
 static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz)
@@ -1387,6 +1395,7 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 
 void sym_flush_pid(int pid)
 {
+	pthread_mutex_lock(&g_lock);
 	for (size_t i = 0; i < g_npm; i++)
 		if (g_pm[i].pid == pid)
 			g_pm[i].n = 0;          // force reread on next resolve
@@ -1397,4 +1406,5 @@ void sym_flush_pid(int pid)
 		if (g_vdso[i].pid == pid)
 			vdso_free(&g_vdso[i]);     // force rebuild on next resolve
 	sc_clear();                             // addresses may have moved
+	pthread_mutex_unlock(&g_lock);
 }

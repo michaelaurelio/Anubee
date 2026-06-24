@@ -45,37 +45,34 @@ int main(void)
 	// --- trace_build_argv ---
 	struct trace_argv v;
 
-	// syscalls, no prefix, no inject_pkg
+	// syscalls, no prefix
 	char *s1[] = { A("trace"), A("-a") };
-	int na = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, s1, 1, 2, NULL);
+	int na = trace_build_argv(&v, "syscalls", NULL, NULL, s1, 1, 2, NULL);
 	assert(na == 2);
 	assert(strcmp(v.argv[0], "syscalls") == 0);
 	assert(strcmp(v.argv[1], "-a") == 0);
 	assert(v.argv[2] == NULL);
 
-	// funcs, with prefix and inject_pkg
+	// funcs, with prefix (package now comes from rc, not injected into argv)
 	char *s2[] = { A("trace"), A("-e"), A("lib!fn") };
 	int trunc = 0;
-	int nb = trace_build_argv(&v, "funcs", "com.app", 1, "run", "funcs.jsonl",
-	                          s2, 1, 3, &trunc);
+	int nb = trace_build_argv(&v, "funcs", "run", "funcs.jsonl", s2, 1, 3, &trunc);
 	assert(trunc == 0);
-	assert(nb == 7);  // engine + -P pkg + -o file + 2 section args
+	assert(nb == 5);  // engine + -o file + 2 section args
 	assert(strcmp(v.argv[0], "funcs") == 0);
-	assert(strcmp(v.argv[1], "-P") == 0);
-	assert(strcmp(v.argv[2], "com.app") == 0);
-	assert(strcmp(v.argv[3], "-o") == 0);
-	assert(strcmp(v.argv[4], "run.funcs.jsonl") == 0);
-	assert(strcmp(v.argv[5], "-e") == 0 && strcmp(v.argv[6], "lib!fn") == 0);
-	assert(v.argv[7] == NULL);
+	assert(strcmp(v.argv[1], "-o") == 0);
+	assert(strcmp(v.argv[2], "run.funcs.jsonl") == 0);
+	assert(strcmp(v.argv[3], "-e") == 0 && strcmp(v.argv[4], "lib!fn") == 0);
+	assert(v.argv[5] == NULL);
 
 	// empty section (start == end) — only header entries
-	int nc = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, s1, 2, 2, NULL);
+	int nc = trace_build_argv(&v, "syscalls", NULL, NULL, s1, 2, 2, NULL);
 	assert(nc == 1 && strcmp(v.argv[0], "syscalls") == 0 && v.argv[1] == NULL);
 
 	// truncation: fill past 63-arg limit
 	char *big[128]; for (int i = 0; i < 128; i++) big[i] = A("x");
 	trunc = 0;
-	int nd = trace_build_argv(&v, "syscalls", NULL, 0, NULL, NULL, big, 0, 128, &trunc);
+	int nd = trace_build_argv(&v, "syscalls", NULL, NULL, big, 0, 128, &trunc);
 	assert(trunc == 1);
 	assert(nd == 63);         // 1 engine name + 62 section args
 	assert(v.argv[63] == NULL);

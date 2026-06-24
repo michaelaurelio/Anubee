@@ -4,7 +4,6 @@
 #include <string.h>
 
 int trace_build_argv(struct trace_argv *out, const char *engine,
-                     const char *pkg,    int inject_pkg,
                      const char *prefix, const char *suffix,
                      char **src_argv, int start, int end,
                      int *truncated)
@@ -13,10 +12,6 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 	if (truncated) *truncated = 0;
 
 	out->argv[argc++] = (char *)engine;
-	if (inject_pkg) {
-		out->argv[argc++] = "-P";
-		out->argv[argc++] = (char *)pkg;
-	}
 	if (prefix) {
 		snprintf(out->outbuf, sizeof(out->outbuf), "%s.%s", prefix, suffix);
 		out->argv[argc++] = "-o";

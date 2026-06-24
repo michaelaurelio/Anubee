@@ -4,12 +4,11 @@
 // app, emitting only those whose user backtrace passes through a chosen native
 // library (e.g. a RASP .so).
 //
-//   usage: syscalls <package> <lib> [activity]
-//   where <lib> is a substring of the native library's mapped name, or a glob
-//   (* ? []) over it for a randomized per-run name (e.g. 'e_[0-9]*').
-//   e.g.   syscalls com.example.app librasp.so
-//          syscalls com.example.app 'e_[0-9]*'
-//          syscalls com.example.app libguard.so com.example.app.MainActivity
+//   usage: syscalls -P <package> -l <lib-selector> [options]
+//   where <lib-selector> is a substring or glob (* ? []) of the library name.
+//   e.g.   syscalls -P com.example.app -l librasp.so
+//          syscalls -P com.example.app -l 'e_[0-9]*'
+//          syscalls -P com.example.app -a -s openat,read -o out.jsonl
 //
 // What it does, in order:
 //   1. Resolves the package's app-UID by stat'ing its data dir.
@@ -53,6 +52,7 @@
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
+#include "common/engine_args.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 
@@ -932,35 +932,76 @@ static int ends_with(const char *s, const char *suf)
 	return ls >= lf && !strcmp(s + ls - lf, suf);
 }
 
-static void usage(const char *argv0)
+static void copy_str(char *dst, const char *src, size_t n)
 {
-	fprintf(stderr,
-		"usage: %s [-o out.json] [-v] [-q] [-a] [-b MB] [-s list|-x list] <package> [lib-substring] [activity]\n"
-		"  -a, --all           capture ALL syscalls of the app (no library filter)\n"
-		"  -s, --syscall list  only these syscalls (comma-separated names, e.g. openat,read)\n"
-		"  -x, --exclude list  all syscalls except these (comma-separated names)\n"
-		"  -o, --json <file>   export captured syscalls to a JSON file (implies -q)\n"
-		"  -J, --jsonl         write JSON Lines (one record/line; crash-safe, streamable).\n"
-		"                      Auto-enabled when -o ends in .jsonl\n"
-		"  -b, --bufsize MB    kernel ring buffer size in MB (default 4; rounded to power of 2)\n"
-		"  -Q, --queue MB      userspace worker queue size in MB (default 256; absorbs bursts)\n"
-		"  -q, --quiet         suppress per-event console output (much faster under load)\n"
-		"  -v, --verbose       also log every executable mapping\n"
-		"      --snapshot      capture per-syscall register+stack snapshots to a\n"
-		"                      <out>.stacks sidecar for off-device CFI unwinding of\n"
-		"                      packed/obfuscated native code (library-filtered mode; off by\n"
-		"                      default — Java/JIT/OAT frames are symbolized on-device)\n"
-		"\n"
-		"  By default a <lib> selector is required and only syscalls whose backtrace\n"
-		"  passes through that library are recorded. With -a it is optional/ignored.\n"
-		"  <lib> is a substring of the mapped name, or a glob (* ? []) over it — e.g.\n"
-		"  'e_*' / 'e_[0-9]*' for a protector payload loaded under a randomized name.\n"
-		"  -s/-x further restrict which syscalls are kept (works with the default/-a modes).\n"
-		"  e.g. %s com.example.app librasp.so\n"
-		"       %s com.example.app 'e_[0-9]*'         # trace a randomized-name library\n"
-		"       %s -a -s openat,read,close,newfstatat -o files.json com.example.app\n",
-		argv0, argv0, argv0, argv0);
+	size_t len = strnlen(src, n - 1);
+	memcpy(dst, src, len);
+	dst[len] = '\0';
 }
+
+// ---- argp-based argument parser ------------------------------------------
+
+struct sysc_args {
+	struct common_args c;        // -o -v -q -J -b -Q (shared with funcs)
+	char package_name[256];      // -P
+	char lib_sel[256];           // -l: library selector (substring or glob)
+	char activity[256];          // -A: optional launch activity override
+	int  capture_all;            // -a
+	int  want_snap;              // --snapshot
+	const char *syscall_list;    // value of -s or -x
+	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
+};
+
+static const struct argp_option sysc_options[] = {
+	{ "package",     'P', "PACKAGE",  0, "App package to trace (required in standalone mode)" },
+	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*')" },
+	{ "activity",    'A', "ACTIVITY", 0, "Override launch activity component"                },
+	COMMON_ARGP_OPTIONS,
+	{ "all",         'a', NULL,       0, "Capture all syscalls (no library filter)"          },
+	{ "snapshot",     1,  NULL,       0, "Capture stack snapshots for off-device unwinding"  },
+	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)"                       },
+	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names"          },
+	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names"           },
+	{ 0 }
+};
+
+static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
+{
+	struct sysc_args *a = state->input;
+	switch (key) {
+	case 'P': copy_str(a->package_name, arg, sizeof(a->package_name)); break;
+	case 'l': copy_str(a->lib_sel,      arg, sizeof(a->lib_sel));      break;
+	case 'A': copy_str(a->activity,     arg, sizeof(a->activity));     break;
+	case 'a': a->capture_all = 1; break;
+	case  1 : a->want_snap = 1;   break;
+	case  2 : a->want_snap = 0;   break;
+	case 's':
+		if (a->syscall_mode == 2) argp_error(state, "use either -s or -x, not both");
+		a->syscall_list = arg; a->syscall_mode = 1;
+		break;
+	case 'x':
+		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
+		a->syscall_list = arg; a->syscall_mode = 2;
+		break;
+	case ARGP_KEY_END:
+		if (a->package_name[0] == '\0')
+			argp_error(state, "-P <package> is required");
+		if (!a->capture_all && a->lib_sel[0] == '\0')
+			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
+		break;
+	default:
+		return parse_common_arg(key, arg, state, &a->c);
+	}
+	return 0;
+}
+
+static const struct argp sysc_argp = {
+	sysc_options, parse_sysc_opts, NULL,
+	"Syscall tracer for a single Android app.\v"
+	"  e.g. ares syscalls -P com.example.app -l librasp.so\n"
+	"       ares syscalls -P com.example.app -l 'e_[0-9]*' -o out.jsonl\n"
+	"       ares syscalls -P com.example.app -a -s openat,read\n"
+};
 
 // ---- engine driver, split into setup / run / teardown --------------------
 // cmd_syscalls below is a thin standalone wrapper; the `trace` coordinator drives
@@ -968,96 +1009,28 @@ static void usage(const char *argv0)
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-	int capture_all = 0;
-	// Java frames are now symbolized on-device, so the off-device stack-snapshot
-	// sidecar is opt-in (it remains the escape hatch for native CFI unwinding of
-	// packed/obfuscated code). --snapshot enables it.
-	int want_snap = 0;
-	const char *json_path = NULL;
-	const char *syscall_list = NULL;
-	int syscall_mode = 0;                    // 0=off, 1=allowlist, 2=denylist
-	int bufmb = 4;                           // kernel ring buffer size (MB)
-	int queue_mb = 256;                      // userspace worker queue size (MB)
+	struct sysc_args sa = { .c = COMMON_ARGS_INIT };
+	// Pre-fill package from coordinator so ARGP_KEY_END validation passes
+	// without needing -P in the syscalls argv section.
+	if (rc && rc->pkg)
+		copy_str(sa.package_name, rc->pkg, sizeof(sa.package_name));
+	argp_parse(&sysc_argp, argc, argv, 0, NULL, &sa);
 
-	int ai = 1;
-	for (; ai < argc; ai++) {
-		if (!strcmp(argv[ai], "-o") || !strcmp(argv[ai], "--json")) {
-			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
-			json_path = argv[++ai];
-		} else if (!strcmp(argv[ai], "-v") || !strcmp(argv[ai], "--verbose")) {
-			g_verbose = 1;
-		} else if (!strcmp(argv[ai], "-q") || !strcmp(argv[ai], "--quiet")) {
-			g_quiet = 1;
-		} else if (!strcmp(argv[ai], "-J") || !strcmp(argv[ai], "--jsonl")) {
-			g_jsonl = 1;
-		} else if (!strcmp(argv[ai], "-b") || !strcmp(argv[ai], "--bufsize")) {
-			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
-			bufmb = atoi(argv[++ai]);
-			if (bufmb < 1) { fprintf(stderr, "bufsize must be >= 1 MB\n"); return 1; }
-		} else if (!strcmp(argv[ai], "-Q") || !strcmp(argv[ai], "--queue")) {
-			if (ai + 1 >= argc) { usage(argv[0]); return 1; }
-			queue_mb = atoi(argv[++ai]);
-			if (queue_mb < 1) { fprintf(stderr, "queue must be >= 1 MB\n"); return 1; }
-		} else if (!strcmp(argv[ai], "-a") || !strcmp(argv[ai], "--all")) {
-			capture_all = 1;
-		} else if (!strcmp(argv[ai], "--snapshot")) {
-			want_snap = 1;
-		} else if (!strcmp(argv[ai], "--no-snapshot")) {
-			want_snap = 0;          // accepted for back-compat; off is the default
-		} else if (!strcmp(argv[ai], "-s") || !strcmp(argv[ai], "--syscall")) {
-			if (ai + 1 >= argc || syscall_mode == 2) {
-				fprintf(stderr, "use either -s or -x, not both\n");
-				usage(argv[0]); return 1;
-			}
-			syscall_list = argv[++ai];
-			syscall_mode = 1;
-		} else if (!strcmp(argv[ai], "-x") || !strcmp(argv[ai], "--exclude")) {
-			if (ai + 1 >= argc || syscall_mode == 1) {
-				fprintf(stderr, "use either -s or -x, not both\n");
-				usage(argv[0]); return 1;
-			}
-			syscall_list = argv[++ai];
-			syscall_mode = 2;
-		} else if (argv[ai][0] == '-') {
-			fprintf(stderr, "unknown option: %s\n", argv[ai]);
-			usage(argv[0]);
-			return 1;
-		} else {
-			break;
-		}
-	}
-	// Need <package>; <lib-substring> is required only in the default
-	// library-filtered mode (not with -a). In coordinator mode (rc->pkg set) the
-	// package is supplied by `trace`, so the positionals are just [lib] [activity].
-	int no_lib_needed = capture_all;
-	int npos = argc - ai;
-	const char *activity;
-	if (rc && rc->pkg) {
-		if (!no_lib_needed && npos < 1) { usage(argv[0]); return 1; }
-		g_pkg = rc->pkg;
-		if (no_lib_needed) {
-			g_lib = "";
-			activity = (npos > 0) ? argv[ai] : NULL;
-		} else {
-			g_lib = argv[ai];
-			activity = (npos > 1) ? argv[ai + 1] : NULL;
-		}
-	} else {
-		if (npos < 1 || (!no_lib_needed && npos < 2)) {
-			usage(argv[0]);
-			return 1;
-		}
-		g_pkg = argv[ai];
-		if (no_lib_needed) {
-			g_lib = "";                          // no library filter
-			activity = (npos > 1) ? argv[ai + 1] : NULL;
-		} else {
-			g_lib = argv[ai + 1];
-			activity = (npos > 2) ? argv[ai + 2] : NULL;
-		}
-	}
+	g_pkg      = sa.package_name;
+	g_lib      = sa.capture_all ? "" : sa.lib_sel;
+	g_activity = sa.activity[0] ? sa.activity : NULL;
+	g_verbose  = sa.c.verbose;
+	g_quiet    = sa.c.quiet || (sa.c.output_file != NULL);
+	g_jsonl    = sa.c.jsonl ||
+	             (sa.c.output_file && ends_with(sa.c.output_file, ".jsonl"));
+	int capture_all      = sa.capture_all;
+	int want_snap        = sa.want_snap;
+	int bufmb            = sa.c.bufmb;
+	int queue_mb         = sa.c.queue_mb;
+	const char *json_path    = sa.c.output_file;
+	const char *syscall_list = sa.syscall_list;
+	int syscall_mode         = sa.syscall_mode;
 
-	g_activity = activity;
 	int uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
 	if (uid < 0) {
 		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
@@ -1069,13 +1042,6 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
-
-	// Writing JSON => suppress the slow per-event console rendering by default.
-	if (json_path)
-		g_quiet = 1;
-	// A .jsonl output path implies JSON Lines framing.
-	if (json_path && ends_with(json_path, ".jsonl"))
-		g_jsonl = 1;
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement).

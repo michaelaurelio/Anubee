@@ -40,4 +40,39 @@ const struct cfi_fde *cfi_lookup(const struct cfi_section *s, uint64_t pc);
 /* Free s->fdes (does NOT free the borrowed data buffer). */
 void cfi_section_free(struct cfi_section *s);
 
+/* ---- CFI interpreter types (Task 5) -------------------------------------- */
+
+/* A register's recovery rule for a given PC row. */
+struct cfi_rule {
+	uint8_t kind;     /* CFI_UNDEF=0, CFI_SAME=1, CFI_AT_CFA=2 (saved at CFA + off) */
+	int64_t off;      /* byte offset from CFA when kind==CFI_AT_CFA */
+};
+enum { CFI_UNDEF = 0, CFI_SAME = 1, CFI_AT_CFA = 2 };
+
+#define CFI_NREG 31       /* x0..x30 */
+#define CFI_REG_SP 31     /* DWARF reg 31 = sp on aarch64 */
+
+/* CFA + per-register rules at one PC row. CFA = regval(cfa_reg) + cfa_off,
+ * where regval(31)=sp, regval(r)=x[r] otherwise. */
+struct cfi_cfa_state {
+	uint32_t cfa_reg;
+	int64_t  cfa_off;
+	struct cfi_rule cols[CFI_NREG];
+};
+
+/* Interpret the CIE initial instructions then the FDE instructions, accumulating rules up to
+ * (and including) module_pc. Fills *out. Returns 0 on success, -1 if no FDE covers module_pc
+ * or the program is malformed. module_pc is in the section's address space (caller maps a
+ * runtime PC to module-relative first). */
+int cfi_run_program(const struct cfi_section *s, uint64_t module_pc, struct cfi_cfa_state *out);
+
+/* Step one frame up. On entry x[0..30], *sp, *pc describe the current frame; module_pc is *pc
+ * mapped to this section's space. Computes CFA and the caller's registers by reading the frozen
+ * stack window [stack_base, stack_base+stack_len), and overwrites x[], *sp, *pc with the caller
+ * frame. Returns 1 if a caller frame was recovered, 0 to STOP the unwind (no FDE, RA undefined,
+ * caller PC == 0, or a needed stack slot lies outside the window). Never reads outside the window. */
+int cfi_step(const struct cfi_section *s, uint64_t module_pc,
+	     uint64_t x[CFI_NREG], uint64_t *sp, uint64_t *pc,
+	     const uint8_t *stack, uint64_t stack_base, size_t stack_len);
+
 #endif

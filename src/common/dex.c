@@ -119,7 +119,10 @@ static int push_range(struct dex_method_map *m, size_t *cap,
 
 // Parse one encoded_method group of `count` entries starting at *pos. method_idx
 // is a running sum, reset to 0 by the caller per group. Returns 1 on a clean
-// pass, 0 if a ULEB read ran out (caller abandons the rest of this class).
+// pass, 0 if a ULEB read ran out (truncated — caller abandons the rest of this
+// class but keeps what it has), -1 on allocation failure (caller aborts the
+// whole build). The truncated and OOM cases are kept distinct so an OOM never
+// masquerades as a successfully-built but silently-incomplete map.
 static int parse_method_group(struct dex_method_map *m, size_t *cap,
                               size_t len, size_t *pos, uint32_t count)
 {
@@ -129,7 +132,7 @@ static int parse_method_group(struct dex_method_map *m, size_t *cap,
         if (!uleb128(m->img, len, pos, &idx_diff) ||
             !uleb128(m->img, len, pos, &access_flags) ||
             !uleb128(m->img, len, pos, &code_off))
-            return 0;
+            return 0;                      // truncated — skip rest of class
         method_idx += idx_diff;            // first entry: relative to 0
         if (code_off == 0)
             continue;                      // abstract/native — no bytecode
@@ -144,7 +147,7 @@ static int parse_method_group(struct dex_method_map *m, size_t *cap,
         if (method_idx >= m->method_ids_size)
             continue;                      // bad index — skip record
         if (!push_range(m, cap, start, start + (uint32_t)insns_bytes, method_idx))
-            return 0;                      // OOM — abort this class
+            return -1;                     // OOM — abort the build
     }
     return 1;
 }
@@ -215,15 +218,37 @@ struct dex_method_map *dex_map_build(const uint8_t *img, size_t len)
             continue;
 
         // direct then virtual methods; each group's method_idx restarts at 0.
-        if (!parse_method_group(m, &cap, len, &pos, direct_methods))
+        // A truncated group (0) skips the rest of this class; an OOM (<0) aborts.
+        int dr = parse_method_group(m, &cap, len, &pos, direct_methods);
+        if (dr < 0)
+            goto oom;
+        if (dr == 0)
             continue;   // truncated/short class — keep prior ranges, next class
-        parse_method_group(m, &cap, len, &pos, virtual_methods);
+        if (parse_method_group(m, &cap, len, &pos, virtual_methods) < 0)
+            goto oom;
     }
 
-    if (m->nranges > 1)
+    if (m->nranges > 1) {
         qsort(m->ranges, m->nranges, sizeof(*m->ranges), cmp_range);
+        // Enforce the non-overlapping invariant dex_map_lookup's binary search
+        // relies on: a malformed DEX can encode methods whose insns ranges
+        // overlap. Keep the lowest-start range of any overlapping run and drop
+        // the rest, so lookups stay deterministic and bounded on hostile input.
+        size_t w = 1;
+        for (size_t r = 1; r < m->nranges; r++) {
+            if (m->ranges[r].start >= m->ranges[w - 1].end)
+                m->ranges[w++] = m->ranges[r];
+        }
+        m->nranges = w;
+    }
 
     return m;
+
+oom:
+    free(m->img);
+    free(m->ranges);
+    free(m);
+    return NULL;
 }
 
 void dex_map_free(struct dex_method_map *m)

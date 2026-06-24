@@ -178,7 +178,9 @@ Flat JSONL: `{"type":"func","span":N,"parent_span":M,...}` and
 Flags: `-p PID` / `-P package` · `-e SPEC` (repeatable) / `-F spec-file` ·
 `-o file.jsonl`. **Quote specs with parentheses** (`'libc.so!open(S)'`) so the
 shell doesn't choke on the `(`. v1 captures raw syscall args (no decode) and uses
-SP-based span close (no return values yet).
+SP-based span close (no return values yet). Limits: up to 64 PIDs and 64 specs per
+run (a warning prints if you exceed either, rather than silently dropping the extras);
+`-o` reports `wrote N event(s)` at exit.
 
 ### `ares lib` — library-load tracer
 

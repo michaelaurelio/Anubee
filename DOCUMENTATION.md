@@ -332,6 +332,51 @@ AOT-compiled frames backed by OAT/ODEX/VDEX files (e.g. `base.vdex+0x..`, app
 `.odex`) are shown as `file+offset`; managed-method resolution for those formats
 is deferred (see [BACKLOG.md](BACKLOG.md)).
 
+#### vDSO frames
+
+`[vdso]` frames are named from the vDSO's `.dynsym`, read out of the target's
+live memory (the vDSO is a complete, immutable ELF the kernel maps with no
+backing file). A frame renders as `[vdso]!__kernel_clock_gettime+0x..`. The
+parse reuses the on-disk symbol machinery (`ingest_fd_section` → `add_symbols`
+→ `sym_lookup`) via `pread` on `/proc/<pid>/mem`; it writes nothing into the
+target (firewall-clean) and is built once per pid.
+
+#### Backtrace frame classification (what resolves, what does not)
+
+| Region | What it is | Resolution |
+|---|---|---|
+| `<lib>.so!sym+off` | on-disk ELF | `.dynsym` / `.symtab` / `.gnu_debugdata` |
+| `base.odex!Class.method+off` | AOT-compiled app code | **already named** via `.gnu_debugdata` mini-debug-info embedded by `dex2oat` |
+| `[JIT]!method+off` | ART JIT code cache | GDB JIT descriptor walk (live memory) |
+| `[vdso]!__kernel_*+off` | kernel vDSO | vDSO `.dynsym` (live memory) |
+| `<lib>.so+off` (no `!`) | stripped / past-symbol-end native | no symbol exists — bare offset is the ceiling |
+| `[anon:dalvik-main space]+off` | GC object heap | **not a method** — a return address here is frame-pointer-unwind noise |
+| `[anon:dalvik-DEX data]+off` | dex bytecode (nterp) | **deferred** — needs the dex method resolver (Phase 2) |
+| `base.vdex+off` | interpreter / quickened dex | **deferred** — dex resolver + PC-meaning research (Phase 2) |
+
+#### DEX offset→method resolver (`src/common/dex`, Phase 2a — parser only)
+
+The version-stable core both deferred rows above bottom out in: a pure parser
+that maps a byte offset into a standard DEX image (`dex\n0NN`) to the Java method
+whose `code_item.insns` covers it, returning `pkg.Class.method`. Interface:
+`dex_map_build(img, len)` → `dex_map_lookup(map, off, out, outsz)` →
+`dex_map_free(map)`. The map retains a private copy of the image (it never aliases
+the caller's bytes) plus a sorted array of method bytecode ranges; lookup
+binary-searches the ranges, then resolves names through the
+`method_ids`/`type_ids`/`string_ids` tables. The DEX is target-controlled, so
+every read is bounds-checked and every table index validated — a malformed entry
+is skipped, a malformed header fails the build (`NULL`), and no input can fault.
+It has **no libbpf / `/proc` / ELF dependency and no detectability surface** (pure
+parsing of bytes the caller already holds), and is host-tested against a committed
+`.dex` fixture (`tests/test_dex.c`, `tests/fixtures/sample.dex`).
+
+**Not yet wired into any capability** — the resolver has no caller, so it is
+compiled only by `make test` and is absent from `build/ares`. The
+vdex-container locate, anonymous-region wiring, and `symbolize.c` integration
+(emitting `base.vdex!pkg.Class.method+0x..`) land in Phases 2c/2d; CompactDex
+(`cdex001`) is deferred to the code-item-decode seam. See
+[BACKLOG.md](BACKLOG.md).
+
 ## 6. The `correlate` engine (uprobe + span-gated kprobe, loud)
 
 Function→syscall correlation on a live run. One BPF object

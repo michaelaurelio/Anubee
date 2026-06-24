@@ -338,16 +338,25 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   yet) and exists as the single audit point + regression guard; the future thin-presets
   work will use it to refuse a loud object in a quiet preset (call
   `ares_quiet_config_ok` before loading engines). Backed by `tests/test_capabilities.c`
-  (9 checks, host-unit-testable).
+  (10 checks, host-unit-testable).
 - **C6 — ELF reconstruction** — merged into `src/dump/rebuild.c` (the single
   `ares dump` engine); the old per-engine dump files are removed.
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
-- **C8 — Misc duplication** — `libbpf_print_fn` + signal handlers; duplicate
-  `vmlinux.h`. (Near-identical `map_event` struct and vendored libbpf are already
-  unified.) BPF dropped-counter dup (`dropped` map + `bump_dropped()`) and the
-  `syscalls_hdr` alias resolved (2026-06-24). Remaining: `libbpf_print_fn`, `vmlinux.h`.
-- **C9 — Capability the funcs engine could borrow:** the syscalls engine's
-  `decode_sockaddr` (the funcs engine has no sockaddr decoding).
+- **C8 — Misc duplication** — **DONE (2026-06-24).** BPF dropped-counter dup
+  (`dropped` map + `bump_dropped()`) and `syscalls_hdr` alias resolved (2026-06-24);
+  `libbpf_print_fn` — three local copies in `lib`/`dump`/`correlate` replaced by
+  `ares_libbpf_quiet` from `common/runtime.h` (see X2 above). Remaining: `vmlinux.h`
+  dedup (see Deferred tech debt).
+- **C9 — funcs `decode_sockaddr` support** — **DEFERRED (2026-06-24).** `funcs` has
+  no sockaddr decoding for pointer args (`connect`/`bind` destination addresses show
+  up as raw pointers). The syscalls approach (a `sock_args` BPF map keyed by syscall
+  number) doesn't port: `funcs` uses one generic uprobe program for all attach points,
+  and keying config by runtime entry address is fragile under ASLR. Adding it properly
+  would need heuristic BPF capture + a new `ARG_SOCK` spec type-char + event-struct
+  change + emit plumbing. **Deferred because:** the common use case (what address did
+  this app connect to?) is already covered by `ares syscalls`, which decodes sockaddrs
+  for connect/bind/sendto at the kernel boundary. Revisit only if the need arises to
+  tie a sockaddr to a specific userspace function's call stack.
 
 ---
 

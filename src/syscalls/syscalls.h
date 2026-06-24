@@ -61,7 +61,8 @@ struct syscalls_syscall_event {
 struct syscalls_stack_snapshot {
 	struct trace_event_header h;
 	__u64 stack_id;
-	__u64 pc, sp, fp, lr;                        /* user pc / sp / x29 / x30 */
+	__u64 pc, sp, fp, lr;                        /* user pc / sp / x29 / x30 (legacy mirror) */
+	__u64 regs[31];                              /* full GP file x0..x30 (CFI initial state) */
 	__u32 snap_len;                              /* bytes valid in snap[] (from sp up) */
 	__u32 _pad;
 	__u8  snap[SYSC_SNAP_MAX];               /* user stack starting at sp */

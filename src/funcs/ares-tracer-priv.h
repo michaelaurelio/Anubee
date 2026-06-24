@@ -33,7 +33,8 @@ int  lookup_caller(pid_t pid, __u64 addr,
 // Called from ares-tracer.c when --structured mode is active.
 struct jbuf;   // common/emit.h
 struct event;  // ares-tracer.h
-void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol);
-void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol);
+#include "common/probe_resolve.h"
+void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
+void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
 
 #endif /* __ARES_TRACER_PRIV_H */

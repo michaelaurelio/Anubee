@@ -952,7 +952,6 @@ struct sysc_args {
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
 };
 
-const char *argp_program_version     = "ares syscalls";
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static const struct argp_option sysc_options[] = {

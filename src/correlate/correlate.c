@@ -28,7 +28,6 @@
 #include "common/probe_resolve.h"
 #include "common/engine_args.h"
 
-const char *argp_program_version     = "ares correlate";
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 // nr -> name table (generated for the device's arm64 ABI).
@@ -194,7 +193,7 @@ static const struct argp_option corr_options[] = {
     { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
     { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable)", 0 },
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
-    { "output",  'o', "FILE",      0, "Write structured JSONL", 0 },
+    { "output",  'o', "FILE",      0, "Write structured JSONL (implies -q)", 0 },
     { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
     { 0 }
 };
@@ -252,7 +251,7 @@ int cmd_correlate(int argc, char **argv)
     if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
         return 1;
 
-    g_quiet = ca.quiet;
+    g_quiet = ca.quiet || (ca.out_path != NULL);
     if (ca.out_path) {
         g_jsonl = fopen(ca.out_path, "w");
         if (!g_jsonl) {

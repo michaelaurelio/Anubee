@@ -56,6 +56,22 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	// --version / -V: answered centrally because objcopy localizes each engine's
+	// argp_program_version, leaving glibc's weak NULL fallback and a broken
+	// --version. Print "ares <subcommand>" and exit; guard on the known-name set
+	// so "ares bogus --version" still falls through to the "unknown command" error.
+	static const char *known[] = { "syscalls","funcs","lib","dump","correlate","trace" };
+	for (int k = 0; k < (int)(sizeof(known)/sizeof(known[0])); k++) {
+		if (strcmp(cmd, known[k])) continue;
+		for (int i = 2; i < argc; i++) {
+			if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-V")) {
+				printf("ares %s\n", cmd);
+				return 0;
+			}
+		}
+		break;
+	}
+
 	// Hand off the rest of argv past the subcommand. Each engine keeps its own
 	// argument parser and sees argv[0] = the subcommand name (used in its usage).
 	if (!strcmp(cmd, "syscalls"))

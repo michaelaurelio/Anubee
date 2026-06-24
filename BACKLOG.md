@@ -398,66 +398,43 @@ that lands in AOT-compiled or interpreter-adjacent regions, not just the JIT cac
 ## CLI consistency — deferred items
 
 From the full consistency audit documented in `CONSISTENCY_AUDIT.md` (2026-06-24).
-Tier 1 (A1, A4, A2, A7) and Tier 2 minus A5 (A3, X3, X4, C1) were shipped. Items
-below remain deferred.
+Shipped in order: Tier 1 (A1, A4, A2, A7), Tier 2 minus A5 (A3, X3, X4, C1), then
+2026-06-24: Quick wins + A.0 keystone (see below). Items still deferred follow.
 
-### A5 — package/activity are positional in `lib`/`dump`, flags elsewhere (Tier 2)
+### Shipped 2026-06-24
 
-`ares lib <package> [activity]` and `ares dump <package> <pattern> [activity]` use
-positional args for the package and activity; every other engine uses `-P`/`-A`. A user
-who learns `-P com.x` on `syscalls` has to drop the flag for `lib`/`dump`. Fix: accept
-`-P`/`-A` in `lib`/`dump` (keep positional as a back-compat alias). Deferred because
-`lib`/`dump` are single-function hand-rolled parsers and the positional grammar is short
-and documented; benefit is marginal for the code addition.
+- **A5** — `-P`/`-A` flags on `lib`/`dump` (keeping positionals as aliases): done
+  as part of the A.0 argp migration.
+- **A.0** — `lib`/`dump`/`correlate` migrated to GNU argp + `argp_program_version`.
+  `lib` and `dump` also route launch through `ares_launch_app()` (launch dedup, gains
+  death-wait + `am start -S`). Correlate launch stays inline (needs pid back from pidof).
+- **`syscalls --version`** — `argp_program_version = "ares syscalls"` added; all six
+  engines now report an identity string via `--version`.
+- **U3 doc** — `funcs --help` now documents the dual console+file output mode and the
+  intentional difference from `syscalls -o ⇒ quiet`.
 
-### A.0 — Two parsing paradigms: `lib`/`dump`/`correlate` are hand-rolled (Tier 3)
+### Won't do (dead-flag trap — see evaluation in plan)
 
-`syscalls` and `funcs` use GNU argp (auto `--help`/`--usage`/`--version`, `--long`
-forms, the shared `engine_args.h` `-o/-v/-q/-J/-b/-Q` contract). `lib`, `dump`, and
-`correlate` use hand-rolled `argv` loops. Consequence: two help formats, two error
-styles, no shared contract on those engines. Fix: migrate `lib`/`dump`/`correlate` to
-argp + `engine_args.h`. Larger but mechanical; the main benefit is `-J`, `-b`, and `-Q`
-reaching those engines consistently.
+- `dump -v` — dump has no verbose-tier output to gate; a flag would be wired to nothing.
+- `lib`/`dump`/`correlate` `-b`/`-Q` — these engines poll the ring buffer directly with
+  no configurable ring size or worker queue; advertising the flags would recreate the A1
+  dead-flag bug.
 
 ### X2 — Three structured-output code paths (Tier 3)
 
 `syscalls`/`funcs` use `ares_sink` (framing-aware, drop reporting, `-J`, periodic
 flush). `lib` and `correlate` write a raw `FILE*` opened with `fopen` — always
 line-framed, no `-J`, no "wrote N records" report at teardown. `dump` writes binary ELF
-files. Fix: migrate `lib` and `correlate` onto `ares_sink`. Depends on A.0 (or can be
-done independently by adding `ares_sink` alongside the hand-rolled parser).
+files. Fix: migrate `lib` and `correlate` onto `ares_sink`. A.0 is now done, so X2 can
+be done independently.
 
 ### U1/U2 — Console style diverges between engines (Tier 3)
 
 `funcs` uses timestamped tagged lines (`[spawn] >`, `[work] >`, `[uprobe] >`,
-`[event] >`). All other engines (`syscalls`, `lib`, `dump`, `correlate`, `trace`) use
-plain prose banners (`tracing uid N`, `queue: N MB`, `Ctrl-C to stop`, etc.). Under
-`trace -o` the interleave is masked, but standalone runs feel like two different tools.
-Fix: pick one convention and align. Recommendation: `[stage] >` tagged (the richer
-one); change the others to match. `[lib]` / `[unlib]` in `lib` are output lines, not
-banners — keep their format.
-
-### U3 — `-o ⇒ quiet` only in `syscalls` standalone (Tier 3)
-
-`syscalls`: `g_quiet = quiet || output_file` (implicitly silences console when `-o` is
-set). `funcs` standalone: `g_quiet = quiet` only (console stays live alongside the
-file). Under `trace -o` this is equalized (coordinator appends `-q` to the funcs
-section). Standalone `funcs -o x.jsonl` still prints console — arguably a feature (both
-console + file at once, which `syscalls` can't do), but it's an undocumented
-asymmetry. Options: (a) unify on `syscalls` behavior; (b) formally document funcs'
-dual-output mode in `--help`.
-
-### Remaining asymmetries (not yet filed as named items)
-
-- `dump` has no `-v` verbose dial; `syscalls`/`funcs`/`lib` do.
-- `dump`/`correlate` have no `-b` ring buffer or `-Q` queue knobs; behavior on high
-  event volume is undocumented.
-- `syscalls --version` is absent; `funcs --version` prints `ares funcs` (post-C1).
-  Add a matching version string to syscalls or drop funcs', to keep the two symmetric.
-- `lib`/`dump` inline their own `am force-stop` / `am start` (don't call
-  `ares_launch_app`). They now use `ares_launch_banner` for the print, but the
-  launch logic itself is still duplicated. Long-term: route `lib`/`dump` through
-  `ares_launch_app` and delete their inline sequences.
+`[event] >`). All other engines use plain prose banners. Under `trace -o` the interleave
+is masked, but standalone runs feel like two different tools. Fix: pick one convention
+and align. `[lib]` / `[unlib]` in `lib` are output lines, not banners — keep their
+format. Note: low value / high cosmetic churn across 5 files; not recommended.
 
 ---
 

@@ -30,7 +30,11 @@
 #include "dump.skel.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
+#include "common/engine_args.h"
 #include "rebuild.h"
+
+const char *argp_program_version     = "ares dump";
+const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;
 static void on_sigint(int sig) { (void)sig; exiting = 1; }
@@ -82,9 +86,6 @@ static int seen_add(__u32 pid, __u64 start)
 	return 1;                              // newly recorded
 }
 
-// Device launch/UID helpers (sh_exec / resolve_uid / resolve_component) now live
-// in src/common/launch.{c,h} as ares_*; shared across all engines.
-
 // ---- ring-buffer event handling -------------------------------------------
 
 static int handle_event(void *ctx, void *data, size_t sz)
@@ -127,152 +128,162 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_li
 	return vfprintf(stderr, fmt, args);
 }
 
-static void usage(void)
+// ---- argp parser ----------------------------------------------------------
+
+static const char dump_doc[] =
+    "Launch PACKAGE fresh and dump every native library whose basename matches"
+    " PATTERN (glob, e.g. 'e_*') from live memory, rebuilding each into a"
+    " loadable ELF (.so).\v"
+    "PACKAGE, PATTERN, and ACTIVITY can be passed as flags or positionally.\n"
+    "Example: ares dump -P com.example.app 'libsecret*' -d /tmp/dumps";
+static const char dump_args_doc[] = "[PACKAGE PATTERN [ACTIVITY]]";
+
+struct dump_args {
+    const char *pkg;
+    const char *pattern;
+    const char *activity;
+    const char *outdir;
+    int on_map;
+    int raw;
+    int quiet;
+};
+
+// Synthetic keys for long-only options (must be > 127 to avoid short-option collision).
+enum { KEY_ON_MAP = 256, KEY_RAW };
+
+static const struct argp_option dump_options[] = {
+    { "package",  'P',        "PACKAGE",  0, "App package to launch and dump", 0 },
+    { "activity", 'A',        "ACTIVITY", 0, "Override launch activity component (default: auto-resolve)", 0 },
+    { "dump-dir", 'd',        "DIR",      0, "Output directory (default: current dir)", 0 },
+    { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
+    { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
+    { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
+    { 0 }
+};
+
+static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
 {
-	fprintf(stderr,
-		"usage: ares dump [options] <package> <pattern> [activity]\n"
-		"\n"
-		"Launch <package> fresh and dump every loaded native library whose\n"
-		"basename matches <pattern> (glob, e.g. 'e_*') from live memory,\n"
-		"rebuilding each into a loadable ELF (.so).\n"
-		"\n"
-		"options:\n"
-		"  -d, --dump-dir DIR  output directory (default: current dir)\n"
-		"      --on-map        dump the instant a matching library maps\n"
-		"                      (default: dump on exit, post-decryption)\n"
-		"      --raw           emit the raw phdr-fixed image, skip ELF rebuild\n"
-		"  -q, --quiet         suppress progress chatter\n"
-		"  -h, --help          show this help\n");
+    struct dump_args *a = state->input;
+    switch (key) {
+    case 'P': a->pkg      = arg;  break;
+    case 'A': a->activity = arg;  break;
+    case 'd': a->outdir   = arg;  break;
+    case 'q': a->quiet    = 1;    break;
+    case KEY_ON_MAP: a->on_map = 1; break;
+    case KEY_RAW:    a->raw    = 1; break;
+    case ARGP_KEY_ARG:
+        if      (!a->pkg)     a->pkg     = arg;
+        else if (!a->pattern) a->pattern = arg;
+        else if (!a->activity) a->activity = arg;
+        else argp_error(state, "unexpected argument '%s'", arg);
+        break;
+    case ARGP_KEY_END:
+        if (!a->pkg)     argp_error(state, "package is required (-P PACKAGE or first positional)");
+        if (!a->pattern) argp_error(state, "pattern is required (second positional)");
+        break;
+    default:
+        return ARGP_ERR_UNKNOWN;
+    }
+    return 0;
 }
+
+static const struct argp dump_argp = { dump_options, dump_parse_opt, dump_args_doc, dump_doc, 0, 0, 0 };
+
+// ---- entry point ----------------------------------------------------------
 
 int cmd_dump(int argc, char **argv)
 {
-	const char *pkg = NULL, *activity = NULL;
+    struct dump_args da = { .outdir = "." };
+    if (argp_parse(&dump_argp, argc, argv, 0, NULL, &da) != 0)
+        return 1;
 
-	for (int i = 1; i < argc; i++) {
-		const char *a = argv[i];
-		if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-			usage();
-			return 0;
-		} else if (!strcmp(a, "-q") || !strcmp(a, "--quiet")) {
-			g_quiet = 1;
-		} else if (!strcmp(a, "--on-map")) {
-			g_on_map = 1;
-		} else if (!strcmp(a, "--raw")) {
-			dump_set_raw(1);
-		} else if (!strcmp(a, "-d") || !strcmp(a, "--dump-dir")) {
-			if (++i >= argc) { fprintf(stderr, "dump: -d needs a DIR\n"); return 1; }
-			g_outdir = argv[i];
-		} else if (a[0] == '-') {
-			fprintf(stderr, "dump: unknown option '%s'\n", a);
-			usage();
-			return 1;
-		} else if (!pkg) {
-			pkg = a;
-		} else if (!g_pattern) {
-			g_pattern = a;
-		} else if (!activity) {
-			activity = a;
-		} else {
-			fprintf(stderr, "dump: unexpected argument '%s'\n", a);
-			return 1;
-		}
-	}
+    const char *pkg      = da.pkg;
+    const char *activity = da.activity;
+    g_pattern = da.pattern;
+    g_outdir  = da.outdir;
+    g_on_map  = da.on_map;
+    g_quiet   = da.quiet;
+    if (da.raw) dump_set_raw(1);
 
-	if (!pkg || !g_pattern) {
-		usage();
-		return 1;
-	}
+    int uid = ares_resolve_uid(pkg);
+    if (uid < 0) {
+        fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", pkg);
+        return 1;
+    }
 
-	int uid = ares_resolve_uid(pkg);
-	if (uid < 0) {
-		fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", pkg);
-		return 1;
-	}
+    libbpf_set_print(libbpf_print_fn);
 
-	libbpf_set_print(libbpf_print_fn);
+    struct ares_dump *skel = ares_dump__open();
+    if (!skel) {
+        fprintf(stderr, "dump: failed to open BPF skeleton\n");
+        return 1;
+    }
+    if (ares_dump__load(skel)) {
+        fprintf(stderr, "dump: failed to load BPF (need eBPF privileges / SELinux permissive?)\n");
+        goto err_skel;
+    }
 
-	struct ares_dump *skel = ares_dump__open();
-	if (!skel) {
-		fprintf(stderr, "dump: failed to open BPF skeleton\n");
-		return 1;
-	}
-	if (ares_dump__load(skel)) {
-		fprintf(stderr, "dump: failed to load BPF (need eBPF privileges / SELinux permissive?)\n");
-		goto err_skel;
-	}
+    __u32 key = 0, vuid = (__u32)uid;
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
+        fprintf(stderr, "dump: failed to install target UID\n");
+        goto err_skel;
+    }
 
-	__u32 key = 0, vuid = (__u32)uid;
-	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uid), &key, &vuid, BPF_ANY) != 0) {
-		fprintf(stderr, "dump: failed to install target UID\n");
-		goto err_skel;
-	}
+    if (ares_dump__attach(skel)) {
+        fprintf(stderr, "dump: failed to attach (uprobe_mmap in kallsyms?)\n");
+        goto err_skel;
+    }
 
-	if (ares_dump__attach(skel)) {
-		fprintf(stderr, "dump: failed to attach (uprobe_mmap in kallsyms?)\n");
-		goto err_skel;
-	}
+    struct ring_buffer *rb =
+        ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
+    if (!rb) {
+        fprintf(stderr, "dump: failed to create ring buffer\n");
+        goto err_skel;
+    }
 
-	struct ring_buffer *rb =
-		ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
-	if (!rb) {
-		fprintf(stderr, "dump: failed to create ring buffer\n");
-		goto err_skel;
-	}
+    // Fresh start: kill any running instance, wait for it to die, then launch.
+    // Tracing is already armed, so we catch the new process from its first mapping.
+    ares_launch_banner(pkg, uid);
+    if (ares_launch_app(pkg, activity) != 0) {
+        fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", pkg);
+        goto err_rb;
+    }
 
-	char cmd[512], comp[256];
-	snprintf(cmd, sizeof(cmd), "am force-stop %s", pkg);
-	ares_sh_exec(cmd, NULL, 0);
+    signal(SIGINT, on_sigint);
+    printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
+           uid, g_pattern, g_on_map ? "on map" : "on exit");
 
-	if (activity)
-		snprintf(comp, sizeof(comp), "%s/%s", pkg, activity);
-	else if (ares_resolve_component(pkg, comp, sizeof(comp)) != 0) {
-		fprintf(stderr, "dump: could not resolve launcher activity for '%s'; pass it explicitly\n", pkg);
-		goto err_rb;
-	}
+    while (!exiting) {
+        int err = ring_buffer__poll(rb, 200 /* ms */);
+        if (err < 0 && err != -EINTR)
+            break;
+    }
 
-	snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-	ares_launch_banner(pkg, uid);
-	if (ares_sh_exec(cmd, NULL, 0) < 0) {
-		fprintf(stderr, "dump: launch failed\n");
-		goto err_rb;
-	}
+    // dump-on-exit: rescan each recorded pid's maps and dump matching modules.
+    if (!g_on_map) {
+        if (g_pids_n == 0)
+            fprintf(stderr, "[dump] no app process mapped anything\n");
+        int total = 0;
+        for (size_t i = 0; i < g_pids_n; i++) {
+            int d = dump_pid_modules((int)g_pids[i], g_pattern, g_outdir);
+            if (d > 0)
+                total += d;
+        }
+        fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
+            total, total == 1 ? "" : "s", g_pattern, g_outdir);
+    }
 
-	signal(SIGINT, on_sigint);
-	printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
-	       uid, g_pattern, g_on_map ? "on map" : "on exit");
-
-	while (!exiting) {
-		int err = ring_buffer__poll(rb, 200 /* ms */);
-		if (err < 0 && err != -EINTR)
-			break;
-	}
-
-	// dump-on-exit: rescan each recorded pid's maps and dump matching modules.
-	if (!g_on_map) {
-		if (g_pids_n == 0)
-			fprintf(stderr, "[dump] no app process mapped anything\n");
-		int total = 0;
-		for (size_t i = 0; i < g_pids_n; i++) {
-			int d = dump_pid_modules((int)g_pids[i], g_pattern, g_outdir);
-			if (d > 0)
-				total += d;
-		}
-		fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
-			total, total == 1 ? "" : "s", g_pattern, g_outdir);
-	}
-
-	ring_buffer__free(rb);
-	ares_dump__destroy(skel);
-	free(g_pids);
-	free(g_seen);
-	return 0;
+    ring_buffer__free(rb);
+    ares_dump__destroy(skel);
+    free(g_pids);
+    free(g_seen);
+    return 0;
 
 err_rb:
-	ring_buffer__free(rb);
+    ring_buffer__free(rb);
 err_skel:
-	ares_dump__destroy(skel);
-	free(g_pids);
-	free(g_seen);
-	return 1;
+    ares_dump__destroy(skel);
+    free(g_pids);
+    free(g_seen);
+    return 1;
 }

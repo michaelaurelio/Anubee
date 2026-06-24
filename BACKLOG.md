@@ -7,7 +7,7 @@ forward-looking items only.
 **Contents**
 
 - [Shipped](#shipped)
-- [Open issues — review 2026-06-17 (R2–R7, R9)](#open-issues--review-2026-06-17)
+- [Open issues — review 2026-06-17 (R3, R4, R5, R9)](#open-issues--review-2026-06-17)
 - [Consolidation roadmap — shared-code de-dup (C1–C9)](#consolidation-roadmap--shared-code-de-dup)
 - [`correlate` — remaining work](#correlate--remaining-work)
 - [Planned — structured emitter + unified MCP](#planned--structured-emitter--unified-mcp)
@@ -16,6 +16,20 @@ forward-looking items only.
 ---
 
 ## Shipped
+
+### CLI consistency / asymmetry — 2026-06-24
+
+All six engines now use GNU argp (auto `--help`/`--usage`/`--version`). `lib`, `dump`,
+and `correlate` migrated from hand-rolled `argv` loops to argp (A.0). During the
+migration: `lib`/`dump` gained `-P`/`-A` flags with positional aliases kept for
+back-compat (A5); `lib`/`dump` launch now routes through `ares_launch_app()` deleting
+the inline force-stop/resolve/start sequences and gaining the death-wait loop and
+`am start -S`; `correlate` -q is now documented in `--help` (R6 closed). All six
+engines report identity via `--version` (syscalls: `ares syscalls`; others likewise).
+`funcs --help` documents the dual console+file output mode (U3). The `argp_program_bug_address`
+fields reflect the two-author split: `funcs` → `vincent.kwee@binus.ac.id`; all others
+→ `michael.windarta@binus.ac.id`. Won't-do items noted (dump -v, lib/dump/correlate
+`-b`/`-Q` — no behavior to attach; would recreate the A1 dead-flag bug).
 
 ### BPF de-dup + argument-parsing normalization — 2026-06-24
 
@@ -220,18 +234,15 @@ shared `ares_*` implementations (already used by `funcs`/`correlate`), removing
 ## Open issues — review 2026-06-17
 
 Repo-wide review pass. Ordered by severity; most are small and self-contained.
+R2, R6, R7 closed — see Shipped above.
 
 ### Correctness / robustness
 
-- **R2 — uprobe offset uses `sym.st_value` (a virtual address) directly as the
-  uprobe file offset** in both `correlate` (`resolve_custom_spec_for_path` /
-  `resolve_targets*` in `src/common/probe_resolve.c`) and `funcs`. libbpf's
-  `bpf_program__attach_uprobe` wants a **file offset**; `st_value == file_offset`
-  only when the containing `PT_LOAD`'s `p_vaddr == p_offset` (true for most Android
-  `.so`s, so on-device tests pass). For libraries whose executable segment has
-  `p_vaddr != p_offset` the probe lands at the wrong address. Fix: convert via the
-  program headers (`file_off = st_value - (seg.p_vaddr - seg.p_offset)` for the
-  segment that contains `st_value`).
+- **R2 — DONE (2026-06-23).** `vaddr_to_file_off()` added to `src/common/probe_resolve.c`:
+  builds a `PT_LOAD` table from the open ELF handle and converts `sym.st_value` (virtual
+  address) to a file offset via `file_off = vaddr - (seg.p_vaddr - seg.p_offset)` for the
+  containing segment. All three resolution paths in `probe_resolve.c` now call it (lines
+  ~184, ~273, ~436). Verified device-side on a `.so` with non-zero `p_vaddr − p_offset`.
 - **R3 — `correlate` leaks its uprobe `bpf_link`s.** `attach_uprobes_for_pid` stores
   each `bpf_program__attach_uprobe` result in a local `link` that is never tracked or
   `bpf_link__destroy`'d (only the syscall kprobe `kp` is). Cleanup relies on process
@@ -249,11 +260,9 @@ Repo-wide review pass. Ordered by severity; most are small and self-contained.
 
 ### Consistency / docs
 
-- **R6 — `correlate -q` is parsed but undocumented** — `usage()` omits the `-q`
-  (quiet) flag that `cmd_correlate` handles.
-- **R7 — `FUNC_CFLAGS` lacks `-Wextra`** (Makefile) while every other engine's CFLAGS
-  has it. `funcs` is the largest C unit (1.5k lines) and gets the *weakest* warning
-  coverage. Align it to `-Wall -Wextra`.
+- **R6 — DONE (2026-06-24).** `correlate` migrated to argp; `-q` is now in
+  `corr_options[]` and appears in `--help` automatically. No separate `usage()` remains.
+- **R7 — DONE (2026-06-23).** `FUNC_CFLAGS` aligned to `-Wall -Wextra` in the Makefile.
 
 ### Perf (minor)
 

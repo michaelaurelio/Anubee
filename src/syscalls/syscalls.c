@@ -953,15 +953,15 @@ struct sysc_args {
 };
 
 static const struct argp_option sysc_options[] = {
-	{ "package",     'P', "PACKAGE",  0, "App package to trace (required in standalone mode)" },
-	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*')" },
-	{ "activity",    'A', "ACTIVITY", 0, "Override launch activity component"                },
+	{ "package",     'P', "PACKAGE",  0, "App package to trace (required in standalone mode)", 0 },
+	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*')",  0 },
+	{ "activity",    'A', "ACTIVITY", 0, "Override launch activity component",                 0 },
 	COMMON_ARGP_OPTIONS,
-	{ "all",         'a', NULL,       0, "Capture all syscalls (no library filter)"          },
-	{ "snapshot",     1,  NULL,       0, "Capture stack snapshots for off-device unwinding"  },
-	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)"                       },
-	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names"          },
-	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names"           },
+	{ "all",         'a', NULL,       0, "Capture all syscalls (no library filter)",           0 },
+	{ "snapshot",     1,  NULL,       0, "Capture stack snapshots for off-device unwinding",   0 },
+	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)",                        0 },
+	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
+	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names",            0 },
 	{ 0 }
 };
 
@@ -996,11 +996,12 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 }
 
 static const struct argp sysc_argp = {
-	sysc_options, parse_sysc_opts, NULL,
-	"Syscall tracer for a single Android app.\v"
-	"  e.g. ares syscalls -P com.example.app -l librasp.so\n"
-	"       ares syscalls -P com.example.app -l 'e_[0-9]*' -o out.jsonl\n"
-	"       ares syscalls -P com.example.app -a -s openat,read\n"
+	.options = sysc_options,
+	.parser  = parse_sysc_opts,
+	.doc     = "Syscall tracer for a single Android app.\v"
+	           "  e.g. ares syscalls -P com.example.app -l librasp.so\n"
+	           "       ares syscalls -P com.example.app -l 'e_[0-9]*' -o out.jsonl\n"
+	           "       ares syscalls -P com.example.app -a -s openat,read\n",
 };
 
 // ---- engine driver, split into setup / run / teardown --------------------

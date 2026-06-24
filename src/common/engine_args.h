@@ -25,12 +25,12 @@ struct common_args {
 
 // Embed in an engine's argp_option table (before the terminating { 0 }).
 #define COMMON_ARGP_OPTIONS \
-    { "output",  'o', "FILE", 0, "Export structured JSONL to FILE"                 }, \
-    { "verbose", 'v', NULL,   0, "Verbose debug output"                            }, \
-    { "quiet",   'q', NULL,   0, "Suppress per-event console output"               }, \
-    { "jsonl",   'J', NULL,   0, "Write JSON Lines (one record per line)"          }, \
-    { "bufsize", 'b', "MB",   0, "Kernel ring buffer size in MB (default 4)"       }, \
-    { "queue",   'Q', "MB",   0, "Userspace worker queue size in MB (default 256)" }
+    { "output",  'o', "FILE", 0, "Export structured JSONL to FILE",                 0 }, \
+    { "verbose", 'v', NULL,   0, "Verbose debug output",                            0 }, \
+    { "quiet",   'q', NULL,   0, "Suppress per-event console output",               0 }, \
+    { "jsonl",   'J', NULL,   0, "Write JSON Lines (one record per line)",          0 }, \
+    { "bufsize", 'b', "MB",   0, "Kernel ring buffer size in MB (default 4)",       0 }, \
+    { "queue",   'Q', "MB",   0, "Userspace worker queue size in MB (default 256)", 0 }
 
 // Call from each engine's parse_opts for the common keys.
 // Returns 0 when handled, ARGP_ERR_UNKNOWN when not (so the caller handles

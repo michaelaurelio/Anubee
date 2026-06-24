@@ -53,12 +53,12 @@ static const struct argp_option options[] = {
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
     { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
     { "include",        'i', "FUNCTION",     0, "Target function to trace (regex)",                                                   0 },
-    { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment" },
-    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]" },
-    { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)" },
-    { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)" },
-    { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack" },
-    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve" },
+    { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",           0 },
+    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",        0 },
+    { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",            0 },
+    { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
+    { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
+    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",            0 },
     COMMON_ARGP_OPTIONS,
     { 0 }
 };

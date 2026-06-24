@@ -214,6 +214,9 @@ static __always_inline void emit_snapshot(struct pt_regs *user_regs,
 	s->sp = BPF_CORE_READ(user_regs, sp);
 	s->fp = BPF_CORE_READ(user_regs, regs[29]);
 	s->lr = BPF_CORE_READ(user_regs, regs[30]);
+	#pragma clang loop unroll(full)
+	for (int i = 0; i < 31; i++)
+		s->regs[i] = BPF_CORE_READ(user_regs, regs[i]);
 	s->_pad = 0;
 	s->snap_len = 0;
 	const void *sp = (const void *)s->sp;

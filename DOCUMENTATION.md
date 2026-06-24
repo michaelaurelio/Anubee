@@ -328,6 +328,29 @@ target (firewall-clean) and is built once per pid.
 | `[anon:dalvik-DEX data]+off` | dex bytecode (nterp) | **deferred** — needs the dex method resolver (Phase 2) |
 | `base.vdex+off` | interpreter / quickened dex | **deferred** — dex resolver + PC-meaning research (Phase 2) |
 
+#### DEX offset→method resolver (`src/common/dex`, Phase 2a — parser only)
+
+The version-stable core both deferred rows above bottom out in: a pure parser
+that maps a byte offset into a standard DEX image (`dex\n0NN`) to the Java method
+whose `code_item.insns` covers it, returning `pkg.Class.method`. Interface:
+`dex_map_build(img, len)` → `dex_map_lookup(map, off, out, outsz)` →
+`dex_map_free(map)`. The map retains a private copy of the image (it never aliases
+the caller's bytes) plus a sorted array of method bytecode ranges; lookup
+binary-searches the ranges, then resolves names through the
+`method_ids`/`type_ids`/`string_ids` tables. The DEX is target-controlled, so
+every read is bounds-checked and every table index validated — a malformed entry
+is skipped, a malformed header fails the build (`NULL`), and no input can fault.
+It has **no libbpf / `/proc` / ELF dependency and no detectability surface** (pure
+parsing of bytes the caller already holds), and is host-tested against a committed
+`.dex` fixture (`tests/test_dex.c`, `tests/fixtures/sample.dex`).
+
+**Not yet wired into any capability** — the resolver has no caller, so it is
+compiled only by `make test` and is absent from `build/ares`. The
+vdex-container locate, anonymous-region wiring, and `symbolize.c` integration
+(emitting `base.vdex!pkg.Class.method+0x..`) land in Phases 2c/2d; CompactDex
+(`cdex001`) is deferred to the code-item-decode seam. See
+[BACKLOG.md](BACKLOG.md).
+
 ## 6. The `correlate` engine (uprobe + span-gated kprobe, loud)
 
 Function→syscall correlation on a live run. One BPF object

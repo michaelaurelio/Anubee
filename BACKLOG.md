@@ -346,6 +346,26 @@ The remaining real work is **Phase 2: a shared dex method-name resolver** for
 `base.vdex` and `[anon:dalvik-DEX data]` frames; `[anon:dalvik-main space]` frames
 are unwind noise and out of scope.
 
+**Phase 2a shipped (2026-06-24).** The version-stable core — `src/common/dex.{c,h}`,
+a pure standard-DEX offset→method parser (`dex_map_build`/`dex_map_lookup`/
+`dex_map_free`, output `pkg.Class.method`) — is implemented and host-tested against
+a committed `.dex` fixture (`tests/test_dex.c`). It is **not yet wired into any
+capability** (no caller; compiled only by `make test`, absent from `build/ares`).
+Spec: `docs/superpowers/specs/2026-06-24-dex-method-resolver-core-design.md`.
+Remaining phases, in dependency order:
+
+- **Phase 2b — on-device research spike** (needs the rooted device): capture
+  `base.vdex` / `[anon:dalvik-DEX data]` frames, dump bytes at the offsets,
+  determine dex-vs-cdex, vdex version, and whether the PC is a `code_item.insns`
+  offset. Greenlights or kills integration.
+- **Phase 2c — vdex container + anon-region locate:** find the DEX image inside
+  `base.vdex` (version-gated) and in `[anon:dalvik-DEX data]`; feed it to
+  `dex_map_build`. CompactDex (`cdex001`) support lands here if 2b shows the device
+  uses it.
+- **Phase 2d — `symbolize.c` integration:** wire the two frame types through the
+  resolver with a per-image cache (mirroring the vDSO per-pid holder), emitting
+  `base.vdex!pkg.Class.method+0x..`. MCP-format note + device-test assertion.
+
 Follow-on to the JIT method-name work (spec
 `docs/superpowers/specs/2026-06-23-jit-named-cache-symbolization-design.md`, which
 covers **JIT only**). Goal: name the Java method behind a native backtrace frame

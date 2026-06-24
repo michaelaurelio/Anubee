@@ -81,7 +81,7 @@ test_lib() {
 test_syscalls() {
     echo "=== syscalls (kprobe) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat $PKG")"
+    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -101,7 +101,7 @@ test_syscalls() {
 test_syscalls_jit() {
     echo "=== syscalls JIT symbolization ([JIT]! frames) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat $PKG")"
+    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-jit: BPF load failed"
     fi
@@ -122,7 +122,7 @@ test_syscalls_jit() {
 test_syscalls_vdso() {
     echo "=== syscalls vDSO symbolization ([vdso]! frames) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat $PKG")"
+    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-vdso: BPF load failed"
     fi

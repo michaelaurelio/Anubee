@@ -50,6 +50,11 @@ struct dex_method_map {
 };
 
 // ---- little-endian readers (caller has already bounds-checked) -------------
+static uint16_t rd_u16(const uint8_t *p)
+{
+    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
 static uint32_t rd_u32(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -230,10 +235,98 @@ void dex_map_free(struct dex_method_map *m)
     free(m);
 }
 
-// Implemented in Task 3.
+// Resolve string id `idx` into out as a NUL-terminated C string. DEX strings are
+// MUTF-8 with a ULEB128 utf16-length prefix and a trailing NUL; method/class
+// names are ASCII, so we copy raw bytes until NUL (bounded by len and outsz).
+// Returns 1 on success, 0 on any bounds failure or if the name exceeds outsz.
+static int dex_string(const struct dex_method_map *m, uint32_t idx,
+                      char *out, size_t outsz)
+{
+    if (idx >= m->string_ids_size)
+        return 0;
+    uint32_t data_off = rd_u32(m->img + m->string_ids_off + (size_t)idx * STRING_ID_STRIDE);
+    if (data_off >= m->len)
+        return 0;
+    size_t pos = data_off;
+    uint32_t utf16_len;
+    if (!uleb128(m->img, m->len, &pos, &utf16_len))
+        return 0;
+    size_t o = 0;
+    while (pos < m->len) {
+        uint8_t c = m->img[pos++];
+        if (c == 0)
+            break;
+        if (o + 1 >= outsz)
+            return 0;          // too long for buffer — treat as a miss
+        out[o++] = (char)c;
+    }
+    out[o] = 0;
+    return 1;
+}
+
 int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
                    char *out, size_t outsz)
 {
-    (void)m; (void)off; (void)out; (void)outsz;
-    return 0;
+    if (!m || !out || outsz == 0)
+        return 0;
+
+    // binary-search the sorted, non-overlapping ranges for the one holding off.
+    const struct method_range *hit = NULL;
+    size_t lo = 0, hi = m->nranges;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (off < m->ranges[mid].start)
+            hi = mid;
+        else if (off >= m->ranges[mid].end)
+            lo = mid + 1;
+        else { hit = &m->ranges[mid]; break; }
+    }
+    if (!hit)
+        return 0;
+
+    // method_ids[idx]: class_idx (u16 @0), name_idx (u32 @4). Index already
+    // validated < method_ids_size at build time, but re-check defensively.
+    if (hit->method_idx >= m->method_ids_size)
+        return 0;
+    const uint8_t *mid_ent = m->img + m->method_ids_off +
+                             (size_t)hit->method_idx * METHOD_ID_STRIDE;
+    uint16_t class_idx = rd_u16(mid_ent + 0);
+    uint32_t name_idx  = rd_u32(mid_ent + 4);
+
+    char name[256];
+    if (!dex_string(m, name_idx, name, sizeof(name)))
+        return 0;
+
+    // class_idx -> type_ids[class_idx] (descriptor_idx) -> string "Lpkg/Class;".
+    if (class_idx >= m->type_ids_size)
+        return 0;
+    uint32_t desc_idx = rd_u32(m->img + m->type_ids_off +
+                               (size_t)class_idx * TYPE_ID_STRIDE);
+    char desc[256];
+    if (!dex_string(m, desc_idx, desc, sizeof(desc)))
+        return 0;
+
+    // descriptor must be a class type "L...;" (array/primitive cannot have methods).
+    size_t dl = strlen(desc);
+    if (dl < 2 || desc[0] != 'L' || desc[dl - 1] != ';')
+        return 0;
+
+    // format out = dotted(desc[1..dl-1]) + "." + name, bounded by outsz.
+    size_t o = 0;
+    for (size_t i = 1; i + 1 < dl; i++) {
+        char c = desc[i] == '/' ? '.' : desc[i];
+        if (o + 1 >= outsz)
+            return 0;
+        out[o++] = c;
+    }
+    if (o + 1 >= outsz)
+        return 0;
+    out[o++] = '.';
+    for (size_t i = 0; name[i]; i++) {
+        if (o + 1 >= outsz)
+            return 0;
+        out[o++] = name[i];
+    }
+    out[o] = 0;
+    return 1;
 }

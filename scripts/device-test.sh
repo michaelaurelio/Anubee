@@ -136,7 +136,9 @@ test_syscalls_vdso() {
 }
 
 # syscalls register file: assert that a "stack" sidecar record carries a 31-entry
-# "regs" array (x0..x30 as hex strings). Uses -o to produce <out>.stacks on device.
+# "regs" array (x0..x30 as hex strings). Snapshots are opt-in (--snapshot) and
+# library-filtered mode only (disabled in -a capture-all), and the package must be
+# passed via -P; so use -l libc.so --snapshot -P (not -a, not a positional pkg).
 # A miss on "regs" means the BPF capture or serializer regressed.
 test_syscalls_regs() {
     echo "=== syscalls register file (regs[0..30] in stack sidecar) ==="
@@ -144,7 +146,7 @@ test_syscalls_regs() {
     local out_file="/data/local/tmp/ares_regs_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "syscalls -a -s openat -o $out_file $PKG")"
+    local out; out="$(ares "syscalls -l libc.so -s openat --snapshot -o $out_file -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-regs: BPF load failed (root/SELinux/own-su-c?)"
     fi

@@ -24,7 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -55,6 +55,13 @@ flowchart TD
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
   are *not* fused into a single always-on pass (see §9).
+- **The kernel-side UID filter is shared, not duplicated.** `src/common/uid_filter.bpf.h`
+  defines the `target_uids` BPF HASH-set map and the `uid_matches()` inline, and is
+  `#include`d into all five BPF objects. Each loader inserts the target app's UID
+  before launch (`key=uid, value=1`). The HASH-set shape accommodates multi-UID
+  gating (needed by `funcs`, which can trace several PIDs with distinct UIDs) at no
+  extra cost for single-UID callers; the detectability firewall (§9) is preserved
+  because each engine still compiles its own BPF object.
 - **Library-load tracing is shared, not duplicated.** The mmap/munmap capture,
   `/proc/<pid>/maps` full-path resolution, and the `[lib]` text/JSONL emitter live
   once in `src/common/lib_trace.*` and are used by all five engines. The BPF probe
@@ -64,8 +71,13 @@ flowchart TD
 - **Engine-runtime plumbing is shared, not duplicated.** `src/common/runtime.{c,h}`
   provides `ares_install_stop_handler` (2-stage SIGINT/SIGTERM → flag/`_exit(130)`),
   `ares_drops_report` (unified teardown tally), `ares_round_pow2` (BPF ring sizing),
-  and the BPF-dependent inline helpers `ares_libbpf_quiet` / `ares_drops_read` (gated
-  on `__LIBBPF_LIBBPF_H` so the header is host-testable without libbpf).
+  and the BPF-dependent inline helpers `ares_libbpf_quiet` / `ares_drops_read` /
+  `ares_rb_poll_until` / `ares_rb_poll_until_cb` (all gated on `__LIBBPF_LIBBPF_H` so
+  the header is host-testable without libbpf). `ares_rb_poll_until_cb` is the shared
+  ring-buffer poll loop used by all five engines: it accepts an optional per-iteration
+  tick callback for periodic work (e.g. the `syscalls` drops report) and returns the
+  final poll error. `ares_rb_poll_until` is the no-callback wrapper used by the three
+  simple engines (`lib`/`dump`/`correlate`).
 - **The decoupled drain queue is shared, not duplicated.** `src/common/evqueue.{c,h}`
   provides `struct ares_evq` — a SPSC byte ring with `[4-byte len][payload]` framing,
   cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
@@ -217,12 +229,13 @@ expensive one:
   mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
   and the worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes
   stdout/stderr lines between the two threads.
-- Output: human-readable text to stdout; when `-o FILE` is passed, structured records
-  for CALL and RETURN events via the shared `ares_sink` (see §3.1 and §7). `-J`/`--jsonl`
-  forces JSONL framing (one record per line, no enclosing `[...]`); without `-J` and when
-  the filename doesn't end in `.jsonl`, the sink writes array-framed output. Console
-  output is kept live alongside `-o` (dual output — unlike `syscalls`, where `-o` implies
-  quiet). Use `-q` to suppress console when only the file stream is needed.
+- Output: human-readable text to stdout (unless `-o FILE` or `-q` is given, both of
+  which suppress console output). When `-o FILE` is passed, structured records for CALL
+  and RETURN events are written via the shared `ares_sink` (see §3.1 and §7) and
+  console output is suppressed (`-o` implies `-q`, consistent with all other engines).
+  `-J`/`--jsonl` forces JSONL framing (one record per line, no enclosing `[...]`);
+  without `-J` and when the filename doesn't end in `.jsonl`, the sink writes
+  array-framed output.
 - **Quiet mode** (`-q`): suppresses all per-event console output in
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
 
@@ -465,8 +478,9 @@ stream:
 - `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
   "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "retval":..,"elapsed_ns":..}` (see §3.1). Human-readable text goes to stdout
-  only. `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
+  "retval":..,"elapsed_ns":..}` (see §3.1). The `-o` file receives structured records
+  only; human-readable console output is suppressed when `-o` is active (implied `-q`).
+  `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.
   MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`

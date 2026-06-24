@@ -31,6 +31,7 @@
 #include "common/emit.h"
 #include "common/runtime.h"
 #include "common/evqueue.h"
+#include "common/engine_args.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -42,48 +43,49 @@ static const ares_module_t *active_modules[sizeof(all_modules)/sizeof(all_module
 static int active_module_count = 0;
 
 // Argument parser module using argp.h
-const char *argp_program_version = "ares-tracer 1.0";
-const char *argp_program_bug_address = "<vincentferdinand.k@gmail.com>";
-static const char doc[] = "Android native function calls proof of concept using eBPF uprobes";
+const char *argp_program_version = "ares funcs";
+const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
+static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
+    "\v"
+    "Note: -o writes structured JSONL *and* keeps the console live (dual output).\n"
+    "Use -q to silence the console when only the file stream is needed.\n"
+    "(syscalls -o implies quiet; funcs -o does not — this is intentional.)";
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
     { "pid",            'p', "PID[,PID...]", 0, "Process ID(s) to inspect",                                                          0 },
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
+    { "activity",       'A', "ACTIVITY",    0, "Override launch activity component (default: auto-resolve)",                          0 },
     { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
     { "include",        'i', "FUNCTION",     0, "Target function to trace (regex)",                                                   0 },
-    { "verbose",        'v', NULL,           0, "Verbose debug output (modules scanned, symbols matched)",                            0 },
-    { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",            0 },
-    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",          0 },
-    { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",              0 },
-    { "output",         'o', "FILE",         0, "Export structured JSONL to FILE",                                                    0 },
+    { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",           0 },
+    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",        0 },
+    { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",            0 },
     { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
-    { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                  0 },
-    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",              0 },
-    { "structured",     'J', 0,              0, "No-op (structured JSONL is now the default -o format)",                             0 },
-    { "bufsize",        'b', "MB",           0, "Ring buffer size in MB (default: 4; rounded up to next power of two)",              0 },
+    { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
+    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",            0 },
+    COMMON_ARGP_OPTIONS,
     { 0 }
 };
 
 struct args {
+    struct common_args c;          // -o -v -q -J -b -Q (shared with syscalls)
     pid_t pids[64];
     int pid_count;
     char package_name[256];
+    char activity[256];
     char mod_patterns[32][256];
     int mod_pattern_count;
     char func_patterns[32][256];
     int func_pattern_count;
-    bool verbose;
     bool resolve_syms;
     char custom_specs[64][512];
     int custom_spec_count;
     char spec_files[8][256];
     int spec_file_count;
-    char output_file[256];
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
-    int  bufmb;          // ring buffer size in MB (0 → default 4)
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -113,6 +115,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             copy_str(args->package_name, arg, sizeof(args->package_name));
             break;
 
+        case 'A':
+            copy_str(args->activity, arg, sizeof(args->activity));
+            break;
+
         case 'I':
             if (args->mod_pattern_count < 32) {
                 copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
@@ -126,8 +132,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'v':
-            args->verbose = true;
-            break;
+        case 'o':
+        case 'q':
+        case 'Q':
+        case 'J':
+        case 'b':
+            return parse_common_arg(key, arg, state, &args->c);
 
         case 'S':
             args->resolve_syms = true;
@@ -143,10 +153,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
                 copy_str(args->spec_files[args->spec_file_count++], arg, 256);
             break;
 
-        case 'o':
-            copy_str(args->output_file, arg, sizeof(args->output_file));
-            break;
-
         case 'r':
             if (args->func_ret_pattern_count < 32)
                 copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
@@ -156,16 +162,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'c':
             args->caller_only = true;
             break;
-
-        case 'J':
-            break; // no-op: structured JSONL is the default -o format
-
-        case 'b': {
-            int mb = atoi(arg);
-            if (mb < 1) { argp_error(state, "bufsize must be >= 1 MB"); return ARGP_ERR_UNKNOWN; }
-            args->bufmb = mb;
-            break;
-        }
 
         case 'm': {
             for (int i = 0; all_modules[i]; i++) {
@@ -200,6 +196,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
 static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 
+static int ends_with(const char *s, const char *suf)
+{
+    size_t ls = strlen(s), lf = strlen(suf);
+    return ls >= lf && !strcmp(s + ls - lf, suf);
+}
+
 
 // Application UID resolver 
 // launch/UID helpers (sh_exec / resolve_uid / get_pid_uid / resolve_component)
@@ -213,15 +215,18 @@ static volatile sig_atomic_t exiting = 0;
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
 static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
+static char g_funcs_activity[256];      // launch activity override (empty = auto-resolve)
+static int  g_funcs_uid;               // resolved UID for the launch banner
 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
 
 // Worker-thread drain: ring callback pushes CALL/RETURN; worker pops + processes.
-#define FUNCS_QUEUE_MB 16  // ponytail: fixed queue; add -q only if queue drops appear
 static struct ares_evq g_q;
 static pthread_t       g_worker;
 static int             g_worker_started;
+
+static bool g_quiet = false;
 
 // ponytail: two independent mutexes, never nested (disjoint critical sections).
 static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
@@ -700,21 +705,23 @@ static void process_call_return(const void *data, size_t data_sz)
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
             bname = bname ? bname + 1 : target->mod_path;
-            ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
-                e->h.pid, e->ppid, bname, target->func_name, target->offset,
-                used_fallback ? " (resolved from known offset)" : "");
+            if (!g_quiet)
+                ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
+                    e->h.pid, e->ppid, bname, target->func_name, target->offset,
+                    used_fallback ? " (resolved from known offset)" : "");
             if (g_sink.f) {
                 g_sink.jb.len = 0;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name);
                 ares_sink_emit(&g_sink);
             }
         } else {
-            ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
-                e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
+            if (!g_quiet)
+                ts_print("[event] > [CALL] PID:%d PPID:%d %s!??? @ 0x%llx (unresolved)\n",
+                    e->h.pid, e->ppid, e->comm, (unsigned long long)e->entry_addr);
             return;
         }
 
-        if (target->arg_count >= 0) {
+        if (!g_quiet && target->arg_count >= 0) {
             for (int i = 0; i < target->arg_count; i++) {
                 if (target->arg_types[i] == ARG_STR) {
                     if (e->is_str[i])
@@ -758,7 +765,7 @@ static void process_call_return(const void *data, size_t data_sz)
                     }
                 }
             }
-        } else {
+        } else if (!g_quiet) {
             for (int i = 0; i < NUM_ARGS; i++) {
                 if (e->is_str[i])
                     out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
@@ -767,7 +774,7 @@ static void process_call_return(const void *data, size_t data_sz)
             }
         }
 
-        if (e->caller_addr) {
+        if (!g_quiet && e->caller_addr) {
             char caller_mod[128] = "";
             unsigned long caller_off = 0;
             if (lookup_caller(header->pid, e->caller_addr, caller_mod, sizeof(caller_mod), &caller_off) == 0)
@@ -776,7 +783,7 @@ static void process_call_return(const void *data, size_t data_sz)
                 out_print("         [event]   | caller: 0x%llx\n", (unsigned long long)e->caller_addr);
         }
 
-        if (!caller_only) {
+        if (!g_quiet && !caller_only) {
             for (__u32 i = 2; i < e->stack_depth; i++) {
                 if (!e->call_stack[i]) break;
                 char frame_mod[128] = "";
@@ -833,10 +840,11 @@ static void process_call_return(const void *data, size_t data_sz)
         else
             snprintf(retval_buf, sizeof(retval_buf), "0x%lx", (unsigned long)e->retval);
 
-        ts_print("[event] > [RET]  PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
-            header->pid, bname, fname, offset,
-            used_fallback ? " (resolved from known offset)" : "",
-            elapsed_buf, retval_buf);
+        if (!g_quiet)
+            ts_print("[event] > [RET]  PID:%d %s!%s @ 0x%lx%s%s -> %s\n",
+                header->pid, bname, fname, offset,
+                used_fallback ? " (resolved from known offset)" : "",
+                elapsed_buf, retval_buf);
 
         if (g_sink.f) {
             g_sink.jb.len = 0;
@@ -844,13 +852,14 @@ static void process_call_return(const void *data, size_t data_sz)
             ares_sink_emit(&g_sink);
         }
 
-        if (arg_count >= 0) {
+        if (!g_quiet && arg_count >= 0) {
             for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
                 if (arg_types[i] == ARG_STR && e->is_str[i + 1])
                     out_print("         [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
             }
         }
 
+        if (g_quiet) return;
         __u32 stack_limit = caller_only ? 2 : e->stack_depth;
         for (__u32 i = 1; i < stack_limit; i++) {
             if (!e->call_stack[i]) break;
@@ -1031,17 +1040,21 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     libbpf_set_print(ares_libbpf_quiet);
 
     // Argument parsing
-    struct args args = {
-        .pid_count = 0,
-    };
+    struct args args = { .c = COMMON_ARGS_INIT };
+    // Pre-fill package from coordinator so ARGP_KEY_END validation passes
+    // without requiring -P in the funcs argv section.
+    if (rc && rc->pkg)
+        copy_str(args.package_name, rc->pkg, sizeof(args.package_name));
     argp_parse(&argp, argc, argv, 0, NULL, &args);
-    verbose = args.verbose;
+    verbose = args.c.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
+    g_quiet = args.c.quiet;
 
-    if (args.output_file[0] != '\0') {
-        if (ares_sink_open(&g_sink, args.output_file, "event", /*jsonl=*/1) != 0) {
-            fprintf(stderr, "cannot open '%s': %s\n", args.output_file, strerror(errno));
+    if (args.c.output_file) {
+        int jsonl = args.c.jsonl || ends_with(args.c.output_file, ".jsonl");
+        if (ares_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
+            fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;
         }
     }
@@ -1054,13 +1067,14 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (args.package_name[0] != '\0') {
         // Remember the package so the caller can launch it after setup returns.
         snprintf(g_funcs_pkg, sizeof(g_funcs_pkg), "%s", args.package_name);
+        snprintf(g_funcs_activity, sizeof(g_funcs_activity), "%s", args.activity);
         uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(args.package_name);
         if (uid < 0) {
             err_print(" [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
             err = -1;
             goto cleanup;
         }
-        ts_print("[spawn] > %s UID %d\n", args.package_name, uid);
+        g_funcs_uid = uid;
     }
 
 
@@ -1137,7 +1151,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             all_modules[i]->pre_attach(skel);
 
     {
-        int bufmb = args.bufmb > 0 ? args.bufmb : 4;
+        int bufmb = args.c.bufmb;
         size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
         if (ares_tracer_bpf__load(skel)) {
@@ -1370,8 +1384,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Start the worker drain thread last — probe_targets[] is now fully populated,
     // so the worker can look up targets without racing the setup-time resolve loops.
-    if (ares_evq_init(&g_q, (size_t)FUNCS_QUEUE_MB << 20) != 0) {
-        err_print(" [work] > cannot allocate %d MB worker queue\n", FUNCS_QUEUE_MB);
+    if (ares_evq_init(&g_q, (size_t)args.c.queue_mb << 20) != 0) {
+        err_print(" [work] > cannot allocate %d MB worker queue\n", args.c.queue_mb);
         err = -1;
         goto cleanup;
     }
@@ -1462,8 +1476,8 @@ int cmd_funcs(int argc, char **argv)
     // Standalone: launch the package now that probes + UID are armed (spawn mode
     // only; -p PID attach mode has no package and never launches).
     if (g_funcs_pkg[0]) {
-        ts_print("[spawn] > launching %s\n", g_funcs_pkg);
-        if (ares_launch_app(g_funcs_pkg, NULL) != 0) {
+        ares_launch_banner(g_funcs_pkg, g_funcs_uid);
+        if (ares_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL) != 0) {
             err_print(" [spawn] > failed to launch %s\n", g_funcs_pkg);
             funcs_teardown();
             return 1;

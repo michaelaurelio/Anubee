@@ -182,8 +182,7 @@ int cfi_parse_debug_frame(struct cfi_section *s, const uint8_t *data, size_t len
         struct dwarf_cur c;
         dwarf_cur_init(&c, data, len);
 
-        while (!c.err && c.pos < len && idx < nfde) {
-            size_t entry_start = c.pos;
+        while (!c.err && c.pos < len) {
             uint32_t length = dwarf_u32(&c);
             if (c.err)
                 goto fail;
@@ -206,8 +205,9 @@ int cfi_parse_debug_frame(struct cfi_section *s, const uint8_t *data, size_t len
             }
 
             /* FDE: id is the section offset of the governing CIE */
+            if (idx >= nfde)
+                goto fail; /* more FDEs than first pass counted — malformed */
             uint32_t cie_off = id;
-            (void)entry_start;
 
             /* Look up the CIE to get addr_size */
             struct cfi_cie cie;

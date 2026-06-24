@@ -71,13 +71,16 @@ flowchart TD
   cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
   use it to decouple the ring-buffer drain thread from the heavy per-event work
   (symbolization, JSON emit). The kernel ring stays empty; bursts are absorbed in RAM.
-- **The argument-parsing contract is shared, not duplicated.** `src/common/engine_args.h`
-  provides `struct common_args`, `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS`, and
-  `parse_common_arg()` — the six flags common to every engine (`-o -v -q -J -b -Q`).
-  Each engine embeds `struct common_args` in its own args struct and delegates the
-  common argp keys to `parse_common_arg()`. Both engines pre-fill `package_name` from
-  `rc->pkg` before calling `argp_parse`, so the coordinator never injects `-P` into
-  either engine's argv section.
+- **The argument-parsing contract is shared, not duplicated.** All six engines use
+  GNU argp (auto `--help`/`--usage`/`--version`). `src/common/engine_args.h` provides
+  `struct common_args`, `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS`, and
+  `parse_common_arg()`. `syscalls` and `funcs` embed `struct common_args` and use the
+  full six-flag contract (`-o -v -q -J -b -Q`). `lib`, `dump`, and `correlate` use
+  argp directly but advertise only the flags they have behavior for — the dead-flag
+  trap is intentionally avoided (see BACKLOG "Won't do"). `syscalls` and `funcs`
+  pre-fill the package name from `rc->pkg` before calling `argp_parse`, so the
+  coordinator never injects `-P` into either engine's argv section. The other engines
+  take `-P` directly.
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
   shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
   (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
@@ -92,9 +95,9 @@ flowchart TD
   when the shared `volatile sig_atomic_t *stop` is set), and
   `<engine>_teardown()`. The launch is owned by the caller (the wrapper standalone,
   or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
-  (`src/common/launch.h`) carries a pre-resolved UID + an `external_launch` flag.
-  Standalone behavior is unchanged; the split exists so both engines can be armed,
-  launched once, and polled together (the planned `trace` runner). See
+  (`src/common/launch.h`) carries a pre-resolved UID + package name into each
+  `*_setup`. Standalone behavior is unchanged; the split exists so both engines can be
+  armed, launched once, and polled together (the `trace` runner). See
   [BACKLOG.md](BACKLOG.md).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
@@ -184,11 +187,12 @@ expensive one:
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
-- All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
-  option ordering does not matter and `--help` is auto-generated. The library selector
-  is `-l <selector>` (was a positional argument). The sole runtime env var is
-  `ARES_DEBUG=1`, which surfaces libbpf's verbose load/relocation logging (otherwise
-  suppressed) — the first thing to check on a BPF load `-EPERM` or CO-RE/relocation error.
+- All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
+  option ordering does not matter; `--help` is auto-generated; `--version` prints
+  `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).
+  The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's verbose
+  load/relocation logging (otherwise suppressed) — the first thing to check on a BPF
+  load `-EPERM` or CO-RE/relocation error.
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 
@@ -213,13 +217,14 @@ expensive one:
   mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
   and the worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes
   stdout/stderr lines between the two threads.
-- Output: human-readable text to stdout; when `-o FILE` is passed, structured
-  JSONL records for CALL and RETURN events via the shared `ares_sink` (see §3.1
-  and §7). `-J`/`--structured` is accepted but is a no-op (structured is the
-  default `-o` format).
+- Output: human-readable text to stdout; when `-o FILE` is passed, structured records
+  for CALL and RETURN events via the shared `ares_sink` (see §3.1 and §7). `-J`/`--jsonl`
+  forces JSONL framing (one record per line, no enclosing `[...]`); without `-J` and when
+  the filename doesn't end in `.jsonl`, the sink writes array-framed output. Console
+  output is kept live alongside `-o` (dual output — unlike `syscalls`, where `-o` implies
+  quiet). Use `-q` to suppress console when only the file stream is needed.
 - **Quiet mode** (`-q`): suppresses all per-event console output in
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
-  Useful when writing to `-o FILE` without redirecting stdout.
 
 ### 3.1 Structured JSONL output (`-o`)
 
@@ -257,13 +262,18 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
 ## 4. The `lib` engine (kprobe, library-load only)
 
 - Launches the target package fresh under a UID filter installed *before* launch
-  (resolve app-UID → `am force-stop` + `am start`), so every executable, file-backed
-  mapping is seen from the process's first thread, including forked app processes.
+  via `ares_launch_app` (force-stop → wait-for-stop → `am start -S`), so every
+  executable, file-backed mapping is seen from the process's first thread, including
+  forked app processes.
 - The thinnest engine: it adds only a ring buffer, the target-UID map, and
   `uid_matches()`; the mmap/munmap capture, `/proc/<pid>/maps` full-path resolution,
   and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
   and no uprobes — nothing is written into the target, so it sits on the stealthy
   side of the detectability firewall (§9).
+- **CLI:** `ares lib [-P PACKAGE | PACKAGE] [-A ACTIVITY | ACTIVITY] [-o FILE] [-v] [-q]`.
+  Package and activity can be given as `-P`/`-A` flags (consistent with other engines)
+  or as positional arguments (back-compat). `--help`, `--usage`, and `--version`
+  (`ares lib`) are auto-generated by argp.
 - Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
   line, plus optional structured JSONL via `-o`
   (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §7). `[unlib]` unmap lines are
@@ -272,9 +282,13 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
 ## 5. The `dump` engine (kprobe, live-memory dump)
 
 - **Stealthy fresh launch**, same approach as `ares lib`: installs a UID filter
-  *before* launch, runs `am force-stop` + `am start`, and uses the shared
-  `src/common/lib_trace` probe (mmap/munmap capture + `/proc/<pid>/maps` resolver)
-  to track every library mapping. No uprobes — nothing written into the target.
+  *before* launch, then calls `ares_launch_app` (force-stop → wait-for-stop →
+  `am start -S`), using the shared `src/common/lib_trace` probe (mmap/munmap capture +
+  `/proc/<pid>/maps` resolver) to track every library mapping. No uprobes — nothing
+  written into the target.
+- **CLI:** `ares dump [-P PACKAGE | PACKAGE] [-A ACTIVITY | ACTIVITY] PATTERN [-d DIR] [--on-map] [--raw] [-q]`.
+  Package and activity accept `-P`/`-A` flags or positional arguments (back-compat).
+  `--help`, `--usage`, and `--version` (`ares dump`) are auto-generated by argp.
 - **Two dump triggers:**
   - Default (on-exit): after the app terminates, rescans `/proc/<pid>/maps` for all
     mappings that match the user-supplied glob and dumps each one.
@@ -338,6 +352,8 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
 - **Loader** (`src/correlate/correlate.c`): reuses `src/common/launch` and
   `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
   per resolved `(path,offset)` plus the one shared kprobe, then drains the ring.
+  Uses GNU argp (`--help`/`--usage`/`--version` — prints `ares correlate`); flags:
+  `-p PID[,…]`, `-P PACKAGE`, `-e SPEC`, `-F FILE`, `-o FILE`, `-q`.
 - **Output**: flat, type-discriminated JSONL via the shared serializer
   (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `func` records:
   `{"type":"func","span":N,"parent_span":M,"pid":...,"tid":...,"entry_addr":"0x...","args":["0x...",...]}`
@@ -405,8 +421,9 @@ stream:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
   "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
   "retval":..,"elapsed_ns":..}` (see §3.1). Human-readable text goes to stdout
-  only. `-J` is accepted as a no-op for compatibility. MAP/UNMAP/SPAWN/PROC_EXIT/
-  EXECVE/PROP structured records are a follow-on.
+  only. `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
+  wrapper); the default is array framing unless the output filename ends in `.jsonl`.
+  MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`
   (from the shared emitter):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,

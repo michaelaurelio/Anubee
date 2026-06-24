@@ -132,3 +132,8 @@ int ares_launch_app(const char *pkg, const char *activity)
 		return -1;
 	return 0;
 }
+
+void ares_launch_banner(const char *pkg, int uid)
+{
+	printf("launching %s (uid %d)\n", pkg, uid);
+}

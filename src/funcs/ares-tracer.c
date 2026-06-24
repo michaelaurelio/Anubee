@@ -43,14 +43,15 @@ static const ares_module_t *active_modules[sizeof(all_modules)/sizeof(all_module
 static int active_module_count = 0;
 
 // Argument parser module using argp.h
-const char *argp_program_version = "ares-tracer 1.0";
+const char *argp_program_version = "ares funcs";
 const char *argp_program_bug_address = "<vincentferdinand.k@gmail.com>";
-static const char doc[] = "Android native function calls proof of concept using eBPF uprobes";
+static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)";
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
     { "pid",            'p', "PID[,PID...]", 0, "Process ID(s) to inspect",                                                          0 },
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
+    { "activity",       'A', "ACTIVITY",    0, "Override launch activity component (default: auto-resolve)",                          0 },
     { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
     { "include",        'i', "FUNCTION",     0, "Target function to trace (regex)",                                                   0 },
     { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",           0 },
@@ -68,6 +69,7 @@ struct args {
     pid_t pids[64];
     int pid_count;
     char package_name[256];
+    char activity[256];
     char mod_patterns[32][256];
     int mod_pattern_count;
     char func_patterns[32][256];
@@ -107,6 +109,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'P':
             copy_str(args->package_name, arg, sizeof(args->package_name));
+            break;
+
+        case 'A':
+            copy_str(args->activity, arg, sizeof(args->activity));
             break;
 
         case 'I':
@@ -186,6 +192,12 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
 static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 
+static int ends_with(const char *s, const char *suf)
+{
+    size_t ls = strlen(s), lf = strlen(suf);
+    return ls >= lf && !strcmp(s + ls - lf, suf);
+}
+
 
 // Application UID resolver 
 // launch/UID helpers (sh_exec / resolve_uid / get_pid_uid / resolve_component)
@@ -199,6 +211,8 @@ static volatile sig_atomic_t exiting = 0;
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
 static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
+static char g_funcs_activity[256];      // launch activity override (empty = auto-resolve)
+static int  g_funcs_uid;               // resolved UID for the launch banner
 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
@@ -1034,7 +1048,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_quiet = args.c.quiet;
 
     if (args.c.output_file) {
-        if (ares_sink_open(&g_sink, args.c.output_file, "event", /*jsonl=*/1) != 0) {
+        int jsonl = args.c.jsonl || ends_with(args.c.output_file, ".jsonl");
+        if (ares_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
             fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;
         }
@@ -1048,13 +1063,14 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (args.package_name[0] != '\0') {
         // Remember the package so the caller can launch it after setup returns.
         snprintf(g_funcs_pkg, sizeof(g_funcs_pkg), "%s", args.package_name);
+        snprintf(g_funcs_activity, sizeof(g_funcs_activity), "%s", args.activity);
         uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(args.package_name);
         if (uid < 0) {
             err_print(" [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
             err = -1;
             goto cleanup;
         }
-        ts_print("[spawn] > %s UID %d\n", args.package_name, uid);
+        g_funcs_uid = uid;
     }
 
 
@@ -1456,8 +1472,8 @@ int cmd_funcs(int argc, char **argv)
     // Standalone: launch the package now that probes + UID are armed (spawn mode
     // only; -p PID attach mode has no package and never launches).
     if (g_funcs_pkg[0]) {
-        ts_print("[spawn] > launching %s\n", g_funcs_pkg);
-        if (ares_launch_app(g_funcs_pkg, NULL) != 0) {
+        ares_launch_banner(g_funcs_pkg, g_funcs_uid);
+        if (ares_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL) != 0) {
             err_print(" [spawn] > failed to launch %s\n", g_funcs_pkg);
             funcs_teardown();
             return 1;

@@ -232,7 +232,7 @@ int cmd_dump(int argc, char **argv)
 	}
 
 	snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-	printf("launching: %s\n", cmd);
+	ares_launch_banner(pkg, uid);
 	if (ares_sh_exec(cmd, NULL, 0) < 0) {
 		fprintf(stderr, "dump: launch failed\n");
 		goto err_rb;

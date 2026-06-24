@@ -1010,7 +1010,9 @@ static const struct argp sysc_argp = {
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-	struct sysc_args sa = { .c = COMMON_ARGS_INIT };
+	// ponytail: g_pkg/g_lib/g_activity alias into sa; static so they stay valid
+	// through the run/launch phases after setup returns. setup runs once per process.
+	static struct sysc_args sa = { .c = COMMON_ARGS_INIT };
 	// Pre-fill package from coordinator so ARGP_KEY_END validation passes
 	// without needing -P in the syscalls argv section.
 	if (rc && rc->pkg)
@@ -1045,12 +1047,8 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
-	// requirement).
-	size_t bufbytes = (size_t)bufmb << 20;
-	size_t p2 = 1;
-	while (p2 < bufbytes)
-		p2 <<= 1;
-	bufbytes = p2;
+	// requirement). Uses the same helper as funcs.
+	size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
 
 	libbpf_set_print(ares_libbpf_quiet);
 
@@ -1256,7 +1254,7 @@ int cmd_syscalls(int argc, char **argv)
 
 	// Standalone: tracing is armed (UID installed in setup); launch and own signals.
 	ares_install_stop_handler(&exiting);
-	printf("launching: %s\n", g_pkg);
+	ares_launch_banner(g_pkg, g_uid);
 	if (ares_launch_app(g_pkg, g_activity) != 0) {
 		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
 		syscalls_teardown();

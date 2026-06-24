@@ -179,7 +179,8 @@ static void usage(void)
         "  -e SPEC           probe spec MODULE!FUNC[(S|V,...)] (repeatable)\n"
         "  -F FILE           load probe specs from a file (one per line, # = comment)\n"
         "  -o FILE           write structured JSONL\n"
-        "  -h                show this help\n");
+        "  -q                suppress per-event console output\n"
+        "  -h, --help        show this help\n");
 }
 
 int cmd_correlate(int argc, char **argv)
@@ -253,7 +254,7 @@ int cmd_correlate(int argc, char **argv)
             fprintf(stderr, "correlate: cannot resolve launcher for %s\n", pkg); goto err_skel;
         }
         snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
-        printf("launching: %s\n", cmd);
+        ares_launch_banner(pkg, uid);
         ares_sh_exec(cmd, NULL, 0);
         sleep(1);  // let the process spawn + map its libs
         char pidbuf[32] = "";

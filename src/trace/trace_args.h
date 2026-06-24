@@ -7,6 +7,7 @@
 struct trace_args {
 	const char *pkg;       // -P value, or NULL
 	const char *prefix;    // -o value, or NULL
+	const char *activity;  // -A value, or NULL
 	int sys_start, sys_end;    // [start,end) slice into argv; start<0 = no --syscalls
 	int func_start, func_end;  // likewise for --funcs
 };

@@ -86,20 +86,20 @@ int cmd_trace(int argc, char **argv)
 	}
 	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg, .external_launch = 1 };
 
-	// Build each engine's argv: ["<engine>", (-P pkg)?, (-o <file>)?, <section args...>].
-	// funcs uses argp which requires -P at parse time; syscalls takes pkg via rc->pkg.
+	// Build each engine's argv: ["<engine>", ("-o" file)?, <section args...>].
+	// Both engines read the package name from rc->pkg (pre-filled before argp_parse).
 	struct trace_argv sysv, funcv;
 	int sys_argc = 0, func_argc = 0;
 
 	if (want_sys) {
 		int tr = 0;
-		sys_argc = trace_build_argv(&sysv, "syscalls", pkg, 0, prefix,
+		sys_argc = trace_build_argv(&sysv, "syscalls", prefix,
 		                            "syscalls.jsonl", argv, sys_start, sys_end, &tr);
 		if (tr) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
 	}
 	if (want_func) {
 		int tr = 0;
-		func_argc = trace_build_argv(&funcv, "funcs", pkg, 1, prefix,
+		func_argc = trace_build_argv(&funcv, "funcs", prefix,
 		                             "funcs.jsonl", argv, func_start, func_end, &tr);
 		if (tr) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
 	}

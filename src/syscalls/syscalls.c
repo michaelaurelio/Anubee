@@ -1181,6 +1181,25 @@ out:
 	return 1;
 }
 
+// ~every second: surface drops live (kernel ring + userspace queue).
+static int g_drop_ticks;
+static unsigned long long g_last_drops;
+static void syscalls_drops_tick(void *ctx)
+{
+	(void)ctx;
+	if (++g_drop_ticks < 5)            // ~1s at 200ms/tick
+		return;
+	g_drop_ticks = 0;
+	pthread_mutex_lock(&g_q.m);
+	unsigned long long qd = g_q.dropped;
+	pthread_mutex_unlock(&g_q.m);
+	unsigned long long d = ares_drops_read(g_dropfd) + qd;
+	if (d > g_last_drops) {
+		fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
+		g_last_drops = d;
+	}
+}
+
 int syscalls_run(volatile sig_atomic_t *stop)
 {
 	g_stopp = stop;
@@ -1189,25 +1208,9 @@ int syscalls_run(volatile sig_atomic_t *stop)
 	else
 		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", g_uid, g_lib);
 
-	unsigned long long last_drops = 0;
-	int ticks = 0;
-	while (!*stop) {
-		int err = ring_buffer__poll(g_rb, 200 /* ms */);
-		if (err < 0 && err != -EINTR)
-			break;
-		// ~every second: surface drops live (kernel ring + userspace queue).
-		if (++ticks >= 5) {
-			ticks = 0;
-			pthread_mutex_lock(&g_q.m);
-			unsigned long long qd = g_q.dropped;
-			pthread_mutex_unlock(&g_q.m);
-			unsigned long long d = ares_drops_read(g_dropfd) + qd;
-			if (d > last_drops) {
-				fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
-				last_drops = d;
-			}
-		}
-	}
+	g_drop_ticks = 0;
+	g_last_drops = 0;
+	ares_rb_poll_until_cb(g_rb, stop, syscalls_drops_tick, NULL);
 	return 0;
 }
 

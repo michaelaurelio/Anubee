@@ -180,11 +180,7 @@ int cmd_lib(int argc, char **argv)
     signal(SIGINT, on_sigint);
     printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", uid);
 
-    while (!exiting) {
-        int err = ring_buffer__poll(rb, 200 /* ms */);
-        if (err < 0 && err != -EINTR)
-            break;
-    }
+    ares_rb_poll_until(rb, &exiting);
 
     ring_buffer__free(rb);
     ares_lib__destroy(skel);

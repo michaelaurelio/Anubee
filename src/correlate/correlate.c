@@ -306,10 +306,7 @@ int cmd_correlate(int argc, char **argv)
 
     signal(SIGINT, on_sigint);
     printf("correlating %d uprobe(s) -> syscalls ... Ctrl-C to stop\n", total);
-    while (!exiting) {
-        int err = ring_buffer__poll(rb, 200);
-        if (err < 0 && err != -EINTR) break;
-    }
+    ares_rb_poll_until(rb, &exiting);
 
     ring_buffer__free(rb);
     bpf_link__destroy(kp);

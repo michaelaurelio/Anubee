@@ -319,10 +319,15 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   consolidated via `ares_rb_poll_until_cb` (2026-06-24): `funcs`' near-busy 1ms poll
   raised to 200ms (−200× idle wakeups, no effect on drain latency); `syscalls`' periodic
   drops report extracted to a tick callback so all five engines now share the same loop.
-- **C3 — `/proc/<pid>/maps` parsing + basename→fullpath cache** — now in
-  `src/common/lib_trace.c` (`ares_libtrace_resolve_path`), shared by all three
-  engines. *Remaining:* `symbolize.c`'s own maps parsing (for stack symbolization)
-  is still separate → fold into one maps/symbol module.
+- **C3 — `/proc/<pid>/maps` parsing + basename→fullpath cache** — **DONE (2026-06-24).**
+  `src/syscalls/symbolize.{c,h}` moved to `src/common/symbolize.{c,h}` and shared
+  by both `syscalls` and `funcs`. `funcs`' local resolver (`lookup_caller`,
+  `resolve_addr_to_module`, APK ZIP parser, `caller_cache`) deleted; call sites
+  replaced with `sym_resolve`. APK-embedded `.so` naming ported from funcs into
+  `common/symbolize.c` (`apk_so_name`, ZIP central-dir parser), so both engines now
+  show `base.apk -> libfoo.so!func+0x...`. Remaining `/proc/<pid>/maps` parsers in
+  `lib_trace.c` and `correlate` (attach-time scan) are different use-cases and deferred
+  (see Deferred tech debt).
 - **C4 — Kernel-side UID filter** — **DONE (2026-06-24).** Created
   `src/common/uid_filter.bpf.h` with the `target_uids` HASH-set map + `uid_matches()`.
   All five `.bpf.c` files now include it; `syscalls`/`lib`/`dump` loaders converted
@@ -341,7 +346,9 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   (10 checks, host-unit-testable).
 - **C6 — ELF reconstruction** — merged into `src/dump/rebuild.c` (the single
   `ares dump` engine); the old per-engine dump files are removed.
-- **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
+- **C7 — Symbol/caller resolution** — **DONE (2026-06-24).** See C3 above. `funcs`
+  now gets real function names from `.dynsym`/`.symtab`/`.gnu_debugdata`, ART/JIT
+  frames, and vDSO resolution — all previously unavailable.
 - **C8 — Misc duplication** — **DONE (2026-06-24).** BPF dropped-counter dup
   (`dropped` map + `bump_dropped()`) and `syscalls_hdr` alias resolved (2026-06-24);
   `libbpf_print_fn` — three local copies in `lib`/`dump`/`correlate` replaced by
@@ -533,4 +540,13 @@ format. Note: low value / high cosmetic churn across 5 files; not recommended.
   to `ring_buffer__new`; the MAP handler dereferences it after `funcs_setup`
   returns. Pre-existing; unrelated to the C2 worker split (the worker never
   touches `rctx`). Fix: promote `rctx` to file-static.
+- **Maps-parser fold for `lib_trace` + `correlate` (C3 option 2, deferred)** —
+  `src/common/lib_trace.c`'s `find_path_in_maps` (basename→fullpath cache for
+  library-load events) and `correlate`'s attach-time `/proc/<pid>/maps` scan both
+  have different access patterns from the symbolizer's cached binary-search maps.
+  Routing them through the shared per-pid maps cache in `common/symbolize.c` would
+  give a single `/proc/<pid>/maps` parser repo-wide. Deferred because the access
+  patterns diverge: lib_trace does basename→fullpath for mmap events; correlate does
+  a full-table scan at attach time. Revisit after the C3 symbolizer consolidation
+  is stable.
 

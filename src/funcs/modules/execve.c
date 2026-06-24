@@ -67,27 +67,18 @@ static int ex_handle_event(const struct trace_event_header *hdr, const void *dat
         e->argc ? argv_buf : "");
 
     if (e->stack_depth > 0) {
-        char caller_mod[128] = "";
-        unsigned long caller_off = 0;
-        __u32 start = (e->stack_depth > 0) ? 1 : 0;
+        __u32 start = 1;
         if (start < e->stack_depth && e->call_stack[start]) {
-            if (lookup_caller(hdr->pid, e->call_stack[start],
-                              caller_mod, sizeof(caller_mod), &caller_off) == 0)
-                out_print("         [event]   | caller: %s+0x%lx\n",
-                          caller_mod, caller_off);
+            char caller_sym[320];
+            sym_resolve(hdr->pid, e->call_stack[start], caller_sym, sizeof(caller_sym));
+            out_print("         [event]   | caller: %s\n", caller_sym);
         }
         if (!caller_only) {
             for (__u32 i = start + 1; i < e->stack_depth; i++) {
                 if (!e->call_stack[i]) break;
-                char frame_mod[128] = "";
-                unsigned long frame_off = 0;
-                if (lookup_caller(hdr->pid, e->call_stack[i],
-                                  frame_mod, sizeof(frame_mod), &frame_off) == 0)
-                    out_print("         [event]   | #%u %s+0x%lx\n",
-                              i, frame_mod, frame_off);
-                else
-                    out_print("         [event]   | #%u 0x%llx\n",
-                              i, (unsigned long long)e->call_stack[i]);
+                char frame_sym[320];
+                sym_resolve(hdr->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
+                out_print("         [event]   | #%u %s\n", i, frame_sym);
             }
         }
     }

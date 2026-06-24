@@ -48,7 +48,7 @@
 
 #include "syscalls.h"
 #include "syscalls.skel.h"
-#include "symbolize.h"
+#include "common/symbolize.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"

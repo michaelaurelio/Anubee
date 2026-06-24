@@ -26,8 +26,7 @@ void funcs_teardown(void);
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2)));
-int  lookup_caller(pid_t pid, __u64 addr,
-                   char *mod_out, size_t mod_sz, unsigned long *off_out);
+#include "common/symbolize.h"   // sym_resolve / sym_flush_pid (shared call-stack resolver)
 
 // Structured-record builders defined in funcs_emit.c (pure, no libbpf deps).
 // Called from ares-tracer.c when --structured mode is active.

@@ -62,13 +62,7 @@ struct {
 	__uint(max_entries, 1 << 22);                 // 4 MB
 } events SEC(".maps");
 
-// Single-slot: the app UID to trace, installed by the loader before launch.
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, __u32);
-} target_uid SEC(".maps");
+#include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
 
 // Per-process (keyed by tgid) executable ranges of the target library. The
 // loader populates this in response to the mmap events we emit below.
@@ -127,15 +121,6 @@ struct {
 } stack_seen SEC(".maps");
 
 // ---- helpers -------------------------------------------------------------
-
-static __always_inline int uid_matches(void)
-{
-	__u32 key = 0;
-	__u32 *want = bpf_map_lookup_elem(&target_uid, &key);
-	if (!want || *want == 0)
-		return 0;
-	return (__u32)bpf_get_current_uid_gid() == *want;
-}
 
 // Apply the optional per-syscall allow/deny filter. Cheap — runs before the
 // stack walk so unwanted syscalls cost almost nothing.

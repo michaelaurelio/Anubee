@@ -23,5 +23,9 @@ int main(void)
     /* x29/x30 must agree with the legacy fp/lr mirror */
     assert(r.x[29] == s.regs[29]);
     assert(r.x[30] == s.regs[30]);
+
+    /* truncated flag round-trip: field must exist and hold the written value */
+    s.truncated = 1;
+    assert(s.truncated == 1);
     return 0;
 }

@@ -570,6 +570,12 @@ static void json_emit_stack(const struct syscalls_stack_snapshot *s)
 	jb_s(j, ",\"sp\":\"");     jb_hex(j, s->sp); jb_c(j, '"');
 	jb_s(j, ",\"fp\":\"");     jb_hex(j, s->fp); jb_c(j, '"');
 	jb_s(j, ",\"lr\":\"");     jb_hex(j, s->lr); jb_c(j, '"');
+	jb_s(j, ",\"regs\":[");
+	for (int i = 0; i < 31; i++) {
+		if (i) jb_c(j, ',');
+		jb_c(j, '"'); jb_hex(j, s->regs[i]); jb_c(j, '"');
+	}
+	jb_c(j, ']');
 	jb_s(j, ",\"snap_len\":"); jb_u64(j, s->snap_len);
 	jb_s(j, ",\"snapshot\":\"");
 	if (s->snap_len <= sizeof(s->snap))

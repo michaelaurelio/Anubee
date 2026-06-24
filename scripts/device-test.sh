@@ -135,6 +135,39 @@ test_syscalls_vdso() {
     fi
 }
 
+# syscalls register file: assert that a "stack" sidecar record carries a 31-entry
+# "regs" array (x0..x30 as hex strings). Uses -o to produce <out>.stacks on device.
+# A miss on "regs" means the BPF capture or serializer regressed.
+test_syscalls_regs() {
+    echo "=== syscalls register file (regs[0..30] in stack sidecar) ==="
+    forcestop
+    local out_file="/data/local/tmp/ares_regs_test.jsonl"
+    local stacks_file="${out_file}.stacks"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
+    local out; out="$(ares "syscalls -a -s openat -o $out_file $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "syscalls-regs: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    local stacks; stacks="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
+    if [ -z "$stacks" ]; then
+        echo "  SKIP: no stack sidecar produced in this window (no stack snapshots captured)"
+        return
+    fi
+    # Each "stack" record must carry "regs":["<hex>","<hex>",... ] with exactly 31 entries
+    # (30 commas separating 31 quoted hex strings inside the array).
+    local regs_line; regs_line="$(grep '"regs":\[' <<<"$stacks" | head -1)"
+    if [ -z "$regs_line" ]; then
+        echo "  stacks: $stacks" >&2; fail "syscalls-regs: no \"regs\" field in stack sidecar"
+    fi
+    # Count commas inside the regs array: extract content between "regs":[ and the closing ]
+    local regs_content; regs_content="$(sed 's/.*"regs":\[\([^]]*\)\].*/\1/' <<<"$regs_line")"
+    local comma_count; comma_count="$(echo "$regs_content" | tr -cd ',' | wc -c)"
+    [ "$comma_count" -eq 30 ] \
+        || fail "syscalls-regs: expected 30 commas (31 regs) in regs array, got $comma_count"
+    info "syscalls-regs OK — regs[0..30] present in stack sidecar"
+}
+
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
 # one probed symbol to fire; use libc.so!open as a stable target. Asserts that
 # the structured record shape ("type":"call") reaches the output file.
@@ -163,9 +196,10 @@ case "$WHAT" in
     syscalls)          test_syscalls ;;
     syscalls-jit)      test_syscalls_jit ;;
     syscalls-vdso)     test_syscalls_vdso ;;
+    syscalls-regs)     test_syscalls_regs ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | funcs-structured | all)" ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_funcs_structured ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | funcs-structured | all)" ;;
 esac
 
 forcestop

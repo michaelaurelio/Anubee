@@ -9,8 +9,6 @@ __pycache__/
 *.pyc
 tmp/
 
-# local knowledge graph (regenerated via `graphify update .`)
+# graphify
 graphify-out/
-
-# local graphify context exclusions
 .graphifyignore

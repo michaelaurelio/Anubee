@@ -27,6 +27,7 @@
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 #include "common/engine_args.h"
+#include "common/runtime.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
@@ -46,8 +47,8 @@ static const char *syscall_name(long nr)
 static volatile sig_atomic_t exiting = 0;
 static void on_sigint(int sig) { (void)sig; if (exiting) _exit(130); exiting = 1; }
 
-static FILE *g_jsonl = NULL;
-static int   g_quiet = 0;
+static struct ares_sink g_sink;
+static int              g_quiet = 0;
 
 static void log_stderr(const char *fmt, ...)
 {
@@ -57,12 +58,7 @@ static void log_stderr(const char *fmt, ...)
     va_end(ap);
 }
 
-static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list args)
-{
-    if (level == LIBBPF_DEBUG)
-        return 0;
-    return vfprintf(stderr, fmt, args);
-}
+// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
 
 static int handle_event(void *ctx, void *data, size_t sz)
 {
@@ -70,7 +66,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (sz < sizeof(struct trace_event_header))
         return 0;
     const struct trace_event_header *h = data;
-    static struct jbuf cj;  // reused; handle_event is single-threaded (ring_buffer__poll)
 
     if (h->type == CORR_EV_FUNC) {
         if (sz < sizeof(struct corr_func_event)) return 0;
@@ -79,12 +74,10 @@ static int handle_event(void *ctx, void *data, size_t sz)
             printf("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
                    (unsigned long long)e->span, (unsigned long long)e->parent_span,
                    e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
-        if (g_jsonl) {
-            cj.len = 0;
-            corr_emit_func(&cj, e);
-            fwrite(cj.b, 1, cj.len, g_jsonl);
-            fputc('\n', g_jsonl);
-            fflush(g_jsonl);
+        if (g_sink.f) {
+            g_sink.jb.len = 0;
+            corr_emit_func(&g_sink.jb, e);
+            ares_sink_emit(&g_sink);
         }
     } else if (h->type == CORR_EV_SYSCALL) {
         if (sz < sizeof(struct corr_syscall_event)) return 0;
@@ -94,12 +87,10 @@ static int handle_event(void *ctx, void *data, size_t sz)
             printf("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
-        if (g_jsonl) {
-            cj.len = 0;
-            corr_emit_syscall(&cj, e, name);
-            fwrite(cj.b, 1, cj.len, g_jsonl);
-            fputc('\n', g_jsonl);
-            fflush(g_jsonl);
+        if (g_sink.f) {
+            g_sink.jb.len = 0;
+            corr_emit_syscall(&g_sink.jb, e, name);
+            ares_sink_emit(&g_sink);
         }
     }
     return 0;
@@ -252,15 +243,12 @@ int cmd_correlate(int argc, char **argv)
         return 1;
 
     g_quiet = ca.quiet || (ca.out_path != NULL);
-    if (ca.out_path) {
-        g_jsonl = fopen(ca.out_path, "w");
-        if (!g_jsonl) {
-            fprintf(stderr, "correlate: cannot open %s: %s\n", ca.out_path, strerror(errno));
-            return 1;
-        }
+    if (ca.out_path && ares_sink_open(&g_sink, ca.out_path, "event", 1) != 0) {
+        fprintf(stderr, "correlate: cannot open %s: %s\n", ca.out_path, strerror(errno));
+        return 1;
     }
 
-    libbpf_set_print(libbpf_print_fn);
+    libbpf_set_print(ares_libbpf_quiet);
 
     struct ares_correlate *skel = ares_correlate__open();
     if (!skel) { fprintf(stderr, "correlate: open skeleton failed\n"); goto err_file; }
@@ -326,12 +314,12 @@ int cmd_correlate(int argc, char **argv)
     ring_buffer__free(rb);
     bpf_link__destroy(kp);
     ares_correlate__destroy(skel);
-    if (g_jsonl) fclose(g_jsonl);
+    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
     return 0;
 
 err_skel:
     ares_correlate__destroy(skel);
 err_file:
-    if (g_jsonl) fclose(g_jsonl);
+    if (g_sink.f) ares_sink_close(&g_sink);
     return 1;
 }

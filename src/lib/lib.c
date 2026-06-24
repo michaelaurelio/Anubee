@@ -23,18 +23,20 @@
 #include <bpf/bpf.h>
 
 #include "lib.skel.h"
+#include "common/emit.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/engine_args.h"
+#include "common/runtime.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;
 static void on_sigint(int sig) { (void)sig; exiting = 1; }
 
-static FILE *g_jsonl   = NULL;   // structured JSONL sink (-o), or NULL
-static int   g_quiet   = 0;      // suppress stdout text
-static int   g_verbose = 0;      // -v: also print [unlib] unmap lines on stdout
+static struct ares_sink g_sink;            // structured JSONL sink (-o)
+static int              g_quiet   = 0;    // suppress stdout text
+static int              g_verbose = 0;    // -v: also print [unlib] unmap lines on stdout
 
 // ---- ring-buffer event handling ------------------------------------------
 
@@ -53,21 +55,16 @@ static int handle_event(void *ctx, void *data, size_t sz)
 		const char *full = path;
 		if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 			full = e->name;     // fall back to the BPF-supplied basename
-		ares_libtrace_emit_lib(g_jsonl, g_quiet, e, full, NULL);
+		ares_libtrace_emit_lib(&g_sink, g_quiet, e, full, NULL);
 	} else if (h->type == LIB_EV_UNMAP) {
 		if (sz < sizeof(struct lib_unmap_event))
 			return 0;
-		ares_libtrace_emit_unlib(g_jsonl, g_quiet || !g_verbose, data);
+		ares_libtrace_emit_unlib(&g_sink, g_quiet || !g_verbose, data);
 	}
 	return 0;
 }
 
-static int libbpf_print_fn(enum libbpf_print_level level, const char *fmt, va_list args)
-{
-	if (level == LIBBPF_DEBUG)
-		return 0;
-	return vfprintf(stderr, fmt, args);
-}
+// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
 
 // ---- argp parser ----------------------------------------------------------
 
@@ -136,15 +133,12 @@ int cmd_lib(int argc, char **argv)
         return 1;
     }
 
-    if (la.c.output_file) {
-        g_jsonl = fopen(la.c.output_file, "w");
-        if (!g_jsonl) {
-            fprintf(stderr, "lib: cannot open '%s': %s\n", la.c.output_file, strerror(errno));
-            return 1;
-        }
+    if (la.c.output_file && ares_sink_open(&g_sink, la.c.output_file, "lib", 1) != 0) {
+        fprintf(stderr, "lib: cannot open '%s': %s\n", la.c.output_file, strerror(errno));
+        return 1;
     }
 
-    libbpf_set_print(libbpf_print_fn);
+    libbpf_set_print(ares_libbpf_quiet);
 
     struct ares_lib *skel = ares_lib__open();
     if (!skel) {
@@ -194,7 +188,7 @@ int cmd_lib(int argc, char **argv)
 
     ring_buffer__free(rb);
     ares_lib__destroy(skel);
-    if (g_jsonl) fclose(g_jsonl);
+    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
     return 0;
 
 err_rb:
@@ -202,6 +196,6 @@ err_rb:
 err_skel:
     ares_lib__destroy(skel);
 err_file:
-    if (g_jsonl) fclose(g_jsonl);
+    if (g_sink.f) ares_sink_close(&g_sink);
     return 1;
 }

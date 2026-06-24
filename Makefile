@@ -332,6 +332,8 @@ test:
 	$(BUILD)/test_unwind_regs
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dwarf.c src/common/dwarf.c -o $(BUILD)/test_dwarf
 	$(BUILD)/test_dwarf
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_parse.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_parse
+	$(BUILD)/test_cfi_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \

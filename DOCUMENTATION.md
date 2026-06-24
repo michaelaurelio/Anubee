@@ -71,6 +71,13 @@ flowchart TD
   cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
   use it to decouple the ring-buffer drain thread from the heavy per-event work
   (symbolization, JSON emit). The kernel ring stays empty; bursts are absorbed in RAM.
+- **The argument-parsing contract is shared, not duplicated.** `src/common/engine_args.h`
+  provides `struct common_args`, `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS`, and
+  `parse_common_arg()` — the six flags common to every engine (`-o -v -q -J -b -Q`).
+  Each engine embeds `struct common_args` in its own args struct and delegates the
+  common argp keys to `parse_common_arg()`. Both engines pre-fill `package_name` from
+  `rc->pkg` before calling `argp_parse`, so the coordinator never injects `-P` into
+  either engine's argv section.
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
   shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
   (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
@@ -177,10 +184,11 @@ expensive one:
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
-- All capture behavior is flag-driven (`-a`/`-q`/`-v`/`-J`/`-o`/`--snapshot`, see
-  README). The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's
-  verbose load/relocation logging (otherwise suppressed) — the first thing to check
-  on a BPF load `-EPERM` or CO-RE/relocation error.
+- All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
+  option ordering does not matter and `--help` is auto-generated. The library selector
+  is `-l <selector>` (was a positional argument). The sole runtime env var is
+  `ARES_DEBUG=1`, which surfaces libbpf's verbose load/relocation logging (otherwise
+  suppressed) — the first thing to check on a BPF load `-EPERM` or CO-RE/relocation error.
 
 ## 3. The `funcs` engine (uprobe, spec-driven)
 
@@ -198,7 +206,8 @@ expensive one:
   absorbs bursts without dropping events at the BPF side.
 - **Decoupled drain:** MAP/UNMAP/module events are handled inline on the poll
   thread (they attach uprobes and must race the just-mmap'd library). CALL and
-  RETURN events are pushed into a 16 MiB `struct ares_evq` userspace queue and
+  RETURN events are pushed into a configurable `struct ares_evq` userspace queue
+  (default 256 MiB, `-Q MB`) and
   processed on a dedicated worker thread, so the kernel ring stays drained
   regardless of symbolization/JSON latency. Synchronized with two independent
   mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
@@ -208,6 +217,9 @@ expensive one:
   JSONL records for CALL and RETURN events via the shared `ares_sink` (see §3.1
   and §7). `-J`/`--structured` is accepted but is a no-op (structured is the
   default `-o` format).
+- **Quiet mode** (`-q`): suppresses all per-event console output in
+  `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
+  Useful when writing to `-o FILE` without redirecting stdout.
 
 ### 3.1 Structured JSONL output (`-o`)
 
@@ -361,16 +373,16 @@ setup/run/teardown phases (§1).
   then drains both ring buffers on two pthreads against a shared
   `volatile sig_atomic_t` stop flag, and tears both down.
 - **Coordinator mode plumbing:** `struct ares_run_ctx` (`src/common/launch.h`)
-  carries the pre-resolved UID + package into each `*_setup`; the engines take the
-  package from `rc->pkg` so the per-engine arg slices carry only engine-specific
-  options. The driver symbols (`syscalls_setup`/`_run`/`_teardown`,
+  carries the pre-resolved UID + package into each `*_setup`; the engines pre-fill
+  their package name from `rc->pkg` before calling `argp_parse`, so no `-P` flag
+  appears in either engine's argv section. The driver symbols (`syscalls_setup`/`_run`/`_teardown`,
   `funcs_*`) are kept global through the partial-link so `trace.part.o` can call
   them (see the `--keep-global-symbol` lists in the Makefile).
 - **CLI:** `ares trace -P <pkg> [-o <prefix>] [--syscalls <args…>] [--funcs <args…>]`.
   With `-o`, each engine writes its own file (`<prefix>.syscalls.jsonl` /
   `<prefix>.funcs.jsonl`) — no shared `FILE*`, and both are ingestable by the
-  unified MCP today. Each `--…` section is that engine's normal options minus the
-  package.
+  unified MCP today. Each `--…` section is that engine's normal options; the package
+  is not repeated (`rc->pkg` supplies it).
 - **Operational notes:** without `-o`, both engines print to stdout from two
   threads and the text interleaves — `trace` warns and `-o` is recommended. A
   first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the

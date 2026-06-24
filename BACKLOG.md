@@ -17,6 +17,40 @@ forward-looking items only.
 
 ## Shipped
 
+### BPF de-dup + argument-parsing normalization — 2026-06-24
+
+**BPF infrastructure de-dup:**
+
+- `src/common/bpf_drop.bpf.h` — consolidated the identical `dropped`
+  PERCPU_ARRAY map and `bump_dropped()` helper that `syscalls.bpf.c` and
+  `ares-tracer.bpf.c` each defined locally. syscalls had a non-atomic
+  `(*c)++`; both now use `__sync_fetch_and_add` uniformly.
+- `struct syscalls_hdr` in `src/syscalls/syscalls.h` replaced with
+  `struct trace_event_header` (identical layout, removes the local alias).
+- `#define ARES_FLUSH_MASK 0x3fff` added to `src/common/emit.h`; both
+  worker threads' flush intervals now reference the named constant.
+
+**Argument parsing normalization (syscalls + funcs + trace coordinator):**
+
+- `src/common/engine_args.h` (new) — `struct common_args` (six shared
+  flags), `COMMON_ARGS_INIT`, `COMMON_ARGP_OPTIONS` macro, and
+  `parse_common_arg()` inline delegate. Single source of truth for
+  `-o`/`-v`/`-q`/`-J`/`-b`/`-Q`.
+- `syscalls.c` — replaced hand-rolled strcmp loop + positional parsing
+  with GNU argp (`struct sysc_args`, `sysc_options[]`, `parse_sysc_opts()`).
+  Option ordering no longer matters; `--help` is auto-generated. Positional
+  `<lib>` replaced with `-l <selector>`. `COMMON_ARGP_OPTIONS` embedded.
+- `ares-tracer.c` — `struct args` embeds `struct common_args c`; `options[]`
+  uses `COMMON_ARGP_OPTIONS`; `parse_opts` delegates common keys via
+  `parse_common_arg()`. Added `-q` (quiet: gates all console prints via
+  `g_quiet` global). Added `-Q <MB>` (configurable worker queue size,
+  replaces hardcoded 16 MiB; default 256 MiB). Package pre-filled from
+  `rc->pkg` before `argp_parse`.
+- `inject_pkg` removed from `trace_build_argv()` (`trace_args.h`,
+  `trace_args.c`, both call sites in `trace.c`, assertions in
+  `tests/test_trace_args.c`). Both engines pre-fill the package from
+  `rc->pkg`; the coordinator no longer injects `-P` into either section.
+
 ### Engine unification round 2 — 2026-06-23
 
 **Phases A, B, C1, C2 shipped.**
@@ -264,7 +298,8 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
 - **C7 — Symbol/caller resolution** — addr→module+offset via maps + dynsym, in both.
 - **C8 — Misc duplication** — `libbpf_print_fn` + signal handlers; duplicate
   `vmlinux.h`. (Near-identical `map_event` struct and vendored libbpf are already
-  unified.)
+  unified.) BPF dropped-counter dup (`dropped` map + `bump_dropped()`) and the
+  `syscalls_hdr` alias resolved (2026-06-24). Remaining: `libbpf_print_fn`, `vmlinux.h`.
 - **C9 — Capability the funcs engine could borrow:** the syscalls engine's
   `decode_sockaddr` (the funcs engine has no sockaddr decoding).
 

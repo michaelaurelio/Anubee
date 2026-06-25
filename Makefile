@@ -250,8 +250,8 @@ $(MAIN_OBJ): $(SRC)/main.c
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
 
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
-# syscalls/funcs also export their setup/run/teardown phases so the `trace`
-# coordinator can drive both engines from one process (everything else localized).
+# syscalls/funcs/lib also export their setup/run/teardown phases so a trace-style
+# coordinator can drive multiple engines from one process (everything else localized).
 $(SYSC_PART): $(SYSC_OBJ)
 	$(LD) -r -o $@ $(SYSC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_syscalls \
@@ -272,7 +272,10 @@ $(COMMON_PART): $(COMMON_OBJ) Makefile
 
 $(LIB_PART): $(LIB_OBJ)
 	$(LD) -r -o $@ $(LIB_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_lib $@
+	$(OBJCOPY) --keep-global-symbol=cmd_lib \
+	           --keep-global-symbol=lib_setup \
+	           --keep-global-symbol=lib_run \
+	           --keep-global-symbol=lib_teardown $@
 
 $(CORR_PART): $(CORR_OBJ)
 	$(LD) -r -o $@ $(CORR_OBJ)

@@ -21,12 +21,9 @@ so history stays traceable.
 ## Urgent — architectural / correctness-critical
 
 - **`rctx` use-after-return in `funcs_setup` — DONE (2026-06-25).** See Resolved.
-- **Thin presets over the formal core (architectural keystone).** PARTIAL —
-  `syscalls` and `funcs` are split into setup/run/teardown phases (the first step).
-  Remaining: split `lib` the same way and retire the partial-link symbol-localization
-  scaffolding where it's no longer needed. This is the migration the consolidation
-  roadmap (C2/C3/C4/C7 below) folds into; the immediate consumer was the `trace`
-  runner.
+- **Thin presets over the formal core (architectural keystone) — DONE (2026-06-25).**
+  `syscalls`, `funcs`, and `lib` are all split into coordinator-ready
+  `*_setup(argc, argv, rc)` / `*_run(stop)` / `*_teardown()` phases. See Resolved.
 - **Firewall quiet-mode enforcement.** The C5.1 capability registry
   (`src/common/capabilities.{c,h}`) records which BPF objects write target memory,
   but it is **advisory only** — nothing calls `ares_quiet_config_ok` to *refuse*
@@ -146,6 +143,16 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-25 (session 3)
+
+- **Thin presets keystone — `lib` phase split (coordinator-ready).** `cmd_lib`
+  refactored into `lib_setup(argc, argv, rc)` / `lib_run(stop)` / `lib_teardown()` +
+  thin `cmd_lib` wrapper, fully symmetric with `syscalls` and `funcs`. `struct
+  ares_run_ctx` accepted so a future coordinator can pre-resolve the UID and drive
+  `lib` alongside other engines without a second launch. `on_sigint` retired in
+  favour of the shared `ares_install_stop_handler`. Makefile `LIB_PART` updated to
+  export all four entry points (`cmd_lib` + three phases). No behaviour change.
 
 ### 2026-06-25 (session 2)
 

@@ -29,14 +29,18 @@
 #include "common/engine_args.h"
 #include "common/runtime.h"
 
-const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
-
 static volatile sig_atomic_t exiting = 0;
-static void on_sigint(int sig) { (void)sig; exiting = 1; }
 
-static struct ares_sink g_sink;            // structured JSONL sink (-o)
-static int              g_quiet   = 0;    // suppress stdout text
-static int              g_verbose = 0;    // -v: also print [unlib] unmap lines on stdout
+static struct ares_sink g_sink;
+static int              g_quiet   = 0;
+static int              g_verbose = 0;
+
+// Cross-phase state: published by lib_setup, consumed by lib_run/lib_teardown.
+static struct ares_lib   *g_skel;
+static struct ring_buffer *g_rb;
+static int                 g_uid;
+static const char         *g_pkg;
+static const char         *g_activity;
 
 // ---- ring-buffer event handling ------------------------------------------
 
@@ -114,22 +118,29 @@ static error_t lib_parse_opt(int key, char *arg, struct argp_state *state)
 
 static const struct argp lib_argp = { lib_options, lib_parse_opt, lib_args_doc, lib_doc, 0, 0, 0 };
 
-// ---- entry point ----------------------------------------------------------
+// ---- three-phase driver ---------------------------------------------------
+// lib_setup/run/teardown are kept global so a trace-style coordinator can drive
+// `lib` alongside other engines from a single app launch. Cross-phase state lives
+// in the file-static g_* above. (cmd_lib below is the thin standalone wrapper.)
 
-int cmd_lib(int argc, char **argv)
+int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    struct lib_args la = { .c = COMMON_ARGS_INIT };
-    if (argp_parse(&lib_argp, argc, argv, 0, NULL, &la) != 0)
-        return 1;
+    // ponytail: static so g_pkg/g_activity can alias la after setup returns.
+    static struct lib_args la = { .c = COMMON_ARGS_INIT };
+    // Pre-fill package from coordinator so ARGP_KEY_END validation passes
+    // without needing -P in the lib argv section.
+    if (rc && rc->pkg)
+        la.pkg = rc->pkg;
+    argp_parse(&lib_argp, argc, argv, 0, NULL, &la);
 
-    const char *pkg      = la.pkg;
-    const char *activity = la.activity;
-    g_quiet   = la.c.quiet || (la.c.output_file != NULL);
-    g_verbose = la.c.verbose;
+    g_pkg      = la.pkg;
+    g_activity = la.activity;
+    g_quiet    = la.c.quiet || (la.c.output_file != NULL);
+    g_verbose  = la.c.verbose;
 
-    int uid = ares_resolve_uid(pkg);
-    if (uid < 0) {
-        fprintf(stderr, "lib: could not resolve UID for '%s' (installed? run as root?)\n", pkg);
+    g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+    if (g_uid < 0) {
+        fprintf(stderr, "lib: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
         return 1;
     }
 
@@ -151,7 +162,7 @@ int cmd_lib(int argc, char **argv)
     }
 
     // Install the target UID BEFORE launching, so the first mapping is caught.
-    __u32 vuid = (__u32)uid; __u8 one = 1;
+    __u32 vuid = (__u32)g_uid; __u8 one = 1;
     if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
         fprintf(stderr, "lib: failed to install target UID\n");
         goto err_skel;
@@ -169,29 +180,58 @@ int cmd_lib(int argc, char **argv)
         goto err_skel;
     }
 
-    // Fresh start: kill any running instance, wait for it to die, then launch.
-    // Tracing is already armed, so we catch the new process from its first mapping.
-    ares_launch_banner(pkg, uid);
-    if (ares_launch_app(pkg, activity) != 0) {
-        fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", pkg);
-        goto err_rb;
-    }
-
-    signal(SIGINT, on_sigint);
-    printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", uid);
-
-    ares_rb_poll_until(rb, &exiting);
-
-    ring_buffer__free(rb);
-    ares_lib__destroy(skel);
-    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+    // Setup complete: publish live state to run/teardown phases. The caller
+    // owns the app launch, which must happen AFTER this returns since the UID
+    // filter is already armed.
+    g_skel = skel;
+    g_rb   = rb;
     return 0;
 
-err_rb:
-    ring_buffer__free(rb);
 err_skel:
     ares_lib__destroy(skel);
 err_file:
     if (g_sink.f) ares_sink_close(&g_sink);
     return 1;
+}
+
+int lib_run(volatile sig_atomic_t *stop)
+{
+    printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", g_uid);
+    // ponytail: no drops ticker — lib.bpf.c has no dropped map / worker queue.
+    ares_rb_poll_until(g_rb, stop);
+    return 0;
+}
+
+void lib_teardown(void)
+{
+    if (g_rb) {
+        ring_buffer__free(g_rb);
+        g_rb = NULL;
+    }
+    if (g_skel) {
+        ares_lib__destroy(g_skel);
+        g_skel = NULL;
+    }
+    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+}
+
+// ---- entry point (thin standalone wrapper) --------------------------------
+
+int cmd_lib(int argc, char **argv)
+{
+    if (lib_setup(argc, argv, NULL) != 0)
+        return 1;
+
+    // Standalone: tracing is armed (UID installed in setup); launch and own signals.
+    ares_install_stop_handler(&exiting);
+    ares_launch_banner(g_pkg, g_uid);
+    if (ares_launch_app(g_pkg, g_activity) != 0) {
+        fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
+        lib_teardown();
+        return 1;
+    }
+
+    lib_run(&exiting);
+    lib_teardown();
+    return 0;
 }

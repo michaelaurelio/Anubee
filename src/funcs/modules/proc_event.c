@@ -54,6 +54,9 @@ static int pe_handle_event(const struct trace_event_header *hdr, const void *dat
         else
             ts_print("[proc]  > [EXIT]  PID:%d (%s) exit status %d\n",
                 hdr->pid, e->comm, status);
+        // Flush the dead pid's cached maps so a recycled pid doesn't read stale symbols.
+        // ponytail: route through the worker queue if in-flight frames for the dying pid matter.
+        sym_flush_pid(hdr->pid);
         return 0;
     }
     return -1;

@@ -16,6 +16,7 @@
 // we look up (addr - load_base) in the symbol table.
 
 #include "symbolize.h"
+#include "common/maps.h"      // ares_parse_maps_line
 #include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
 
 #include <stdio.h>
@@ -23,6 +24,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
@@ -35,18 +37,17 @@
 
 // ---- /proc/<pid>/maps ----------------------------------------------------
 
-struct mapping {
-	uint64_t start, end, off;
-	int exec;
-	char path[MAX_PATH_LEN];
-};
-
 struct procmaps {
 	int pid;
-	struct mapping *m;
+	struct ares_map_line *m;
 	size_t n, cap;
 	long long last_read_ms;
+	long long last_used_ms;   // LRU eviction clock
+	int gone;                 // 1 if last fopen got ENOENT (pid exited before maps read)
 };
+
+// ponytail: tune if traces need more concurrent pids; 128 covers typical app + zygote forks.
+#define PM_MAX_PIDS 128
 
 static struct procmaps *g_pm;
 static size_t g_npm;
@@ -63,61 +64,77 @@ static void read_proc_maps(struct procmaps *pm)
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/maps", pm->pid);
 	FILE *f = fopen(path, "r");
-	pm->n = 0;
+	int oerr = errno;            // capture before now_ms() (clock_gettime) can clobber it
+	pm->n    = 0;
+	pm->gone = 0;
 	pm->last_read_ms = now_ms();
-	if (!f)
+	if (!f) {
+		pm->gone = (oerr == ENOENT);
 		return;
+	}
 
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		uint64_t start, end, off;
-		char perms[8], p[MAX_PATH_LEN];
-		p[0] = '\0';
-		int got = sscanf(line, "%" SCNx64 "-%" SCNx64 " %7s %" SCNx64 " %*s %*s %255[^\n]",
-				 &start, &end, perms, &off, p);
-		if (got < 4)
+		struct ares_map_line ml;
+		if (!ares_parse_maps_line(line, &ml))
 			continue;
 
 		if (pm->n == pm->cap) {
 			size_t nc = pm->cap ? pm->cap * 2 : 256;
-			struct mapping *nm = realloc(pm->m, nc * sizeof(*nm));
+			struct ares_map_line *nm = realloc(pm->m, nc * sizeof(*nm));
 			if (!nm)
 				break;
 			pm->m = nm;
 			pm->cap = nc;
 		}
-		struct mapping *mp = &pm->m[pm->n++];
-		mp->start = start;
-		mp->end = end;
-		mp->off = off;
-		mp->exec = (perms[2] == 'x');
-		char *q = p;
-		while (*q == ' ')
-			q++;
-		snprintf(mp->path, sizeof(mp->path), "%s", q);
+		pm->m[pm->n++] = ml;
 	}
 	fclose(f);
 }
 
+// pm_get lives above the ART-JIT / vDSO / symbol-cache definitions but reaches
+// into them during LRU eviction. The eviction side-effects are extracted into
+// pm_evict_pid, defined below those subsystems where all types are complete.
+static void pm_evict_pid(int pid);
+
 static struct procmaps *pm_get(int pid)
 {
-	for (size_t i = 0; i < g_npm; i++)
-		if (g_pm[i].pid == pid)
-			return &g_pm[i];
+	long long now = now_ms();
 
-	struct procmaps *np = realloc(g_pm, (g_npm + 1) * sizeof(*np));
-	if (!np)
-		return NULL;
-	g_pm = np;
-	struct procmaps *pm = &g_pm[g_npm++];
-	memset(pm, 0, sizeof(*pm));
-	pm->pid = pid;
-	read_proc_maps(pm);
-	return pm;
+	for (size_t i = 0; i < g_npm; i++) {
+		if (g_pm[i].pid == pid) {
+			g_pm[i].last_used_ms = now;
+			return &g_pm[i];
+		}
+	}
+
+	size_t slot;
+	if (g_npm < PM_MAX_PIDS) {
+		// Still under cap: grow the array.
+		struct procmaps *np = realloc(g_pm, (g_npm + 1) * sizeof(*np));
+		if (!np)
+			return NULL;
+		g_pm = np;
+		slot = g_npm++;
+		memset(&g_pm[slot], 0, sizeof(g_pm[slot]));
+	} else {
+		// At cap: evict the least-recently-used slot and reuse it.
+		slot = 0;
+		for (size_t i = 1; i < g_npm; i++)
+			if (g_pm[i].last_used_ms < g_pm[slot].last_used_ms)
+				slot = i;
+		pm_evict_pid(g_pm[slot].pid);
+		g_pm[slot].n = 0;           // reuse the mapping buffer for the new pid
+	}
+
+	g_pm[slot].pid          = pid;
+	g_pm[slot].last_used_ms = now;
+	read_proc_maps(&g_pm[slot]);
+	return &g_pm[slot];
 }
 
 // /proc/<pid>/maps is address-sorted and non-overlapping, so binary search.
-static struct mapping *find_mapping(struct procmaps *pm, uint64_t addr)
+static struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 {
 	size_t lo = 0, hi = pm->n;
 	while (lo < hi) {
@@ -135,17 +152,13 @@ static struct mapping *find_mapping(struct procmaps *pm, uint64_t addr)
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
 // Also returns the base mapping's [start,end), used to reach the file via
 // /proc/<pid>/map_files when its path is deleted/anonymous.
-static void module_base(struct procmaps *pm, struct mapping *hit,
+static void module_base(struct procmaps *pm, struct ares_map_line *hit,
 			uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
 {
-	size_t i = (size_t)(hit - pm->m);
-	while (i > 0 &&
-	       pm->m[i - 1].end == pm->m[i].start &&
-	       !strcmp(pm->m[i - 1].path, pm->m[i].path))
-		i--;
+	size_t i = ares_module_base_idx(pm->m, (size_t)(hit - pm->m));
 	*load_base = pm->m[i].start;
-	*elf_off = pm->m[i].off;
-	*base_end = pm->m[i].end;
+	*elf_off   = pm->m[i].off;
+	*base_end  = pm->m[i].end;
 }
 
 // ---- symbols (.dynsym / .symtab / .gnu_debugdata) ------------------------
@@ -207,8 +220,7 @@ static int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t
 
 	if (pid > 0) {
 		char mf[96];
-		snprintf(mf, sizeof(mf), "/proc/%d/map_files/%llx-%llx",
-			 pid, (unsigned long long)vstart, (unsigned long long)vend);
+		ares_map_files_path(mf, sizeof(mf), pid, vstart, vend);
 		fd = open(mf, O_RDONLY | O_CLOEXEC);
 	}
 	return fd;
@@ -1224,6 +1236,19 @@ static void sc_clear(void)
 	g_sc_used = 0;
 }
 
+// Called by pm_get when it evicts the LRU procmaps slot. All types (art_ctx,
+// vdso_ctx) are complete by this point in the file.
+static void pm_evict_pid(int pid)
+{
+	for (size_t i = 0; i < g_nart; i++)
+		if (g_art[i].pid == pid)
+			art_reset(&g_art[i]);
+	for (size_t i = 0; i < g_nvdso; i++)
+		if (g_vdso[i].pid == pid)
+			vdso_free(&g_vdso[i]);
+	sc_clear();                 // ponytail: global clear; per-pid eviction too costly
+}
+
 static int sc_get(int pid, uint64_t addr, char *out, size_t outsz)
 {
 	if (!g_sc)
@@ -1249,21 +1274,27 @@ static void sc_put(int pid, uint64_t addr, const char *sym)
 		g_sc = calloc(g_sc_cap, sizeof(*g_sc));
 		if (!g_sc) { g_sc_cap = 0; return; }
 	}
+	// ponytail: clear-and-rebuild at the ceiling; per-pid eviction too costly on open-addressed table.
+#define SC_MAX_CAP (1u << 18)
 	if ((g_sc_used + 1) * 4 >= g_sc_cap * 3) {          // grow at 75% load
-		size_t ncap = g_sc_cap * 2, nmask = ncap - 1;
-		struct sc_ent *ng = calloc(ncap, sizeof(*ng));
-		if (ng) {
-			for (size_t k = 0; k < g_sc_cap; k++) {
-				if (!g_sc[k].used)
-					continue;
-				size_t j = sc_hash(g_sc[k].pid, g_sc[k].addr) & nmask;
-				while (ng[j].used)
-					j = (j + 1) & nmask;
-				ng[j] = g_sc[k];
+		if (g_sc_cap >= SC_MAX_CAP) {
+			sc_clear();   // hit ceiling; cache rebuilds lazily on subsequent misses
+		} else {
+			size_t ncap = g_sc_cap * 2, nmask = ncap - 1;
+			struct sc_ent *ng = calloc(ncap, sizeof(*ng));
+			if (ng) {
+				for (size_t k = 0; k < g_sc_cap; k++) {
+					if (!g_sc[k].used)
+						continue;
+					size_t j = sc_hash(g_sc[k].pid, g_sc[k].addr) & nmask;
+					while (ng[j].used)
+						j = (j + 1) & nmask;
+					ng[j] = g_sc[k];
+				}
+				free(g_sc);
+				g_sc = ng;
+				g_sc_cap = ncap;
 			}
-			free(g_sc);
-			g_sc = ng;
-			g_sc_cap = ncap;
 		}
 	}
 	size_t mask = g_sc_cap - 1, i = sc_hash(pid, addr) & mask;
@@ -1304,14 +1335,17 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		return 0;
 	}
 
-	struct mapping *hit = find_mapping(pm, (uint64_t)addr);
+	struct ares_map_line *hit = find_mapping(pm, (uint64_t)addr);
 	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
 		read_proc_maps(pm);             // a library may have loaded since
 		hit = find_mapping(pm, (uint64_t)addr);
 	}
 	if (!hit) {
-		// Not in any mapping: stale frame, or a bad frame-pointer unwind.
-		snprintf(out, outsz, "0x%llx [unmapped]", addr);
+		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
+		if (pm->gone)
+			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
+		else
+			snprintf(out, outsz, "0x%llx [unmapped]", addr);
 		return 0;
 	}
 
@@ -1374,9 +1408,9 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 	// the symbol resolution is already correct; this only improves the label.
 	const char *inner_so = apk_so_name(hit->path, elf_off);
 	if (inner_so) {
-		char tmp[MAX_PATH_LEN];
-		snprintf(tmp, sizeof(tmp), "%s -> %s", base, inner_so);
-		snprintf(base, sizeof(base), "%s", tmp);
+		char apk[MAX_PATH_LEN];
+		memcpy(apk, base, sizeof(apk));
+		snprintf(base, sizeof(base), "%.125s -> %.125s", apk, inner_so);
 	}
 
 	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, load_base, base_end);
@@ -1397,8 +1431,10 @@ void sym_flush_pid(int pid)
 {
 	pthread_mutex_lock(&g_lock);
 	for (size_t i = 0; i < g_npm; i++)
-		if (g_pm[i].pid == pid)
-			g_pm[i].n = 0;          // force reread on next resolve
+		if (g_pm[i].pid == pid) {
+			g_pm[i].n    = 0;       // force reread on next resolve
+			g_pm[i].gone = 0;
+		}
 	for (size_t i = 0; i < g_nart; i++)
 		if (g_art[i].pid == pid)
 			art_reset(&g_art[i]);   // re-locate libart + rebuild JIT map

@@ -24,7 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -90,8 +90,14 @@ flowchart TD
   most Android system libraries and `dex2oat`-compiled app code); ART/JIT method
   names via `__jit_debug_descriptor` over `/proc/<pid>/mem`; vDSO `.dynsym`; and
   APK-embedded stored `.so` display names (ZIP central-dir parse). Per-pid
-  `/proc/<pid>/maps` snapshots are cached with binary search and a throttled refresh.
-  Results are cached in an open-addressing hash table keyed by `(pid, addr)`.
+  Per-pid `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
+  refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
+  (prevents unbounded growth on fork-heavy traces) and **flushed on process exit**
+  via `sym_flush_pid` wired to `ARES_EVENT_PROC_EXIT` (`-m proc-event`; the LRU
+  bound is the always-on backstop for the default config). The symbol result hash
+  is bounded at `SC_MAX_CAP=256k` entries (clears and rebuilds at the ceiling).
+  The line parser is shared: `src/common/maps.{c,h}` exposes `ares_parse_maps_line`
+  and is used by all six `/proc/<pid>/maps` consumers across the codebase.
   `funcs` previously had a simpler local resolver (`lookup_caller`) that only
   produced module+offset with no symbol names; the merge gives `funcs` real function
   names, JIT/vDSO resolution, and `.gnu_debugdata` for free, while `syscalls` gains

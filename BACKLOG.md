@@ -325,9 +325,17 @@ unified `lib_map_event`/`lib_unmap_event`). Remaining items, rough priority:
   `resolve_addr_to_module`, APK ZIP parser, `caller_cache`) deleted; call sites
   replaced with `sym_resolve`. APK-embedded `.so` naming ported from funcs into
   `common/symbolize.c` (`apk_so_name`, ZIP central-dir parser), so both engines now
-  show `base.apk -> libfoo.so!func+0x...`. Remaining `/proc/<pid>/maps` parsers in
-  `lib_trace.c` and `correlate` (attach-time scan) are different use-cases and deferred
-  (see Deferred tech debt).
+  show `base.apk -> libfoo.so!func+0x...`.
+  **Phase 2 — shared line parser + spawn/kill fixes (2026-06-24):** `src/common/maps.{c,h}`
+  added with `ares_parse_maps_line()` (the one canonical `sscanf` for all six
+  `/proc/<pid>/maps` consumers — symbolize, lib_trace, probe_resolve, correlate, rebuild,
+  funcs). Symbolizer cache fixes: LRU eviction at `PM_MAX_PIDS=128` pids (prevents
+  unbounded growth), `SC_MAX_CAP` ceiling on the symbol hash (clears and rebuilds at
+  256k entries), and `sym_flush_pid` wired to `ARES_EVENT_PROC_EXIT` in
+  `proc_event.c` (prevents stale maps for recycled pids when `-m proc-event` is active).
+  Thread-safety mutex added to `sym_resolve`/`sym_flush_pid` (prior turn — required since
+  funcs calls both from the poll thread and worker thread). Full consolidation of the
+  one-shot scanners into a shared iterator explicitly declined — see Deferred tech debt.
 - **C4 — Kernel-side UID filter** — **DONE (2026-06-24).** Created
   `src/common/uid_filter.bpf.h` with the `target_uids` HASH-set map + `uid_matches()`.
   All five `.bpf.c` files now include it; `syscalls`/`lib`/`dump` loaders converted
@@ -540,13 +548,10 @@ format. Note: low value / high cosmetic churn across 5 files; not recommended.
   to `ring_buffer__new`; the MAP handler dereferences it after `funcs_setup`
   returns. Pre-existing; unrelated to the C2 worker split (the worker never
   touches `rctx`). Fix: promote `rctx` to file-static.
-- **Maps-parser fold for `lib_trace` + `correlate` (C3 option 2, deferred)** —
-  `src/common/lib_trace.c`'s `find_path_in_maps` (basename→fullpath cache for
-  library-load events) and `correlate`'s attach-time `/proc/<pid>/maps` scan both
-  have different access patterns from the symbolizer's cached binary-search maps.
-  Routing them through the shared per-pid maps cache in `common/symbolize.c` would
-  give a single `/proc/<pid>/maps` parser repo-wide. Deferred because the access
-  patterns diverge: lib_trace does basename→fullpath for mmap events; correlate does
-  a full-table scan at attach time. Revisit after the C3 symbolizer consolidation
-  is stable.
+- **Maps-parser fold for `lib_trace` + `correlate` (C3 option 2, full consolidation)**
+  — sharing a single `/proc/<pid>/maps` *iterator* (open/read/close) would remove the
+  remaining structural duplication, but the one-shot scanners (`probe_resolve`,
+  `correlate`, `dump/rebuild`) run once per attach/dump and wouldn't benefit from
+  caching. All six consumers now share `ares_parse_maps_line` from `common/maps.c`;
+  further folding is explicitly declined as over-engineering for once-per-attach scans.
 

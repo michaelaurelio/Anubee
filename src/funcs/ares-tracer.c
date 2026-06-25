@@ -32,6 +32,7 @@
 #include "common/runtime.h"
 #include "common/evqueue.h"
 #include "common/engine_args.h"
+#include "common/maps.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -317,19 +318,17 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
         if (f) {
             char line[512];
             while (fgets(line, sizeof(line), f) && !result) {
-                unsigned long long start, end, pgoff;
-                char perms[5], path[256] = "";
+                struct ares_map_line ml;
+                if (!ares_parse_maps_line(line, &ml)) continue;
+                if (entry_addr < ml.start || entry_addr >= ml.end) continue;
+                if (!ml.exec || ml.path[0] != '/') continue;
 
-                if (sscanf(line, "%llx-%llx %4s %llx %*s %*d %255s",
-                           &start, &end, perms, &pgoff, path) < 4) continue;
-                if (entry_addr < start || entry_addr >= end) continue;
-                if (!strchr(perms, 'x') || path[0] != '/') continue;
-
-                unsigned long file_offset = (unsigned long)(entry_addr - start) + (unsigned long)pgoff;
+                unsigned long file_offset = (unsigned long)(entry_addr - ml.start)
+                                          + (unsigned long)ml.off;
 
                 for (int i = 0; i < probe_target_count; i++) {
                     if (probe_targets[i].offset == file_offset &&
-                        strcmp(probe_targets[i].mod_path, path) == 0) {
+                        strcmp(probe_targets[i].mod_path, ml.path) == 0) {
                         probe_targets[i].runtime_entry_addr = entry_addr;
                         result = &probe_targets[i];
                         break;
@@ -441,8 +440,7 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                 entry_prog, false, uprobe_pid, path, tgt.offset);
             if (!probe_links[idx] && map_start && map_end) {
                 char map_files[80];
-                snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
-                         pid, map_start, map_end);
+                ares_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
                 if (access(map_files, F_OK) == 0) {
                     probe_links[idx] = bpf_program__attach_uprobe(
                         entry_prog, false, uprobe_pid, map_files, tgt.offset);
@@ -726,8 +724,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
                         if (!probe_links[i]) {
                             char map_files[80];
-                            snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
-                                     header->pid, (unsigned long)e->start, (unsigned long)e->end);
+                            ares_map_files_path(map_files, sizeof(map_files),
+                                                header->pid, e->start, e->end);
                             if (access(map_files, F_OK) == 0) {
                                 probe_links[i] = bpf_program__attach_uprobe(
                                     entry_prog, false, -1,
@@ -1054,11 +1052,10 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                 if (!mf) continue;
                 char mline[512];
                 while (fgets(mline, sizeof(mline), mf)) {
-                    char perms[5], mpath[256] = "";
-                    if (sscanf(mline, "%*x-%*x %4s %*x %*s %*d %255s", perms, mpath) < 1) continue;
-                    if (mpath[0] != '/') continue;
-                    if (!strchr(perms, 'x')) continue;
-                    apply_custom_specs_for_file(&rctx, args.pids[p], mpath, args.pids[p], 0, 0);
+                    struct ares_map_line ml;
+                    if (!ares_parse_maps_line(mline, &ml)) continue;
+                    if (ml.path[0] != '/' || !ml.exec) continue;
+                    apply_custom_specs_for_file(&rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1125,11 +1122,10 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             if (cf) {
                 char cline[512];
                 while (fgets(cline, sizeof(cline), cf)) {
-                    char cperms[5], cpath[256] = "";
-                    if (sscanf(cline, "%*x-%*x %4s %*x %*s %*d %255s", cperms, cpath) < 1) continue;
-                    if (cpath[0] != '/') continue;
-                    if (!strchr(cperms, 'x')) continue;
-                    apply_custom_specs_for_file(&rctx, zygote_pid, cpath, -1, 0, 0);
+                    struct ares_map_line ml;
+                    if (!ares_parse_maps_line(cline, &ml)) continue;
+                    if (ml.path[0] != '/' || !ml.exec) continue;
+                    apply_custom_specs_for_file(&rctx, zygote_pid, ml.path, -1, 0, 0);
                 }
                 fclose(cf);
             }

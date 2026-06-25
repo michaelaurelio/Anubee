@@ -397,7 +397,9 @@ the caller's bytes) plus a sorted array of method bytecode ranges; lookup
 binary-searches the ranges, then resolves names through the
 `method_ids`/`type_ids`/`string_ids` tables. The DEX is target-controlled, so
 every read is bounds-checked and every table index validated — a malformed entry
-is skipped, a malformed header fails the build (`NULL`), and no input can fault.
+is skipped, a malformed header (or an allocation failure mid-build) fails the
+build (`NULL`), overlapping method ranges from a crafted DEX are pruned so the
+binary search stays deterministic, and no input can fault.
 It has **no libbpf / `/proc` / ELF dependency and no detectability surface** (pure
 parsing of bytes the caller already holds), and is host-tested against a committed
 `.dex` fixture (`tests/test_dex.c`, `tests/fixtures/sample.dex`).
@@ -432,12 +434,19 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   Uses GNU argp (`--help`/`--usage`/`--version` — prints `ares correlate`); flags:
   `-p PID[,…]`, `-P PACKAGE`, `-e SPEC`, `-F FILE`, `-o FILE`, `-q`.
 - **Output**: flat, type-discriminated JSONL via the shared serializer
-  (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `func` records:
+  (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `-o FILE` opens the shared
+  `ares_sink` (8 MB buffered, periodic flush, `wrote N event(s)` report at teardown),
+  matching `syscalls`/`funcs` — no per-event `fflush`. `func` records:
   `{"type":"func","span":N,"parent_span":M,"pid":...,"tid":...,"entry_addr":"0x...","args":["0x...",...]}`
   — args as hex strings. `syscall` records additionally carry a parallel
   `"decoded"` array: each element is the human-readable flag expansion (from
   `flags_decode_arg`) where a decoder applied, or `""` otherwise. One row per
   event, joinable on `span`; syscalls are never nested inside a func record.
+- **Robustness**: each entry-uprobe `bpf_link` is tracked and `bpf_link__destroy`'d
+  on teardown (not leaked to process exit). The fixed input caps — `-p` (64 PIDs),
+  `-e`/`-F` (64 specs), per-pid attach dedup (256) — now emit a warning when hit
+  instead of silently truncating, so a wide package or large `-F` file is not quietly
+  under-instrumented.
 - **Detectability**: this object carries the uprobe, so it is the **loud** path; the
   quiet engines never load it (see §9). Correlation is per-tid & synchronous
   (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by

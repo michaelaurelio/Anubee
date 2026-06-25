@@ -10,8 +10,8 @@ const char *trace_type_name(unsigned type)
     case TRACE_CALL:      return "call";
     case TRACE_RETURN:    return "return";
     case TRACE_SYSCALL:   return "syscall";
-    case TRACE_MAP:       return "map";
-    case TRACE_UNMAP:     return "unmap";
+    case TRACE_LIB:       return "lib";
+    case TRACE_UNLIB:     return "unlib";
     case TRACE_SPAWN:     return "spawn";
     case TRACE_PROC_EXIT: return "proc_exit";
     case TRACE_EXECVE:    return "execve";

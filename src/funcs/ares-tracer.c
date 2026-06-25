@@ -706,8 +706,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     // Structured record status (per event type):
     //   CALL   — done (worker via funcs_emit_call)
     //   RETURN — done (worker via funcs_emit_return)
-    //   MAP    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
-    //   UNMAP  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
+    //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
+    //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
     //   SPAWN/PROC_EXIT/EXECVE/PROP — deferred; see BACKLOG "module events"
     //     (needs funcs_emit_* builders + sink path on the module handle_event
     //     signature; revisit with B2 worker-routing once module scope is confirmed)

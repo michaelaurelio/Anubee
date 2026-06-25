@@ -27,6 +27,14 @@ struct cfi_section {
 	size_t         nfde;
 };
 
+/* Locate the ".debug_frame" section inside an ELF64 image held in elf[0..len).
+ * On success, sets *df / *df_len to a slice INSIDE `elf` (borrowed — must outlive any
+ * cfi_section parsed from it) and returns 0. Returns -1 if `elf` is not a valid ELF64,
+ * is malformed, or has no ".debug_frame". Every offset in the image is untrusted: bounds-check
+ * all of them; never read outside [0,len). */
+int  cfi_extract_debug_frame(const uint8_t *elf, size_t len,
+			     const uint8_t **df, size_t *df_len);
+
 /* Parse a .debug_frame section. Returns 0 on success (fills s->fdes/nfde), -1 on a malformed
  * section. `data` is borrowed (not copied) and must outlive the section. */
 int  cfi_parse_debug_frame(struct cfi_section *s, const uint8_t *data, size_t len);

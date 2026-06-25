@@ -1,8 +1,104 @@
 #include "common/cfi_unwind.h"
 #include "common/dwarf.h"
 
+#include <elf.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ---------------------------------------------------------------------------
+ * cfi_extract_debug_frame: locate ".debug_frame" inside an ELF64 image.
+ * Every offset is untrusted and bounds-checked against len.
+ * -------------------------------------------------------------------------*/
+int cfi_extract_debug_frame(const uint8_t *elf, size_t len,
+                            const uint8_t **df, size_t *df_len)
+{
+    /* Minimum size for a valid ELF64 header */
+    if (len < sizeof(Elf64_Ehdr))
+        return -1;
+
+    Elf64_Ehdr ehdr;
+    memcpy(&ehdr, elf, sizeof(Elf64_Ehdr));
+
+    /* Validate ELF magic */
+    if (ehdr.e_ident[EI_MAG0] != ELFMAG0 ||
+        ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr.e_ident[EI_MAG2] != ELFMAG2 ||
+        ehdr.e_ident[EI_MAG3] != ELFMAG3)
+        return -1;
+
+    /* Only ELF64 supported */
+    if (ehdr.e_ident[EI_CLASS] != ELFCLASS64)
+        return -1;
+
+    /* Validate section header table: offset, count, entry size */
+    if (ehdr.e_shnum == 0 || ehdr.e_shentsize < sizeof(Elf64_Shdr))
+        return -1;
+
+    /* Check e_shoff + total section header table fits in the image */
+    uint64_t shoff = ehdr.e_shoff;
+    uint64_t shnum = ehdr.e_shnum;
+    uint64_t shentsz = ehdr.e_shentsize;
+    if (shoff == 0 || shoff > len)
+        return -1;
+    /* shnum * shentsz may overflow; check with division */
+    if (shentsz != 0 && shnum > (len - shoff) / shentsz)
+        return -1;
+
+    /* Validate e_shstrndx */
+    uint16_t shstrndx = ehdr.e_shstrndx;
+    if (shstrndx >= shnum)
+        return -1;
+
+    /* Read the section-header string table section header */
+    Elf64_Shdr shstr_hdr;
+    uint64_t shstr_hdr_off = shoff + (uint64_t)shstrndx * shentsz;
+    if (shstr_hdr_off + sizeof(Elf64_Shdr) > len)
+        return -1;
+    memcpy(&shstr_hdr, elf + shstr_hdr_off, sizeof(Elf64_Shdr));
+
+    /* Validate shstrtab section content bounds */
+    uint64_t shstr_off  = shstr_hdr.sh_offset;
+    uint64_t shstr_size = shstr_hdr.sh_size;
+    if (shstr_size == 0 || shstr_off > len || shstr_off + shstr_size > len)
+        return -1;
+
+    const char *shstr = (const char *)(elf + shstr_off);
+
+    /* Walk section headers looking for ".debug_frame" */
+    static const char target[] = ".debug_frame";
+    for (uint64_t i = 0; i < shnum; i++) {
+        uint64_t sh_off = shoff + i * shentsz;
+        if (sh_off + sizeof(Elf64_Shdr) > len)
+            return -1;
+
+        Elf64_Shdr shdr;
+        memcpy(&shdr, elf + sh_off, sizeof(Elf64_Shdr));
+
+        /* Bounds-check sh_name against the string table */
+        if ((uint64_t)shdr.sh_name >= shstr_size)
+            continue;
+
+        /* Compare name */
+        /* Ensure the name string is fully within shstrtab */
+        size_t max_name = (size_t)(shstr_size - shdr.sh_name);
+        if (max_name < sizeof(target) - 1)
+            continue;
+        if (memcmp(shstr + shdr.sh_name, target, sizeof(target)) != 0)
+            continue;
+
+        /* Found ".debug_frame" — bounds-check its content */
+        uint64_t sec_off  = shdr.sh_offset;
+        uint64_t sec_size = shdr.sh_size;
+        if (sec_size == 0 || sec_off > len || sec_off + sec_size > len)
+            return -1;
+
+        *df     = elf + sec_off;
+        *df_len = (size_t)sec_size;
+        return 0;
+    }
+
+    return -1; /* no ".debug_frame" section found */
+}
 
 /* ---------------------------------------------------------------------------
  * Internal: parse the CIE at section offset cie_off from raw section bytes.

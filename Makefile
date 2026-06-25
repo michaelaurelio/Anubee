@@ -341,6 +341,8 @@ test:
 	$(BUILD)/test_cfi_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_step.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_step
 	$(BUILD)/test_cfi_step
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_elf.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_elf
+	$(BUILD)/test_cfi_elf tests/fixtures/debug_frame_sample.elf
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps

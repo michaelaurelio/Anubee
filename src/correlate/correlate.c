@@ -28,6 +28,7 @@
 #include "common/probe_resolve.h"
 #include "common/engine_args.h"
 #include "common/runtime.h"
+#include "common/maps.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
@@ -114,9 +115,10 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        char perms[5], path[256] = "";
-        if (sscanf(line, "%*x-%*x %4s %*x %*s %*d %255s", perms, path) < 1) continue;
-        if (path[0] != '/' || !strchr(perms, 'x')) continue;
+        struct ares_map_line ml;
+        if (!ares_parse_maps_line(line, &ml)) continue;
+        if (ml.path[0] != '/' || !ml.exec) continue;
+        const char *path = ml.path;
 
         for (int s = 0; s < nspec; s++) {
             if (!custom_spec_matches_path(&specs[s], path)) continue;

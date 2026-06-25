@@ -25,6 +25,7 @@
 
 #include "rebuild.h"
 #include "common/proc_mem.h"
+#include "common/maps.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,46 +64,33 @@ void dump_set_raw(int on) { g_raw = on; }
 
 // ---- /proc/<pid>/maps -----------------------------------------------------
 
-struct dmap {
-	uint64_t start, end, off;
-	char path[DUMP_MAX_PATH];
-};
-
-static int read_maps(int pid, struct dmap **out)
+static int read_maps(int pid, struct ares_map_line **out)
 {
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
 	FILE *f = fopen(path, "r");
-	if (!f)
+	if (!f) {
+		if (errno == ENOENT)
+			fprintf(stderr, "[dump] pid %d: /proc/%d/maps gone (process exited)\n", pid, pid);
 		return -1;
+	}
 
-	struct dmap *m = NULL;
+	struct ares_map_line *m = NULL;
 	size_t n = 0, cap = 0;
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		uint64_t start, end, off;
-		char perms[8], p[DUMP_MAX_PATH];
-		p[0] = '\0';
-		int got = sscanf(line, "%" SCNx64 "-%" SCNx64 " %7s %" SCNx64 " %*s %*s %255[^\n]",
-				 &start, &end, perms, &off, p);
-		if (got < 4)
+		struct ares_map_line ml;
+		if (!ares_parse_maps_line(line, &ml))
 			continue;
 		if (n == cap) {
 			size_t nc = cap ? cap * 2 : 256;
-			struct dmap *nm = realloc(m, nc * sizeof(*nm));
+			struct ares_map_line *nm = realloc(m, nc * sizeof(*nm));
 			if (!nm)
 				break;
 			m = nm;
 			cap = nc;
 		}
-		m[n].start = start;
-		m[n].end = end;
-		m[n].off = off;
-		char *q = p;
-		while (*q == ' ')
-			q++;
-		snprintf(m[n].path, sizeof(m[n].path), "%s", q);
-		n++;
+		m[n++] = ml;
 	}
 	fclose(f);
 	*out = m;
@@ -110,12 +98,9 @@ static int read_maps(int pid, struct dmap **out)
 }
 
 // Walk back over the contiguous run of same-path mappings to the load base.
-static uint64_t load_base_of(const struct dmap *m, int hit)
+static uint64_t load_base_of(const struct ares_map_line *m, int hit)
 {
-	int i = hit;
-	while (i > 0 && m[i - 1].end == m[i].start && !strcmp(m[i - 1].path, m[i].path))
-		i--;
-	return m[i].start;
+	return m[ares_module_base_idx(m, (size_t)hit)].start;
 }
 
 static const char *basename_of(const char *p)
@@ -682,7 +667,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 
 int dump_pid_modules(int pid, const char *substr, const char *outdir)
 {
-	struct dmap *m = NULL;
+	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
 	if (n < 0)
 		return -1;
@@ -742,7 +727,7 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 
 int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir)
 {
-	struct dmap *m = NULL;
+	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
 	if (n < 0)
 		return -1;

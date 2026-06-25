@@ -4,6 +4,7 @@
 // "[lib]" text / JSONL emitter. See lib_trace.h for the public API.
 #include "common/lib_trace.h"
 #include "common/emit.h"
+#include "common/maps.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -20,15 +21,11 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
 
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		char perms[5], path[256] = "";
-		unsigned long long start_addr;
-
-		if (sscanf(line, "%llx-%*x %4s %*x %*s %*d %255s", &start_addr, perms, path) < 2)
+		struct ares_map_line ml;
+		if (!ares_parse_maps_line(line, &ml))
 			continue;
-
-		if (start_addr == start) {
-			strncpy(out, path, outsz - 1);
-			out[outsz - 1] = '\0';
+		if (ml.start == start) {
+			snprintf(out, outsz, "%s", ml.path);
 			fclose(f);
 			return 0;
 		}

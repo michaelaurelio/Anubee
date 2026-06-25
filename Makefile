@@ -79,7 +79,8 @@ FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
-               $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c
+               $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
+               $(SRC)/common/maps.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -98,7 +99,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
-               sym_resolve sym_flush_pid
+               sym_resolve sym_flush_pid \
+               ares_parse_maps_line ares_module_base_idx ares_map_files_path
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -221,7 +223,7 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(SRC)/common/symbolize.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(SRC)/common/symbolize.h $(SRC)/common/maps.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
@@ -321,7 +323,7 @@ test:
 	$(BUILD)/test_funcs_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
 	$(BUILD)/test_corr_emit
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_trace_emit.c src/common/lib_trace.c src/common/emit.c -o $(BUILD)/test_lib_trace_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_trace_emit.c src/common/lib_trace.c src/common/emit.c src/common/maps.c -o $(BUILD)/test_lib_trace_emit
 	$(BUILD)/test_lib_trace_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_capabilities.c src/common/capabilities.c -o $(BUILD)/test_capabilities
 	$(BUILD)/test_capabilities
@@ -333,6 +335,8 @@ test:
 	$(BUILD)/test_evqueue
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps
+	$(BUILD)/test_maps
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

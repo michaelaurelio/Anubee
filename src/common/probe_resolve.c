@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "common/probe_resolve.h"
+#include "common/maps.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -111,11 +112,11 @@ int resolve_targets(const struct probe_resolve_ctx *ctx, pid_t pid,
     int n_rx = 0, n_matched = 0;
 
     while (fgets(line, sizeof(line), f) && count < max_targets) {
-        char perms[5], path[256] = "";
-
-        if (sscanf(line, "%*x-%*x %4s %*x %*s %*d %255s", perms, path) < 1) continue;
-        if (path[0] != '/') continue;
-        if (!strchr(perms, 'x')) continue;
+        struct ares_map_line ml;
+        if (!ares_parse_maps_line(line, &ml)) continue;
+        if (ml.path[0] != '/') continue;
+        if (!ml.exec) continue;
+        const char *path = ml.path;
 
         if (ctx->verbose) ctx->log("  [maps] > rx[%d]: %s\n", n_rx, path);
         n_rx++;
@@ -211,8 +212,7 @@ int resolve_targets_for_file(const struct probe_resolve_ctx *ctx,
     int fd = open(path, O_RDONLY);
     if (fd < 0 && map_start && map_end) {
         char map_files[80];
-        snprintf(map_files, sizeof(map_files), "/proc/%d/map_files/%lx-%lx",
-                 pid, map_start, map_end);
+        ares_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
         fd = open(map_files, O_RDONLY);
         if (fd >= 0 && ctx->verbose)
             ctx->log("  [scan] > opened via map_files (file deleted from fs)\n");

@@ -51,6 +51,33 @@ static void on_sigint(int sig) { (void)sig; if (exiting) _exit(130); exiting = 1
 static struct ares_sink g_sink;
 static int              g_quiet = 0;
 
+// Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
+// kprobe is tracked separately via kp). Grown on demand; on OOM we drop tracking
+// for the new link — it stays attached and is reaped at process exit.
+static struct bpf_link **g_uprobe_links = NULL;
+static int g_uprobe_nlinks = 0, g_uprobe_cap = 0;
+
+static void track_uprobe_link(struct bpf_link *link)
+{
+    if (g_uprobe_nlinks == g_uprobe_cap) {
+        int ncap = g_uprobe_cap ? g_uprobe_cap * 2 : 64;
+        struct bpf_link **n = realloc(g_uprobe_links, (size_t)ncap * sizeof(*n));
+        if (!n) return;
+        g_uprobe_links = n;
+        g_uprobe_cap = ncap;
+    }
+    g_uprobe_links[g_uprobe_nlinks++] = link;
+}
+
+static void destroy_uprobe_links(void)
+{
+    for (int i = 0; i < g_uprobe_nlinks; i++)
+        bpf_link__destroy(g_uprobe_links[i]);
+    free(g_uprobe_links);
+    g_uprobe_links = NULL;
+    g_uprobe_nlinks = g_uprobe_cap = 0;
+}
+
 static void log_stderr(const char *fmt, ...)
 {
     va_list ap;
@@ -76,7 +103,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->span, (unsigned long long)e->parent_span,
                    e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
         if (g_sink.f) {
-            g_sink.jb.len = 0;
             corr_emit_func(&g_sink.jb, e);
             ares_sink_emit(&g_sink);
         }
@@ -89,7 +115,6 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
         if (g_sink.f) {
-            g_sink.jb.len = 0;
             corr_emit_syscall(&g_sink.jb, e, name);
             ares_sink_emit(&g_sink);
         }
@@ -134,6 +159,10 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
                 done[ndone].off = tgt.offset;
                 ndone++;
+            } else if (ndone == 256) {
+                fprintf(stderr, "correlate: warning — dedup table full (256) for PID %d; "
+                                "duplicate uprobes may be attached\n", pid);
+                ndone++;  // warn once
             }
 
             struct bpf_link *link = bpf_program__attach_uprobe(
@@ -141,6 +170,7 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
             const char *bname = strrchr(path, '/');
             bname = bname ? bname + 1 : path;
             if (link) {
+                track_uprobe_link(link);
                 printf("[spec] > %s!%s @ 0x%lx\n", bname,
                        tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
                 attached++;
@@ -204,10 +234,14 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
             a->pids[a->pid_count++] = (pid_t)atoi(tok);
             tok = strtok(NULL, ",");
         }
+        if (tok)
+            fprintf(stderr, "correlate: warning — more than 64 PIDs given; extras ignored\n");
         break;
     }
     case 'e':
-        if (a->nspec < 64 && parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) == 0)
+        if (a->nspec >= 64)
+            fprintf(stderr, "correlate: warning — spec cap (64) reached; '%s' ignored\n", arg);
+        else if (parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) == 0)
             a->nspec++;
         break;
     case 'F': {
@@ -219,6 +253,9 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
             if (line[0] == '\0' || line[0] == '#') continue;
             if (parse_custom_probe_spec(line, &a->specs[a->nspec], log_stderr) == 0) a->nspec++;
         }
+        if (a->nspec >= 64 && !feof(sf))
+            fprintf(stderr, "correlate: warning — spec cap (64) reached; "
+                            "remaining lines in '%s' ignored\n", arg);
         fclose(sf);
         break;
     }
@@ -304,7 +341,7 @@ int cmd_correlate(int argc, char **argv)
         fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
-    if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); goto err_skel; }
+    if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); destroy_uprobe_links(); goto err_skel; }
 
     signal(SIGINT, on_sigint);
     printf("correlating %d uprobe(s) -> syscalls ... Ctrl-C to stop\n", total);
@@ -312,11 +349,13 @@ int cmd_correlate(int argc, char **argv)
 
     ring_buffer__free(rb);
     bpf_link__destroy(kp);
+    destroy_uprobe_links();
     ares_correlate__destroy(skel);
     if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
     return 0;
 
 err_skel:
+    destroy_uprobe_links();
     ares_correlate__destroy(skel);
 err_file:
     if (g_sink.f) ares_sink_close(&g_sink);

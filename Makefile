@@ -333,6 +333,14 @@ test:
 	$(BUILD)/test_runtime
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread
 	$(BUILD)/test_evqueue
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_unwind_regs.c -o $(BUILD)/test_unwind_regs
+	$(BUILD)/test_unwind_regs
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dwarf.c src/common/dwarf.c -o $(BUILD)/test_dwarf
+	$(BUILD)/test_dwarf
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_parse.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_parse
+	$(BUILD)/test_cfi_parse
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_step.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_step
+	$(BUILD)/test_cfi_step
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps

@@ -136,7 +136,7 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
 
     // Small dedup of (path,offset) already attached for this pid.
     struct { char path[256]; unsigned long off; } done[256];
-    int ndone = 0, attached = 0;
+    int ndone = 0, attached = 0, warned = 0;
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -159,10 +159,10 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
                 done[ndone].off = tgt.offset;
                 ndone++;
-            } else if (ndone == 256) {
+            } else if (!warned) {
                 fprintf(stderr, "correlate: warning — dedup table full (256) for PID %d; "
                                 "duplicate uprobes may be attached\n", pid);
-                ndone++;  // warn once
+                warned = 1;
             }
 
             struct bpf_link *link = bpf_program__attach_uprobe(

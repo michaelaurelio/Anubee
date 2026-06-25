@@ -103,9 +103,11 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'p': {
             char *tok = strtok(arg, ",");
             while (tok && args->pid_count < 64) {
-                args->pids[args->pid_count++] = (pid_t)atoi(tok); 
+                args->pids[args->pid_count++] = (pid_t)atoi(tok);
                 tok = strtok(NULL, ",");
             }
+            if (tok)
+                fprintf(stderr, "funcs: warning — more than 64 PIDs given; extras ignored\n");
             break;
         }
 
@@ -118,15 +120,17 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'I':
-            if (args->mod_pattern_count < 32) {
+            if (args->mod_pattern_count < 32)
                 copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
-            }
+            else
+                fprintf(stderr, "funcs: warning — module cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'i':
-            if (args->func_pattern_count < 32) {
+            if (args->func_pattern_count < 32)
                 copy_str(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]));
-            }
+            else
+                fprintf(stderr, "funcs: warning — function cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'v':
@@ -144,17 +148,23 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'e':
             if (args->custom_spec_count < 64)
                 copy_str(args->custom_specs[args->custom_spec_count++], arg, 512);
+            else
+                fprintf(stderr, "funcs: warning — spec cap (64) reached; '%s' ignored\n", arg);
             break;
 
         case 'F':
             if (args->spec_file_count < 8)
                 copy_str(args->spec_files[args->spec_file_count++], arg, 256);
+            else
+                fprintf(stderr, "funcs: warning — spec-file cap (8) reached; '%s' ignored\n", arg);
             break;
 
         case 'r':
             if (args->func_ret_pattern_count < 32)
                 copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
                         sizeof(args->func_ret_patterns[0]));
+            else
+                fprintf(stderr, "funcs: warning — return-pattern cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'c':
@@ -212,6 +222,9 @@ static volatile sig_atomic_t exiting = 0;
 
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
+// Resolution context: file-static so handle_event can safely dereference it
+// after funcs_setup returns (all fields point at file-scope globals).
+static struct probe_resolve_ctx g_rctx;
 static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
 static char g_funcs_activity[256];      // launch activity override (empty = auto-resolve)
 static int  g_funcs_uid;               // resolved UID for the launch banner
@@ -945,9 +958,10 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
     elf_version(EV_CURRENT);
 
-    // Resolution context: points at the file-scope regex/target/spec state, built
-    // after all counts are finalized. Routed into handle_event via ring_buffer__new.
-    struct probe_resolve_ctx rctx = {
+    // Resolution context: assigned into the file-static g_rctx (not a local) so
+    // handle_event can safely dereference it after funcs_setup returns. All fields
+    // point at file-scope globals that outlive the stack frame.
+    g_rctx = (struct probe_resolve_ctx){
         .mod_re = mod_re, .mod_has_slash = mod_has_slash, .mod_re_count = mod_re_count,
         .func_re = func_re, .func_re_count = func_re_count,
         .func_ret_re = func_ret_re, .func_ret_re_count = func_ret_re_count,
@@ -958,7 +972,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         .log = err_print,
     };
 
-    g_events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &rctx, NULL);
+    g_events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &g_rctx, NULL);
     if (!g_events_rb) {
         err = -1;
         err_print("    [rb] > failed to create ring buffer\n");
@@ -972,7 +986,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             for (int i = 0; i < args.pid_count; i++) {
                 ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
-                    &rctx,
+                    &g_rctx,
                     args.pids[i],
                     probe_targets + probe_target_count,
                     sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
@@ -1055,7 +1069,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                     struct ares_map_line ml;
                     if (!ares_parse_maps_line(mline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
-                    apply_custom_specs_for_file(&rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
+                    apply_custom_specs_for_file(&g_rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1074,7 +1088,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-            int resolved = resolve_targets(&rctx, zygote_pid, probe_targets + prev, max);
+            int resolved = resolve_targets(&g_rctx, zygote_pid, probe_targets + prev, max);
             ts_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
             if (resolved > 0) {
                 probe_target_count += resolved;
@@ -1125,7 +1139,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                     struct ares_map_line ml;
                     if (!ares_parse_maps_line(cline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
-                    apply_custom_specs_for_file(&rctx, zygote_pid, ml.path, -1, 0, 0);
+                    apply_custom_specs_for_file(&g_rctx, zygote_pid, ml.path, -1, 0, 0);
                 }
                 fclose(cf);
             }

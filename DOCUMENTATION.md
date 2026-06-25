@@ -119,7 +119,7 @@ flowchart TD
   `src/common/launch.*` as `ares_*` and are used by all five engines. They are
   linked once into `common.part.o`, exporting only the `ares_*` API (see
   `COMMON_API` in the Makefile).
-- **The `syscalls` and `funcs` engines are split into setup/run/teardown phases.**
+- **The `syscalls`, `funcs`, and `lib` engines are split into setup/run/teardown phases.**
   Each engine's `cmd_<engine>` entry is a thin wrapper over
   `<engine>_setup(argc, argv, rc)` (parse + open/load/attach + arm UID, stopping
   *before* the app launch), `<engine>_run(stop)` (the ring-buffer poll loop, exits
@@ -127,16 +127,18 @@ flowchart TD
   `<engine>_teardown()`. The launch is owned by the caller (the wrapper standalone,
   or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
   (`src/common/launch.h`) carries a pre-resolved UID + package name into each
-  `*_setup`. Standalone behavior is unchanged; the split exists so both engines can be
-  armed, launched once, and polled together (the `trace` runner). See
+  `*_setup`. Standalone behavior is unchanged; the split exists so engines can be
+  armed, launched once, and polled together. The `trace` runner currently drives
+  `syscalls` + `funcs`; `lib` is coordinator-ready but not yet driven by `trace`. See
   [BACKLOG.md](BACKLOG.md).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities
   (`funcs`, `correlate`) set `writes_target_memory = true`; all others are `false`.
-  This is advisory today (no quiet-mode flag consumes it yet) and exists as the
-  single audit point + regression guard. The future thin-presets work will use it
-  to refuse a loud object in a quiet preset. See §9.
+  Advisory by design: each subcommand loads exactly one object of known, documented
+  loudness, so there is no implicit composition layer for a loud object to leak
+  through. The registry is the single audit point + regression guard. Enforcement
+  would only add value under a future intent-based preset/composition layer. See §9.
 
 ### Why partial-link + symbol localization
 
@@ -244,10 +246,11 @@ expensive one:
   RETURN events are pushed into a configurable `struct ares_evq` userspace queue
   (default 256 MiB, `-Q MB`) and
   processed on a dedicated worker thread, so the kernel ring stays drained
-  regardless of symbolization/JSON latency. Synchronized with two independent
-  mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
-  and the worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes
-  stdout/stderr lines between the two threads.
+  regardless of symbolization/JSON latency. Synchronized with three mutexes:
+  `g_targets_lock` guards `probe_targets[]` between the MAP attach path and the
+  worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes stdout/stderr
+  lines between the two threads; `g_sink_lock` serializes `g_sink` writes between
+  the drain thread (lib/unlib records) and the worker thread (call/return records).
 - Output: human-readable text to stdout (unless `-o FILE` or `-q` is given, both of
   which suppress console output). When `-o FILE` is passed, structured records for CALL
   and RETURN events are written via the shared `ares_sink` (see §3.1 and §7) and
@@ -286,10 +289,12 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   cross-toolchain.
 - Builders are declared in `src/funcs/ares-tracer-priv.h` and called from
   `process_call_return` in `src/funcs/ares-tracer.c`, which runs on the worker
-  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`;
-  `g_sink` is single-writer (worker-only) during the run phase.
-- MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on; the
-  hook point is already in `handle_event` at the SEAM.
+  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`.
+  `g_sink` is multi-writer: the drain thread emits lib/unlib records and the worker
+  thread emits call/return records; all writes are serialized by `g_sink_lock`.
+  MAP/UNLIB records (library load/unload) are **done** — emitted as
+  `{"type":"lib",...}` / `{"type":"unlib",...}` via `ares_libtrace_emit_lib/unlib`.
+  SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 
 ## 4. The `lib` engine (kprobe, library-load only)
 
@@ -510,7 +515,8 @@ stream:
   only; human-readable console output is suppressed when `-o` is active (implied `-q`).
   `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.
-  MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
+  MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).
+  SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`
   (from the shared emitter):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
@@ -522,8 +528,9 @@ output for `syscalls` and `funcs` is now routed through `ares_sink_open` /
 `ares_sink_emit` / `ares_sink_close` / `ares_sink_report`. The sink owns the
 `FILE*`, an 8 MB `_IOFBF` write buffer, the reused `jbuf`, the record count, the
 JSONL/array framing, periodic flush, and the "wrote N records to PATH" report.
-Single-writer per sink (no lock); each engine's drain/worker thread is the sole
-writer. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
+`syscalls` is single-writer (drain thread only). `funcs` is multi-writer (drain
+thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialized by
+`g_sink_lock`. SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
 ingest remain; see [BACKLOG.md](BACKLOG.md).
 
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)

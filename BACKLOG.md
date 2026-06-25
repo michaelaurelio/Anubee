@@ -20,16 +20,7 @@ so history stays traceable.
 
 ## Urgent — architectural / correctness-critical
 
-- **`rctx` use-after-return in `funcs_setup` — DONE (2026-06-25).** See Resolved.
-- **Thin presets over the formal core (architectural keystone) — DONE (2026-06-25).**
-  `syscalls`, `funcs`, and `lib` are all split into coordinator-ready
-  `*_setup(argc, argv, rc)` / `*_run(stop)` / `*_teardown()` phases. See Resolved.
-- **Firewall quiet-mode enforcement.** The C5.1 capability registry
-  (`src/common/capabilities.{c,h}`) records which BPF objects write target memory,
-  but it is **advisory only** — nothing calls `ares_quiet_config_ok` to *refuse*
-  loading a loud object in a quiet preset. The one real invariant ("a stealthy run
-  attaches zero uprobes") is currently held only by convention. Wire the gate when
-  the thin-presets work lands so a quiet preset cannot silently load a uprobe object.
+_No open urgent items — recent keystones are under [Resolved](#resolved--done)._
 
 ---
 
@@ -251,8 +242,9 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **Structured JSONL for `funcs` CALL/RETURN (Task 4)** — `-J`/`--structured`;
   `funcs_emit.c` (pure, host-tested).
-- **C5.1 — firewall-aware capability registry** (`capabilities.{c,h}`, advisory;
-  enforcement still open — see Urgent).
+- **C5.1 — firewall-aware capability registry** (`capabilities.{c,h}`). Advisory by
+  design: each subcommand loads one object of known/documented loudness; enforcement
+  is only meaningful under an intent-based preset/composition layer (not built).
 
 ### 2026-06-20
 

@@ -79,9 +79,10 @@ int cfi_extract_debug_frame(const uint8_t *elf, size_t len,
             continue;
 
         /* Compare name */
-        /* Ensure the name string is fully within shstrtab */
+        /* Ensure the full name+NUL is within shstrtab: the memcmp below reads
+         * sizeof(target) bytes (including the terminator) for an exact match. */
         size_t max_name = (size_t)(shstr_size - shdr.sh_name);
-        if (max_name < sizeof(target) - 1)
+        if (max_name < sizeof(target))
             continue;
         if (memcmp(shstr + shdr.sh_name, target, sizeof(target)) != 0)
             continue;

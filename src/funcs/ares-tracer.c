@@ -258,9 +258,12 @@ static void funcs_drops_tick(void *ctx)
     }
 }
 
-// ponytail: two independent mutexes, never nested (disjoint critical sections).
+// ponytail: three independent mutexes, never nested (disjoint critical sections).
+// g_sink_lock serializes g_sink writes across the drain thread (lib/unlib records)
+// and the worker thread (call/return records); see emit.h for the single-writer contract.
 static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
 static pthread_mutex_t g_out_lock     = PTHREAD_MUTEX_INITIALIZER; // stdout/stderr line serializer
+static pthread_mutex_t g_sink_lock    = PTHREAD_MUTEX_INITIALIZER; // g_sink (multi-writer: drain lib/unlib + worker call/return)
 
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void out_print(const char *fmt, ...)
@@ -519,9 +522,11 @@ static void process_call_return(const void *data, size_t data_sz)
                     e->h.pid, e->ppid, bname, target->func_name, target->offset,
                     used_fallback ? " (resolved from known offset)" : "");
             if (g_sink.f) {
+                pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target);
                 ares_sink_emit(&g_sink);
+                pthread_mutex_unlock(&g_sink_lock);
             }
         } else {
             if (!g_quiet)
@@ -650,9 +655,11 @@ static void process_call_return(const void *data, size_t data_sz)
                 elapsed_buf, retval_buf);
 
         if (g_sink.f) {
+            pthread_mutex_lock(&g_sink_lock);
             g_sink.jb.len = 0;
             funcs_emit_return(&g_sink.jb, e, bname, fname, target);
             ares_sink_emit(&g_sink);
+            pthread_mutex_unlock(&g_sink_lock);
         }
 
         if (!g_quiet && arg_count >= 0) {
@@ -685,7 +692,7 @@ static void *funcs_worker_main(void *arg)
     while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
         process_call_return(rec, sz);
         if (g_sink.f && (++flushed & ARES_FLUSH_MASK) == 0)
-            ares_sink_flush(&g_sink);
+            ares_sink_flush(&g_sink); // fflush only; glibc FILE ops are thread-safe; no g_sink_lock needed
     }
     return NULL;
 }
@@ -696,17 +703,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     if (data_sz < sizeof(*header)) return 0;
     struct probe_resolve_ctx *rctx = ctx;  // routed via ring_buffer__new (see cmd_funcs)
 
-    // SEAM — structured trace output (deferred; see DOCUMENTATION.md "Unified
-    // trace schema"). Today this handler renders human-readable text that the
-    // JSONL writer wraps as {ts,stream,tag,message}. The follow-up will, when a
-    // structured-JSONL mode is selected, emit one self-describing record per
-    // event here using the shared discriminator, e.g.:
-    //   {"type":"call",  "pid":..,"tid":..,"module":..,"symbol":..,
-    //    "entry_addr":..,"args":[..],"strings":[..],"call_stack":[..]}
-    //   {"type":"return","pid":..,"tid":..,"symbol":..,"retval":..,"elapsed_ns":..}
-    //   {"type":"map"|"unmap"|"spawn"|"proc_exit"|"execve"|"prop", ...}
-    // so ares-mcp can analyze funcs traces with the same field-level tools it
-    // uses for "type":"syscall" records. Hook the emitter into each case below.
+    // Structured record status (per event type):
+    //   CALL   — done (worker via funcs_emit_call)
+    //   RETURN — done (worker via funcs_emit_return)
+    //   MAP    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
+    //   UNMAP  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
+    //   SPAWN/PROC_EXIT/EXECVE/PROP — deferred; see BACKLOG "module events"
+    //     (needs funcs_emit_* builders + sink path on the module handle_event
+    //     signature; revisit with B2 worker-routing once module scope is confirmed)
 
     if (header->type == ARES_EVENT_MAP) {
         const struct lib_map_event *e = data;
@@ -717,6 +721,15 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         char path[256];
         if (ares_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
             return 0;
+
+        // Emit structured lib record for every load (regardless of probe filter).
+        // quiet=g_quiet||!verbose: sink always when -o; console [lib] line only under -v
+        // (funcs already prints [uprobe]/[sym] attach lines — avoids double-reporting).
+        if (g_sink.f || verbose) {
+            pthread_mutex_lock(&g_sink_lock);
+            ares_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
+            pthread_mutex_unlock(&g_sink_lock);
+        }
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
@@ -799,9 +812,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (verbose)
-            ts_print("[unmap] > PID:%d 0x%llx-0x%llx\n", header->pid,
-                     (unsigned long long)e->start, (unsigned long long)e->end);
+        if (g_sink.f || verbose) {
+            pthread_mutex_lock(&g_sink_lock);
+            ares_libtrace_emit_unlib(&g_sink, g_quiet || !verbose, e);
+            pthread_mutex_unlock(&g_sink_lock);
+        }
 
         return 0;
     }

@@ -20,11 +20,7 @@ so history stays traceable.
 
 ## Urgent — architectural / correctness-critical
 
-- **`rctx` use-after-return in `funcs_setup` (latent bug).** `struct
-  probe_resolve_ctx rctx` is a stack local in `funcs_setup` (ares-tracer.c:~1172)
-  passed to `ring_buffer__new`; the MAP handler dereferences it *after*
-  `funcs_setup` returns. Pre-existing, unrelated to the C2 worker split (the worker
-  never touches `rctx`). **Fix:** promote `rctx` to file-static.
+- **`rctx` use-after-return in `funcs_setup` — DONE (2026-06-25).** See Resolved.
 - **Thin presets over the formal core (architectural keystone).** PARTIAL —
   `syscalls` and `funcs` are split into setup/run/teardown phases (the first step).
   Remaining: split `lib` the same way and retire the partial-link symbol-localization
@@ -78,12 +74,17 @@ the thin-presets migration (Urgent).
   map/`bump_dropped()` → `src/common/bpf_drop.bpf.h`; `syscalls_hdr` alias removed.
   Remaining: `vmlinux.h` dedup (see Minor).
 
-### `funcs` structured records
+### `funcs` structured records — module events (deferred)
 
-- MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured JSONL records (extend
-  `funcs_emit.c`, same one-builder-per-type pattern, each pinned by a host test). The
-  `handle_event()` SEAM already routes every event type; hook each case. (CALL/RETURN
-  already done.)
+- CALL/RETURN: **done.** MAP/UNMAP: **done (2026-06-25)** via `ares_libtrace_emit_lib/unlib`
+  under `g_sink_lock` (Option A — drain emits directly, attach stays prompt).
+- **SPAWN/PROC_EXIT/EXECVE/PROP** still open: needs new `funcs_emit_*` builders
+  (one per type, host-tested) and a sink path on the module `handle_event` signature
+  (`module.h:19` currently has no output channel).
+- **B2 — route all map/unmap/module events through the worker queue** (syscalls
+  `process_event` model): converges funcs to single-writer, enables retiring the
+  `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
+  in (at that point B2 becomes cheaper than wiring more lock sites into modules).
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 
@@ -146,7 +147,26 @@ symbol path); vDSO frames are named (Phase 1).
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
-### 2026-06-25
+### 2026-06-25 (session 2)
+
+- **Y1 — funcs cap-overflow warnings.** Six silent truncation caps in `parse_opts`
+  (`-p/-I/-i/-e/-F/-r`) now emit `"funcs: warning — … cap (N) reached; '…' ignored"`
+  to stderr, matching correlate's wording.
+- **Y2 — `rctx` use-after-return fixed.** Promoted `struct probe_resolve_ctx rctx`
+  from stack-local in `funcs_setup` to file-static `g_rctx`; all five setup-time
+  `&rctx` references repointed. `handle_event` dereferences safely after setup returns.
+- **Y3 — live drop ticker for funcs.** `funcs_drops_tick` mirrors `syscalls_drops_tick`
+  (BPF ring drops + worker queue drops, ~1 s cadence); wired into `funcs_run` via
+  `ares_rb_poll_until_cb`.
+- **Y4 (map/unmap) — funcs structured lib/unlib records.** funcs now emits
+  `{"type":"lib",...}` / `{"type":"unlib",...}` on every library load/unload via the
+  shared `ares_libtrace_emit_lib`/`emit_unlib` (`src/common/lib_trace.c`). Threading:
+  Option A — new `g_sink_lock` serializes drain-thread lib/unlib writes against
+  worker-thread call/return writes; `ares_sink_flush` stays unlocked (fflush is
+  thread-safe). Console `[lib]`/`[unlib]` lines gated on `-v` (funcs already prints
+  attach lines). Module events (spawn/proc_exit/execve/prop) deferred → see Major above.
+
+### 2026-06-25 (session 1)
 
 - **C3 Phase 2 — shared `/proc/<pid>/maps` line parser + symbolizer cache bounds.**
   `src/common/maps.{c,h}` adds `ares_parse_maps_line` (the one canonical `sscanf`),

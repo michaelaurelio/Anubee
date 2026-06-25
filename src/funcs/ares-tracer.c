@@ -222,6 +222,7 @@ static volatile sig_atomic_t exiting = 0;
 
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
+struct ares_tracer_bpf *skel = NULL;  // must precede funcs_drops_tick below
 // Resolution context: file-static so handle_event can safely dereference it
 // after funcs_setup returns (all fields point at file-scope globals).
 static struct probe_resolve_ctx g_rctx;
@@ -331,7 +332,6 @@ int custom_probe_spec_count = 0;
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
-struct ares_tracer_bpf *skel = NULL;
 
 static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
 {

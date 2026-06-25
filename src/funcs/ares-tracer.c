@@ -239,6 +239,25 @@ static int             g_worker_started;
 
 static bool g_quiet = false;
 
+// Drop ticker state — reset at funcs_run entry; matches syscalls_drops_tick pattern.
+static int g_funcs_drop_ticks;
+static unsigned long long g_funcs_last_drops;
+static void funcs_drops_tick(void *ctx)
+{
+    (void)ctx;
+    if (++g_funcs_drop_ticks < 5)            // ~1s at 200ms/tick (matches syscalls)
+        return;
+    g_funcs_drop_ticks = 0;
+    pthread_mutex_lock(&g_q.m);
+    unsigned long long qd = g_q.dropped;     // worker thread writes this concurrently
+    pthread_mutex_unlock(&g_q.m);
+    unsigned long long d = ares_drops_read(bpf_map__fd(skel->maps.dropped)) + qd;
+    if (d > g_funcs_last_drops) {
+        fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
+        g_funcs_last_drops = d;
+    }
+}
+
 // ponytail: two independent mutexes, never nested (disjoint critical sections).
 static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
 static pthread_mutex_t g_out_lock     = PTHREAD_MUTEX_INITIALIZER; // stdout/stderr line serializer
@@ -1186,7 +1205,9 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 int funcs_run(volatile sig_atomic_t *stop)
 {
-    int err = ares_rb_poll_until_cb(g_events_rb, stop, NULL, NULL);
+    g_funcs_drop_ticks = 0;
+    g_funcs_last_drops = 0;
+    int err = ares_rb_poll_until_cb(g_events_rb, stop, funcs_drops_tick, NULL);
     if (err < 0)
         err_print("   [err] > ring buffer poll error: %d\n", err);
 

@@ -553,36 +553,15 @@ static void render_ret(long long ret, char *out, size_t outsz)
 // every call), then written with a single fwrite. This is the dominant per-event
 // cost on the drain path once symbolization is cached.
 
-// Write one stack snapshot (registers + base64 stack bytes) to the sidecar
-// stream. Always JSON Lines — this is consumed by the off-device unwinder, not
-// the main trace. Deduped in-kernel, so these are comparatively rare.
-static void json_emit_stack(const struct syscalls_stack_snapshot *s)
+// Write one stack snapshot to the sidecar stream. Delegates serialisation to
+// the shared ares_stack_snapshot_emit_json; owns only the file write.
+static void json_emit_stack(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks)
 		return;
 	struct jbuf *j = &g_sink.jb;
 	j->len = 0;
-
-	jb_s(j, "{\"type\":\"stack\",\"pid\":"); jb_u64(j, s->h.pid);
-	jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
-	jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
-	jb_s(j, ",\"pc\":\"");     jb_hex(j, s->pc); jb_c(j, '"');
-	jb_s(j, ",\"sp\":\"");     jb_hex(j, s->sp); jb_c(j, '"');
-	jb_s(j, ",\"fp\":\"");     jb_hex(j, s->fp); jb_c(j, '"');
-	jb_s(j, ",\"lr\":\"");     jb_hex(j, s->lr); jb_c(j, '"');
-	jb_s(j, ",\"regs\":[");
-	for (int i = 0; i < 31; i++) {
-		if (i) jb_c(j, ',');
-		jb_c(j, '"'); jb_hex(j, s->regs[i]); jb_c(j, '"');
-	}
-	jb_c(j, ']');
-	jb_s(j, ",\"snap_len\":"); jb_u64(j, s->snap_len);
-	jb_s(j, ",\"truncated\":"); jb_u64(j, s->truncated);
-	jb_s(j, ",\"snapshot\":\"");
-	if (s->snap_len <= sizeof(s->snap))
-		jb_b64(j, s->snap, s->snap_len);
-	jb_s(j, "\"}\n");
-
+	ares_stack_snapshot_emit_json(j, s);
 	if (j->b && j->len)
 		fwrite(j->b, 1, j->len, g_stacks);
 	g_stack_count++;
@@ -880,7 +859,7 @@ static void *worker_main(void *arg)
 {
 	(void)arg;
 	// Sized to the largest record (the stack snapshot), so nothing is truncated.
-	static char rec[sizeof(struct syscalls_stack_snapshot) + 64];
+	static char rec[sizeof(struct ares_stack_snapshot) + 64];
 	unsigned long flushed = 0;
 	size_t sz;
 	while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {

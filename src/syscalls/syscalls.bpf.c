@@ -161,59 +161,10 @@ static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *sta
 	return 0;
 }
 
-// FNV-1a over the captured return addresses, seeded with the tgid so the same
-// call path in different processes (different ASLR, different stack bytes) gets
-// distinct ids and one process's snapshot never suppresses another's. Within a
-// process the addresses are stable for its lifetime, so a repeated stack hashes
-// the same and is snapshotted once. Never returns 0 (0 = "no stack id").
-static __always_inline __u64 hash_stack(__u64 *stack, int n, __u32 tgid)
-{
-	__u64 h = 0xcbf29ce484222325ULL ^ ((__u64)tgid << 32);
-	#pragma clang loop unroll(full)
-	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
-		if (i < n) {
-			h ^= stack[i];
-			h *= 0x100000001b3ULL;
-		}
-	}
-	return h ? h : 1;
-}
-
-// Emit one stack-snapshot record: user registers + a bounded copy of the user
-// stack from sp upward. Two fixed-size attempts (the verifier needs a constant
-// length) so a fault near the top of the stack still yields the smaller window.
-static __always_inline void emit_snapshot(struct pt_regs *user_regs,
-					  __u32 tgid, __u32 tid, __u64 sid)
-{
-	struct syscalls_stack_snapshot *s = bpf_ringbuf_reserve(&events, sizeof(*s), 0);
-	if (!s) {
-		bump_dropped();
-		return;
-	}
-	s->h.type = SYSC_EV_STACK;
-	s->h.pid  = tgid;
-	s->h.tid  = tid;
-	s->h._pad = 0;
-	s->stack_id = sid;
-	s->pc = BPF_CORE_READ(user_regs, pc);
-	s->sp = BPF_CORE_READ(user_regs, sp);
-	s->fp = BPF_CORE_READ(user_regs, regs[29]);
-	s->lr = BPF_CORE_READ(user_regs, regs[30]);
-	#pragma clang loop unroll(full)
-	for (int i = 0; i < 31; i++)
-		s->regs[i] = BPF_CORE_READ(user_regs, regs[i]);
-	s->truncated = 0;
-	s->_pad[0] = 0; s->_pad[1] = 0; s->_pad[2] = 0;
-	s->snap_len = 0;
-	const void *sp = (const void *)s->sp;
-	if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_MAX, sp) == 0)
-		s->snap_len = SYSC_SNAP_MAX;
-	else if (s->sp && bpf_probe_read_user(s->snap, SYSC_SNAP_SMALL, sp) == 0) {
-		s->snap_len = SYSC_SNAP_SMALL;
-		s->truncated = 1;
-	}
-	bpf_ringbuf_submit(s, 0);
-}
+// Shared snapshot BPF helpers (hash + emit) — pulled from common.
+// ARES_SNAPSHOT_RB names the ringbuf this engine uses.
+#define ARES_SNAPSHOT_RB events
+#include "common/stack_snapshot.bpf.h"
 
 // ---- syscall entry -------------------------------------------------------
 
@@ -256,11 +207,11 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// (snapshot_enabled is never set in capture-all).
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
-		stack_id = hash_stack(stack, n, tgid);
+		stack_id = ares_hash_stack(stack, n, tgid);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			emit_snapshot(user_regs, tgid, (__u32)id, stack_id);
+			ares_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
 		}
 	}
 

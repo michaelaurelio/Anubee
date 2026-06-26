@@ -1,12 +1,11 @@
 #include <assert.h>
 #include <string.h>
 #include <linux/types.h>
-#include "syscalls/syscalls.h"
-#include "syscalls/unwind_regs.h"
+#include "common/stack_snapshot.h"  /* struct ares_stack_snapshot + ares_unwind_regs */
 
 int main(void)
 {
-    struct syscalls_stack_snapshot s;
+    struct ares_stack_snapshot s;
     memset(&s, 0, sizeof(s));
     for (int i = 0; i < 31; i++)
         s.regs[i] = 0x1000ULL + i;       /* x0..x30 */

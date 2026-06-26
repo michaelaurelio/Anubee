@@ -74,29 +74,17 @@ the thin-presets migration (Urgent).
   `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
   in (at that point B2 becomes cheaper than wiring more lock sites into modules).
 
-### CFI stack unwinder — staged work (W1–W3)
+### CFI stack unwinder — W1 remaining
 
-DWARF `.debug_frame` parser + CFI interpreter landed in `src/common/` (see Resolved
-2026-06-26), fed by full GP-register-file capture in the syscalls BPF program. Three
-follow-up items remain before the unwinder produces actual backtraces:
+W2 and W3 landed (2026-06-26 — see Resolved). One follow-up remains:
 
 - **W1 — CFI unwinder not wired to runtime.** `cfi_step` / `cfi_run_program` /
   `unwind_regs_from_snapshot` are exercised only by host tests; no engine calls them at
-  runtime. syscalls captures and emits `regs[31]` raw but never produces a backtrace.
+  runtime. Both `syscalls` and `funcs` now capture and emit `regs[31]` + the frozen stack
+  window, but neither produces an actual CFI backtrace yet.
   Follow-up: add a runtime unwind driver that loads `.debug_frame`, maps runtime
   PC→module-relative, and loops `cfi_step` over the frozen snapshot window to emit a
-  CFI-unwound call chain.
-- **W2 — register-file / stack snapshot is syscalls-only (asymmetry).** `funcs` uses
-  `bpf_get_stack(BPF_F_USER_STACK)` (frame-pointer/stackmap-based; weak on stripped /
-  optimized aarch64 — the primary Android pentest target); `lib` and `correlate` capture
-  no stack at all. Follow-up: generalize the register-file BPF snapshot so `funcs` can
-  feed the CFI unwinder for accurate function-entry backtraces. This unifies two
-  divergent unwinding mechanisms now coexisting in the tree.
-- **W3 — `unwind_regs.h` layering (cleanup, blocked on W2).** `src/syscalls/unwind_regs.h`
-  lives under the syscalls engine and `#include`s `syscalls/syscalls.h`, yet it feeds the
-  engine-agnostic CFI core in `src/common/`. Once W2 generalizes the snapshot struct,
-  move `unwind_regs.h` + adapter into `src/common/` so `funcs`/`lib` can use it without
-  depending on the syscalls header.
+  CFI-unwound call chain. Usable by both engines (shared sidecar format).
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 
@@ -159,7 +147,24 @@ symbol path); vDSO frames are named (Phase 1).
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
-### 2026-06-26
+### 2026-06-26 (session 2)
+
+- **W2+W3 — Shared snapshot extraction + funcs stack snapshot (closes W2, W3).** Moved
+  the register-file + stack snapshot into a shared core: `src/common/stack_snapshot.{h,bpf.h,c}`
+  (`struct ares_stack_snapshot`, `ARES_SNAP_MAX/SMALL/NREG`, `ares_hash_stack`,
+  `ares_emit_stack_snapshot`, `ares_stack_snapshot_emit_json`, `ares_unwind_regs` +
+  `unwind_regs_from_snapshot`). Both the `syscalls` (kprobe) and `funcs` (uprobe) engines
+  `#include` the shared BPF helpers via the `ARES_SNAPSHOT_RB` macro idiom (mirrors the
+  existing `uid_filter.bpf.h` / `lib_trace.bpf.h` pattern). W3 closed: `unwind_regs.h`
+  deleted from `src/syscalls/`; adapter now lives in `common/stack_snapshot.h`, engine-neutral.
+  `funcs` gains `--snapshot` (requires `-o`): deduped by FNV-1a stack hash, sidecar file
+  `<output>.stacks` (JSONL, identical schema to syscalls sidecar), `"stack_id"` field on
+  CALL records for join. `ARES_EVENT_STACK=12` added to `enum event_type`. New host tests:
+  `test_stack_snapshot` (JSON emitter round-trip); `test_unwind_regs` migrated to
+  `common/stack_snapshot.h`; `test_funcs_emit` extended (17 checks). W1 (runtime unwind
+  driver) remains open.
+
+### 2026-06-26 (session 1)
 
 - **Merge `origin/main`: DWARF CFI unwinder + syscalls register-file snapshot.**
   `src/common/dwarf.{c,h}`: bounded byte cursor (ULEB128/SLEB128/fixed-width reads).

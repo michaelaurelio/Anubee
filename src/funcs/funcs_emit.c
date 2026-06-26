@@ -31,6 +31,8 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
         jb_c(j, '"'); jb_hex(j, e->args[i]); jb_c(j, '"');
     }
     jb_c(j, ']');
+    if (e->stack_id)
+        { jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
 
     if (target && target->arg_count >= 0) {
         // string_args: BPF-captured string values for ARG_STR args.

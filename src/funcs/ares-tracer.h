@@ -23,6 +23,7 @@ enum event_type {
     ARES_EVENT_PROP_GET  = 9,  // __system_property_get  (CALL is_ret=0, RET is_ret=1)
     ARES_EVENT_PROP_FIND = 10, // __system_property_find (CALL is_ret=0, RET is_ret=1)
     ARES_EVENT_PROP_SCAN = 11, // __system_property_foreach (entry only)
+    ARES_EVENT_STACK     = 12, // stack snapshot sidecar (first sight of each distinct stack)
 };
 
 
@@ -43,6 +44,7 @@ struct event {
     char strings[NUM_ARGS][MAX_STR_LEN];
     __u64 call_stack[STACK_DEPTH];
     __u32 stack_depth;
+    __u64 stack_id;   /* FNV-1a hash of call_stack; 0 = none. Links to ARES_EVENT_STACK sidecar. */
 };
 
 

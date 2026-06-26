@@ -33,6 +33,7 @@
 #include "common/evqueue.h"
 #include "common/engine_args.h"
 #include "common/maps.h"
+#include "common/stack_snapshot.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -62,6 +63,8 @@ static const struct argp_option options[] = {
     { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
     { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",            0 },
+    { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },
+    { "no-snapshot",    2,   NULL,           0, "Disable stack snapshots (default)",                                                 0 },
     COMMON_ARGP_OPTIONS,
     { 0 }
 };
@@ -84,6 +87,7 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
+    int  want_snap;       /* --snapshot */
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -171,6 +175,14 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             args->caller_only = true;
             break;
 
+        case 1:
+            args->want_snap = 1;
+            break;
+
+        case 2:
+            args->want_snap = 0;
+            break;
+
         case 'm': {
             for (int i = 0; all_modules[i]; i++) {
                 if (strcmp(arg, all_modules[i]->name) == 0) {
@@ -232,6 +244,10 @@ static int  g_funcs_uid;               // resolved UID for the launch banner
 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
+
+// Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
+static FILE               *g_stacks;
+static unsigned long long  g_stack_count;
 
 // Worker-thread drain: ring callback pushes CALL/RETURN; worker pops + processes.
 static struct ares_evq g_q;
@@ -708,9 +724,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     //   RETURN — done (worker via funcs_emit_return)
     //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
     //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
+    //   STACK  — done (drain, inline, to g_stacks sidecar — no lock needed)
     //   SPAWN/PROC_EXIT/EXECVE/PROP — deferred; see BACKLOG "module events"
     //     (needs funcs_emit_* builders + sink path on the module handle_event
     //     signature; revisit with B2 worker-routing once module scope is confirmed)
+
+    if (header->type == ARES_EVENT_STACK) {
+        if (g_stacks && data_sz >= (int)sizeof(struct ares_stack_snapshot)) {
+            // ponytail: drain-thread scratch jbuf — drain is single-writer, no lock.
+            static struct jbuf sj;
+            sj.len = 0;
+            ares_stack_snapshot_emit_json(&sj, data);
+            if (sj.b && sj.len)
+                fwrite(sj.b, 1, sj.len, g_stacks);
+            g_stack_count++;
+        }
+        return 0;
+    }
 
     if (header->type == ARES_EVENT_MAP) {
         const struct lib_map_event *e = data;
@@ -868,6 +898,20 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;
         }
+        // Stack-snapshot sidecar: opt-in (--snapshot), requires -o (snapshot is
+        // meaningless without a structured output file to link it to).
+        if (args.want_snap) {
+            char sp[1040];
+            snprintf(sp, sizeof(sp), "%s.stacks", args.c.output_file);
+            g_stacks = fopen(sp, "w");
+            if (!g_stacks)
+                fprintf(stderr, "warning: cannot open snapshot sidecar '%s': %s\n",
+                        sp, strerror(errno));
+            else {
+                setvbuf(g_stacks, malloc(8u << 20), _IOFBF, 8u << 20);
+                printf("stack snapshots: %s\n", sp);
+            }
+        }
     }
 
     if (verbose) err_print("  [verb] > mode ON\n");
@@ -965,6 +1009,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         int bufmb = args.c.bufmb;
         size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
+        skel->rodata->snapshot_enabled = (g_stacks != NULL) ? 1 : 0;
         if (ares_tracer_bpf__load(skel)) {
             err_print("   [bpf] > failed to load skeleton\n");
             ares_tracer_bpf__destroy(skel);
@@ -1270,6 +1315,13 @@ void funcs_teardown(void)
     ares_evq_destroy(&g_q);
     ares_sink_close(&g_sink);
     ares_sink_report(&g_sink);
+    if (g_stacks) {
+        fclose(g_stacks);
+        g_stacks = NULL;
+        fprintf(stderr, "wrote %llu stack snapshot%s to sidecar\n",
+                g_stack_count, g_stack_count == 1 ? "" : "s");
+        g_stack_count = 0;
+    }
 }
 
 int cmd_funcs(int argc, char **argv)

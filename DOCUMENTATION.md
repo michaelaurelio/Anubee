@@ -24,7 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -221,13 +221,13 @@ expensive one:
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
 - **`--snapshot` captures a frozen user-stack window.** The BPF program captures up to
-  `SYSC_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
+  `ARES_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
   `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to
-  `SYSC_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
-  (see §7). The register file is the CFI initial state for a future DWARF-based
-  software unwind (see [BACKLOG W1–W3](BACKLOG.md)); the parse core
-  (`src/common/dwarf.c` + `cfi_unwind.c`) is already in `src/common/` and host-tested
-  but not yet wired into the runtime.
+  `ARES_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
+  (see §7). The register file is the CFI initial state for the DWARF-based software
+  unwinder (`src/common/dwarf.c` + `cfi_unwind.c`; see [BACKLOG W1](BACKLOG.md)).
+  The snapshot struct and BPF helpers live in `src/common/stack_snapshot.{h,bpf.h}` and
+  are shared with the `funcs` engine.
 - All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
   option ordering does not matter; `--help` is auto-generated; `--version` prints
   `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).
@@ -268,6 +268,13 @@ expensive one:
   array-framed output.
 - **Quiet mode** (`-q`): suppresses all per-event console output in
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
+- **Stack snapshot** (`--snapshot`, requires `-o`): mirrors the `syscalls` `--snapshot`
+  feature. At each CALL entry the BPF program captures the full GP register file
+  (x0..x30) and a frozen stack window (up to `ARES_SNAP_MAX` bytes), deduped by an
+  FNV-1a hash of `call_stack[]`. Deduplicated `{"type":"stack",...}` records are written
+  to `<output>.stacks` (a sidecar JSONL file, identical schema to `syscalls` — see §7).
+  Each CALL record in the main `.jsonl` carries `"stack_id"` linking it to the sidecar.
+  The sidecar is written by the drain thread only (no lock needed).
 
 ### 3.1 Structured JSONL output (`-o`)
 
@@ -520,9 +527,11 @@ stream:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
-  register file at syscall entry — the CFI initial state. `truncated` is 1 if the
-  stack window fell back to `SYSC_SNAP_SMALL` (raw bytes still valid, but shorter than
-  `SYSC_SNAP_MAX`).
+  register file at the trap point — the CFI initial state. `truncated` is 1 if the
+  stack window fell back to `ARES_SNAP_SMALL` (raw bytes still valid, but shorter than
+  `ARES_SNAP_MAX`). This schema is **shared** between `syscalls` (sidecar
+  `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
+  `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
   "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,

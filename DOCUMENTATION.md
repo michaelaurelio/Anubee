@@ -23,8 +23,8 @@ flowchart TD
     lib["lib — src/lib/<br/>kprobe lib-load engine<br/>+ own BPF skeleton"]
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
-    tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)"]
+    tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -37,6 +37,7 @@ flowchart TD
     main --> tracecmd
     tracecmd --> syscalls
     tracecmd --> funcs
+    tracecmd --> lib
     syscalls --> common
     funcs --> common
     lib --> common
@@ -119,7 +120,7 @@ flowchart TD
   `src/common/launch.*` as `ares_*` and are used by all five engines. They are
   linked once into `common.part.o`, exporting only the `ares_*` API (see
   `COMMON_API` in the Makefile).
-- **The `syscalls` and `funcs` engines are split into setup/run/teardown phases.**
+- **All five tracing engines are split into setup/run/teardown phases.**
   Each engine's `cmd_<engine>` entry is a thin wrapper over
   `<engine>_setup(argc, argv, rc)` (parse + open/load/attach + arm UID, stopping
   *before* the app launch), `<engine>_run(stop)` (the ring-buffer poll loop, exits
@@ -127,16 +128,22 @@ flowchart TD
   `<engine>_teardown()`. The launch is owned by the caller (the wrapper standalone,
   or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
   (`src/common/launch.h`) carries a pre-resolved UID + package name into each
-  `*_setup`. Standalone behavior is unchanged; the split exists so both engines can be
-  armed, launched once, and polled together (the `trace` runner). See
-  [BACKLOG.md](BACKLOG.md).
+  `*_setup`. Standalone behavior is unchanged; the split exists so engines can be
+  armed, launched once, and polled together. The `trace` runner drives
+  `syscalls` + `funcs` + `lib` concurrently from one launch. `dump` and `correlate`
+  have the lifecycle contract but are not yet wired into `trace` — see
+  [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception: `correlate_setup` owns
+  its own launch internally (needs child PID via `pidof` to attach uprobes before
+  returning) and ignores `rc`; this will be folded into `ares_launch_app` when that
+  helper returns the PID (GA6).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities
   (`funcs`, `correlate`) set `writes_target_memory = true`; all others are `false`.
-  This is advisory today (no quiet-mode flag consumes it yet) and exists as the
-  single audit point + regression guard. The future thin-presets work will use it
-  to refuse a loud object in a quiet preset. See §9.
+  Advisory by design: each subcommand loads exactly one object of known, documented
+  loudness, so there is no implicit composition layer for a loud object to leak
+  through. The registry is the single audit point + regression guard. Enforcement
+  would only add value under a future intent-based preset/composition layer. See §9.
 
 ### Why partial-link + symbol localization
 
@@ -218,6 +225,14 @@ expensive one:
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
+- **`--snapshot` captures a frozen user-stack window.** The BPF program captures up to
+  `ARES_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
+  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to
+  `ARES_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
+  (see §7). The register file is the CFI initial state for the DWARF-based software
+  unwinder (`src/common/dwarf.c` + `cfi_unwind.c`; see [BACKLOG W1](BACKLOG.md)).
+  The snapshot struct and BPF helpers live in `src/common/stack_snapshot.{h,bpf.h}` and
+  are shared with the `funcs` engine.
 - All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
   option ordering does not matter; `--help` is auto-generated; `--version` prints
   `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).
@@ -244,10 +259,11 @@ expensive one:
   RETURN events are pushed into a configurable `struct ares_evq` userspace queue
   (default 256 MiB, `-Q MB`) and
   processed on a dedicated worker thread, so the kernel ring stays drained
-  regardless of symbolization/JSON latency. Synchronized with two independent
-  mutexes: `g_targets_lock` guards `probe_targets[]` between the MAP attach path
-  and the worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes
-  stdout/stderr lines between the two threads.
+  regardless of symbolization/JSON latency. Synchronized with three mutexes:
+  `g_targets_lock` guards `probe_targets[]` between the MAP attach path and the
+  worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes stdout/stderr
+  lines between the two threads; `g_sink_lock` serializes `g_sink` writes between
+  the drain thread (lib/unlib records) and the worker thread (call/return records).
 - Output: human-readable text to stdout (unless `-o FILE` or `-q` is given, both of
   which suppress console output). When `-o FILE` is passed, structured records for CALL
   and RETURN events are written via the shared `ares_sink` (see §3.1 and §7) and
@@ -257,6 +273,13 @@ expensive one:
   array-framed output.
 - **Quiet mode** (`-q`): suppresses all per-event console output in
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
+- **Stack snapshot** (`--snapshot`, requires `-o`): mirrors the `syscalls` `--snapshot`
+  feature. At each CALL entry the BPF program captures the full GP register file
+  (x0..x30) and a frozen stack window (up to `ARES_SNAP_MAX` bytes), deduped by an
+  FNV-1a hash of `call_stack[]`. Deduplicated `{"type":"stack",...}` records are written
+  to `<output>.stacks` (a sidecar JSONL file, identical schema to `syscalls` — see §7).
+  Each CALL record in the main `.jsonl` carries `"stack_id"` linking it to the sidecar.
+  The sidecar is written by the drain thread only (no lock needed).
 
 ### 3.1 Structured JSONL output (`-o`)
 
@@ -269,11 +292,19 @@ Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 
 ```json
 {"type":"call",   "pid":N,"tid":N,"module":"libc.so","symbol":"open",
-                  "entry_addr":"0xABCDEF","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"]}
+                  "entry_addr":"0xABCDEF","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"],
+                  "backtrace":[{"frame":0,"addr":"0x..."},{"frame":1,"addr":"0x..."}]}
 
 {"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open",
                   "retval":7,"elapsed_ns":4096}
 ```
+
+`backtrace` is always present on CALL records (as long as `bpf_get_stack` returned frames),
+built from `e->call_stack`/`e->stack_depth` at entry — orthogonal to `--snapshot`.
+Addresses only (no inline symbols) to keep `funcs_emit.c` pure and host-testable without
+the symbolizer. Cross-reference with the console output for resolved names, or run
+`sym_resolve` offline. RETURN records carry no backtrace (same stack as entry; stack_depth
+was captured there).
 
 The `module` field is the library basename (no path). `args` always has `NUM_ARGS`
 (8) elements in hex. `elapsed_ns` is 0 if the uretprobe was not attached. These
@@ -286,10 +317,12 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   cross-toolchain.
 - Builders are declared in `src/funcs/ares-tracer-priv.h` and called from
   `process_call_return` in `src/funcs/ares-tracer.c`, which runs on the worker
-  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`;
-  `g_sink` is single-writer (worker-only) during the run phase.
-- MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on; the
-  hook point is already in `handle_event` at the SEAM.
+  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`.
+  `g_sink` is multi-writer: the drain thread emits lib/unlib records and the worker
+  thread emits call/return records; all writes are serialized by `g_sink_lock`.
+  MAP/UNLIB records (library load/unload) are **done** — emitted as
+  `{"type":"lib",...}` / `{"type":"unlib",...}` via `ares_libtrace_emit_lib/unlib`.
+  SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 
 ## 4. The `lib` engine (kprobe, library-load only)
 
@@ -502,15 +535,27 @@ stream:
 - `ares syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
-  "backtrace":[{frame,addr,symbol}..]}`, plus `{"type":"stack",...}` snapshots.
+  "backtrace":[{frame,addr,symbol}..]}`, plus `{"type":"stack",...}` sidecar
+  snapshots emitted by `--snapshot`. Stack snapshot schema:
+  `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
+  "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
+  `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
+  register file at the trap point — the CFI initial state. `truncated` is 1 if the
+  stack window fell back to `ARES_SNAP_SMALL` (raw bytes still valid, but shorter than
+  `ARES_SNAP_MAX`). This schema is **shared** between `syscalls` (sidecar
+  `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
+  `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
-  "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "retval":..,"elapsed_ns":..}` (see §3.1). The `-o` file receives structured records
+  "args":[..],"backtrace":[{"frame":0,"addr":"0x.."},..]}` and
+  `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
+  "retval":..,"elapsed_ns":..}` (see §3.1). CALL records always carry a `backtrace`
+  array of raw addresses (addr-only, no inline symbols — see §3.1). The `-o` file receives structured records
   only; human-readable console output is suppressed when `-o` is active (implied `-q`).
   `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.
-  MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
+  MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).
+  SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`
   (from the shared emitter):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
@@ -522,8 +567,9 @@ output for `syscalls` and `funcs` is now routed through `ares_sink_open` /
 `ares_sink_emit` / `ares_sink_close` / `ares_sink_report`. The sink owns the
 `FILE*`, an 8 MB `_IOFBF` write buffer, the reused `jbuf`, the record count, the
 JSONL/array framing, periodic flush, and the "wrote N records to PATH" report.
-Single-writer per sink (no lock); each engine's drain/worker thread is the sole
-writer. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
+`syscalls` is single-writer (drain thread only). `funcs` is multi-writer (drain
+thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialized by
+`g_sink_lock`. SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
 ingest remain; see [BACKLOG.md](BACKLOG.md).
 
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)

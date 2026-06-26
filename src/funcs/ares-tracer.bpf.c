@@ -9,6 +9,11 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+// 1 = also capture a register set + bounded user-stack snapshot for each CALL
+// event, deduped by stack signature, for off-device DWARF unwinding. Only active
+// when the userspace loader opens a -o sink (set by funcs_setup).
+const volatile int snapshot_enabled = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 4 * 1024 * 1024);
@@ -18,6 +23,19 @@ struct {
 
 // Per-tid span stack (shared with the correlate engine; see header).
 #include "common/span_stack.bpf.h"
+
+// Stack signatures already snapshotted (dedup set). LRU so a long run
+// self-evicts; an eviction just causes one extra snapshot later (harmless).
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u64);
+    __type(value, __u8);
+} stack_seen SEC(".maps");
+
+// Shared snapshot helpers (ares_hash_stack + ares_emit_stack_snapshot).
+#define ARES_SNAPSHOT_RB events_rb
+#include "common/stack_snapshot.bpf.h"
 
 // Determine if a value is a user-space pointer (heuristic)
 static __always_inline bool is_user_ptr(unsigned long val)
@@ -85,6 +103,20 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 
     long stack_ret = bpf_get_stack(ctx, e->call_stack, sizeof(e->call_stack), BPF_F_USER_STACK);
     e->stack_depth = (stack_ret > 0) ? (__u32)((__u64)stack_ret >> 3) : 0;
+
+    // Stack snapshot: on first sight of this call stack, ship the frozen register
+    // file + stack bytes for off-device DWARF unwinding; thereafter just carry the
+    // stack_id so the consumer can join. CALL-entry only (returns share the stack).
+    e->stack_id = 0;
+    if (snapshot_enabled && e->stack_depth > 0) {
+        __u64 sid = ares_hash_stack(e->call_stack, e->stack_depth, pid);
+        if (!bpf_map_lookup_elem(&stack_seen, &sid)) {
+            __u8 one = 1;
+            bpf_map_update_elem(&stack_seen, &sid, &one, BPF_ANY);
+            ares_emit_stack_snapshot(ctx, pid, tid, sid, ARES_EVENT_STACK);
+        }
+        e->stack_id = sid;
+    }
 
     bpf_ringbuf_submit(e, 0);
     return 0;

@@ -17,8 +17,8 @@ int main(void)
     CHECK(strcmp(trace_type_name(TRACE_CALL), "call") == 0,         "call");
     CHECK(strcmp(trace_type_name(TRACE_RETURN), "return") == 0,     "return");
     CHECK(strcmp(trace_type_name(TRACE_SYSCALL), "syscall") == 0,   "syscall");
-    CHECK(strcmp(trace_type_name(TRACE_MAP), "map") == 0,           "map");
-    CHECK(strcmp(trace_type_name(TRACE_UNMAP), "unmap") == 0,       "unmap");
+    CHECK(strcmp(trace_type_name(TRACE_LIB), "lib") == 0,           "lib");
+    CHECK(strcmp(trace_type_name(TRACE_UNLIB), "unlib") == 0,       "unlib");
     CHECK(strcmp(trace_type_name(TRACE_SPAWN), "spawn") == 0,       "spawn");
     CHECK(strcmp(trace_type_name(TRACE_PROC_EXIT), "proc_exit") == 0, "proc_exit");
     CHECK(strcmp(trace_type_name(TRACE_EXECVE), "execve") == 0,     "execve");

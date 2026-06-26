@@ -37,7 +37,6 @@
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;
-static void on_sigint(int sig) { (void)sig; exiting = 1; }
 
 static const char *g_pattern = NULL;   // module pattern to dump (glob/substring)
 static const char *g_outdir  = ".";    // -d: output directory
@@ -184,25 +183,37 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
 
 static const struct argp dump_argp = { dump_options, dump_parse_opt, dump_args_doc, dump_doc, 0, 0, 0 };
 
-// ---- entry point ----------------------------------------------------------
+// ---- three-phase driver ---------------------------------------------------
+// dump_setup/run/teardown are kept global so a trace-style coordinator can drive
+// `dump` alongside other engines from a single app launch. Cross-phase state lives
+// in the file-static g_* above. (cmd_dump below is the thin standalone wrapper.)
 
-int cmd_dump(int argc, char **argv)
+// Cross-phase state: published by dump_setup, consumed by dump_run/dump_teardown.
+static struct ares_dump  *g_skel;
+static struct ring_buffer *g_rb;
+static int                 g_uid;
+static const char         *g_pkg;
+static const char         *g_activity;
+
+int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    struct dump_args da = { .outdir = "." };
+    // ponytail: static so g_pkg/g_activity/g_pattern can alias da after setup returns.
+    static struct dump_args da = { .outdir = "." };
+    if (rc && rc->pkg) da.pkg = rc->pkg;
     if (argp_parse(&dump_argp, argc, argv, 0, NULL, &da) != 0)
         return 1;
 
-    const char *pkg      = da.pkg;
-    const char *activity = da.activity;
-    g_pattern = da.pattern;
-    g_outdir  = da.outdir;
-    g_on_map  = da.on_map;
-    g_quiet   = da.quiet;
+    g_pkg      = da.pkg;
+    g_activity = da.activity;
+    g_pattern  = da.pattern;
+    g_outdir   = da.outdir;
+    g_on_map   = da.on_map;
+    g_quiet    = da.quiet;
     if (da.raw) dump_set_raw(1);
 
-    int uid = ares_resolve_uid(pkg);
-    if (uid < 0) {
-        fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", pkg);
+    g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+    if (g_uid < 0) {
+        fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
         return 1;
     }
 
@@ -218,7 +229,7 @@ int cmd_dump(int argc, char **argv)
         goto err_skel;
     }
 
-    __u32 vuid = (__u32)uid; __u8 one = 1;
+    __u32 vuid = (__u32)g_uid; __u8 one = 1;
     if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
         fprintf(stderr, "dump: failed to install target UID\n");
         goto err_skel;
@@ -236,19 +247,24 @@ int cmd_dump(int argc, char **argv)
         goto err_skel;
     }
 
-    // Fresh start: kill any running instance, wait for it to die, then launch.
-    // Tracing is already armed, so we catch the new process from its first mapping.
-    ares_launch_banner(pkg, uid);
-    if (ares_launch_app(pkg, activity) != 0) {
-        fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", pkg);
-        goto err_rb;
-    }
+    // Setup complete: publish live state to run/teardown phases. The caller
+    // owns the app launch, which must happen AFTER this returns since the UID
+    // filter is already armed.
+    g_skel = skel;
+    g_rb   = rb;
+    return 0;
 
-    signal(SIGINT, on_sigint);
+err_skel:
+    ares_dump__destroy(skel);
+    return 1;
+}
+
+int dump_run(volatile sig_atomic_t *stop)
+{
     printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
-           uid, g_pattern, g_on_map ? "on map" : "on exit");
+           g_uid, g_pattern, g_on_map ? "on map" : "on exit");
 
-    ares_rb_poll_until(rb, &exiting);
+    ares_rb_poll_until(g_rb, stop);
 
     // dump-on-exit: rescan each recorded pid's maps and dump matching modules.
     if (!g_on_map) {
@@ -263,18 +279,41 @@ int cmd_dump(int argc, char **argv)
         fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
             total, total == 1 ? "" : "s", g_pattern, g_outdir);
     }
-
-    ring_buffer__free(rb);
-    ares_dump__destroy(skel);
-    free(g_pids);
-    free(g_seen);
     return 0;
+}
 
-err_rb:
-    ring_buffer__free(rb);
-err_skel:
-    ares_dump__destroy(skel);
-    free(g_pids);
-    free(g_seen);
-    return 1;
+void dump_teardown(void)
+{
+    if (g_rb) {
+        ring_buffer__free(g_rb);
+        g_rb = NULL;
+    }
+    if (g_skel) {
+        ares_dump__destroy(g_skel);
+        g_skel = NULL;
+    }
+    free(g_pids); g_pids = NULL; g_pids_n = g_pids_cap = 0;
+    free(g_seen); g_seen = NULL; g_seen_n = g_seen_cap = 0;
+}
+
+// ---- entry point (thin standalone wrapper) --------------------------------
+
+int cmd_dump(int argc, char **argv)
+{
+    if (dump_setup(argc, argv, NULL) != 0)
+        return 1;
+
+    // Standalone: tracing is armed (UID installed in setup); install 2-stage
+    // stop handler, launch, run, then teardown.
+    ares_install_stop_handler(&exiting);
+    ares_launch_banner(g_pkg, g_uid);
+    if (ares_launch_app(g_pkg, g_activity) != 0) {
+        fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
+        dump_teardown();
+        return 1;
+    }
+
+    dump_run(&exiting);
+    dump_teardown();
+    return 0;
 }

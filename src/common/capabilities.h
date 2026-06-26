@@ -3,9 +3,9 @@
 // invariant — "a stealthy run attaches zero uprobes" — is governed solely by
 // whether a loaded BPF object writes into the target's userspace memory. This
 // table is that fact in one auditable place: only uprobe-bearing objects set
-// writes_target_memory. Advisory today (no quiet-mode flag consumes it yet);
-// it exists as the single audit point + a regression guard, and is the seam the
-// future thin-presets work uses to refuse a loud object in a quiet preset.
+// writes_target_memory. Advisory by design: each subcommand loads one object of
+// known/documented loudness — the value is the audit point + regression guard.
+// Enforcement only makes sense under an implicit composition layer (not built).
 #ifndef __ARES_CAPABILITIES_H
 #define __ARES_CAPABILITIES_H
 

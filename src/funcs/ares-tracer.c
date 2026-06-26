@@ -33,6 +33,7 @@
 #include "common/evqueue.h"
 #include "common/engine_args.h"
 #include "common/maps.h"
+#include "common/stack_snapshot.h"
 
 static const ares_module_t *const all_modules[] = {
     &module_proc_event,
@@ -62,6 +63,8 @@ static const struct argp_option options[] = {
     { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
     { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",            0 },
+    { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },
+    { "no-snapshot",    2,   NULL,           0, "Disable stack snapshots (default)",                                                 0 },
     COMMON_ARGP_OPTIONS,
     { 0 }
 };
@@ -84,6 +87,7 @@ struct args {
     char func_ret_patterns[32][256];
     int func_ret_pattern_count;
     bool caller_only;
+    int  want_snap;       /* --snapshot */
 };
 
 static void copy_str(char *dst, const char *src, size_t dstsz)
@@ -103,9 +107,11 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'p': {
             char *tok = strtok(arg, ",");
             while (tok && args->pid_count < 64) {
-                args->pids[args->pid_count++] = (pid_t)atoi(tok); 
+                args->pids[args->pid_count++] = (pid_t)atoi(tok);
                 tok = strtok(NULL, ",");
             }
+            if (tok)
+                fprintf(stderr, "funcs: warning — more than 64 PIDs given; extras ignored\n");
             break;
         }
 
@@ -118,15 +124,17 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'I':
-            if (args->mod_pattern_count < 32) {
+            if (args->mod_pattern_count < 32)
                 copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
-            }
+            else
+                fprintf(stderr, "funcs: warning — module cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'i':
-            if (args->func_pattern_count < 32) {
+            if (args->func_pattern_count < 32)
                 copy_str(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]));
-            }
+            else
+                fprintf(stderr, "funcs: warning — function cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'v':
@@ -144,21 +152,35 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'e':
             if (args->custom_spec_count < 64)
                 copy_str(args->custom_specs[args->custom_spec_count++], arg, 512);
+            else
+                fprintf(stderr, "funcs: warning — spec cap (64) reached; '%s' ignored\n", arg);
             break;
 
         case 'F':
             if (args->spec_file_count < 8)
                 copy_str(args->spec_files[args->spec_file_count++], arg, 256);
+            else
+                fprintf(stderr, "funcs: warning — spec-file cap (8) reached; '%s' ignored\n", arg);
             break;
 
         case 'r':
             if (args->func_ret_pattern_count < 32)
                 copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
                         sizeof(args->func_ret_patterns[0]));
+            else
+                fprintf(stderr, "funcs: warning — return-pattern cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'c':
             args->caller_only = true;
+            break;
+
+        case 1:
+            args->want_snap = 1;
+            break;
+
+        case 2:
+            args->want_snap = 0;
             break;
 
         case 'm': {
@@ -212,12 +234,20 @@ static volatile sig_atomic_t exiting = 0;
 
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
+struct ares_tracer_bpf *skel = NULL;  // must precede funcs_drops_tick below
+// Resolution context: file-static so handle_event can safely dereference it
+// after funcs_setup returns (all fields point at file-scope globals).
+static struct probe_resolve_ctx g_rctx;
 static char g_funcs_pkg[256];           // package to launch (spawn mode), else ""
 static char g_funcs_activity[256];      // launch activity override (empty = auto-resolve)
 static int  g_funcs_uid;               // resolved UID for the launch banner
 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
+
+// Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
+static FILE               *g_stacks;
+static unsigned long long  g_stack_count;
 
 // Worker-thread drain: ring callback pushes CALL/RETURN; worker pops + processes.
 static struct ares_evq g_q;
@@ -226,9 +256,31 @@ static int             g_worker_started;
 
 static bool g_quiet = false;
 
-// ponytail: two independent mutexes, never nested (disjoint critical sections).
+// Drop ticker state — reset at funcs_run entry; matches syscalls_drops_tick pattern.
+static int g_funcs_drop_ticks;
+static unsigned long long g_funcs_last_drops;
+static void funcs_drops_tick(void *ctx)
+{
+    (void)ctx;
+    if (++g_funcs_drop_ticks < 5)            // ~1s at 200ms/tick (matches syscalls)
+        return;
+    g_funcs_drop_ticks = 0;
+    pthread_mutex_lock(&g_q.m);
+    unsigned long long qd = g_q.dropped;     // worker thread writes this concurrently
+    pthread_mutex_unlock(&g_q.m);
+    unsigned long long d = ares_drops_read(bpf_map__fd(skel->maps.dropped)) + qd;
+    if (d > g_funcs_last_drops) {
+        fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
+        g_funcs_last_drops = d;
+    }
+}
+
+// ponytail: three independent mutexes, never nested (disjoint critical sections).
+// g_sink_lock serializes g_sink writes across the drain thread (lib/unlib records)
+// and the worker thread (call/return records); see emit.h for the single-writer contract.
 static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
 static pthread_mutex_t g_out_lock     = PTHREAD_MUTEX_INITIALIZER; // stdout/stderr line serializer
+static pthread_mutex_t g_sink_lock    = PTHREAD_MUTEX_INITIALIZER; // g_sink (multi-writer: drain lib/unlib + worker call/return)
 
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void out_print(const char *fmt, ...)
@@ -296,7 +348,6 @@ int custom_probe_spec_count = 0;
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
-struct ares_tracer_bpf *skel = NULL;
 
 static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
 {
@@ -487,9 +538,11 @@ static void process_call_return(const void *data, size_t data_sz)
                     e->h.pid, e->ppid, bname, target->func_name, target->offset,
                     used_fallback ? " (resolved from known offset)" : "");
             if (g_sink.f) {
+                pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target);
                 ares_sink_emit(&g_sink);
+                pthread_mutex_unlock(&g_sink_lock);
             }
         } else {
             if (!g_quiet)
@@ -618,9 +671,11 @@ static void process_call_return(const void *data, size_t data_sz)
                 elapsed_buf, retval_buf);
 
         if (g_sink.f) {
+            pthread_mutex_lock(&g_sink_lock);
             g_sink.jb.len = 0;
             funcs_emit_return(&g_sink.jb, e, bname, fname, target);
             ares_sink_emit(&g_sink);
+            pthread_mutex_unlock(&g_sink_lock);
         }
 
         if (!g_quiet && arg_count >= 0) {
@@ -653,7 +708,7 @@ static void *funcs_worker_main(void *arg)
     while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
         process_call_return(rec, sz);
         if (g_sink.f && (++flushed & ARES_FLUSH_MASK) == 0)
-            ares_sink_flush(&g_sink);
+            ares_sink_flush(&g_sink); // fflush only; glibc FILE ops are thread-safe; no g_sink_lock needed
     }
     return NULL;
 }
@@ -664,17 +719,28 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     if (data_sz < sizeof(*header)) return 0;
     struct probe_resolve_ctx *rctx = ctx;  // routed via ring_buffer__new (see cmd_funcs)
 
-    // SEAM — structured trace output (deferred; see DOCUMENTATION.md "Unified
-    // trace schema"). Today this handler renders human-readable text that the
-    // JSONL writer wraps as {ts,stream,tag,message}. The follow-up will, when a
-    // structured-JSONL mode is selected, emit one self-describing record per
-    // event here using the shared discriminator, e.g.:
-    //   {"type":"call",  "pid":..,"tid":..,"module":..,"symbol":..,
-    //    "entry_addr":..,"args":[..],"strings":[..],"call_stack":[..]}
-    //   {"type":"return","pid":..,"tid":..,"symbol":..,"retval":..,"elapsed_ns":..}
-    //   {"type":"map"|"unmap"|"spawn"|"proc_exit"|"execve"|"prop", ...}
-    // so ares-mcp can analyze funcs traces with the same field-level tools it
-    // uses for "type":"syscall" records. Hook the emitter into each case below.
+    // Structured record status (per event type):
+    //   CALL   — done (worker via funcs_emit_call)
+    //   RETURN — done (worker via funcs_emit_return)
+    //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
+    //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
+    //   STACK  — done (drain, inline, to g_stacks sidecar — no lock needed)
+    //   SPAWN/PROC_EXIT/EXECVE/PROP — deferred; see BACKLOG "module events"
+    //     (needs funcs_emit_* builders + sink path on the module handle_event
+    //     signature; revisit with B2 worker-routing once module scope is confirmed)
+
+    if (header->type == ARES_EVENT_STACK) {
+        if (g_stacks && data_sz >= (int)sizeof(struct ares_stack_snapshot)) {
+            // ponytail: drain-thread scratch jbuf — drain is single-writer, no lock.
+            static struct jbuf sj;
+            sj.len = 0;
+            ares_stack_snapshot_emit_json(&sj, data);
+            if (sj.b && sj.len)
+                fwrite(sj.b, 1, sj.len, g_stacks);
+            g_stack_count++;
+        }
+        return 0;
+    }
 
     if (header->type == ARES_EVENT_MAP) {
         const struct lib_map_event *e = data;
@@ -685,6 +751,15 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         char path[256];
         if (ares_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
             return 0;
+
+        // Emit structured lib record for every load (regardless of probe filter).
+        // quiet=g_quiet||!verbose: sink always when -o; console [lib] line only under -v
+        // (funcs already prints [uprobe]/[sym] attach lines — avoids double-reporting).
+        if (g_sink.f || verbose) {
+            pthread_mutex_lock(&g_sink_lock);
+            ares_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
+            pthread_mutex_unlock(&g_sink_lock);
+        }
 
         bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
 
@@ -767,9 +842,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
-        if (verbose)
-            ts_print("[unmap] > PID:%d 0x%llx-0x%llx\n", header->pid,
-                     (unsigned long long)e->start, (unsigned long long)e->end);
+        if (g_sink.f || verbose) {
+            pthread_mutex_lock(&g_sink_lock);
+            ares_libtrace_emit_unlib(&g_sink, g_quiet || !verbose, e);
+            pthread_mutex_unlock(&g_sink_lock);
+        }
 
         return 0;
     }
@@ -820,6 +897,20 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (ares_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
             fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;
+        }
+        // Stack-snapshot sidecar: opt-in (--snapshot), requires -o (snapshot is
+        // meaningless without a structured output file to link it to).
+        if (args.want_snap) {
+            char sp[1040];
+            snprintf(sp, sizeof(sp), "%s.stacks", args.c.output_file);
+            g_stacks = fopen(sp, "w");
+            if (!g_stacks)
+                fprintf(stderr, "warning: cannot open snapshot sidecar '%s': %s\n",
+                        sp, strerror(errno));
+            else {
+                setvbuf(g_stacks, malloc(8u << 20), _IOFBF, 8u << 20);
+                printf("stack snapshots: %s\n", sp);
+            }
         }
     }
 
@@ -918,6 +1009,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         int bufmb = args.c.bufmb;
         size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
+        skel->rodata->snapshot_enabled = (g_stacks != NULL) ? 1 : 0;
         if (ares_tracer_bpf__load(skel)) {
             err_print("   [bpf] > failed to load skeleton\n");
             ares_tracer_bpf__destroy(skel);
@@ -945,9 +1037,10 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
     elf_version(EV_CURRENT);
 
-    // Resolution context: points at the file-scope regex/target/spec state, built
-    // after all counts are finalized. Routed into handle_event via ring_buffer__new.
-    struct probe_resolve_ctx rctx = {
+    // Resolution context: assigned into the file-static g_rctx (not a local) so
+    // handle_event can safely dereference it after funcs_setup returns. All fields
+    // point at file-scope globals that outlive the stack frame.
+    g_rctx = (struct probe_resolve_ctx){
         .mod_re = mod_re, .mod_has_slash = mod_has_slash, .mod_re_count = mod_re_count,
         .func_re = func_re, .func_re_count = func_re_count,
         .func_ret_re = func_ret_re, .func_ret_re_count = func_ret_re_count,
@@ -958,7 +1051,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         .log = err_print,
     };
 
-    g_events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &rctx, NULL);
+    g_events_rb = ring_buffer__new(bpf_map__fd(skel->maps.events_rb), handle_event, &g_rctx, NULL);
     if (!g_events_rb) {
         err = -1;
         err_print("    [rb] > failed to create ring buffer\n");
@@ -972,7 +1065,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             for (int i = 0; i < args.pid_count; i++) {
                 ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
                 int resolved = resolve_targets(
-                    &rctx,
+                    &g_rctx,
                     args.pids[i],
                     probe_targets + probe_target_count,
                     sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
@@ -1055,7 +1148,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                     struct ares_map_line ml;
                     if (!ares_parse_maps_line(mline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
-                    apply_custom_specs_for_file(&rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
+                    apply_custom_specs_for_file(&g_rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1074,7 +1167,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0) {
             int prev = probe_target_count;
             int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-            int resolved = resolve_targets(&rctx, zygote_pid, probe_targets + prev, max);
+            int resolved = resolve_targets(&g_rctx, zygote_pid, probe_targets + prev, max);
             ts_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
             if (resolved > 0) {
                 probe_target_count += resolved;
@@ -1125,7 +1218,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                     struct ares_map_line ml;
                     if (!ares_parse_maps_line(cline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
-                    apply_custom_specs_for_file(&rctx, zygote_pid, ml.path, -1, 0, 0);
+                    apply_custom_specs_for_file(&g_rctx, zygote_pid, ml.path, -1, 0, 0);
                 }
                 fclose(cf);
             }
@@ -1172,7 +1265,9 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 int funcs_run(volatile sig_atomic_t *stop)
 {
-    int err = ares_rb_poll_until_cb(g_events_rb, stop, NULL, NULL);
+    g_funcs_drop_ticks = 0;
+    g_funcs_last_drops = 0;
+    int err = ares_rb_poll_until_cb(g_events_rb, stop, funcs_drops_tick, NULL);
     if (err < 0)
         err_print("   [err] > ring buffer poll error: %d\n", err);
 
@@ -1220,6 +1315,13 @@ void funcs_teardown(void)
     ares_evq_destroy(&g_q);
     ares_sink_close(&g_sink);
     ares_sink_report(&g_sink);
+    if (g_stacks) {
+        fclose(g_stacks);
+        g_stacks = NULL;
+        fprintf(stderr, "wrote %llu stack snapshot%s to sidecar\n",
+                g_stack_count, g_stack_count == 1 ? "" : "s");
+        g_stack_count = 0;
+    }
 }
 
 int cmd_funcs(int argc, char **argv)

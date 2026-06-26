@@ -26,10 +26,18 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 	return argc;
 }
 
+// Returns 1 if s is a section-start delimiter, so each section's end-scan can
+// stop at any other section (not just the one other delimiter from the 2-engine era).
+static int is_section_delim(const char *s)
+{
+	return !strcmp(s, "--syscalls") || !strcmp(s, "--funcs") || !strcmp(s, "--lib");
+}
+
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
 {
 	o->pkg = o->prefix = o->activity = NULL;
 	o->sys_start = o->sys_end = o->func_start = o->func_end = -1;
+	o->lib_start = o->lib_end = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-P")) {
@@ -44,13 +52,18 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 		} else if (!strcmp(argv[i], "--syscalls")) {
 			o->sys_start = i + 1; o->sys_end = argc;
 			for (int j = o->sys_start; j < argc; j++)
-				if (!strcmp(argv[j], "--funcs")) { o->sys_end = j; break; }
+				if (is_section_delim(argv[j])) { o->sys_end = j; break; }
 			i = o->sys_end - 1;
 		} else if (!strcmp(argv[i], "--funcs")) {
 			o->func_start = i + 1; o->func_end = argc;
 			for (int j = o->func_start; j < argc; j++)
-				if (!strcmp(argv[j], "--syscalls")) { o->func_end = j; break; }
+				if (is_section_delim(argv[j])) { o->func_end = j; break; }
 			i = o->func_end - 1;
+		} else if (!strcmp(argv[i], "--lib")) {
+			o->lib_start = i + 1; o->lib_end = argc;
+			for (int j = o->lib_start; j < argc; j++)
+				if (is_section_delim(argv[j])) { o->lib_end = j; break; }
+			i = o->lib_end - 1;
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			return 1;
 		} else {

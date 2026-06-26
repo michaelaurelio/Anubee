@@ -8,19 +8,16 @@
 #define SYSCALLS_H
 
 #include "common/trace_schema.h"
+#include "common/stack_snapshot.h"  /* struct ares_stack_snapshot + ARES_SNAP_* */
 
 #define SYSC_MAX_STACK_DEPTH 32
 #define SYSC_MAX_RANGES      8
 #define SYSC_SYSCALL_NARGS   6
 
-/* Stack snapshot (Phase 2a): registers + a bounded copy of the thread's user
- * stack, captured in eBPF at the syscall point (the thread is in-kernel, so the
- * user stack is frozen) for off-device DWARF unwinding. Deduplicated by a stack
- * signature so the heavy snap[] rides the ring only on the first sight of each
- * distinct stack. SNAP_MAX is the full window; SNAP_SMALL the fallback when the
- * full read faults (near the top of the stack region). */
-#define SYSC_SNAP_MAX        8192
-#define SYSC_SNAP_SMALL      2048
+/* SYSC_SNAP_MAX/SMALL kept as aliases for any downstream code that used the old
+ * names; the canonical constants are now ARES_SNAP_MAX/SMALL in stack_snapshot.h. */
+#define SYSC_SNAP_MAX   ARES_SNAP_MAX
+#define SYSC_SNAP_SMALL ARES_SNAP_SMALL
 
 /* Inline capture of string (const char *) arguments. We resolve at most the
  * first SYSC_STR_SLOTS args (covers every path-taking syscall), each up to
@@ -55,19 +52,9 @@ struct syscalls_syscall_event {
 	__u8  sock[SYSC_SOCK_MAX];               /* raw sockaddr (connect/bind/sendto) */
 };
 
-/* One stack snapshot, emitted once per distinct stack_id (see above). Carries
- * the user registers and a bounded copy of the thread's stack for off-device
- * DWARF unwinding. The largest ring record — but deduped, so rare. */
-struct syscalls_stack_snapshot {
-	struct trace_event_header h;
-	__u64 stack_id;
-	__u64 pc, sp, fp, lr;                        /* user pc / sp / x29 / x30 (legacy mirror) */
-	__u64 regs[31];                              /* full GP file x0..x30 (CFI initial state) */
-	__u32 snap_len;                              /* bytes valid in snap[] (from sp up) */
-	__u8  truncated;                             /* 1 = snap[] smaller than stack used */
-	__u8  _pad[3];
-	__u8  snap[SYSC_SNAP_MAX];               /* user stack starting at sp */
-};
+/* One stack snapshot — now the shared struct ares_stack_snapshot from
+ * common/stack_snapshot.h. Alias kept so old callers in this engine still compile. */
+typedef struct ares_stack_snapshot syscalls_stack_snapshot;
 
 /* Executable file-backed mappings (uprobe_mmap) and unmaps (uprobe_munmap) are
  * captured by the shared probe in common/lib_trace.bpf.h and arrive as

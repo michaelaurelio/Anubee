@@ -80,7 +80,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
                $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
-               $(SRC)/common/maps.c
+               $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -100,7 +100,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
                sym_resolve sym_flush_pid \
-               ares_parse_maps_line ares_module_base_idx ares_map_files_path
+               ares_parse_maps_line ares_module_base_idx ares_map_files_path \
+               ares_stack_snapshot_emit_json
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -250,8 +251,8 @@ $(MAIN_OBJ): $(SRC)/main.c
 	$(CC) -O2 -Wall -Wextra -c $< -o $@
 
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
-# syscalls/funcs also export their setup/run/teardown phases so the `trace`
-# coordinator can drive both engines from one process (everything else localized).
+# syscalls/funcs/lib also export their setup/run/teardown phases so a trace-style
+# coordinator can drive multiple engines from one process (everything else localized).
 $(SYSC_PART): $(SYSC_OBJ)
 	$(LD) -r -o $@ $(SYSC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_syscalls \
@@ -272,15 +273,24 @@ $(COMMON_PART): $(COMMON_OBJ) Makefile
 
 $(LIB_PART): $(LIB_OBJ)
 	$(LD) -r -o $@ $(LIB_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_lib $@
+	$(OBJCOPY) --keep-global-symbol=cmd_lib \
+	           --keep-global-symbol=lib_setup \
+	           --keep-global-symbol=lib_run \
+	           --keep-global-symbol=lib_teardown $@
 
 $(CORR_PART): $(CORR_OBJ)
 	$(LD) -r -o $@ $(CORR_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_correlate $@
+	$(OBJCOPY) --keep-global-symbol=cmd_correlate \
+	           --keep-global-symbol=correlate_setup \
+	           --keep-global-symbol=correlate_run \
+	           --keep-global-symbol=correlate_teardown $@
 
 $(DUMP_PART): $(DUMP_OBJ)
 	$(LD) -r -o $@ $(DUMP_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_dump $@
+	$(OBJCOPY) --keep-global-symbol=cmd_dump \
+	           --keep-global-symbol=dump_setup \
+	           --keep-global-symbol=dump_run \
+	           --keep-global-symbol=dump_teardown $@
 
 $(TRACE_PART): $(TRACE_OBJ)
 	$(LD) -r -o $@ $(TRACE_OBJ)
@@ -333,8 +343,10 @@ test:
 	$(BUILD)/test_runtime
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread
 	$(BUILD)/test_evqueue
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_unwind_regs.c -o $(BUILD)/test_unwind_regs
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_unwind_regs.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_unwind_regs
 	$(BUILD)/test_unwind_regs
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_stack_snapshot.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_stack_snapshot
+	$(BUILD)/test_stack_snapshot
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dwarf.c src/common/dwarf.c -o $(BUILD)/test_dwarf
 	$(BUILD)/test_dwarf
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_parse.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_parse

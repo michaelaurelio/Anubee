@@ -31,6 +31,22 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
         jb_c(j, '"'); jb_hex(j, e->args[i]); jb_c(j, '"');
     }
     jb_c(j, ']');
+    if (e->stack_id)
+        { jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
+
+    // ponytail: addr-only (no sym_resolve) so this file stays libbpf/symbolizer-free
+    // and host-testable. The caller (ares-tracer.c) already resolves symbols to the
+    // console; promote symbol field here if MCP consumers need it.
+    jb_s(j, ",\"backtrace\":[");
+    for (int i = 0, first = 1; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
+        if (e->call_stack[i] == 0) break;
+        if (!first) jb_c(j, ',');
+        first = 0;
+        jb_s(j, "{\"frame\":");    jb_u64(j, i);
+        jb_s(j, ",\"addr\":\"");   jb_hex(j, e->call_stack[i]); jb_c(j, '"');
+        jb_c(j, '}');
+    }
+    jb_c(j, ']');
 
     if (target && target->arg_count >= 0) {
         // string_args: BPF-captured string values for ARG_STR args.

@@ -49,6 +49,7 @@
 #include "syscalls.h"
 #include "syscalls.skel.h"
 #include "common/symbolize.h"
+#include "common/stack_snapshot.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
@@ -555,6 +556,9 @@ static void render_ret(long long ret, char *out, size_t outsz)
 
 // Write one stack snapshot to the sidecar stream. Delegates serialisation to
 // the shared ares_stack_snapshot_emit_json; owns only the file write.
+// After writing the raw snapshot, emit a companion cfi_stack record.
+static void emit_cfi_backtrace(const struct ares_stack_snapshot *s);
+
 static void json_emit_stack(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks)
@@ -565,6 +569,7 @@ static void json_emit_stack(const struct ares_stack_snapshot *s)
 	if (j->b && j->len)
 		fwrite(j->b, 1, j->len, g_stacks);
 	g_stack_count++;
+	emit_cfi_backtrace(s);
 }
 
 // A frame inside one of ART's interpreter entrypoints means a Java method is
@@ -578,6 +583,35 @@ static int is_interp_frame(const char *sym)
 	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter
 	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
 	       strstr(sym, "artInterpreterToCompiledCodeBridge");
+}
+
+static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
+{
+	if (!g_stacks) return;
+	uint64_t pcs[64];
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64);
+	if (n <= 0) return;
+	struct jbuf *j = &g_sink.jb; j->len = 0;
+	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
+	jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
+	jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
+	jb_s(j, ",\"cfi_backtrace\":[");
+	char sym[320];
+	for (int i = 0; i < n; i++) {
+		if (i) jb_c(j, ',');
+		sym_resolve((int)s->h.pid, pcs[i], sym, sizeof(sym));
+		jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)i);
+		jb_s(j, ",\"addr\":\""); jb_hex(j, pcs[i]);
+		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
+		if (strstr(sym, "art_jni_trampoline")) jb_s(j, ",\"kind\":\"jni-trampoline\"");
+		else if (strstr(sym, ".oat!") || strstr(sym, ".odex!") || strstr(sym, ".vdex!"))
+			jb_s(j, ",\"kind\":\"managed\"");
+		else if (is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
+		else jb_s(j, ",\"kind\":\"native\"");
+		jb_c(j, '}');
+	}
+	jb_s(j, "]}\n");
+	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 }
 
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,

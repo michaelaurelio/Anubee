@@ -19,6 +19,8 @@
 #include "common/maps.h"      // ares_parse_maps_line
 #include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
 #include "common/cfi_unwind.h"
+#include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
+#include "common/stack_snapshot.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -607,7 +609,7 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
 /* Return the cached cfi_section for (path, elf_off), loading it on first sight.
  * Returns NULL if the module has no usable CFI or could not be read.
  * Mirrors dynsym_get: grow/append, ok=0 on failure so future calls short-circuit. */
-static __attribute__((unused)) struct cfi_section *
+static struct cfi_section *
 cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 	int pid, uint64_t vstart, uint64_t vend)
 {
@@ -1594,6 +1596,42 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
 	}
 	return 1;
+}
+
+int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
+			uint64_t *out_pcs, int max)
+{
+	struct ares_unwind_regs r;
+	unwind_regs_from_snapshot(snap, &r);
+	/* cfi_step operates on uint64_t arrays; ares_unwind_regs uses __u64.
+	 * They are the same width but distinct types — copy to avoid -Wincompatible-pointer-types. */
+	uint64_t regs[CFI_NREG];
+	uint64_t sp = (uint64_t)r.sp;
+	uint64_t pc = (uint64_t)r.pc;
+	for (int k = 0; k < CFI_NREG; k++)
+		regs[k] = (uint64_t)r.x[k];
+	int n = 0;
+	for (int iter = 0; iter < max && iter < 256; iter++) {
+		out_pcs[n++] = pc;
+		if (n >= max) break;
+		if (pc == 0) break;
+		struct procmaps *pm = pm_get(pid);
+		if (!pm) break;
+		struct ares_map_line *hit = find_mapping(pm, pc);
+		if (!hit) break;
+		uint64_t load_base, elf_off, base_end;
+		module_base(pm, hit, &load_base, &elf_off, &base_end);
+		/* IMPORTANT: cfi_get returns a pointer into a realloc'able cache; use the
+		 * section (cfi_step) before the next iteration's cfi_get. Never hold it
+		 * across calls. */
+		struct cfi_section *sec = cfi_get(hit->path, elf_off, load_base, pid, hit->start, hit->end);
+		if (!sec) break;
+		uint64_t module_pc = pc - load_base;
+		int rc = cfi_step(sec, module_pc, regs, &sp, &pc,
+				  (const uint8_t *)snap->snap, snap->sp, (size_t)snap->snap_len);
+		if (rc != 1) break;
+	}
+	return n;
 }
 
 void sym_flush_pid(int pid)

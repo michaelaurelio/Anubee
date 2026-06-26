@@ -12,6 +12,7 @@ struct cfi_cie {
 	uint32_t insn_off;      /* section offset of CIE initial_instructions */
 	uint32_t insn_len;      /* length of initial_instructions */
 	uint8_t  fde_enc;       /* DW_EH_PE encoding for FDE pointers (eh_frame only; 0xff=omit) */
+	uint8_t  has_z;         /* eh_frame CIE augmentation starts with 'z' (FDEs carry aug-data) */
 };
 
 struct cfi_fde {

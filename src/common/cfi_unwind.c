@@ -394,12 +394,9 @@ int cfi_parse_eh_frame(struct cfi_section *s, const uint8_t *data, size_t len,
             if (c.err || c.pos > entry_end)
                 goto fail;
 
-            /* If CIE has 'z' augmentation, FDE has an aug-data block to skip */
-            /* We detect this by checking fde_enc != 0xff (which implies 'z' in CIE) */
-            /* But a cleaner check: we need to know if aug[0]=='z'. We already parsed
-             * the CIE and fde_enc==0xff only when 'z' is absent. So skip aug block
-             * only when fde_enc != 0xff (i.e., 'R' was present, meaning 'z' is present). */
-            if (cie.fde_enc != 0xff) {
+            /* If the CIE augmentation starts with 'z', each FDE carries an
+             * aug-data block (uleb length + bytes) to skip before the insns. */
+            if (cie.has_z) {
                 uint64_t fde_aug_len = dwarf_uleb(&c);
                 if (c.err)
                     goto fail;
@@ -532,7 +529,8 @@ static int parse_cie(const uint8_t *data, size_t len,
 
     /* eh_frame: if aug starts with 'z', parse augmentation-data block */
     uint8_t fde_enc = 0xff; /* default: omit / DW_EH_PE_omit */
-    if (is_eh && naug > 0 && aug[0] == 'z') {
+    uint8_t has_z = (is_eh && naug > 0 && aug[0] == 'z') ? 1 : 0;
+    if (has_z) {
         uint64_t aug_len = dwarf_uleb(&c);
         if (c.err)
             return -1;
@@ -620,6 +618,7 @@ static int parse_cie(const uint8_t *data, size_t len,
     out->data_align = data_align;
     out->ra_reg     = ra_reg;
     out->fde_enc    = fde_enc;
+    out->has_z      = has_z;
     out->insn_off   = (uint32_t)c.pos;
     out->insn_len   = (uint32_t)(entry_end - c.pos);
     return 0;

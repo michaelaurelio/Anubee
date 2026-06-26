@@ -74,6 +74,30 @@ the thin-presets migration (Urgent).
   `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
   in (at that point B2 becomes cheaper than wiring more lock sites into modules).
 
+### CFI stack unwinder — staged work (W1–W3)
+
+DWARF `.debug_frame` parser + CFI interpreter landed in `src/common/` (see Resolved
+2026-06-26), fed by full GP-register-file capture in the syscalls BPF program. Three
+follow-up items remain before the unwinder produces actual backtraces:
+
+- **W1 — CFI unwinder not wired to runtime.** `cfi_step` / `cfi_run_program` /
+  `unwind_regs_from_snapshot` are exercised only by host tests; no engine calls them at
+  runtime. syscalls captures and emits `regs[31]` raw but never produces a backtrace.
+  Follow-up: add a runtime unwind driver that loads `.debug_frame`, maps runtime
+  PC→module-relative, and loops `cfi_step` over the frozen snapshot window to emit a
+  CFI-unwound call chain.
+- **W2 — register-file / stack snapshot is syscalls-only (asymmetry).** `funcs` uses
+  `bpf_get_stack(BPF_F_USER_STACK)` (frame-pointer/stackmap-based; weak on stripped /
+  optimized aarch64 — the primary Android pentest target); `lib` and `correlate` capture
+  no stack at all. Follow-up: generalize the register-file BPF snapshot so `funcs` can
+  feed the CFI unwinder for accurate function-entry backtraces. This unifies two
+  divergent unwinding mechanisms now coexisting in the tree.
+- **W3 — `unwind_regs.h` layering (cleanup, blocked on W2).** `src/syscalls/unwind_regs.h`
+  lives under the syscalls engine and `#include`s `syscalls/syscalls.h`, yet it feeds the
+  engine-agnostic CFI core in `src/common/`. Once W2 generalizes the snapshot struct,
+  move `unwind_regs.h` + adapter into `src/common/` so `funcs`/`lib` can use it without
+  depending on the syscalls header.
+
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 
 Goal: name the Java method behind a native backtrace frame that lands in
@@ -134,6 +158,21 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-26
+
+- **Merge `origin/main`: DWARF CFI unwinder + syscalls register-file snapshot.**
+  `src/common/dwarf.{c,h}`: bounded byte cursor (ULEB128/SLEB128/fixed-width reads).
+  `src/common/cfi_unwind.{c,h}`: `.debug_frame` CIE/FDE parser (O(log n) PC binary
+  search), CFI rule interpreter (`cfi_run_program`), and single-frame stepper
+  (`cfi_step`). `syscalls_stack_snapshot` extended: adds `regs[31]` (x0..x30 full
+  GP file, CFI initial state) and `truncated` flag (1 = snapshot smaller than stack
+  used); JSON output gains `"regs":["0x...",…]` (31 elements) and `"truncated":0/1`.
+  `src/syscalls/unwind_regs.h`: `struct ares_unwind_regs` + `unwind_regs_from_snapshot()`
+  adapter. `scripts/device-test.sh` syscalls-regs/-family arms corrected (`-P`, `-l`,
+  `--snapshot` flags). Four new host tests (`test_dwarf`, `test_cfi_parse`,
+  `test_cfi_step`, `test_unwind_regs`) wired into `make test`. CFI wiring to runtime
+  and generalization to other engines deferred → W1–W3 in Major above.
 
 ### 2026-06-25 (session 3)
 

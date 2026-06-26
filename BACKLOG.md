@@ -20,11 +20,47 @@ so history stays traceable.
 
 ## Urgent — architectural / correctness-critical
 
-_No open urgent items — recent keystones are under [Resolved](#resolved--done)._
+### Graph audit (2026-06-26)
+
+- **GA1 — `jbuf` realloc-failure is a latent heap overflow (not truncation).**
+  `jb_need` (`src/common/emit.c:9-18`) leaves `cap` unchanged when `realloc` returns
+  NULL, but `jb_raw`/`jb_c` (`emit.c:20-27`) guard only on `if (j->b)` (pointer
+  non-NULL), **not** capacity — so after a failed grow they `memcpy`/write `n` bytes
+  past `cap` onto the old buffer. `struct jbuf` (`emit.h:13`) has no error flag, so the
+  failure is invisible. Trigger is OOM-only (rare), but it's memory-unsafe. Fix: add an
+  error/`oom` bit to `jbuf`, make `jb_need` set it on failure, and have every `jb_*`
+  writer bail when set (and have `ares_sink_emit` skip a poisoned record). Verify with a
+  `realloc`-fault shim under ASan.
 
 ---
 
 ## Major — features / substantial work
+
+### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26)
+
+The load-bearing asymmetry surfaced by the graph: only `syscalls`/`funcs`/`lib` were
+refactored to the `setup`/`run`/`teardown` contract; **`dump` and `correlate` are still
+monolithic `cmd_*`** (`dump.c:189`, `correlate.c:278`). That is exactly why the `trace`
+coordinator can only compose `syscalls`+`funcs` (`trace.c:116-155`) — `lib` is refactored
+but never wired into `trace`, and `dump`/`correlate` are structurally excluded from any
+combined run. Fix is the highest-leverage structural change: split `dump` and `correlate`
+into `setup`/`run`/`teardown` + thin `cmd_*` wrappers (mirror the `syscalls`/`funcs`
+pattern), then wire `lib` (and optionally `correlate`) into `trace`.
+
+Per-engine comparison (current state, for reference):
+
+| Dimension | syscalls | funcs | lib | dump | correlate | trace |
+|---|---|---|---|---|---|---|
+| Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **monolithic** | **monolithic** | coordinator |
+| App launch | shared `ares_launch_app` | shared | shared | shared | **own inline launch** (`correlate.c:300`) | shared |
+| Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | **bypasses sink/evq/jb** (ELF dumps) | sink, inline poll | per-engine |
+| Symbolized stacks / `--snapshot` | yes | yes | no | no | SP ids only | inherits |
+| Return values | yes (kretprobe) | yes (uretprobe) | no | no | **no** | inherits |
+| Stop handler | shared 2-stage SIGINT+TERM | shared | shared | **single-stage SIGINT only** | hand-rolled SIGINT only | hand-rolled SIGINT only |
+
+Related per-row follow-ups are filed individually below (launch → GA6, stop handler →
+GA5; output/symbolization/return-value gaps are pre-existing items: `correlate --returns`,
+C9, the shared-core roadmap).
 
 ### `correlate` engine — remaining capability
 
@@ -139,6 +175,41 @@ symbol path); vDSO frames are named (Phase 1).
   for the new types.
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
+
+### Graph audit (2026-06-26)
+
+- **GA3 — sink swallows all write/flush/close errors.** `ares_sink_emit` ignores every
+  `fwrite`/`fputs`/`fputc` return and increments `count` regardless (`emit.c:104-120`);
+  `ares_sink_flush`/`_close` ignore `fflush`/`fclose` (`emit.c:126,135`); `ares_sink_open`
+  hands `setvbuf` an unchecked `malloc(8 MB)` (`emit.c:93`). ENOSPC/EIO and a
+  flush-failure-at-close silently truncate the JSONL with zero signal. Fix: check the
+  hot-path returns, latch a sticky write-error, and report it at teardown.
+- **GA4 — event-queue pop clamp can desync the whole stream.** `ares_evq_pop` does
+  `if (n > outcap) n = outcap` then advances `tail` by only `n` (`evqueue.c:68-72`); the
+  remaining `sz-n` bytes are then read as the next length prefix, desyncing every
+  subsequent record. The inline comment ("records are always bounded") asserts the
+  invariant in prose but nothing enforces it. Currently safe only because worker buffers
+  are sized to the max record (`syscalls.c:861`). Fix: `assert(sz <= outcap)` (or drop the
+  whole record + count it) instead of a silent partial read.
+- **GA5 — stop-handler inconsistency across engines.** `dump` is **single-stage**
+  (`on_sigint` just sets `exiting`, no force-exit on a 2nd Ctrl-C — `dump.c:39-40`) and
+  catches SIGINT only; `correlate` (`correlate.c:49`) and `trace` (`trace.c:31`) hand-roll
+  2-stage handlers but also catch SIGINT only. Only `syscalls`/`funcs`/`lib` use the shared
+  `ares_install_stop_handler` (`runtime.c:23`) → 2-stage SIGINT+SIGTERM. Fix: route all
+  three through the shared helper. Low risk, small diff.
+- **GA6 — `correlate` uses an inline launcher, not shared `ares_launch_app`**
+  (`correlate.c:300`; the inline comment says the helper "doesn't return the pid"). Fold
+  back by returning the pid from `ares_launch_app` so `correlate` stops cloning launch
+  logic. Consolidation, pairs with GA2.
+- **GA7 — `probe_resolve` residual fragility (post-R2-fix).** `vaddr_to_file_off` is
+  correct for normal ELF, but: a vaddr in no PT_LOAD is returned unchanged → silently wrong
+  offset (`probe_resolve.c:22`); the PT_LOAD table is capped at 32 segments, extras ignored
+  (`:32`); a user-supplied `@offset` in a custom spec is used as a raw file offset with no
+  conversion (`:408`). Harden the no-segment-match and over-cap cases to fail loudly.
+- _Checked, not a bug:_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of unbounded
+  append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings
+  (`correlate.c:233,242,251`). No action. (R2 raw-`st_value`-offset is likewise already
+  fixed — see Resolved.)
 
 ---
 

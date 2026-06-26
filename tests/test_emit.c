@@ -55,6 +55,22 @@ int main(void)
 
     free(j.b); j = (struct jbuf){0};
 
+    // GA1 regression: simulate OOM realloc by pre-poisoning err, then verify
+    // that jb_* writers are no-ops and the buffer is not written past cap.
+    {
+        struct jbuf bad = {0};
+        jb_s(&bad, "seed");           // normal first allocation
+        size_t saved_cap = bad.cap;
+        bad.err = 1;                  // synthesise the post-OOM-grow state
+        size_t saved_len = bad.len;
+        jb_s(&bad, "SHOULD_NOT_APPEAR");
+        jb_c(&bad, 'X');
+        CHECK(bad.len == saved_len,   "oom: len stays fixed");
+        CHECK(bad.cap == saved_cap,   "oom: cap stays fixed");
+        CHECK(memcmp(bad.b, "seed", 4) == 0, "oom: existing content intact");
+        free(bad.b);
+    }
+
     // ares_sink: JSONL mode — each record on its own line, no array framing.
     {
         const char *path = "/tmp/test_sink_jsonl.jsonl";

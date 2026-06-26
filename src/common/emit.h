@@ -10,7 +10,9 @@
 #include <stddef.h>
 #include <stdio.h>
 
-struct jbuf { char *b; size_t len, cap; };
+// err latches on a failed realloc grow: once set, every jb_* write is a no-op
+// (so nothing is written past cap) and ares_sink_emit drops the whole record.
+struct jbuf { char *b; size_t len, cap; int err; };
 
 // Flush the output sink every N records to limit loss on hard kill.
 #define ARES_FLUSH_MASK 0x3fff

@@ -34,6 +34,22 @@ int main(void)
 	assert(t.sys_start == 5 && t.sys_end == 6);
 	assert(t.func_start == 7 && t.func_end == 9);
 
+	// 3-section: --syscalls --funcs --lib in order
+	char *g[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls"), A("-a"),
+	              A("--funcs"), A("-e"), A("x"), A("--lib") };
+	assert(trace_parse_args(9, g, &t) == 0);
+	assert(t.sys_start == 4 && t.sys_end == 5);    // "-a", stops at --funcs
+	assert(t.func_start == 6 && t.func_end == 8);  // "-e","x", stops at --lib
+	assert(t.lib_start == 9 && t.lib_end == 9);    // empty --lib section
+
+	// 3-section: --lib before --syscalls (tests that old 2-delimiter scan would mis-split)
+	char *h[] = { A("trace"), A("-P"), A("pkg"), A("--lib"), A("--syscalls"), A("-a"),
+	              A("--funcs"), A("-e"), A("y") };
+	assert(trace_parse_args(9, h, &t) == 0);
+	assert(t.lib_start == 4 && t.lib_end == 4);    // empty, stops at --syscalls
+	assert(t.sys_start == 5 && t.sys_end == 6);    // "-a", stops at --funcs
+	assert(t.func_start == 7 && t.func_end == 9);  // "-e","y"
+
 	// errors / help
 	char *d[] = { A("trace"), A("-P") };
 	assert(trace_parse_args(2, d, &t) < 0);          // -P missing value

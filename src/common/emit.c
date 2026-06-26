@@ -8,6 +8,8 @@
 
 static void jb_need(struct jbuf *j, size_t n)
 {
+	if (j->err)
+		return;                  // already poisoned — leave the buffer untouched
 	if (j->len + n <= j->cap)
 		return;
 	size_t nc = j->cap ? j->cap * 2 : 8192;
@@ -15,16 +17,19 @@ static void jb_need(struct jbuf *j, size_t n)
 		nc *= 2;
 	char *nb = realloc(j->b, nc);
 	if (nb) { j->b = nb; j->cap = nc; }
+	else j->err = 1;             // OOM grow failed: poison; the record is dropped at emit
 }
 
+// After jb_need, !err guarantees len+n <= cap, so guarding on !err is the
+// capacity check — the old `if (j->b)` only checked non-NULL and wrote past cap.
 static void jb_raw(struct jbuf *j, const char *s, size_t n)
 {
 	jb_need(j, n);
-	if (j->b) { memcpy(j->b + j->len, s, n); j->len += n; }
+	if (j->b && !j->err) { memcpy(j->b + j->len, s, n); j->len += n; }
 }
 
 void jb_s(struct jbuf *j, const char *s) { jb_raw(j, s, strlen(s)); }
-void jb_c(struct jbuf *j, char c) { jb_need(j, 1); if (j->b) j->b[j->len++] = c; }
+void jb_c(struct jbuf *j, char c) { jb_need(j, 1); if (j->b && !j->err) j->b[j->len++] = c; }
 
 void jb_u64(struct jbuf *j, unsigned long long v)
 {
@@ -105,6 +110,11 @@ void ares_sink_emit(struct ares_sink *s)
 {
     if (!s->f || !s->jb.b || !s->jb.len)
         return;
+    if (s->jb.err) {
+        // OOM during record build: drop this record and reset for the next.
+        s->jb.err = 0; s->jb.len = 0;
+        return;
+    }
     if (s->jsonl) {
         fwrite(s->jb.b, 1, s->jb.len, s->f);
         fputc('\n', s->f);

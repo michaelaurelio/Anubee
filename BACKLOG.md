@@ -20,47 +20,32 @@ so history stays traceable.
 
 ## Urgent — architectural / correctness-critical
 
-### Graph audit (2026-06-26)
-
-- **GA1 — `jbuf` realloc-failure is a latent heap overflow (not truncation).**
-  `jb_need` (`src/common/emit.c:9-18`) leaves `cap` unchanged when `realloc` returns
-  NULL, but `jb_raw`/`jb_c` (`emit.c:20-27`) guard only on `if (j->b)` (pointer
-  non-NULL), **not** capacity — so after a failed grow they `memcpy`/write `n` bytes
-  past `cap` onto the old buffer. `struct jbuf` (`emit.h:13`) has no error flag, so the
-  failure is invisible. Trigger is OOM-only (rare), but it's memory-unsafe. Fix: add an
-  error/`oom` bit to `jbuf`, make `jb_need` set it on failure, and have every `jb_*`
-  writer bail when set (and have `ares_sink_emit` skip a poisoned record). Verify with a
-  `realloc`-fault shim under ASan.
+No outstanding urgent items.
 
 ---
 
 ## Major — features / substantial work
 
-### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26)
+### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26) — **DONE 2026-06-26**
 
-The load-bearing asymmetry surfaced by the graph: only `syscalls`/`funcs`/`lib` were
-refactored to the `setup`/`run`/`teardown` contract; **`dump` and `correlate` are still
-monolithic `cmd_*`** (`dump.c:189`, `correlate.c:278`). That is exactly why the `trace`
-coordinator can only compose `syscalls`+`funcs` (`trace.c:116-155`) — `lib` is refactored
-but never wired into `trace`, and `dump`/`correlate` are structurally excluded from any
-combined run. Fix is the highest-leverage structural change: split `dump` and `correlate`
-into `setup`/`run`/`teardown` + thin `cmd_*` wrappers (mirror the `syscalls`/`funcs`
-pattern), then wire `lib` (and optionally `correlate`) into `trace`.
+Core split + `lib`→`trace` wiring shipped. Deferred items remain open individually:
+- **Wiring `correlate` into `trace`** — `correlate_setup` must keep its inline `-P` launch
+  to get the child PID for uprobe attachment; "caller launches once" contract requires
+  `ares_launch_app` to return a PID first (→ GA6).
+- **Wiring `dump` into `trace`** — output model is ELF files + on-exit rescan, not a
+  concurrent stream; low-value combined run. Deferred by design.
 
-Per-engine comparison (current state, for reference):
+Per-engine comparison (post-GA2):
 
 | Dimension | syscalls | funcs | lib | dump | correlate | trace |
 |---|---|---|---|---|---|---|
-| Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **monolithic** | **monolithic** | coordinator |
-| App launch | shared `ares_launch_app` | shared | shared | shared | **own inline launch** (`correlate.c:300`) | shared |
-| Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | **bypasses sink/evq/jb** (ELF dumps) | sink, inline poll | per-engine |
+| Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **setup/run/teardown** ✓ | **setup/run/teardown** ✓ | coordinator |
+| App launch | shared `ares_launch_app` | shared | shared | shared | own inline launch (needs GA6) | shared |
+| Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | bypasses sink/evq/jb (ELF dumps) | sink, inline poll | per-engine |
 | Symbolized stacks / `--snapshot` | yes | yes | no | no | SP ids only | inherits |
-| Return values | yes (kretprobe) | yes (uretprobe) | no | no | **no** | inherits |
-| Stop handler | shared 2-stage SIGINT+TERM | shared | shared | **single-stage SIGINT only** | hand-rolled SIGINT only | hand-rolled SIGINT only |
-
-Related per-row follow-ups are filed individually below (launch → GA6, stop handler →
-GA5; output/symbolization/return-value gaps are pre-existing items: `correlate --returns`,
-C9, the shared-core roadmap).
+| Return values | yes (kretprobe) | yes (uretprobe) | no | no | no | inherits |
+| Stop handler | shared 2-stage SIGINT+TERM | shared | shared | **shared 2-stage** ✓ | **shared 2-stage** ✓ | hand-rolled 2-stage |
+| Wired into `trace` | yes | yes | **yes** ✓ | no (deferred) | no (needs GA6) | — |
 
 ### `correlate` engine — remaining capability
 
@@ -191,12 +176,13 @@ symbol path); vDSO frames are named (Phase 1).
   invariant in prose but nothing enforces it. Currently safe only because worker buffers
   are sized to the max record (`syscalls.c:861`). Fix: `assert(sz <= outcap)` (or drop the
   whole record + count it) instead of a silent partial read.
-- **GA5 — stop-handler inconsistency across engines.** `dump` is **single-stage**
-  (`on_sigint` just sets `exiting`, no force-exit on a 2nd Ctrl-C — `dump.c:39-40`) and
-  catches SIGINT only; `correlate` (`correlate.c:49`) and `trace` (`trace.c:31`) hand-roll
-  2-stage handlers but also catch SIGINT only. Only `syscalls`/`funcs`/`lib` use the shared
-  `ares_install_stop_handler` (`runtime.c:23`) → 2-stage SIGINT+SIGTERM. Fix: route all
-  three through the shared helper. Low risk, small diff.
+- **GA5 — stop-handler inconsistency across engines. PARTIAL (2026-06-26).**
+  `dump` and `correlate` now both use the shared `ares_install_stop_handler` (2-stage
+  SIGINT+SIGTERM) — fixed as a free byproduct of the GA2 lifecycle split. Remaining:
+  `trace` coordinator still hand-rolls its `on_sigint` (`trace.c:31`); it's already
+  2-stage (`_exit(130)` on second Ctrl-C) and catches only SIGINT, but doesn't respond
+  to SIGTERM. Low risk — the coordinator case is intentionally different (multiple
+  concurrent drain threads share `g_stop`). Fix separately if SIGTERM matters for `trace`.
 - **GA6 — `correlate` uses an inline launcher, not shared `ares_launch_app`**
   (`correlate.c:300`; the inline comment says the helper "doesn't return the pid"). Fold
   back by returning the pid from `ares_launch_app` so `correlate` stops cloning launch
@@ -217,6 +203,21 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-26 (session 4)
+
+- **GA1 — `jbuf` OOM path is a heap overflow (fixed).** Added `int err` field to
+  `struct jbuf` (`emit.h`); `jb_need` sets it on failed `realloc`; every `jb_*` writer
+  bails early when set (no write past `cap`); `ares_sink_emit` drops and resets a
+  poisoned record. Regression test in `tests/test_emit.c` (3 new checks, 21 total).
+- **GA2 — Engine lifecycle symmetry + `lib`→`trace` wiring.** `dump.c` and `correlate.c`
+  each split into `<engine>_setup` / `_run` / `_teardown` + thin `cmd_*` wrapper, fully
+  symmetric with `syscalls`/`funcs`/`lib`. Both engines switched to the shared 2-stage
+  stop handler (`ares_install_stop_handler`) — closes GA5 for dump and correlate. `lib`
+  wired into `trace`: new `--lib` section in `trace_args` + coordinator (`trace.c`),
+  section-boundary scan fixed for 3 delimiters (was 2), `test_trace_args` extended with
+  3-section and reorder cases. Makefile: `CORR_PART`/`DUMP_PART` keep-global updated for
+  6 new driver symbols. Deferred: wiring correlate/dump into `trace` (see GA2 in Major).
 
 ### 2026-06-26 (session 3)
 

@@ -11,6 +11,7 @@ struct cfi_cie {
 	uint32_t ra_reg;        /* return_address_register (30 = LR on aarch64) */
 	uint32_t insn_off;      /* section offset of CIE initial_instructions */
 	uint32_t insn_len;      /* length of initial_instructions */
+	uint8_t  fde_enc;       /* DW_EH_PE encoding for FDE pointers (eh_frame only; 0xff=omit) */
 };
 
 struct cfi_fde {
@@ -25,6 +26,7 @@ struct cfi_section {
 	size_t         len;
 	struct cfi_fde *fdes;   /* malloc'd, sorted ascending by pc_lo */
 	size_t         nfde;
+	uint64_t       section_vaddr; /* sh_addr of the section (eh_frame: needed for pcrel FDE pointers) */
 };
 
 /* Locate the ".debug_frame" section inside an ELF64 image held in elf[0..len).
@@ -39,7 +41,17 @@ int  cfi_extract_debug_frame(const uint8_t *elf, size_t len,
  * section. `data` is borrowed (not copied) and must outlive the section. */
 int  cfi_parse_debug_frame(struct cfi_section *s, const uint8_t *data, size_t len);
 
-/* Parse the CIE at section offset cie_off into *out. Returns 0 on success, -1 on malformed. */
+/* Locate ".eh_frame" in an ELF64 image; also return its section virtual address (sh_addr),
+ * required to resolve pcrel FDE pointers. *eh is borrowed (inside elf). 0 on success, -1 else. */
+int  cfi_extract_eh_frame(const uint8_t *elf, size_t len,
+			  const uint8_t **eh, size_t *eh_len, uint64_t *eh_vaddr);
+
+/* Parse a .eh_frame section into the same sorted FDE index used by .debug_frame. section_vaddr
+ * is the sh_addr of .eh_frame (for pcrel). FDE pc ranges are stored as module vaddrs. 0/-1. */
+int  cfi_parse_eh_frame(struct cfi_section *s, const uint8_t *data, size_t len, uint64_t section_vaddr);
+
+/* Parse the CIE at section offset cie_off into *out. Returns 0 on success, -1 on malformed.
+ * Auto-detects dialect: id==0 => .eh_frame CIE; id==0xffffffff => .debug_frame CIE. */
 int  cfi_read_cie(const struct cfi_section *s, uint32_t cie_off, struct cfi_cie *out);
 
 /* Return the FDE whose [pc_lo,pc_hi) contains pc (module-relative), or NULL. O(log n). */

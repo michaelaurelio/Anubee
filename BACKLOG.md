@@ -147,6 +147,15 @@ symbol path); vDSO frames are named (Phase 1).
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
+### 2026-06-26 (session 3)
+
+- **funcs JSON backtrace — close syscalls/funcs `-o` asymmetry.** `funcs` CALL records now
+  carry a `"backtrace":[{"frame":N,"addr":"0x.."},…]` array in their structured `-o` JSON,
+  built from the always-on `bpf_get_stack` capture (independent of `--snapshot`). Mirrors
+  the `"backtrace"` array in `syscalls`' JSON emitter (`syscalls.c:654`). Addr-only (no
+  inline `sym_resolve`) to keep `funcs_emit.c` pure and host-testable. Change: `funcs_emit.c`
+  (+backtrace loop), `test_funcs_emit` extended (20 checks). Docs updated.
+
 ### 2026-06-26 (session 2)
 
 - **W2+W3 — Shared snapshot extraction + funcs stack snapshot (closes W2, W3).** Moved

@@ -20,27 +20,32 @@ so history stays traceable.
 
 ## Urgent — architectural / correctness-critical
 
-- **`rctx` use-after-return in `funcs_setup` (latent bug).** `struct
-  probe_resolve_ctx rctx` is a stack local in `funcs_setup` (ares-tracer.c:~1172)
-  passed to `ring_buffer__new`; the MAP handler dereferences it *after*
-  `funcs_setup` returns. Pre-existing, unrelated to the C2 worker split (the worker
-  never touches `rctx`). **Fix:** promote `rctx` to file-static.
-- **Thin presets over the formal core (architectural keystone).** PARTIAL —
-  `syscalls` and `funcs` are split into setup/run/teardown phases (the first step).
-  Remaining: split `lib` the same way and retire the partial-link symbol-localization
-  scaffolding where it's no longer needed. This is the migration the consolidation
-  roadmap (C2/C3/C4/C7 below) folds into; the immediate consumer was the `trace`
-  runner.
-- **Firewall quiet-mode enforcement.** The C5.1 capability registry
-  (`src/common/capabilities.{c,h}`) records which BPF objects write target memory,
-  but it is **advisory only** — nothing calls `ares_quiet_config_ok` to *refuse*
-  loading a loud object in a quiet preset. The one real invariant ("a stealthy run
-  attaches zero uprobes") is currently held only by convention. Wire the gate when
-  the thin-presets work lands so a quiet preset cannot silently load a uprobe object.
+No outstanding urgent items.
 
 ---
 
 ## Major — features / substantial work
+
+### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26) — **DONE 2026-06-26**
+
+Core split + `lib`→`trace` wiring shipped. Deferred items remain open individually:
+- **Wiring `correlate` into `trace`** — `correlate_setup` must keep its inline `-P` launch
+  to get the child PID for uprobe attachment; "caller launches once" contract requires
+  `ares_launch_app` to return a PID first (→ GA6).
+- **Wiring `dump` into `trace`** — output model is ELF files + on-exit rescan, not a
+  concurrent stream; low-value combined run. Deferred by design.
+
+Per-engine comparison (post-GA2):
+
+| Dimension | syscalls | funcs | lib | dump | correlate | trace |
+|---|---|---|---|---|---|---|
+| Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **setup/run/teardown** ✓ | **setup/run/teardown** ✓ | coordinator |
+| App launch | shared `ares_launch_app` | shared | shared | shared | own inline launch (needs GA6) | shared |
+| Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | bypasses sink/evq/jb (ELF dumps) | sink, inline poll | per-engine |
+| Symbolized stacks / `--snapshot` | yes | yes | no | no | SP ids only | inherits |
+| Return values | yes (kretprobe) | yes (uretprobe) | no | no | no | inherits |
+| Stop handler | shared 2-stage SIGINT+TERM | shared | shared | **shared 2-stage** ✓ | **shared 2-stage** ✓ | hand-rolled 2-stage |
+| Wired into `trace` | yes | yes | **yes** ✓ | no (deferred) | no (needs GA6) | — |
 
 ### `correlate` engine — remaining capability
 
@@ -78,12 +83,29 @@ the thin-presets migration (Urgent).
   map/`bump_dropped()` → `src/common/bpf_drop.bpf.h`; `syscalls_hdr` alias removed.
   Remaining: `vmlinux.h` dedup (see Minor).
 
-### `funcs` structured records
+### `funcs` structured records — module events (deferred)
 
-- MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured JSONL records (extend
-  `funcs_emit.c`, same one-builder-per-type pattern, each pinned by a host test). The
-  `handle_event()` SEAM already routes every event type; hook each case. (CALL/RETURN
-  already done.)
+- CALL/RETURN: **done.** MAP/UNMAP: **done (2026-06-25)** via `ares_libtrace_emit_lib/unlib`
+  under `g_sink_lock` (Option A — drain emits directly, attach stays prompt).
+- **SPAWN/PROC_EXIT/EXECVE/PROP** still open: needs new `funcs_emit_*` builders
+  (one per type, host-tested) and a sink path on the module `handle_event` signature
+  (`module.h:19` currently has no output channel).
+- **B2 — route all map/unmap/module events through the worker queue** (syscalls
+  `process_event` model): converges funcs to single-writer, enables retiring the
+  `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
+  in (at that point B2 becomes cheaper than wiring more lock sites into modules).
+
+### CFI stack unwinder — W1 remaining
+
+W2 and W3 landed (2026-06-26 — see Resolved). One follow-up remains:
+
+- **W1 — CFI unwinder not wired to runtime.** `cfi_step` / `cfi_run_program` /
+  `unwind_regs_from_snapshot` are exercised only by host tests; no engine calls them at
+  runtime. Both `syscalls` and `funcs` now capture and emit `regs[31]` + the frozen stack
+  window, but neither produces an actual CFI backtrace yet.
+  Follow-up: add a runtime unwind driver that loads `.debug_frame`, maps runtime
+  PC→module-relative, and loops `cfi_step` over the frozen snapshot window to emit a
+  CFI-unwound call chain. Usable by both engines (shared sidecar format).
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 
@@ -139,6 +161,42 @@ symbol path); vDSO frames are named (Phase 1).
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
+### Graph audit (2026-06-26)
+
+- **GA3 — sink swallows all write/flush/close errors.** `ares_sink_emit` ignores every
+  `fwrite`/`fputs`/`fputc` return and increments `count` regardless (`emit.c:104-120`);
+  `ares_sink_flush`/`_close` ignore `fflush`/`fclose` (`emit.c:126,135`); `ares_sink_open`
+  hands `setvbuf` an unchecked `malloc(8 MB)` (`emit.c:93`). ENOSPC/EIO and a
+  flush-failure-at-close silently truncate the JSONL with zero signal. Fix: check the
+  hot-path returns, latch a sticky write-error, and report it at teardown.
+- **GA4 — event-queue pop clamp can desync the whole stream.** `ares_evq_pop` does
+  `if (n > outcap) n = outcap` then advances `tail` by only `n` (`evqueue.c:68-72`); the
+  remaining `sz-n` bytes are then read as the next length prefix, desyncing every
+  subsequent record. The inline comment ("records are always bounded") asserts the
+  invariant in prose but nothing enforces it. Currently safe only because worker buffers
+  are sized to the max record (`syscalls.c:861`). Fix: `assert(sz <= outcap)` (or drop the
+  whole record + count it) instead of a silent partial read.
+- **GA5 — stop-handler inconsistency across engines. PARTIAL (2026-06-26).**
+  `dump` and `correlate` now both use the shared `ares_install_stop_handler` (2-stage
+  SIGINT+SIGTERM) — fixed as a free byproduct of the GA2 lifecycle split. Remaining:
+  `trace` coordinator still hand-rolls its `on_sigint` (`trace.c:31`); it's already
+  2-stage (`_exit(130)` on second Ctrl-C) and catches only SIGINT, but doesn't respond
+  to SIGTERM. Low risk — the coordinator case is intentionally different (multiple
+  concurrent drain threads share `g_stop`). Fix separately if SIGTERM matters for `trace`.
+- **GA6 — `correlate` uses an inline launcher, not shared `ares_launch_app`**
+  (`correlate.c:300`; the inline comment says the helper "doesn't return the pid"). Fold
+  back by returning the pid from `ares_launch_app` so `correlate` stops cloning launch
+  logic. Consolidation, pairs with GA2.
+- **GA7 — `probe_resolve` residual fragility (post-R2-fix).** `vaddr_to_file_off` is
+  correct for normal ELF, but: a vaddr in no PT_LOAD is returned unchanged → silently wrong
+  offset (`probe_resolve.c:22`); the PT_LOAD table is capped at 32 segments, extras ignored
+  (`:32`); a user-supplied `@offset` in a custom spec is used as a raw file offset with no
+  conversion (`:408`). Harden the no-segment-match and over-cap cases to fail loudly.
+- _Checked, not a bug:_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of unbounded
+  append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings
+  (`correlate.c:233,242,251`). No action. (R2 raw-`st_value`-offset is likewise already
+  fixed — see Resolved.)
+
 ---
 
 ## Resolved / Done
@@ -146,7 +204,92 @@ symbol path); vDSO frames are named (Phase 1).
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
-### 2026-06-25
+### 2026-06-26 (session 4)
+
+- **GA1 — `jbuf` OOM path is a heap overflow (fixed).** Added `int err` field to
+  `struct jbuf` (`emit.h`); `jb_need` sets it on failed `realloc`; every `jb_*` writer
+  bails early when set (no write past `cap`); `ares_sink_emit` drops and resets a
+  poisoned record. Regression test in `tests/test_emit.c` (3 new checks, 21 total).
+- **GA2 — Engine lifecycle symmetry + `lib`→`trace` wiring.** `dump.c` and `correlate.c`
+  each split into `<engine>_setup` / `_run` / `_teardown` + thin `cmd_*` wrapper, fully
+  symmetric with `syscalls`/`funcs`/`lib`. Both engines switched to the shared 2-stage
+  stop handler (`ares_install_stop_handler`) — closes GA5 for dump and correlate. `lib`
+  wired into `trace`: new `--lib` section in `trace_args` + coordinator (`trace.c`),
+  section-boundary scan fixed for 3 delimiters (was 2), `test_trace_args` extended with
+  3-section and reorder cases. Makefile: `CORR_PART`/`DUMP_PART` keep-global updated for
+  6 new driver symbols. Deferred: wiring correlate/dump into `trace` (see GA2 in Major).
+
+### 2026-06-26 (session 3)
+
+- **funcs JSON backtrace — close syscalls/funcs `-o` asymmetry.** `funcs` CALL records now
+  carry a `"backtrace":[{"frame":N,"addr":"0x.."},…]` array in their structured `-o` JSON,
+  built from the always-on `bpf_get_stack` capture (independent of `--snapshot`). Mirrors
+  the `"backtrace"` array in `syscalls`' JSON emitter (`syscalls.c:654`). Addr-only (no
+  inline `sym_resolve`) to keep `funcs_emit.c` pure and host-testable. Change: `funcs_emit.c`
+  (+backtrace loop), `test_funcs_emit` extended (20 checks). Docs updated.
+
+### 2026-06-26 (session 2)
+
+- **W2+W3 — Shared snapshot extraction + funcs stack snapshot (closes W2, W3).** Moved
+  the register-file + stack snapshot into a shared core: `src/common/stack_snapshot.{h,bpf.h,c}`
+  (`struct ares_stack_snapshot`, `ARES_SNAP_MAX/SMALL/NREG`, `ares_hash_stack`,
+  `ares_emit_stack_snapshot`, `ares_stack_snapshot_emit_json`, `ares_unwind_regs` +
+  `unwind_regs_from_snapshot`). Both the `syscalls` (kprobe) and `funcs` (uprobe) engines
+  `#include` the shared BPF helpers via the `ARES_SNAPSHOT_RB` macro idiom (mirrors the
+  existing `uid_filter.bpf.h` / `lib_trace.bpf.h` pattern). W3 closed: `unwind_regs.h`
+  deleted from `src/syscalls/`; adapter now lives in `common/stack_snapshot.h`, engine-neutral.
+  `funcs` gains `--snapshot` (requires `-o`): deduped by FNV-1a stack hash, sidecar file
+  `<output>.stacks` (JSONL, identical schema to syscalls sidecar), `"stack_id"` field on
+  CALL records for join. `ARES_EVENT_STACK=12` added to `enum event_type`. New host tests:
+  `test_stack_snapshot` (JSON emitter round-trip); `test_unwind_regs` migrated to
+  `common/stack_snapshot.h`; `test_funcs_emit` extended (17 checks). W1 (runtime unwind
+  driver) remains open.
+
+### 2026-06-26 (session 1)
+
+- **Merge `origin/main`: DWARF CFI unwinder + syscalls register-file snapshot.**
+  `src/common/dwarf.{c,h}`: bounded byte cursor (ULEB128/SLEB128/fixed-width reads).
+  `src/common/cfi_unwind.{c,h}`: `.debug_frame` CIE/FDE parser (O(log n) PC binary
+  search), CFI rule interpreter (`cfi_run_program`), and single-frame stepper
+  (`cfi_step`). `syscalls_stack_snapshot` extended: adds `regs[31]` (x0..x30 full
+  GP file, CFI initial state) and `truncated` flag (1 = snapshot smaller than stack
+  used); JSON output gains `"regs":["0x...",…]` (31 elements) and `"truncated":0/1`.
+  `src/syscalls/unwind_regs.h`: `struct ares_unwind_regs` + `unwind_regs_from_snapshot()`
+  adapter. `scripts/device-test.sh` syscalls-regs/-family arms corrected (`-P`, `-l`,
+  `--snapshot` flags). Four new host tests (`test_dwarf`, `test_cfi_parse`,
+  `test_cfi_step`, `test_unwind_regs`) wired into `make test`. CFI wiring to runtime
+  and generalization to other engines deferred → W1–W3 in Major above.
+
+### 2026-06-25 (session 3)
+
+- **Thin presets keystone — `lib` phase split (coordinator-ready).** `cmd_lib`
+  refactored into `lib_setup(argc, argv, rc)` / `lib_run(stop)` / `lib_teardown()` +
+  thin `cmd_lib` wrapper, fully symmetric with `syscalls` and `funcs`. `struct
+  ares_run_ctx` accepted so a future coordinator can pre-resolve the UID and drive
+  `lib` alongside other engines without a second launch. `on_sigint` retired in
+  favour of the shared `ares_install_stop_handler`. Makefile `LIB_PART` updated to
+  export all four entry points (`cmd_lib` + three phases). No behaviour change.
+
+### 2026-06-25 (session 2)
+
+- **Y1 — funcs cap-overflow warnings.** Six silent truncation caps in `parse_opts`
+  (`-p/-I/-i/-e/-F/-r`) now emit `"funcs: warning — … cap (N) reached; '…' ignored"`
+  to stderr, matching correlate's wording.
+- **Y2 — `rctx` use-after-return fixed.** Promoted `struct probe_resolve_ctx rctx`
+  from stack-local in `funcs_setup` to file-static `g_rctx`; all five setup-time
+  `&rctx` references repointed. `handle_event` dereferences safely after setup returns.
+- **Y3 — live drop ticker for funcs.** `funcs_drops_tick` mirrors `syscalls_drops_tick`
+  (BPF ring drops + worker queue drops, ~1 s cadence); wired into `funcs_run` via
+  `ares_rb_poll_until_cb`.
+- **Y4 (map/unmap) — funcs structured lib/unlib records.** funcs now emits
+  `{"type":"lib",...}` / `{"type":"unlib",...}` on every library load/unload via the
+  shared `ares_libtrace_emit_lib`/`emit_unlib` (`src/common/lib_trace.c`). Threading:
+  Option A — new `g_sink_lock` serializes drain-thread lib/unlib writes against
+  worker-thread call/return writes; `ares_sink_flush` stays unlocked (fflush is
+  thread-safe). Console `[lib]`/`[unlib]` lines gated on `-v` (funcs already prints
+  attach lines). Module events (spawn/proc_exit/execve/prop) deferred → see Major above.
+
+### 2026-06-25 (session 1)
 
 - **C3 Phase 2 — shared `/proc/<pid>/maps` line parser + symbolizer cache bounds.**
   `src/common/maps.{c,h}` adds `ares_parse_maps_line` (the one canonical `sscanf`),
@@ -224,8 +367,9 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **Structured JSONL for `funcs` CALL/RETURN (Task 4)** — `-J`/`--structured`;
   `funcs_emit.c` (pure, host-tested).
-- **C5.1 — firewall-aware capability registry** (`capabilities.{c,h}`, advisory;
-  enforcement still open — see Urgent).
+- **C5.1 — firewall-aware capability registry** (`capabilities.{c,h}`). Advisory by
+  design: each subcommand loads one object of known/documented loudness; enforcement
+  is only meaningful under an intent-based preset/composition layer (not built).
 
 ### 2026-06-20
 

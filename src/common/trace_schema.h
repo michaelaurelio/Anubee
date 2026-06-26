@@ -24,8 +24,8 @@ enum trace_event_type {
     TRACE_CALL = 1,   // native function entry (funcs)
     TRACE_RETURN,     // native function return (funcs)
     TRACE_SYSCALL,    // syscall record (syscalls / correlate)
-    TRACE_MAP,        // library mmap
-    TRACE_UNMAP,      // library munmap
+    TRACE_LIB,        // library mmap  ("lib"   — matches ares_libtrace_emit_lib output)
+    TRACE_UNLIB,      // library munmap ("unlib" — matches ares_libtrace_emit_unlib output)
     TRACE_SPAWN,      // process fork
     TRACE_PROC_EXIT,  // process exit
     TRACE_EXECVE,     // execve

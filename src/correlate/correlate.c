@@ -46,14 +46,13 @@ static const char *syscall_name(long nr)
 }
 
 static volatile sig_atomic_t exiting = 0;
-static void on_sigint(int sig) { (void)sig; if (exiting) _exit(130); exiting = 1; }
 
 static struct ares_sink g_sink;
 static int              g_quiet = 0;
 
 // Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
-// kprobe is tracked separately via kp). Grown on demand; on OOM we drop tracking
-// for the new link — it stays attached and is reaped at process exit.
+// kprobe is tracked separately via g_kp). Grown on demand; on OOM we drop
+// tracking for the new link — it stays attached and is reaped at process exit.
 static struct bpf_link **g_uprobe_links = NULL;
 static int g_uprobe_nlinks = 0, g_uprobe_cap = 0;
 
@@ -136,7 +135,7 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
 
     // Small dedup of (path,offset) already attached for this pid.
     struct { char path[256]; unsigned long off; } done[256];
-    int ndone = 0, attached = 0;
+    int ndone = 0, attached = 0, warned = 0;
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -159,10 +158,10 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
                 done[ndone].off = tgt.offset;
                 ndone++;
-            } else if (ndone == 256) {
+            } else if (!warned) {
                 fprintf(stderr, "correlate: warning — dedup table full (256) for PID %d; "
                                 "duplicate uprobes may be attached\n", pid);
-                ndone++;  // warn once
+                warned = 1;
             }
 
             struct bpf_link *link = bpf_program__attach_uprobe(
@@ -273,11 +272,25 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
 
 static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_doc, corr_doc, 0, 0, 0 };
 
-// ---- entry point ----------------------------------------------------------
+// ---- three-phase driver ---------------------------------------------------
+// correlate_setup/run/teardown are kept global for signature parity with the
+// other engines. rc is plumbed through for future coordinator use but is not
+// consumed: correlate's -P launch must stay inside setup because it needs the
+// child PID back (via pidof) to attach uprobes before returning.
+// ponytail: inline launch stays here — "caller launches once" contract doesn't
+// apply until ares_launch_app returns the PID; that's a separate future change.
 
-int cmd_correlate(int argc, char **argv)
+// Cross-phase state: published by correlate_setup, consumed by run/teardown.
+static struct ares_correlate *g_skel;
+static struct bpf_link        *g_kp;
+static struct ring_buffer     *g_rb;
+static int                     g_total;
+
+int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    struct corr_args ca = { 0 };
+    (void)rc;  // plumbed for parity; -P/-p own their pid/launch logic
+    // ponytail: static so specs/pkg strings (pointing into argv) outlive setup.
+    static struct corr_args ca = { 0 };
     if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
         return 1;
 
@@ -343,15 +356,10 @@ int cmd_correlate(int argc, char **argv)
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); destroy_uprobe_links(); goto err_skel; }
 
-    signal(SIGINT, on_sigint);
-    printf("correlating %d uprobe(s) -> syscalls ... Ctrl-C to stop\n", total);
-    ares_rb_poll_until(rb, &exiting);
-
-    ring_buffer__free(rb);
-    bpf_link__destroy(kp);
-    destroy_uprobe_links();
-    ares_correlate__destroy(skel);
-    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+    g_skel  = skel;
+    g_kp    = kp;
+    g_rb    = rb;
+    g_total = total;
     return 0;
 
 err_skel:
@@ -360,4 +368,42 @@ err_skel:
 err_file:
     if (g_sink.f) ares_sink_close(&g_sink);
     return 1;
+}
+
+int correlate_run(volatile sig_atomic_t *stop)
+{
+    printf("correlating %d uprobe(s) -> syscalls ... Ctrl-C to stop\n", g_total);
+    ares_rb_poll_until(g_rb, stop);
+    return 0;
+}
+
+void correlate_teardown(void)
+{
+    if (g_rb) {
+        ring_buffer__free(g_rb);
+        g_rb = NULL;
+    }
+    if (g_kp) {
+        bpf_link__destroy(g_kp);
+        g_kp = NULL;
+    }
+    destroy_uprobe_links();
+    if (g_skel) {
+        ares_correlate__destroy(g_skel);
+        g_skel = NULL;
+    }
+    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+}
+
+// ---- entry point (thin standalone wrapper) --------------------------------
+
+int cmd_correlate(int argc, char **argv)
+{
+    if (correlate_setup(argc, argv, NULL) != 0)
+        return 1;
+
+    ares_install_stop_handler(&exiting);
+    correlate_run(&exiting);
+    correlate_teardown();
+    return 0;
 }

@@ -10,7 +10,9 @@
 #include <stddef.h>
 #include <stdio.h>
 
-struct jbuf { char *b; size_t len, cap; };
+// err latches on a failed realloc grow: once set, every jb_* write is a no-op
+// (so nothing is written past cap) and ares_sink_emit drops the whole record.
+struct jbuf { char *b; size_t len, cap; int err; };
 
 // Flush the output sink every N records to limit loss on hard kill.
 #define ARES_FLUSH_MASK 0x3fff
@@ -24,7 +26,10 @@ void jb_esc(struct jbuf *j, const char *s);               // JSON-escaped string
 void jb_b64(struct jbuf *j, const unsigned char *p, size_t n);  // base64 blob
 
 // Shared output sink: owns FILE*, jbuf, count, flush policy, and framing.
-// ponytail: single-writer, no lock; caller ensures one thread drives it.
+// Default: single-writer, no lock; caller ensures one thread drives it.
+// Multi-writer engines (e.g. funcs: drain lib/unlib + worker call/return) MUST
+// serialize all jb-build + ares_sink_emit calls under an external mutex.
+// ares_sink_flush (fflush only) is safe to call unlocked from any thread.
 struct ares_sink {
     FILE               *f;
     struct jbuf         jb;           // engine builds a bare {…} object into jb, then calls emit

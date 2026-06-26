@@ -80,7 +80,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
                $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
-               $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c
+               $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
+               $(SRC)/common/cfi_unwind.c $(SRC)/common/dwarf.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -99,7 +100,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
-               sym_resolve sym_flush_pid \
+               sym_resolve sym_flush_pid cfi_unwind_snapshot \
                ares_parse_maps_line ares_module_base_idx ares_map_files_path \
                ares_stack_snapshot_emit_json
 

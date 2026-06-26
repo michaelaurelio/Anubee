@@ -555,6 +555,8 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
 		return -1;
 	if (eh.e_shoff == 0 || eh.e_shnum == 0 || eh.e_shentsize < sizeof(Elf64_Shdr))
 		return -1;
+	if (eh.e_shoff > len)            /* else (len - e_shoff) underflows below */
+		return -1;
 
 	/* Overflow-safe: (e_shnum * e_shentsize) must not exceed (len - e_shoff). */
 	if (eh.e_shnum > (len - eh.e_shoff) / eh.e_shentsize)

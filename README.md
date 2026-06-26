@@ -108,10 +108,28 @@ ares syscalls -o trace.jsonl com.example.app librasp.so
 
 # Capture ALL of an app's syscalls (no library filter):
 ares syscalls -a -o trace.jsonl com.example.app
+
+# Capture stack snapshots + CFI-unwind into Java callers (library-filtered only):
+ares syscalls -l libc.so -s openat --snapshot -o trace.jsonl -P com.example.app
+# Writes trace.jsonl  (syscall events)
+# Writes trace.jsonl.stacks  ({"type":"stack",...} raw snapshot + {"type":"cfi_stack",...} CFI backtrace)
 ```
 
 Common flags: `-a` all syscalls · `-s/-x list` include/exclude syscalls · `-o file` (`.jsonl` =
-streamable JSON Lines) · `-q` quiet.
+streamable JSON Lines) · `-q` quiet · `--snapshot` enable stack snapshots + CFI unwind.
+
+**`--snapshot` and `cfi_stack` records:** When `--snapshot` is used with a library
+filter and `-o <file>`, each trapped syscall that lands inside the target library
+captures a frozen register file + up to 8 KB of user-stack bytes. These are written
+to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
+unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
+using DWARF `.eh_frame`/`.debug_frame`, naturally crossing `art_jni_trampoline` into
+the ART-compiled Java caller. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
+
+**Limits of `--snapshot` / CFI unwind:**
+- Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. Interpreter frames (`ShadowFrame`) are tagged `"kind":"interp"` but the managed method name is not recovered.
+- **Inlining defeats CFI attribution:** an inlined callee has no FDE and cannot be named.
+- Cross-thread offloaded syscalls are not attributed (CFI is per-tid, synchronous).
 
 ### `ares funcs` — function tracer
 

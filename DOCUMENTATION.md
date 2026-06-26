@@ -23,7 +23,7 @@ flowchart TD
     lib["lib — src/lib/<br/>kprobe lib-load engine<br/>+ own BPF skeleton"]
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
-    tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs<br/>from one launch (LOUD, no own BPF)"]
+    tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
     common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
@@ -37,6 +37,7 @@ flowchart TD
     main --> tracecmd
     tracecmd --> syscalls
     tracecmd --> funcs
+    tracecmd --> lib
     syscalls --> common
     funcs --> common
     lib --> common
@@ -119,7 +120,7 @@ flowchart TD
   `src/common/launch.*` as `ares_*` and are used by all five engines. They are
   linked once into `common.part.o`, exporting only the `ares_*` API (see
   `COMMON_API` in the Makefile).
-- **The `syscalls`, `funcs`, and `lib` engines are split into setup/run/teardown phases.**
+- **All five tracing engines are split into setup/run/teardown phases.**
   Each engine's `cmd_<engine>` entry is a thin wrapper over
   `<engine>_setup(argc, argv, rc)` (parse + open/load/attach + arm UID, stopping
   *before* the app launch), `<engine>_run(stop)` (the ring-buffer poll loop, exits
@@ -128,9 +129,13 @@ flowchart TD
   or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
   (`src/common/launch.h`) carries a pre-resolved UID + package name into each
   `*_setup`. Standalone behavior is unchanged; the split exists so engines can be
-  armed, launched once, and polled together. The `trace` runner currently drives
-  `syscalls` + `funcs`; `lib` is coordinator-ready but not yet driven by `trace`. See
-  [BACKLOG.md](BACKLOG.md).
+  armed, launched once, and polled together. The `trace` runner drives
+  `syscalls` + `funcs` + `lib` concurrently from one launch. `dump` and `correlate`
+  have the lifecycle contract but are not yet wired into `trace` — see
+  [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception: `correlate_setup` owns
+  its own launch internally (needs child PID via `pidof` to attach uprobes before
+  returning) and ignores `rc`; this will be folded into `ares_launch_app` when that
+  helper returns the PID (GA6).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities

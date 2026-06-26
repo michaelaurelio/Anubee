@@ -280,11 +280,17 @@ $(LIB_PART): $(LIB_OBJ)
 
 $(CORR_PART): $(CORR_OBJ)
 	$(LD) -r -o $@ $(CORR_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_correlate $@
+	$(OBJCOPY) --keep-global-symbol=cmd_correlate \
+	           --keep-global-symbol=correlate_setup \
+	           --keep-global-symbol=correlate_run \
+	           --keep-global-symbol=correlate_teardown $@
 
 $(DUMP_PART): $(DUMP_OBJ)
 	$(LD) -r -o $@ $(DUMP_OBJ)
-	$(OBJCOPY) --keep-global-symbol=cmd_dump $@
+	$(OBJCOPY) --keep-global-symbol=cmd_dump \
+	           --keep-global-symbol=dump_setup \
+	           --keep-global-symbol=dump_run \
+	           --keep-global-symbol=dump_teardown $@
 
 $(TRACE_PART): $(TRACE_OBJ)
 	$(LD) -r -o $@ $(TRACE_OBJ)

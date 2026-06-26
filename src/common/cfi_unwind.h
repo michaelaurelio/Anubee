@@ -23,11 +23,12 @@ struct cfi_fde {
 };
 
 struct cfi_section {
-	const uint8_t *data;    /* borrowed section bytes; caller keeps alive for the section's life */
+	const uint8_t *data;    /* CFI bytes (points into `owned` when set, else borrowed) */
 	size_t         len;
 	struct cfi_fde *fdes;   /* malloc'd, sorted ascending by pc_lo */
 	size_t         nfde;
 	uint64_t       section_vaddr; /* sh_addr of the section (eh_frame: needed for pcrel FDE pointers) */
+	uint8_t       *owned;   /* malloc'd copy of the CFI bytes, or NULL if data is borrowed */
 };
 
 /* Locate the ".debug_frame" section inside an ELF64 image held in elf[0..len).
@@ -58,7 +59,12 @@ int  cfi_read_cie(const struct cfi_section *s, uint32_t cie_off, struct cfi_cie 
 /* Return the FDE whose [pc_lo,pc_hi) contains pc (module-relative), or NULL. O(log n). */
 const struct cfi_fde *cfi_lookup(const struct cfi_section *s, uint64_t pc);
 
-/* Free s->fdes (does NOT free the borrowed data buffer). */
+/* Load CFI from a full ELF64 image. Tries .eh_frame first, then .debug_frame. On success the
+ * returned section OWNS a private copy of the CFI bytes (out->owned) and `elf` may be freed
+ * immediately after. Returns 0 on success, -1 if neither section exists or on malformed input. */
+int cfi_load_elf(const uint8_t *elf, size_t len, struct cfi_section *out);
+
+/* Free s->fdes and s->owned (safe when owned==NULL — borrowed-data sections unaffected). */
 void cfi_section_free(struct cfi_section *s);
 
 /* ---- CFI interpreter types (Task 5) -------------------------------------- */

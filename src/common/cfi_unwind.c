@@ -807,6 +807,43 @@ void cfi_section_free(struct cfi_section *s)
     free(s->fdes);
     s->fdes = NULL;
     s->nfde = 0;
+    free(s->owned);
+    s->owned = NULL;
+}
+
+int cfi_load_elf(const uint8_t *elf, size_t len, struct cfi_section *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    const uint8_t *sec;
+    size_t sec_len;
+    uint64_t vaddr = 0;
+    int is_eh;
+
+    if (cfi_extract_eh_frame(elf, len, &sec, &sec_len, &vaddr) == 0) {
+        is_eh = 1;
+    } else if (cfi_extract_debug_frame(elf, len, &sec, &sec_len) == 0) {
+        is_eh = 0;
+        vaddr = 0;
+    } else {
+        return -1;
+    }
+
+    uint8_t *buf = malloc(sec_len);
+    if (!buf)
+        return -1;
+    memcpy(buf, sec, sec_len);
+
+    int r = is_eh ? cfi_parse_eh_frame(out, buf, sec_len, vaddr)
+                  : cfi_parse_debug_frame(out, buf, sec_len);
+    if (r != 0) {
+        free(buf);
+        /* parsers set fdes=NULL on failure; out->owned is still 0 from memset */
+        return -1;
+    }
+
+    out->owned = buf;
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------

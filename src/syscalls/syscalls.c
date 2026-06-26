@@ -828,7 +828,7 @@ static void process_event(const void *data, size_t sz)
 		handle_return(data);
 		break;
 	case SYSC_EV_STACK:
-		if (sz < sizeof(struct syscalls_stack_snapshot))
+		if (sz < sizeof(struct ares_stack_snapshot))
 			return;
 		json_emit_stack(data);
 		break;

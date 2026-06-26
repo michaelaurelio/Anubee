@@ -287,11 +287,19 @@ Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 
 ```json
 {"type":"call",   "pid":N,"tid":N,"module":"libc.so","symbol":"open",
-                  "entry_addr":"0xABCDEF","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"]}
+                  "entry_addr":"0xABCDEF","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"],
+                  "backtrace":[{"frame":0,"addr":"0x..."},{"frame":1,"addr":"0x..."}]}
 
 {"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open",
                   "retval":7,"elapsed_ns":4096}
 ```
+
+`backtrace` is always present on CALL records (as long as `bpf_get_stack` returned frames),
+built from `e->call_stack`/`e->stack_depth` at entry — orthogonal to `--snapshot`.
+Addresses only (no inline symbols) to keep `funcs_emit.c` pure and host-testable without
+the symbolizer. Cross-reference with the console output for resolved names, or run
+`sym_resolve` offline. RETURN records carry no backtrace (same stack as entry; stack_depth
+was captured there).
 
 The `module` field is the library basename (no path). `args` always has `NUM_ARGS`
 (8) elements in hex. `elapsed_ns` is 0 if the uretprobe was not attached. These
@@ -534,8 +542,10 @@ stream:
   `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
-  "args":[..]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "retval":..,"elapsed_ns":..}` (see §3.1). The `-o` file receives structured records
+  "args":[..],"backtrace":[{"frame":0,"addr":"0x.."},..]}` and
+  `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
+  "retval":..,"elapsed_ns":..}` (see §3.1). CALL records always carry a `backtrace`
+  array of raw addresses (addr-only, no inline symbols — see §3.1). The `-o` file receives structured records
   only; human-readable console output is suppressed when `-o` is active (implied `-q`).
   `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.

@@ -47,8 +47,18 @@ int main(void)
     CHECK_HAS(j, "\"symbol\":\"open\"", "call symbol");
     CHECK_HAS(j, "\"entry_addr\":\"0xabc000\"", "call entry_addr");
 
+    // backtrace array emitted from call_stack (always-on, independent of --snapshot)
+    j.len = 0;
+    e.call_stack[0] = 0xdead000ULL;
+    e.stack_depth = 1;
+    funcs_emit_call(&j, &e, "libc.so", "open", NULL);
+    CHECK_HAS(j, "\"backtrace\":[", "call backtrace key");
+    CHECK_HAS(j, "\"frame\":0",     "call backtrace frame 0");
+    CHECK_HAS(j, "dead000",         "call backtrace addr");
+
     // stack_id = 0 → no "stack_id" field in output (quiet when no snapshot)
     j.len = 0;
+    e.call_stack[0] = 0; e.stack_depth = 0;
     e.stack_id = 0;
     funcs_emit_call(&j, &e, "libc.so", "open", NULL);
     { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;

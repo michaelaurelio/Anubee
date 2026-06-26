@@ -95,17 +95,25 @@ the thin-presets migration (Urgent).
   `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
   in (at that point B2 becomes cheaper than wiring more lock sites into modules).
 
-### CFI stack unwinder — W1 remaining
+### CFI stack unwinder — all three tasks landed
 
-W2 and W3 landed (2026-06-26 — see Resolved). One follow-up remains:
+W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27 — see Resolved).
 
-- **W1 — CFI unwinder not wired to runtime.** `cfi_step` / `cfi_run_program` /
-  `unwind_regs_from_snapshot` are exercised only by host tests; no engine calls them at
-  runtime. Both `syscalls` and `funcs` now capture and emit `regs[31]` + the frozen stack
-  window, but neither produces an actual CFI backtrace yet.
-  Follow-up: add a runtime unwind driver that loads `.debug_frame`, maps runtime
-  PC→module-relative, and loops `cfi_step` over the frozen snapshot window to emit a
-  CFI-unwound call chain. Usable by both engines (shared sidecar format).
+- **W1 — DONE (2026-06-27): CFI unwinder wired to runtime; cross-trampoline confirmed.**
+  `cfi_unwind_snapshot` (in `src/common/symbolize.c`, declared in `symbolize.h`) loops
+  `cfi_get` + `cfi_step` over the frozen snapshot window. Reads only the frozen
+  `snap->snap[]` bytes — no live target memory. Called from `emit_cfi_backtrace`
+  in `syscalls.c` immediately after each raw `{"type":"stack"}` sidecar write; emits
+  a companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[{frame,addr,symbol,kind},...]}`.
+  `kind` ∈ `native | jni-trampoline | managed | interp`. `cfi_unwind.c` + `dwarf.c`
+  added to `COMMON_CSRC`; `cfi_unwind_snapshot` exported via `COMMON_API`.
+  Device test arm `syscalls-cfi` asserts jni-trampoline→managed cross (SKIP on timing
+  miss; hard-fail only on BPF-load error). On-device proof deferred to controller run.
+
+- **Deferred — interpreter frame naming:** frames tagged `"kind":"interp"` are detected
+  by `is_interp_frame` (ART interpreter entrypoints) but the managed method name is not
+  recovered. Naming them requires an ART managed-stack (ShadowFrame) walk — out of scope
+  for the CFI unwinder. Parked alongside Phase 2b findings.
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 

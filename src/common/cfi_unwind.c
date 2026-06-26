@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* forward declarations — defined later in this file */
+static int fde_cmp(const void *a, const void *b);
+static int parse_cie(const uint8_t *data, size_t len, uint32_t cie_off, struct cfi_cie *out);
+
 /* ---------------------------------------------------------------------------
  * cfi_extract_debug_frame: locate ".debug_frame" inside an ELF64 image.
  * Every offset is untrusted and bounds-checked against len.
@@ -102,9 +106,340 @@ int cfi_extract_debug_frame(const uint8_t *elf, size_t len,
 }
 
 /* ---------------------------------------------------------------------------
+ * cfi_extract_eh_frame: locate ".eh_frame" inside an ELF64 image and return
+ * the section virtual address (sh_addr) needed for pcrel FDE pointer decoding.
+ * Same bounds discipline as cfi_extract_debug_frame.
+ * -------------------------------------------------------------------------*/
+int cfi_extract_eh_frame(const uint8_t *elf, size_t len,
+                         const uint8_t **eh, size_t *eh_len, uint64_t *eh_vaddr)
+{
+    if (len < sizeof(Elf64_Ehdr))
+        return -1;
+
+    Elf64_Ehdr ehdr;
+    memcpy(&ehdr, elf, sizeof(Elf64_Ehdr));
+
+    if (ehdr.e_ident[EI_MAG0] != ELFMAG0 ||
+        ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr.e_ident[EI_MAG2] != ELFMAG2 ||
+        ehdr.e_ident[EI_MAG3] != ELFMAG3)
+        return -1;
+
+    if (ehdr.e_ident[EI_CLASS] != ELFCLASS64)
+        return -1;
+
+    if (ehdr.e_shnum == 0 || ehdr.e_shentsize < sizeof(Elf64_Shdr))
+        return -1;
+
+    uint64_t shoff   = ehdr.e_shoff;
+    uint64_t shnum   = ehdr.e_shnum;
+    uint64_t shentsz = ehdr.e_shentsize;
+    if (shoff == 0 || shoff > len)
+        return -1;
+    if (shentsz != 0 && shnum > (len - shoff) / shentsz)
+        return -1;
+
+    uint16_t shstrndx = ehdr.e_shstrndx;
+    if (shstrndx >= shnum)
+        return -1;
+
+    Elf64_Shdr shstr_hdr;
+    uint64_t shstr_hdr_off = shoff + (uint64_t)shstrndx * shentsz;
+    if (shstr_hdr_off + sizeof(Elf64_Shdr) > len)
+        return -1;
+    memcpy(&shstr_hdr, elf + shstr_hdr_off, sizeof(Elf64_Shdr));
+
+    uint64_t shstr_off  = shstr_hdr.sh_offset;
+    uint64_t shstr_size = shstr_hdr.sh_size;
+    if (shstr_size == 0 || shstr_off > len || shstr_off + shstr_size > len)
+        return -1;
+
+    const char *shstr = (const char *)(elf + shstr_off);
+
+    static const char target[] = ".eh_frame";
+    for (uint64_t i = 0; i < shnum; i++) {
+        uint64_t sh_off = shoff + i * shentsz;
+        if (sh_off + sizeof(Elf64_Shdr) > len)
+            return -1;
+
+        Elf64_Shdr shdr;
+        memcpy(&shdr, elf + sh_off, sizeof(Elf64_Shdr));
+
+        if ((uint64_t)shdr.sh_name >= shstr_size)
+            continue;
+
+        size_t max_name = (size_t)(shstr_size - shdr.sh_name);
+        if (max_name < sizeof(target))
+            continue;
+        if (memcmp(shstr + shdr.sh_name, target, sizeof(target)) != 0)
+            continue;
+
+        uint64_t sec_off  = shdr.sh_offset;
+        uint64_t sec_size = shdr.sh_size;
+        if (sec_size == 0 || sec_off > len || sec_off + sec_size > len)
+            return -1;
+
+        *eh       = elf + sec_off;
+        *eh_len   = (size_t)sec_size;
+        *eh_vaddr = shdr.sh_addr;
+        return 0;
+    }
+
+    return -1; /* no ".eh_frame" section found */
+}
+
+/* ---------------------------------------------------------------------------
+ * decode_eh_pe: decode one DW_EH_PE-encoded value from *c.
+ *
+ * enc        : the encoding byte from the CIE's 'R' augmentation.
+ * field_vaddr: the virtual address of the first byte of this field in memory
+ *              (= section_vaddr + current section-offset BEFORE the read).
+ *              Used only for the pcrel application (enc & 0x70) == 0x10.
+ * apply_pcrel: if 0, only the FORMAT part is decoded (used for address_range).
+ * *val_out   : receives the decoded value.
+ *
+ * Returns 0 on success, -1 on unsupported encoding or read error.
+ * -------------------------------------------------------------------------*/
+static int decode_eh_pe(struct dwarf_cur *c, uint8_t enc,
+                        uint64_t field_vaddr, int apply_pcrel,
+                        uint64_t *val_out)
+{
+    /* DW_EH_PE_omit */
+    if (enc == 0xff) {
+        *val_out = 0;
+        return 0;
+    }
+
+    uint8_t fmt = enc & 0x0fu;
+    uint8_t app = enc & 0x70u;
+
+    uint64_t val;
+    switch (fmt) {
+    case 0x00: /* absptr = udata8 on 64-bit */
+        val = dwarf_u64(c);
+        break;
+    case 0x01: /* uleb128 */
+        val = dwarf_uleb(c);
+        break;
+    case 0x02: /* udata2 */
+        val = dwarf_u16(c);
+        break;
+    case 0x03: /* udata4 */
+        val = dwarf_u32(c);
+        break;
+    case 0x04: /* udata8 */
+        val = dwarf_u64(c);
+        break;
+    case 0x09: /* sleb128 */
+        val = (uint64_t)dwarf_sleb(c);
+        break;
+    case 0x0a: { /* sdata2 */
+        uint16_t raw = dwarf_u16(c);
+        int16_t  s   = (int16_t)raw;
+        val = (uint64_t)(int64_t)s;
+        break;
+    }
+    case 0x0b: { /* sdata4 */
+        uint32_t raw = dwarf_u32(c);
+        int32_t  s   = (int32_t)raw;
+        val = (uint64_t)(int64_t)s;
+        break;
+    }
+    case 0x0c: { /* sdata8 */
+        uint64_t raw = dwarf_u64(c);
+        val = raw; /* already sign-extended in 64-bit */
+        break;
+    }
+    default:
+        return -1;
+    }
+
+    if (c->err)
+        return -1;
+
+    /* Apply relocation */
+    if (apply_pcrel) {
+        switch (app) {
+        case 0x00: /* absolute — no adjustment */
+            break;
+        case 0x10: /* pcrel — add field_vaddr */
+            val += field_vaddr;
+            break;
+        default:
+            return -1; /* unsupported application */
+        }
+    }
+
+    *val_out = val;
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * cfi_parse_eh_frame: two-pass parse of a .eh_frame section.
+ * Same structure as cfi_parse_debug_frame but uses eh entry conventions:
+ *   - id == 0  => CIE; id != 0 => FDE with cie_off = (id_field_offset) - id
+ *   - FDE initial_location decoded via DW_EH_PE from CIE's fde_enc
+ *   - section_vaddr stored on the section for cfi_read_cie to later use
+ * -------------------------------------------------------------------------*/
+int cfi_parse_eh_frame(struct cfi_section *s, const uint8_t *data, size_t len,
+                       uint64_t section_vaddr)
+{
+    s->data         = data;
+    s->len          = len;
+    s->fdes         = NULL;
+    s->nfde         = 0;
+    s->section_vaddr = section_vaddr;
+
+    /* First pass: count FDEs */
+    size_t nfde = 0;
+    {
+        struct dwarf_cur c;
+        dwarf_cur_init(&c, data, len);
+
+        while (!c.err && c.pos < len) {
+            uint32_t length = dwarf_u32(&c);
+            if (c.err)
+                return -1;
+
+            /* 64-bit DWARF not supported */
+            if (length == 0xffffffffu)
+                return -1;
+
+            /* terminator */
+            if (length == 0)
+                break;
+
+            size_t entry_end = c.pos + length;
+            if (entry_end > len)
+                return -1;
+
+            uint32_t id = dwarf_u32(&c);
+            if (c.err)
+                return -1;
+
+            if (id != 0x00000000u) {
+                /* FDE */
+                nfde++;
+            }
+
+            c.pos = entry_end;
+        }
+        if (c.err)
+            return -1;
+    }
+
+    if (nfde == 0)
+        return 0;
+
+    s->fdes = malloc(nfde * sizeof(*s->fdes));
+    if (!s->fdes)
+        return -1;
+
+    /* Second pass: fill FDE table */
+    size_t idx = 0;
+    {
+        struct dwarf_cur c;
+        dwarf_cur_init(&c, data, len);
+
+        while (!c.err && c.pos < len) {
+            uint32_t length = dwarf_u32(&c);
+            if (c.err)
+                goto fail;
+
+            if (length == 0xffffffffu || length == 0)
+                break;
+
+            size_t entry_end = c.pos + length;
+            if (entry_end > len)
+                goto fail;
+
+            /* Record position of the id field (needed for cie_off calc) */
+            uint32_t id_field_off = (uint32_t)c.pos;
+
+            uint32_t id = dwarf_u32(&c);
+            if (c.err)
+                goto fail;
+
+            if (id == 0x00000000u) {
+                /* CIE — skip */
+                c.pos = entry_end;
+                continue;
+            }
+
+            /* FDE: cie_off = (offset of id field) - id */
+            if (idx >= nfde)
+                goto fail;
+
+            /* Guard against underflow */
+            if ((uint32_t)id_field_off < id)
+                goto fail;
+            uint32_t cie_off = id_field_off - id;
+
+            /* Parse the governing CIE to get fde_enc */
+            struct cfi_cie cie;
+            if (parse_cie(data, len, cie_off, &cie) != 0)
+                goto fail;
+
+            /* Decode initial_location: pcrel from field's vaddr */
+            uint64_t field_vaddr = section_vaddr + (uint64_t)c.pos;
+            uint64_t pc_lo;
+            if (decode_eh_pe(&c, cie.fde_enc, field_vaddr, 1, &pc_lo) != 0)
+                goto fail;
+
+            /* Decode address_range: FORMAT part only, no pcrel */
+            uint64_t addr_range;
+            if (decode_eh_pe(&c, cie.fde_enc, 0, 0, &addr_range) != 0)
+                goto fail;
+
+            if (c.err || c.pos > entry_end)
+                goto fail;
+
+            /* If CIE has 'z' augmentation, FDE has an aug-data block to skip */
+            /* We detect this by checking fde_enc != 0xff (which implies 'z' in CIE) */
+            /* But a cleaner check: we need to know if aug[0]=='z'. We already parsed
+             * the CIE and fde_enc==0xff only when 'z' is absent. So skip aug block
+             * only when fde_enc != 0xff (i.e., 'R' was present, meaning 'z' is present). */
+            if (cie.fde_enc != 0xff) {
+                uint64_t fde_aug_len = dwarf_uleb(&c);
+                if (c.err)
+                    goto fail;
+                if (c.pos + (size_t)fde_aug_len > entry_end)
+                    goto fail;
+                c.pos += (size_t)fde_aug_len;
+            }
+
+            struct cfi_fde *fde = &s->fdes[idx++];
+            fde->pc_lo    = pc_lo;
+            fde->pc_hi    = pc_lo + addr_range;
+            fde->cie_off  = cie_off;
+            fde->insn_off = (uint32_t)c.pos;
+            fde->insn_len = (uint32_t)(entry_end - c.pos);
+
+            c.pos = entry_end;
+        }
+        if (c.err)
+            goto fail;
+    }
+
+    s->nfde = idx;
+    qsort(s->fdes, s->nfde, sizeof(*s->fdes), fde_cmp);
+    return 0;
+
+fail:
+    free(s->fdes);
+    s->fdes = NULL;
+    s->nfde = 0;
+    return -1;
+}
+
+/* ---------------------------------------------------------------------------
  * Internal: parse the CIE at section offset cie_off from raw section bytes.
  * Shared by cfi_parse_debug_frame (FDE addr_size lookup) and cfi_read_cie
  * (public API).  Returns 0 on success, -1 on malformed.
+ *
+ * Auto-detects dialect from the id field at cie_off+4:
+ *   id == 0x00000000  => .eh_frame CIE (version 1/3, "zR" augmentation)
+ *   id == 0xffffffff  => .debug_frame CIE (existing behavior, unchanged)
  * -------------------------------------------------------------------------*/
 static int parse_cie(const uint8_t *data, size_t len,
                      uint32_t cie_off, struct cfi_cie *out)
@@ -133,36 +468,47 @@ static int parse_cie(const uint8_t *data, size_t len,
     if (entry_end > len)
         return -1;
 
-    /* id must be 0xffffffff (CIE marker) */
+    /* id: 0 => eh_frame CIE; 0xffffffff => debug_frame CIE; else not a CIE */
     uint32_t id = dwarf_u32(&c);
-    if (c.err || id != 0xffffffffu)
+    if (c.err)
+        return -1;
+
+    int is_eh = (id == 0x00000000u);
+    if (!is_eh && id != 0xffffffffu)
         return -1;
 
     uint8_t version = dwarf_u8(&c);
     if (c.err)
         return -1;
 
-    /* augmentation: NUL-terminated string */
-    uint8_t aug0 = 0;
+    /* Augmentation string: NUL-terminated.
+     * For eh_frame we need to record each letter to decode aug-data later.
+     * For debug_frame we reject 'z' (handled by the is_eh branch).
+     * Collect up to 8 significant chars (plenty for "zRPL").             */
+    char aug[8];
+    int  naug = 0;
     while (!c.err && c.pos < entry_end) {
         uint8_t b = dwarf_u8(&c);
         if (c.err)
             return -1;
-        if (aug0 == 0)
-            aug0 = b;   /* save first char for 'z' check */
         if (b == 0)
-            break;      /* consumed NUL terminator */
+            break;
+        if (naug < (int)(sizeof(aug) - 1))
+            aug[naug++] = (char)b;
     }
+    aug[naug] = '\0';
     if (c.err)
         return -1;
 
-    /* 'z' augmentation means .eh_frame pointer-encoding — not this task */
-    if (aug0 == 'z')
-        return -1;
+    if (!is_eh) {
+        /* debug_frame path: 'z' augmentation unsupported here */
+        if (naug > 0 && aug[0] == 'z')
+            return -1;
+    }
 
-    /* v4 introduces address_size and segment_selector_size */
+    /* v4 introduces address_size and segment_selector_size (debug_frame only) */
     uint8_t addr_size = 8; /* default for v1/v3 on aarch64 */
-    if (version == 4) {
+    if (!is_eh && version == 4) {
         addr_size = dwarf_u8(&c);
         dwarf_u8(&c); /* segment_selector_size — skip */
         if (c.err)
@@ -174,15 +520,95 @@ static int parse_cie(const uint8_t *data, size_t len,
     if (c.err)
         return -1;
 
-    /* ra_register: u8 for v1, uleb for v3/v4 */
+    /* ra_register: uleb always in eh_frame (v1 or v3); u8 for debug_frame v1 */
     uint32_t ra_reg;
-    if (version == 1) {
+    if (!is_eh && version == 1) {
         ra_reg = dwarf_u8(&c);
     } else {
         ra_reg = (uint32_t)dwarf_uleb(&c);
     }
     if (c.err)
         return -1;
+
+    /* eh_frame: if aug starts with 'z', parse augmentation-data block */
+    uint8_t fde_enc = 0xff; /* default: omit / DW_EH_PE_omit */
+    if (is_eh && naug > 0 && aug[0] == 'z') {
+        uint64_t aug_len = dwarf_uleb(&c);
+        if (c.err)
+            return -1;
+        size_t aug_end = c.pos + (size_t)aug_len;
+        if (aug_end > entry_end)
+            return -1;
+
+        /* Walk the augmentation string (skip 'z' itself) and consume aug-data */
+        for (int i = 1; i < naug && c.pos < aug_end; i++) {
+            switch (aug[i]) {
+            case 'R':
+                /* next byte is the FDE pointer encoding */
+                fde_enc = dwarf_u8(&c);
+                if (c.err)
+                    return -1;
+                break;
+            case 'P': {
+                /* 1 encoding byte + 1 pointer encoded by that byte (skip both) */
+                uint8_t penc = dwarf_u8(&c);
+                if (c.err)
+                    return -1;
+                /* Determine pointer size from format nibble */
+                uint8_t fmt = penc & 0x0fu;
+                size_t psz;
+                switch (fmt) {
+                case 0x00: psz = 8; break; /* absptr = udata8 */
+                case 0x02: psz = 2; break; /* udata2 */
+                case 0x03: psz = 4; break; /* udata4 */
+                case 0x04: psz = 8; break; /* udata8 */
+                case 0x09: { /* sleb128 — scan for terminator */
+                    while (c.pos < aug_end && !c.err) {
+                        uint8_t b = dwarf_u8(&c);
+                        if (c.err) return -1;
+                        if (!(b & 0x80)) break;
+                    }
+                    psz = 0;
+                    break;
+                }
+                case 0x0a: psz = 2; break; /* sdata2 */
+                case 0x0b: psz = 4; break; /* sdata4 */
+                case 0x0c: psz = 8; break; /* sdata8 */
+                case 0x01: { /* uleb128 — scan for terminator */
+                    while (c.pos < aug_end && !c.err) {
+                        uint8_t b = dwarf_u8(&c);
+                        if (c.err) return -1;
+                        if (!(b & 0x80)) break;
+                    }
+                    psz = 0;
+                    break;
+                }
+                default:
+                    return -1;
+                }
+                if (psz > 0)
+                    dwarf_skip(&c, psz);
+                if (c.err)
+                    return -1;
+                break;
+            }
+            case 'L':
+                /* 1 encoding byte — skip */
+                dwarf_u8(&c);
+                if (c.err)
+                    return -1;
+                break;
+            default:
+                /* unknown augmentation letter — skip remaining aug-data */
+                c.pos = aug_end;
+                break;
+            }
+        }
+
+        /* Skip any remaining aug-data bytes */
+        if (c.pos < aug_end)
+            c.pos = aug_end;
+    }
 
     /* remainder of the entry is initial_instructions */
     if (c.pos > entry_end)
@@ -193,6 +619,7 @@ static int parse_cie(const uint8_t *data, size_t len,
     out->code_align = code_align;
     out->data_align = data_align;
     out->ra_reg     = ra_reg;
+    out->fde_enc    = fde_enc;
     out->insn_off   = (uint32_t)c.pos;
     out->insn_len   = (uint32_t)(entry_end - c.pos);
     return 0;

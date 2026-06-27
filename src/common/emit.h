@@ -38,6 +38,7 @@ struct ares_sink {
     const char         *noun;         // "syscall" / "event"
     int                 jsonl;        // 1 = newline-per-record; 0 = JSON array with commas
     unsigned long       since_flush;
+    int                 werr;         // latched errno of first write failure (0 = ok)
 };
 
 // Open sink: fopen("w") + 8 MB _IOFBF buffer. Array mode: writes opening '['.

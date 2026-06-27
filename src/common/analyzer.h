@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: GPL-2.0
+// ares_analyzer_t — interface every `ares mod <name>` analyzer implements.
+// The dispatcher (src/modules/mod.c) owns arg-parse, uid resolve, sink, stop
+// handler, app launch, ring-poll, and teardown order. Each analyzer owns ONLY
+// its own BPF skeleton + event semantics.
+#ifndef __ARES_ANALYZER_H
+#define __ARES_ANALYZER_H
+
+struct ares_sink;   // common/emit.h — full def needed by callers that open a sink
+struct ring_buffer; // libbpf — full def needed to poll
+
+// Console/sink context the dispatcher builds once and hands to setup(); the
+// analyzer stores the pointer and passes it as the ring_buffer sample-fn ctx.
+struct ares_mod_ctx {
+    struct ares_sink *sink;  // NULL when no -o (console-only mode)
+    int quiet;               // suppress human-readable console lines
+    int verbose;             // extra console detail
+};
+
+// One entry in the analyzer registry.
+typedef struct {
+    const char *name;        // dispatch token; also the "mod:<name>" key in capabilities.c
+    const char *description; // shown in `ares mod --help`
+    // Open + load the analyzer's OWN BPF skeleton, arm `uid` into its target_uids
+    // map, attach programs, and create a ring_buffer whose sample callback is the
+    // analyzer's static handle_event with ctx set to mc. Returns the ring_buffer*
+    // for the dispatcher to poll, or NULL on any setup failure (analyzer cleans up
+    // before returning NULL).
+    struct ring_buffer *(*setup)(int uid, struct ares_mod_ctx *mc);
+    // Destroy rb, skeleton, and any bpf_link*s. Called after the poll loop exits.
+    void (*teardown)(void);
+    // Print tally / RASP table to stdout at session end. May be NULL.
+    void (*print_summary)(void);
+} ares_analyzer_t;
+
+// Defined in each analyzer's .c; the dispatcher references them by pointer in
+// the registry array (src/modules/mod.c).
+extern const ares_analyzer_t analyzer_proc_event;
+extern const ares_analyzer_t analyzer_execve;
+extern const ares_analyzer_t analyzer_prop_read;
+
+#endif /* __ARES_ANALYZER_H */

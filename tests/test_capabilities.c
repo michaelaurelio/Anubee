@@ -28,10 +28,12 @@ int main(void)
     CHECK(ares_object_writes_target("trace"),      "trace loud");
     // Unknown name is treated as non-writing (safe default for lookup).
     CHECK(!ares_object_writes_target("nonexistent"), "unknown -> false");
+    // Analyzers — stealthy ones are quiet, loud ones are not.
+    CHECK(!ares_object_writes_target("mod:proc-event"), "mod:proc-event quiet");
 
     // ares_quiet_config_ok: a quiet set passes; adding a loud object fails.
-    const char *quiet_set[] = { "syscalls", "lib", "dump" };
-    CHECK(ares_quiet_config_ok(quiet_set, 3), "all-quiet config ok");
+    const char *quiet_set[] = { "syscalls", "lib", "dump", "mod:proc-event" };
+    CHECK(ares_quiet_config_ok(quiet_set, 4), "all-quiet config ok");
     const char *bad_set[] = { "syscalls", "funcs" };
     CHECK(!ares_quiet_config_ok(bad_set, 2), "quiet+loud config rejected");
 

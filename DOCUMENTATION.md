@@ -116,7 +116,8 @@ flowchart TD
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
   shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
   (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
-  force-stop → wait-for-stop → `am start -S -n <component>`) live once in
+  force-stop → wait-for-stop → `am start -S -n <component>`; optionally writes
+  the launched PID into a `pid_t *out_pid` out-param) live once in
   `src/common/launch.*` as `ares_*` and are used by all five engines. They are
   linked once into `common.part.o`, exporting only the `ares_*` API (see
   `COMMON_API` in the Makefile).
@@ -132,10 +133,10 @@ flowchart TD
   armed, launched once, and polled together. The `trace` runner drives
   `syscalls` + `funcs` + `lib` concurrently from one launch. `dump` and `correlate`
   have the lifecycle contract but are not yet wired into `trace` — see
-  [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception: `correlate_setup` owns
-  its own launch internally (needs child PID via `pidof` to attach uprobes before
-  returning) and ignores `rc`; this will be folded into `ares_launch_app` when that
-  helper returns the PID (GA6).
+  [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception: `correlate_setup` owns its launch internally (uprobe attach requires
+  the child PID, only known post-launch) and ignores `rc`; it now routes through
+  `ares_launch_app` with the new `out_pid` param (GA6-keystone done). Wiring
+  `correlate` into `trace` remains deferred — see BACKLOG.md GA2 deferred items.
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities

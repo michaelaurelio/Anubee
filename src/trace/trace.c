@@ -150,7 +150,7 @@ int cmd_trace(int argc, char **argv)
 	signal(SIGINT, on_sigint);
 
 	ares_launch_banner(pkg, uid);
-	if (ares_launch_app(pkg, activity) != 0) {
+	if (ares_launch_app(pkg, activity, NULL) != 0) {
 		fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
 		if (want_lib) lib_teardown();
 		if (want_func) funcs_teardown();

@@ -1336,7 +1336,7 @@ int cmd_funcs(int argc, char **argv)
     // only; -p PID attach mode has no package and never launches).
     if (g_funcs_pkg[0]) {
         ares_launch_banner(g_funcs_pkg, g_funcs_uid);
-        if (ares_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL) != 0) {
+        if (ares_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL, NULL) != 0) {
             err_print(" [spawn] > failed to launch %s\n", g_funcs_pkg);
             funcs_teardown();
             return 1;

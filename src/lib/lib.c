@@ -225,7 +225,7 @@ int cmd_lib(int argc, char **argv)
     // Standalone: tracing is armed (UID installed in setup); launch and own signals.
     ares_install_stop_handler(&exiting);
     ares_launch_banner(g_pkg, g_uid);
-    if (ares_launch_app(g_pkg, g_activity) != 0) {
+    if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
         fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
         lib_teardown();
         return 1;

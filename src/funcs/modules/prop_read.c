@@ -184,7 +184,8 @@ static unsigned long find_symbol_in_elf(const char *path, const char *sym_name)
             if (sym.st_value == 0) continue;
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (name && strcmp(name, sym_name) == 0) {
-                offset = seg_vaddr_to_off(segs, nseg, (unsigned long)sym.st_value);
+                unsigned long off = seg_vaddr_to_off(segs, nseg, (unsigned long)sym.st_value);
+                if (off != SEG_VADDR_BAD) offset = off;   // sentinel -> leave offset 0 (not found)
                 break;
             }
         }

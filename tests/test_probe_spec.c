@@ -93,13 +93,13 @@ int main(void)
         struct load_seg segs[] = {{ .vaddr = 0x11000, .offset = 0x10000, .filesz = 0x8000 }};
         CHECK(seg_vaddr_to_off(segs, 1, 0x11abc) == 0x10abc, "seg: packed vaddr->off");
     }
-    // vaddr outside all segments → returned unchanged
+    // vaddr outside all segments → sentinel (caller must skip, not wrong-offset attach)
     {
         struct load_seg segs[] = {{ .vaddr = 0x1000, .offset = 0x1000, .filesz = 0x100 }};
-        CHECK(seg_vaddr_to_off(segs, 1, 0x9000) == 0x9000, "seg: no match passthrough");
+        CHECK(seg_vaddr_to_off(segs, 1, 0x9000) == SEG_VADDR_BAD, "seg: no match -> sentinel");
     }
-    // empty segment table → passthrough
-    CHECK(seg_vaddr_to_off(NULL, 0, 0x5678) == 0x5678, "seg: empty table passthrough");
+    // empty segment table → sentinel
+    CHECK(seg_vaddr_to_off(NULL, 0, 0x5678) == SEG_VADDR_BAD, "seg: empty table -> sentinel");
 
     printf("\n%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

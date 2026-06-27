@@ -16,6 +16,8 @@ static const struct ares_bpf_object g_objects[] = {
     { "dump",      false },
     { "correlate", true  },
     { "trace",     true  },
+    // Analyzers (src/modules/) — each owns its own BPF object.
+    { "mod:proc-event", false },  // tracepoints only; zero uprobes
 };
 
 const struct ares_bpf_object *ares_bpf_objects(int *count)

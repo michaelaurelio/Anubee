@@ -65,6 +65,8 @@ CORR_SKEL    := $(BUILD)/correlate.skel.h
 DUMP_BPF_OBJ := $(BUILD)/dump.bpf.o
 DUMP_SKEL    := $(BUILD)/dump.skel.h
 SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
+PROC_EVENT_BPF_OBJ := $(BUILD)/proc_event.bpf.o
+PROC_EVENT_SKEL    := $(BUILD)/proc_event.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
 
@@ -122,6 +124,11 @@ DUMP_PART := $(BUILD)/dump.part.o
 TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
+
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/mod.c
+MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
+MOD_PART   := $(BUILD)/mod.part.o
+MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC)
 
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
@@ -205,6 +212,16 @@ $(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/
 $(DUMP_SKEL): $(DUMP_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_dump > $@
 
+# proc-event analyzer BPF: own ring buffer + uid gate + fork/exit tracepoints.
+$(PROC_EVENT_BPF_OBJ): $(SRC)/modules/proc_event.bpf.c vmlinux.h \
+                        $(SRC)/modules/mod_events.h \
+                        $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(PROC_EVENT_SKEL): $(PROC_EVENT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name proc_event_bpf > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -245,6 +262,10 @@ $(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(SRC)/common/proc_mem.h $(SRC)/
 $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(SRC)/common/launch.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
+
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(LIBBPF_A)
+	mkdir -p $(dir $@)
+	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
 $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
@@ -296,9 +317,13 @@ $(TRACE_PART): $(TRACE_OBJ)
 	$(LD) -r -o $@ $(TRACE_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_trace $@
 
+$(MOD_PART): $(MOD_OBJ)
+	$(LD) -r -o $@ $(MOD_OBJ)
+	$(OBJCOPY) --keep-global-symbol=cmd_mod $@
+
 # ---- final link -----------------------------------------------------------
-$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) $(LIBBPF_A)
-	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) -o $@ $(LINK_LIBS)
+$(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) $(MOD_PART) $(LIBBPF_A)
+	$(CC) $(LINK_FLAGS) $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_PART) $(DUMP_PART) $(TRACE_PART) $(MOD_PART) -o $@ $(LINK_LIBS)
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)
@@ -357,6 +382,8 @@ test:
 	$(BUILD)/test_dex tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps
 	$(BUILD)/test_maps
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
+	$(BUILD)/test_mod_emit
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

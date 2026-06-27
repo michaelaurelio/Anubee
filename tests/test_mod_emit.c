@@ -11,6 +11,8 @@
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e);
+void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -70,6 +72,64 @@ int main(void)
       checks++;
       if (strstr(tmp, "\"exit_status\"")) { failures++; printf("  FAIL: exit_status emitted for signal kill\n    in: %s\n", tmp); }
     }
+
+    // ---- execve: 2 argv entries + 2-frame backtrace -------------------------
+    struct execve_event ex = {0};
+    ex.h.type      = MOD_EV_EXECVE;
+    ex.h.pid       = 5000;
+    ex.h.tid       = 5000;
+    ex.argc        = 2;
+    ex.stack_depth = 2;
+    strncpy(ex.comm,     "sh",      TASK_COMM_LEN - 1);
+    strncpy(ex.filename, "/bin/sh", sizeof(ex.filename) - 1);
+    strncpy(ex.argv[0],  "-c",      MAX_ARGV_STR - 1);
+    strncpy(ex.argv[1],  "id",      MAX_ARGV_STR - 1);
+    ex.call_stack[0] = 0xdeadbeef000ULL;
+    ex.call_stack[1] = 0xcafebabe000ULL;
+
+    j.len = 0;
+    mod_emit_execve(&j, &ex);
+    CHECK_HAS(j, "\"type\":\"execve\"",  "execve type");
+    CHECK_HAS(j, "\"pid\":5000",          "execve pid");
+    CHECK_HAS(j, "\"/bin/sh\"",           "execve filename");
+    CHECK_HAS(j, "\"argc\":2",            "execve argc");
+    CHECK_HAS(j, "\"-c\"",               "execve argv[0]");
+    CHECK_HAS(j, "\"id\"",               "execve argv[1]");
+    CHECK_HAS(j, "\"addr\":\"",           "execve backtrace addr present");
+
+    // ---- prop GET call (is_ret=0) --------------------------------------------
+    struct prop_event pg = {0};
+    pg.h.type  = MOD_EV_PROP_GET;
+    pg.h.pid   = 6000;
+    pg.h.tid   = 6000;
+    pg.is_ret  = 0;
+    pg.found   = 0;
+    strncpy(pg.comm,  "app",           TASK_COMM_LEN - 1);
+    strncpy(pg.name,  "ro.debuggable", PROP_NAME_LEN - 1);
+
+    j.len = 0;
+    mod_emit_prop(&j, &pg);
+    CHECK_HAS(j, "\"type\":\"prop\"",  "prop type");
+    CHECK_HAS(j, "\"op\":\"get\"",     "prop op get");
+    CHECK_HAS(j, "\"pid\":6000",       "prop pid");
+    CHECK_HAS(j, "\"ro.debuggable\"",  "prop name");
+    CHECK_HAS(j, "\"is_ret\":0",       "prop is_ret 0");
+
+    // ---- prop FIND return, not found (is_ret=1, found=0) --------------------
+    struct prop_event pf = {0};
+    pf.h.type  = MOD_EV_PROP_FIND;
+    pf.h.pid   = 6000;
+    pf.h.tid   = 6000;
+    pf.is_ret  = 1;
+    pf.found   = 0;
+    strncpy(pf.comm,  "app",       TASK_COMM_LEN - 1);
+    strncpy(pf.name,  "ro.secure", PROP_NAME_LEN - 1);
+
+    j.len = 0;
+    mod_emit_prop(&j, &pf);
+    CHECK_HAS(j, "\"op\":\"find\"", "prop op find");
+    CHECK_HAS(j, "\"is_ret\":1",    "prop is_ret 1");
+    CHECK_HAS(j, "\"found\":0",     "prop found 0");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

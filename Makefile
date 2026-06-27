@@ -67,6 +67,10 @@ DUMP_SKEL    := $(BUILD)/dump.skel.h
 SYSCALLS_TBL := $(BUILD)/syscalls_gen.h
 PROC_EVENT_BPF_OBJ := $(BUILD)/proc_event.bpf.o
 PROC_EVENT_SKEL    := $(BUILD)/proc_event.skel.h
+EXECVE_BPF_OBJ     := $(BUILD)/execve.bpf.o
+EXECVE_SKEL        := $(BUILD)/execve.skel.h
+PROP_READ_BPF_OBJ  := $(BUILD)/prop_read.bpf.o
+PROP_READ_SKEL     := $(BUILD)/prop_read.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
 
@@ -125,7 +129,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC)
@@ -222,6 +226,24 @@ $(PROC_EVENT_BPF_OBJ): $(SRC)/modules/proc_event.bpf.c vmlinux.h \
 $(PROC_EVENT_SKEL): $(PROC_EVENT_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name proc_event_bpf > $@
 
+$(EXECVE_BPF_OBJ): $(SRC)/modules/execve.bpf.c vmlinux.h \
+                   $(SRC)/modules/mod_events.h \
+                   $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(EXECVE_SKEL): $(EXECVE_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name execve_bpf > $@
+
+$(PROP_READ_BPF_OBJ): $(SRC)/modules/prop_read.bpf.c vmlinux.h \
+                      $(SRC)/modules/mod_events.h \
+                      $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(PROP_READ_SKEL): $(PROP_READ_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name prop_read_bpf > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -263,7 +285,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(SRC)/common/launch.h $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 

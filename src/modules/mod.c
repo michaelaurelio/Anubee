@@ -24,6 +24,8 @@ static struct ares_sink g_sink;
 
 static const ares_analyzer_t *const registry[] = {
     &analyzer_proc_event,
+    &analyzer_execve,
+    &analyzer_prop_read,
     NULL,
 };
 

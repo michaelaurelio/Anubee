@@ -3,8 +3,9 @@
 #include "common/emit.h"
 
 #include <stdlib.h>   // realloc, malloc, free
-#include <string.h>   // memcpy, strlen
+#include <string.h>   // memcpy, strlen, strerror
 #include <stdio.h>    // snprintf, fwrite, fputs, fputc, fflush, fclose, fprintf
+#include <errno.h>    // errno, EIO
 
 static void jb_need(struct jbuf *j, size_t n)
 {
@@ -95,7 +96,10 @@ int ares_sink_open(struct ares_sink *s, const char *path,
     s->f = fopen(path, "w");
     if (!s->f)
         return -1;
-    setvbuf(s->f, malloc(SINK_BUF_SIZE), _IOFBF, SINK_BUF_SIZE);
+    {
+        char *vbuf = malloc(SINK_BUF_SIZE);
+        if (setvbuf(s->f, vbuf, _IOFBF, SINK_BUF_SIZE) != 0) free(vbuf);
+    }
     s->path   = path;
     s->noun   = noun;
     s->jsonl  = jsonl;
@@ -122,18 +126,19 @@ void ares_sink_emit(struct ares_sink *s)
         fputs(s->count ? ",\n  " : "\n  ", s->f);
         fwrite(s->jb.b, 1, s->jb.len, s->f);
     }
+    if (!s->werr && ferror(s->f)) s->werr = errno ? errno : EIO;
     s->count++;
     s->jb.len = 0;
     if (++s->since_flush >= SINK_FLUSH_DEFAULT) {
-        fflush(s->f);
+        if (fflush(s->f) != 0 && !s->werr) s->werr = errno ? errno : EIO;
         s->since_flush = 0;
     }
 }
 
 void ares_sink_flush(struct ares_sink *s)
 {
-    if (s->f)
-        fflush(s->f);
+    if (s->f && fflush(s->f) != 0 && !s->werr)
+        s->werr = errno ? errno : EIO;
 }
 
 void ares_sink_close(struct ares_sink *s)
@@ -142,8 +147,8 @@ void ares_sink_close(struct ares_sink *s)
         return;
     if (!s->jsonl)
         fputs("\n]\n", s->f);
-    fflush(s->f);
-    fclose(s->f);
+    if (fflush(s->f) != 0 && !s->werr) s->werr = errno ? errno : EIO;
+    if (fclose(s->f) != 0 && !s->werr) s->werr = errno ? errno : EIO;
     s->f = NULL;
     free(s->jb.b);
     s->jb.b = NULL; s->jb.len = s->jb.cap = 0;
@@ -155,6 +160,9 @@ void ares_sink_report(const struct ares_sink *s)
         return;
     fprintf(stderr, "wrote %llu %s%s to %s\n",
             s->count, s->noun, s->count == 1 ? "" : "s", s->path);
+    if (s->werr)
+        fprintf(stderr, "WARNING: write error on %s (%s) — output is incomplete\n",
+                s->path, strerror(s->werr));
 }
 
 // Base64-encode a byte run into the json buffer (for the stack snapshot blob).

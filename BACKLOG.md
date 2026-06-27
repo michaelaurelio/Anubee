@@ -29,9 +29,11 @@ No outstanding urgent items.
 ### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26) — **DONE 2026-06-26**
 
 Core split + `lib`→`trace` wiring shipped. Deferred items remain open individually:
-- **Wiring `correlate` into `trace`** — `correlate_setup` must keep its inline `-P` launch
-  to get the child PID for uprobe attachment; "caller launches once" contract requires
-  `ares_launch_app` to return a PID first (→ GA6).
+- **Wiring `correlate` into `trace`** — requires a post-launch `correlate_attach(pid)` step
+  (uprobes must attach after the child PID is known, which means a 5th public function and
+  coordinator special-casing). Deliberately deferred: the PID-return barrier is gone (GA6
+  keystone done), but the 5th-fn asymmetry is not worth buying for a marginal combined
+  funcs+correlate run.
 - **Wiring `dump` into `trace`** — output model is ELF files + on-exit rescan, not a
   concurrent stream; low-value combined run. Deferred by design.
 
@@ -40,7 +42,7 @@ Per-engine comparison (post-GA2):
 | Dimension | syscalls | funcs | lib | dump | correlate | trace |
 |---|---|---|---|---|---|---|
 | Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **setup/run/teardown** ✓ | **setup/run/teardown** ✓ | coordinator |
-| App launch | shared `ares_launch_app` | shared | shared | shared | own inline launch (needs GA6) | shared |
+| App launch | shared `ares_launch_app` | shared | shared | shared | **shared (GA6 ✓)** | shared |
 | Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | bypasses sink/evq/jb (ELF dumps) | sink, inline poll | per-engine |
 | Symbolized stacks / `--snapshot` | yes | yes | no | no | SP ids only | inherits |
 | Return values | yes (kretprobe) | yes (uretprobe) | no | no | no | inherits |
@@ -183,10 +185,11 @@ symbol path); vDSO frames are named (Phase 1).
   2-stage (`_exit(130)` on second Ctrl-C) and catches only SIGINT, but doesn't respond
   to SIGTERM. Low risk — the coordinator case is intentionally different (multiple
   concurrent drain threads share `g_stop`). Fix separately if SIGTERM matters for `trace`.
-- **GA6 — `correlate` uses an inline launcher, not shared `ares_launch_app`**
-  (`correlate.c:300`; the inline comment says the helper "doesn't return the pid"). Fold
-  back by returning the pid from `ares_launch_app` so `correlate` stops cloning launch
-  logic. Consolidation, pairs with GA2.
+- **GA6 — `ares_launch_app` PID out-param + `correlate` launch dedup — DONE 2026-06-27 (keystone)**
+  Added `pid_t *out_pid` out-param to `ares_launch_app`; polls `pidof` post-launch when non-NULL.
+  `correlate_setup` sheds ~14 lines of duplicated force-stop/resolve/am-start/pidof logic.
+  Five other callers add `, NULL` (interface unchanged). Wiring `correlate` into `trace` remains
+  deliberately deferred — see GA2 deferred items above.
 - **GA7 — `probe_resolve` residual fragility (post-R2-fix).** `vaddr_to_file_off` is
   correct for normal ELF, but: a vaddr in no PT_LOAD is returned unchanged → silently wrong
   offset (`probe_resolve.c:22`); the PT_LOAD table is capped at 32 segments, extras ignored
@@ -203,6 +206,15 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-27 (session 5)
+
+- **GA6 (keystone) — `ares_launch_app` returns the launched PID; `correlate` dedups its
+  inline launcher.** Added `pid_t *out_pid` out-param to `ares_launch_app` (`launch.{c,h}`);
+  polls `pidof` after `am start -S` when non-NULL. `correlate_setup` replaces ~14 lines of
+  duplicated force-stop/resolve-component/am-start/pidof with a single `ares_launch_app(pkg, NULL, &p)`
+  call. Five other callers (`syscalls`, `funcs`, `lib`, `dump`, `trace`) add `, NULL` — interface
+  contract unchanged.
 
 ### 2026-06-26 (session 4)
 

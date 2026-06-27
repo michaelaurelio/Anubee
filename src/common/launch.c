@@ -2,6 +2,7 @@
 #include "common/launch.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -103,7 +104,7 @@ int ares_resolve_component(const char *pkg, char *out, size_t outsz)
 	return out[0] ? 0 : -1;
 }
 
-int ares_launch_app(const char *pkg, const char *activity)
+int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
 {
 	char cmd[512], comp[256];
 
@@ -130,6 +131,19 @@ int ares_launch_app(const char *pkg, const char *activity)
 	snprintf(cmd, sizeof(cmd), "am start -S -n %s", comp);
 	if (ares_sh_exec(cmd, NULL, 0) < 0)
 		return -1;
+
+	if (out_pid) {
+		*out_pid = 0;
+		snprintf(cmd, sizeof(cmd), "pidof %s", pkg);
+		for (int i = 0; i < 30; i++) {
+			char pid_buf[32] = "";
+			ares_sh_exec(cmd, pid_buf, sizeof(pid_buf));
+			pid_t p = (pid_t)atoi(pid_buf);
+			if (p > 0) { *out_pid = p; return 0; }
+			usleep(100000);
+		}
+		return -1;  // launched but PID never appeared in pidof
+	}
 	return 0;
 }
 

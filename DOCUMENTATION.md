@@ -208,10 +208,11 @@ expensive one:
    attach banner or live `==>`/`<==` events. Knobs: `ARES_TEST_PKG`,
    `ARES_TEST_TIMEOUT`. Three non-obvious device facts are baked in (and documented
    in the `testing-ares-on-device` skill): run ares in its **own** `su -c` (chaining
-   `am force-stop; ares` drops it into a reduced context → BPF `-EPERM`); ares stops
-   on **SIGINT**, not SIGTERM, so `timeout -s INT -k 3` is required; and grep the
-   captured output with here-strings (an `echo | grep -q` pipe SIGPIPEs under
-   `pipefail` on large output).
+   `am force-stop; ares` drops it into a reduced context → BPF `-EPERM`); ares handles
+   both **SIGINT and SIGTERM** via the shared 2-stage stop handler (`runtime.c`);
+   `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
+   the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
+   grep -q` pipe SIGPIPEs under `pipefail` on large output).
 
 ---
 
@@ -568,6 +569,9 @@ output for `syscalls` and `funcs` is now routed through `ares_sink_open` /
 `ares_sink_emit` / `ares_sink_close` / `ares_sink_report`. The sink owns the
 `FILE*`, an 8 MB `_IOFBF` write buffer, the reused `jbuf`, the record count, the
 JSONL/array framing, periodic flush, and the "wrote N records to PATH" report.
+On any write/flush/close failure the first error is latched in `s->werr`;
+`ares_sink_report` prints `WARNING: write error on … output is incomplete` at
+teardown if set (GA3).
 `syscalls` is single-writer (drain thread only). `funcs` is multi-writer (drain
 thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialized by
 `g_sink_lock`. SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP

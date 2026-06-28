@@ -280,6 +280,31 @@ flowchart LR
 
 **Firewall:** `cfi_step` reads stack bytes exclusively from the `snap->snap[]` window captured in-kernel at trap time. It never calls `proc_mem_read` or touches live target memory. No uprobe is added. The firewall is clean.
 
+**Native-frame unwinding (RA default).** The CFI return-address register defaults to
+*same-value* — until a function spills its link register the return address is still live in
+x30. Leaf frames (every libc syscall stub such as `__openat`, and the `art_jni_trampoline`
+stub itself) emit no RA rule, so without this default they read as top-of-stack and the
+unwind stops at frame 0. With it, native unwinding walks the full chain (verified on-device:
+1 → 18 frames). Any explicit CIE/FDE rule overrides the default.
+
+**Raw vs CFI backtrace.** The syscall event's own `backtrace` is the cheap kernel
+frame-pointer walk (`bpf_get_stack`). The FP chain cannot cross `art_jni_trampoline` — the
+managed caller above it keeps no AAPCS `[fp,lr]` frame — so that backtrace **stops at the
+trampoline**, tagging the frame `"fp_unwind_end":"jni-trampoline (managed caller in
+cfi_stack)"` rather than emitting a misread ART quick-frame value (a garbage
+`[unmapped]`/non-canonical address). The companion `cfi_stack` record is the path that
+actually crosses the trampoline. Interpreter bridges are left intact (the interpreter is
+native C++ and keeps a valid FP chain through it).
+
+**Current status & remaining walls.** Native unwinding works on-device and the real
+`boot.oat` trampoline FDE is verified to recover the managed caller, but a *live*
+jni-trampoline→managed cross is **not yet end-to-end**. Two follow-ups gate it (BACKLOG):
+**W5** — JIT code-cache (`[anon]`) frames have no file-backed CFI, so the unwind stops at a
+JIT-compiled caller (needs ART's in-memory mini-ELF unwind info, the same source `jit_resolve`
+uses for symbols); **W6** — library-filter mode (required for snapshots) captures only
+process-init syscalls, so snapshots rarely see a JNI stack. The capture window (**W4**, done)
+was enlarged 8 KB → 32 KB with a 3-tier fault fallback.
+
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
 - Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"` but the managed method name is not recovered (no ART internal stack walk).

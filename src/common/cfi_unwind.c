@@ -289,6 +289,7 @@ int cfi_parse_eh_frame(struct cfi_section *s, const uint8_t *data, size_t len,
     s->fdes         = NULL;
     s->nfde         = 0;
     s->section_vaddr = section_vaddr;
+    s->owned        = NULL;   /* not heap-owned here; cfi_section_free frees this */
 
     /* First pass: count FDEs */
     size_t nfde = 0;
@@ -648,6 +649,8 @@ int cfi_parse_debug_frame(struct cfi_section *s, const uint8_t *data, size_t len
     s->len   = len;
     s->fdes  = NULL;
     s->nfde  = 0;
+    s->owned = NULL;          /* not heap-owned here; cfi_section_free frees this */
+    s->section_vaddr = 0;     /* unused for .debug_frame (absolute addresses) */
 
     /* First pass: count FDEs so we can allocate exactly once. */
     size_t nfde = 0;

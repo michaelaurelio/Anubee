@@ -1,4 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+// BPF object for the prop-read analyzer: trace all Android system property API calls.
+// Standalone module with no dependency on the funcs engine.
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+char LICENSE[] SEC("license") = "GPL";
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 * 1024 * 1024);
+} events_rb SEC(".maps");
+
+#include "common/uid_filter.bpf.h"
+#include "modules/mod_events.h"
+
 // prop_read.bpf.c — BPF programs for all Android system property APIs.
 //
 // Hooks:
@@ -67,7 +84,7 @@ int BPF_KPROBE(on_prop_get, const char *name, char *buf)
     struct prop_entry_ctx ectx = { (unsigned long)name, (unsigned long)buf };
     bpf_map_update_elem(&prop_entry_map, &tid, &ectx, BPF_ANY);
 
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_GET);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_GET);
     if (!e) return 0;
     unsigned long name_addr = (unsigned long)name & 0x00FFFFFFFFFFFFFFul;
     bpf_probe_read_user_str(e->name, sizeof(e->name), (void *)name_addr);
@@ -84,7 +101,7 @@ int BPF_KRETPROBE(on_prop_get_ret)
     struct prop_entry_ctx *saved = bpf_map_lookup_elem(&prop_entry_map, &tid);
     if (!saved) return 0;
 
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_GET);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_GET);
     if (!e) { bpf_map_delete_elem(&prop_entry_map, &tid); return 0; }
 
     e->is_ret = 1;
@@ -109,7 +126,7 @@ int BPF_KPROBE(on_prop_find, const char *name)
     struct prop_entry_ctx ectx = { (unsigned long)name, 0 };
     bpf_map_update_elem(&prop_entry_map, &tid, &ectx, BPF_ANY);
 
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_FIND);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_FIND);
     if (!e) return 0;
     unsigned long name_addr = (unsigned long)name & 0x00FFFFFFFFFFFFFFul;
     bpf_probe_read_user_str(e->name, sizeof(e->name), (void *)name_addr);
@@ -126,7 +143,7 @@ int BPF_KRETPROBE(on_prop_find_ret)
     struct prop_entry_ctx *saved = bpf_map_lookup_elem(&prop_entry_map, &tid);
     if (!saved) return 0;
 
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_FIND);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_FIND);
     if (!e) { bpf_map_delete_elem(&prop_entry_map, &tid); return 0; }
 
     e->is_ret = 1;
@@ -151,7 +168,7 @@ SEC("uprobe")
 int BPF_KPROBE(on_prop_fore)
 {
     if (!uid_matches()) return 0;
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_SCAN);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_SCAN);
     if (!e) return 0;
     bpf_ringbuf_submit(e, 0);
     return 0;
@@ -164,7 +181,7 @@ SEC("uprobe")
 int BPF_KPROBE(on_prop_read_callback, const void *pi)
 {
     if (!uid_matches()) return 0;
-    struct prop_event *e = reserve_prop_event(ARES_EVENT_PROP_READ);
+    struct prop_event *e = reserve_prop_event(MOD_EV_PROP_READ);
     if (!e) return 0;
     read_prop_info((unsigned long)pi, e->name, sizeof(e->name), e->value, sizeof(e->value));
     bpf_ringbuf_submit(e, 0);

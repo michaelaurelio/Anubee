@@ -44,6 +44,18 @@ int main(void)
     CHECK(alen == 8, "alen==8");
     ares_evq_destroy(&q);
 
+    // GA4: an oversized record (> outcap) is dropped whole, not partially consumed,
+    // so the next record stays correctly framed.
+    CHECK(ares_evq_init(&q, 256) == 0, "init5");
+    unsigned char wide[40]; memset(wide, 0xCD, sizeof wide);
+    CHECK(ares_evq_push(&q, wide, 40) == 0, "push wide");
+    CHECK(ares_evq_push(&q, data, 5) == 0, "push narrow after wide");
+    CHECK(ares_evq_pop(&q, out, 16, &alen) == 1, "pop skips oversized -> next");
+    CHECK(alen == 5, "got the narrow record, not a 16B truncation");
+    CHECK(memcmp(out, data, 5) == 0, "framing intact after drop");
+    CHECK(q.dropped == 1, "oversized counted as dropped");
+    ares_evq_destroy(&q);
+
     // done+empty -> pop returns 0 immediately
     CHECK(ares_evq_init(&q, 256) == 0, "init3");
     mark_done(&q);

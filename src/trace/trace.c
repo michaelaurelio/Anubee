@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
+#include "common/runtime.h"  // ares_install_stop_handler
 #include "trace/trace_args.h"
 
 // Engine driver entry points. Defined in the syscalls / funcs / lib engines and
@@ -29,10 +30,9 @@ int  lib_setup(int argc, char **argv, const struct ares_run_ctx *rc);
 int  lib_run(volatile sig_atomic_t *stop);
 void lib_teardown(void);
 
-// One stop flag shared by all engines' poll loops; set by the coordinator's
-// SIGINT handler (the engines do not install their own when driven here).
+// One stop flag shared by all engines' poll loops; set by the shared SIGINT/SIGTERM
+// stop handler (the engines do not install their own when driven here).
 static volatile sig_atomic_t g_stop;
-static void on_sigint(int sig) { (void)sig; if (g_stop) _exit(130); g_stop = 1; }
 
 static void usage(const char *argv0)
 {
@@ -147,10 +147,10 @@ int cmd_trace(int argc, char **argv)
 		return 1;
 	}
 
-	signal(SIGINT, on_sigint);
+	ares_install_stop_handler(&g_stop);
 
 	ares_launch_banner(pkg, uid);
-	if (ares_launch_app(pkg, activity) != 0) {
+	if (ares_launch_app(pkg, activity, NULL) != 0) {
 		fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
 		if (want_lib) lib_teardown();
 		if (want_func) funcs_teardown();

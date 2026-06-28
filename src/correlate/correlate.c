@@ -275,10 +275,10 @@ static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_d
 // ---- three-phase driver ---------------------------------------------------
 // correlate_setup/run/teardown are kept global for signature parity with the
 // other engines. rc is plumbed through for future coordinator use but is not
-// consumed: correlate's -P launch must stay inside setup because it needs the
-// child PID back (via pidof) to attach uprobes before returning.
-// ponytail: inline launch stays here — "caller launches once" contract doesn't
-// apply until ares_launch_app returns the PID; that's a separate future change.
+// consumed: correlate's -P launch stays inside setup because uprobe attach needs
+// the child PID (only known post-launch) before setup returns.
+// ponytail: correlate stays standalone — trace --correlate is deferred; the
+// coordinator would need a post-launch correlate_attach(pid) step (5th public fn).
 
 // Cross-phase state: published by correlate_setup, consumed by run/teardown.
 static struct ares_correlate *g_skel;
@@ -288,7 +288,7 @@ static int                     g_total;
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    (void)rc;  // plumbed for parity; -P/-p own their pid/launch logic
+    (void)rc;  // plumbed for parity; trace --correlate wiring deferred (post-launch attach)
     // ponytail: static so specs/pkg strings (pointing into argv) outlive setup.
     static struct corr_args ca = { 0 };
     if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
@@ -310,25 +310,16 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
 
     // -P: install UID before launch so the kprobe gates from the start.
-    // Launch stays inline (we need the pid back via pidof; ares_launch_app doesn't return it).
     if (ca.pkg) {
         int uid = ares_resolve_uid(ca.pkg);
         if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", ca.pkg); goto err_skel; }
         if (install_uid(skel, uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
-        char cmd[512], comp[256];
-        snprintf(cmd, sizeof(cmd), "am force-stop %s", ca.pkg); ares_sh_exec(cmd, NULL, 0);
-        if (ares_resolve_component(ca.pkg, comp, sizeof(comp)) != 0) {
-            fprintf(stderr, "correlate: cannot resolve launcher for %s\n", ca.pkg); goto err_skel;
-        }
-        snprintf(cmd, sizeof(cmd), "am start -n %s", comp);
         ares_launch_banner(ca.pkg, uid);
-        ares_sh_exec(cmd, NULL, 0);
-        sleep(1);  // let the process spawn + map its libs
-        char pidbuf[32] = "";
-        snprintf(cmd, sizeof(cmd), "pidof %s", ca.pkg);
-        ares_sh_exec(cmd, pidbuf, sizeof(pidbuf));
-        pid_t p = (pid_t)atoi(pidbuf);
-        if (p <= 0) { fprintf(stderr, "correlate: could not find launched PID for %s\n", ca.pkg); goto err_skel; }
+        pid_t p;
+        if (ares_launch_app(ca.pkg, NULL, &p) != 0) {
+            fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
+        }
+        sleep(1);  // let the process map its libs before uprobe attach
         ca.pids[ca.pid_count++] = p;
     } else {
         // -p: install each pid's UID.

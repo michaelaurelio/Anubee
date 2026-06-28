@@ -18,9 +18,32 @@ so history stays traceable.
 
 ---
 
+## Open work — at a glance
+
+**Urgent:** none.
+
+**Major:**
+- GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
+- `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
+- CFI W1: wire `cfi_step` unwinder to runtime (syscalls + funcs)
+- Managed-frame OAT/ODEX: future — parked pending proper ART parsing
+
+**Minor:**
+- F2 — `ares funcs -p` PID attach, needs repro
+- R9 — `syscall_name()` linear scan → bsearch; C9 — `funcs` sockaddr decode
+- `vmlinux.h` dedup; drop committed `vmlinux.btf`
+- MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
+- U1/U2 console style unification (not recommended — high churn, low value)
+- `ares mod` audit (open): U2 `-v` asymmetry, O2 structured backtrace symbols, O3 prop schema, F1 `-p PID`, F2 auto-stop, F3 summaries, F4 `-b` ring wire
+
+---
+
 ## Urgent — architectural / correctness-critical
 
-No outstanding urgent items.
+### B1 — prop-read RASP summary was silently empty under `-o` — **DONE 2026-06-28**
+
+`prop_stat_add()` calls hoisted out of the `if (!mc->quiet)` guard in `src/modules/prop_read.c`.
+Tally now always runs; `pr_print_summary` prints correctly whether or not `-o` is active.
 
 ---
 
@@ -28,10 +51,12 @@ No outstanding urgent items.
 
 ### GA2 — Engine lifecycle asymmetry (graph audit 2026-06-26) — **DONE 2026-06-26**
 
-Core split + `lib`→`trace` wiring shipped. Deferred items remain open individually:
-- **Wiring `correlate` into `trace`** — `correlate_setup` must keep its inline `-P` launch
-  to get the child PID for uprobe attachment; "caller launches once" contract requires
-  `ares_launch_app` to return a PID first (→ GA6).
+GA2 core done (see Resolved/Done 2026-06-26). Deferred wiring remains:
+- **Wiring `correlate` into `trace`** — requires a post-launch `correlate_attach(pid)` step
+  (uprobes must attach after the child PID is known, which means a 5th public function and
+  coordinator special-casing). Deliberately deferred: the PID-return barrier is gone (GA6
+  keystone done), but the 5th-fn asymmetry is not worth buying for a marginal combined
+  funcs+correlate run.
 - **Wiring `dump` into `trace`** — output model is ELF files + on-exit rescan, not a
   concurrent stream; low-value combined run. Deferred by design.
 
@@ -40,7 +65,7 @@ Per-engine comparison (post-GA2):
 | Dimension | syscalls | funcs | lib | dump | correlate | trace |
 |---|---|---|---|---|---|---|
 | Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | **setup/run/teardown** ✓ | **setup/run/teardown** ✓ | coordinator |
-| App launch | shared `ares_launch_app` | shared | shared | shared | own inline launch (needs GA6) | shared |
+| App launch | shared `ares_launch_app` | shared | shared | shared | **shared (GA6 ✓)** | shared |
 | Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | bypasses sink/evq/jb (ELF dumps) | sink, inline poll | per-engine |
 | Symbolized stacks / `--snapshot` | yes | yes | no | no | SP ids only | inherits |
 | Return values | yes (kretprobe) | yes (uretprobe) | no | no | no | inherits |
@@ -59,41 +84,14 @@ Per-engine comparison (post-GA2):
 - **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
   `/proc/maps` scan); tighten launch→attach timing so early calls aren't missed.
 
-### Shared-core de-dup (consolidation roadmap)
-
-The engines were merged with minimal edits, so duplicated logic remains. Folds into
-the thin-presets migration (Urgent).
-
-- **C2 — ring-buffer setup + poll loop.** **DONE (2026-06-23/24).** `ares_rb_poll_until`
-  / `ares_rb_poll_until_cb` in `src/common/runtime.h`; all five engines on the shared
-  drain helper.
-- **C3 — symbolizer maps parsing.** **DONE (2026-06-24/25).** Phase 1: `symbolize.{c,h}`
-  moved to `src/common/` and shared by both engines. Phase 2: `src/common/maps.{c,h}`
-  adds `ares_parse_maps_line` — all six `/proc/<pid>/maps` consumers now use it (symbolize,
-  lib_trace, probe_resolve, correlate, dump/rebuild, funcs). Full iterator-sharing
-  (one open/read/close for all consumers) is **explicitly declined** as over-engineering
-  for once-per-attach one-shot scans.
-- **C4 — kernel-side UID filter.** **DONE (2026-06-24).** `src/common/uid_filter.bpf.h`
-  (`target_uids` HASH-set map + `uid_matches()`); all five `.bpf.c` files include it.
-- **C7 — symbol/caller resolution.** **DONE (2026-06-24).** See C3 Phase 1. `funcs`
-  now gets real function names from `.dynsym`/`.symtab`/`.gnu_debugdata`, ART/JIT
-  frames, and vDSO resolution.
-- **C8 — misc duplication.** **DONE (2026-06-24).** `libbpf_print_fn` (three local
-  copies) → `ares_libbpf_quiet` from `common/runtime.h`; `dropped`
-  map/`bump_dropped()` → `src/common/bpf_drop.bpf.h`; `syscalls_hdr` alias removed.
-  Remaining: `vmlinux.h` dedup (see Minor).
-
-### `funcs` structured records — module events (deferred)
+### `funcs` structured records — module events — **DONE 2026-06-28**
 
 - CALL/RETURN: **done.** MAP/UNMAP: **done (2026-06-25)** via `ares_libtrace_emit_lib/unlib`
   under `g_sink_lock` (Option A — drain emits directly, attach stays prompt).
-- **SPAWN/PROC_EXIT/EXECVE/PROP** still open: needs new `funcs_emit_*` builders
-  (one per type, host-tested) and a sink path on the module `handle_event` signature
-  (`module.h:19` currently has no output channel).
-- **B2 — route all map/unmap/module events through the worker queue** (syscalls
-  `process_event` model): converges funcs to single-writer, enables retiring the
-  `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
-  in (at that point B2 becomes cheaper than wiring more lock sites into modules).
+- **SPAWN/PROC_EXIT/EXECVE/PROP** — **done (2026-06-28)** via `ares mod` migration
+  (Phases 1–3); output channel in `src/modules/mod_emit.c`. See Resolved/Done 2026-06-28.
+- **B2** — worker-queue convergence was scoped for post-module-events; moot after
+  `ares mod` migration (module events no longer route through the funcs worker queue).
 
 ### CFI stack unwinder — engine + wiring landed; live cross has 3 known walls
 
@@ -197,41 +195,37 @@ symbol path); vDSO frames are named (Phase 1).
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
-### Graph audit (2026-06-26)
+- **`ares mod` audit findings (2026-06-28). B1/U1/O1/U3 fixed 2026-06-28. Remaining deferred.**
 
-- **GA3 — sink swallows all write/flush/close errors.** `ares_sink_emit` ignores every
-  `fwrite`/`fputs`/`fputc` return and increments `count` regardless (`emit.c:104-120`);
-  `ares_sink_flush`/`_close` ignore `fflush`/`fclose` (`emit.c:126,135`); `ares_sink_open`
-  hands `setvbuf` an unchecked `malloc(8 MB)` (`emit.c:93`). ENOSPC/EIO and a
-  flush-failure-at-close silently truncate the JSONL with zero signal. Fix: check the
-  hot-path returns, latch a sticky write-error, and report it at teardown.
-- **GA4 — event-queue pop clamp can desync the whole stream.** `ares_evq_pop` does
-  `if (n > outcap) n = outcap` then advances `tail` by only `n` (`evqueue.c:68-72`); the
-  remaining `sz-n` bytes are then read as the next length prefix, desyncing every
-  subsequent record. The inline comment ("records are always bounded") asserts the
-  invariant in prose but nothing enforces it. Currently safe only because worker buffers
-  are sized to the max record (`syscalls.c:861`). Fix: `assert(sz <= outcap)` (or drop the
-  whole record + count it) instead of a silent partial read.
-- **GA5 — stop-handler inconsistency across engines. PARTIAL (2026-06-26).**
-  `dump` and `correlate` now both use the shared `ares_install_stop_handler` (2-stage
-  SIGINT+SIGTERM) — fixed as a free byproduct of the GA2 lifecycle split. Remaining:
-  `trace` coordinator still hand-rolls its `on_sigint` (`trace.c:31`); it's already
-  2-stage (`_exit(130)` on second Ctrl-C) and catches only SIGINT, but doesn't respond
-  to SIGTERM. Low risk — the coordinator case is intentionally different (multiple
-  concurrent drain threads share `g_stop`). Fix separately if SIGTERM matters for `trace`.
-- **GA6 — `correlate` uses an inline launcher, not shared `ares_launch_app`**
-  (`correlate.c:300`; the inline comment says the helper "doesn't return the pid"). Fold
-  back by returning the pid from `ares_launch_app` so `correlate` stops cloning launch
-  logic. Consolidation, pairs with GA2.
-- **GA7 — `probe_resolve` residual fragility (post-R2-fix).** `vaddr_to_file_off` is
-  correct for normal ELF, but: a vaddr in no PT_LOAD is returned unchanged → silently wrong
-  offset (`probe_resolve.c:22`); the PT_LOAD table is capped at 32 segments, extras ignored
-  (`:32`); a user-supplied `@offset` in a custom spec is used as a raw file offset with no
-  conversion (`:408`). Harden the no-segment-match and over-cap cases to fail loudly.
-- _Checked, not a bug:_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of unbounded
-  append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings
-  (`correlate.c:233,242,251`). No action. (R2 raw-`st_value`-offset is likewise already
-  fixed — see Resolved.)
+  **UX / CLI:**
+  - **U1 — dead flags advertised. DONE 2026-06-28.** `mod_options` hand-picks `-o/-v/-q` now
+    (mirrors `lib.c`); `-J/-b/-Q` dropped from `--help`.
+  - **U2 — `-v` honored only by execve.** `mc->verbose` checked in `execve.c` but ignored by
+    proc-event and prop-read. Add verbose output to the other two, or document as execve-only.
+  - **U3 — setup banners standardized. DONE 2026-06-28.** Per-analyzer "enabled" lines removed from
+    `execve.c` and `prop_read.c`; only dispatcher banner remains.
+
+  **Output / schema:**
+  - **O1 — execve prefix fixed. DONE 2026-06-28.** `execve.c` now prints `[exec]` (was `[proc]`).
+  - **O2 — structured execve backtrace addr-only.** Console resolves via `sym_resolve`
+    (`execve.c:53`); `-o` JSONL emits raw addresses only (`mod_emit.c:53-61`). Fix (medium):
+    resolve in analyzer, pass symbol strings into a richer emit path.
+  - **O3 — prop schema over-emits.** SCAN events emit `name`/`value`/`is_ret`/`found` even when
+    empty/zero. Minor; optional per-op field trimming.
+
+  **Functionality:**
+  - **F1 — launch-only; no `-p PID`.** `-P` required; always `ares_launch_app`s. Opportunity:
+    resolve uid from pid, skip launch.
+  - **F2 — no `-d SECONDS` auto-stop.** Scripts wrap with `timeout`.
+  - **F3 — no summary for proc-event or execve.** `print_summary` is NULL for both. Cheap wins:
+    proc-event → fork/exit counts; execve → per-binary exec tally.
+  - **F4 — `-b` ring size wired nowhere.** Each analyzer hardcodes 1 MiB `events_rb`. Wire
+    `bpf_map__set_max_entries` before load if `-b` is ever re-added.
+
+- _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of
+  unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings
+  (`correlate.c:233,242,251`). No action. (R2 raw-`st_value`-offset likewise already fixed — see
+  Resolved.) GA3–GA7 from the same audit all shipped — see Resolved/Done (session 5).
 
 ---
 
@@ -239,6 +233,45 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-28
+
+- **proc-event/execve/prop-read → `ares mod` migration (Phases 1–3).** SPAWN/PROC_EXIT/EXECVE/PROP
+  events migrated from the open `funcs` module-events backlog to the `ares mod` analyzer subsystem
+  (proc-event, execve, prop-read); output channel in `src/modules/mod_emit.c`. Closes the
+  SPAWN/PROC_EXIT/EXECVE/PROP deferred item and retires B2 as moot.
+
+### 2026-06-27 (session 5)
+
+- **GA6 (keystone) — `ares_launch_app` returns the launched PID; `correlate` dedups its
+  inline launcher.** Added `pid_t *out_pid` out-param to `ares_launch_app` (`launch.{c,h}`);
+  polls `pidof` after `am start -S` when non-NULL. `correlate_setup` replaces ~14 lines of
+  duplicated force-stop/resolve-component/am-start/pidof with a single `ares_launch_app(pkg, NULL, &p)`
+  call. Five other callers (`syscalls`, `funcs`, `lib`, `dump`, `trace`) add `, NULL` — interface
+  contract unchanged.
+- **GA7 — `probe_resolve` no-PT_LOAD sentinel.** `seg_vaddr_to_off` and `vaddr_to_file_off` now
+  return `SEG_VADDR_BAD` (`(unsigned long)-1`) instead of the raw vaddr when no PT_LOAD segment
+  contains the address. All four callers (`resolve_targets`, `resolve_targets_for_file`,
+  `resolve_custom_spec_for_path`, `prop_read.c`) guard the sentinel and skip+warn via verbose log
+  rather than attaching a uprobe at a wrong file offset. The 32-segment cap is self-healing under
+  the new contract (an out-of-range vaddr → sentinel → skip). `@offset` in custom specs documented
+  as a file offset, not a readelf/nm vaddr. Two `test_probe_spec` assertions flipped to
+  `SEG_VADDR_BAD`. `DOCUMENTATION.md` updated. Commit `7995126`.
+- **GA5 — `trace` coordinator SIGTERM.** Replaced the hand-rolled `on_sigint` + `signal(SIGINT,
+  on_sigint)` in `trace.c` with `ares_install_stop_handler(&g_stop)`. `trace` now responds to
+  SIGTERM identically to SIGINT (graceful drain+flush; 2nd signal → `_exit(130)`), matching all
+  five standalone engines. Bundled in commit `97c827f` with GA4.
+- **GA4 — event-queue pop desync.** `ares_evq_pop` now loops: reads the 4-byte length, and if
+  the record fits the caller's buffer copies it normally; if oversized, advances `tail` by the
+  full `sz` (keeping the ring framed), increments `dropped`, and fetches the next record — never
+  handing the caller a truncated or garbage record. `test_evqueue` extended: push 40-byte record
+  then 5-byte record, pop with `outcap=16` → must receive the 5-byte record cleanly (26 checks
+  total). Bundled in commit `97c827f` with GA5.
+- **GA3 — sink write errors.** `ares_sink_emit` now latches `errno` into `s->werr` on `ferror`
+  and on periodic `fflush`; `ares_sink_flush`/`_close` latch on `fflush`/`fclose` failure;
+  `ares_sink_report` prints a WARNING line if `werr` is set. `setvbuf` malloc leak fixed (free on
+  `setvbuf` failure). `test_emit` extended: `fmemopen` 16-byte buffer overflowed by 10 records
+  confirms `s.werr != 0` (23 checks total). Commit `478c679`.
 
 ### 2026-06-26 (session 4)
 

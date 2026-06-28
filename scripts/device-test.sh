@@ -29,8 +29,8 @@ info() { echo "  $*"; }
 
 # ares runs in its OWN su -c (see header). Host expands the vars; the single
 # quotes reach the device shell so `su -c '<one string>'` execs the binary.
-# ares stops on SIGINT (its "Ctrl-C") but IGNORES SIGTERM, so plain `timeout`
-# (TERM) hangs waiting on it — send INT, with a SIGKILL backstop after 3s.
+# ares handles both SIGINT and SIGTERM via the shared 2-stage stop handler.
+# -s INT matches the interactive Ctrl-C path; -k 3 keeps the SIGKILL backstop.
 ares()      { adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*'" 2>&1; }
 forcestop() { adb shell "su -c 'am force-stop $PKG'" >/dev/null 2>&1; }
 # A run orphaned by an adb disconnect keeps holding the binary -> ETXTBSY on the

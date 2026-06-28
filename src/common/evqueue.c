@@ -57,20 +57,27 @@ int ares_evq_push(struct ares_evq *q, const void *rec, size_t len)
 int ares_evq_pop(struct ares_evq *q, void *out, size_t outcap, size_t *actual_len)
 {
     pthread_mutex_lock(&q->m);
-    while (q->used == 0 && !q->done)
-        pthread_cond_wait(&q->cv, &q->m);
-    if (q->used == 0 && q->done) {
-        pthread_mutex_unlock(&q->m);
-        return 0;
+    for (;;) {
+        while (q->used == 0 && !q->done)
+            pthread_cond_wait(&q->cv, &q->m);
+        if (q->used == 0 && q->done) {
+            pthread_mutex_unlock(&q->m);
+            return 0;
+        }
+        uint32_t sz;
+        q_out(q, &sz, 4);
+        if (sz <= outcap) {
+            q_out(q, out, sz);
+            pthread_mutex_unlock(&q->m);
+            *actual_len = sz;
+            return 1;
+        }
+        // Oversized record (records are normally bounded): drain it whole so the
+        // ring stays framed instead of desyncing, count it, and fetch the next.
+        q->tail = (q->tail + sz) % q->cap;
+        q->used -= sz;
+        q->dropped++;
     }
-    uint32_t sz;
-    q_out(q, &sz, 4);
-    size_t n = sz;
-    if (n > outcap) n = outcap;    // safety clamp — records are always bounded
-    q_out(q, out, n);
-    pthread_mutex_unlock(&q->m);
-    *actual_len = n;
-    return 1;
 }
 
 void ares_evq_destroy(struct ares_evq *q)

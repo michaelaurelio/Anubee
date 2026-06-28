@@ -1058,6 +1058,14 @@ int cfi_run_program(const struct cfi_section *s, uint64_t module_pc,
         st.cols[i].kind = CFI_UNDEF;
         st.cols[i].off  = 0;
     }
+    /* The return-address register defaults to "same value": until a function
+     * spills its link register, the caller's return address is still live in the
+     * RA register (x30 on aarch64). Leaf frames — e.g. libc syscall stubs like
+     * __openat, and the art_jni_trampoline stub — emit no RA rule, so without this
+     * default they would be read as top-of-stack and the unwind would stop at the
+     * first frame. Any explicit CIE/FDE rule below overrides this. */
+    if (cie.ra_reg < CFI_NREG)
+        st.cols[cie.ra_reg].kind = CFI_SAME;
 
     struct cfi_saved_state remember_stack[CFI_REMEMBER_DEPTH];
     int remember_depth = 0;

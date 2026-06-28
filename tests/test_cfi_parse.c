@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "common/cfi_unwind.h"
 
 static const uint8_t DF[] = {
@@ -50,6 +51,15 @@ int main(void)
 	/* malformed: truncated section must fail cleanly, not crash */
 	struct cfi_section bad;
 	assert(cfi_parse_debug_frame(&bad, DF, 6) == -1);
+
+	/* regression: a section parsed directly (not via cfi_load_elf) must have its
+	 * owned pointer initialized, so cfi_section_free is safe. Poison the struct so
+	 * an uninitialized owned would be a non-NULL garbage pointer -> free() abort
+	 * (the original CI segfault: "free(): invalid size"). */
+	struct cfi_section poisoned;
+	memset(&poisoned, 0xAA, sizeof(poisoned));
+	assert(cfi_parse_debug_frame(&poisoned, DF, sizeof(DF)) == 0);
+	cfi_section_free(&poisoned);   /* must not crash */
 
 	return 0;
 }

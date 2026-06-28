@@ -99,6 +99,19 @@ int main(void)
         free(got);
     }
 
+    // GA3: write errors latch instead of vanishing silently.
+    {
+        char tiny[16];
+        struct ares_sink s = {0};
+        s.f = fmemopen(tiny, sizeof tiny, "w");
+        s.jsonl = 1; s.path = "<mem>"; s.noun = "event";
+        CHECK(s.f != NULL, "ga3: fmemopen");
+        for (int i = 0; i < 10; i++) { jb_s(&s.jb, "{\"x\":1234567890}"); ares_sink_emit(&s); }
+        ares_sink_flush(&s);  // force the overflow through the flush path too
+        CHECK(s.werr != 0, "ga3: write error latched on overflow");
+        fclose(s.f); free(s.jb.b);
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

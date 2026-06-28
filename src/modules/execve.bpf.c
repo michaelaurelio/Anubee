@@ -1,4 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+// BPF object for the execve analyzer: trace execve syscalls with full argv and call stack.
+// Standalone module with no dependency on the funcs engine.
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+char LICENSE[] SEC("license") = "GPL";
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 * 1024 * 1024);
+} events_rb SEC(".maps");
+
+#include "common/uid_filter.bpf.h"
+#include "modules/mod_events.h"
+
 // Full execve tracing via kprobe on __arm64_sys_execve.
 // __arm64_sys_execve(const struct pt_regs *regs): userspace syscall args in regs->regs[0..2].
 // Falls back to on_proc_exec (sched_process_exec) when this kprobe fails to attach.
@@ -13,7 +30,7 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
         return 0;
 
     __u64 id  = bpf_get_current_pid_tgid();
-    e->h.type = ARES_EVENT_EXECVE;
+    e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
@@ -65,7 +82,7 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
         return 0;
 
     __u64 id  = bpf_get_current_pid_tgid();
-    e->h.type = ARES_EVENT_EXECVE;
+    e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
@@ -114,7 +131,7 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
         return 0;
 
     __u64 id  = bpf_get_current_pid_tgid();
-    e->h.type = ARES_EVENT_EXECVE;
+    e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;

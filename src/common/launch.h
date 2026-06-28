@@ -35,7 +35,9 @@ int ares_resolve_component(const char *pkg, char *out, size_t outsz);
 // `am start -S -n <component>`. The caller must have already armed tracing
 // (installed the UID filter / attached probes) so the fresh process is caught
 // from its first instruction. Returns 0 on success, -1 otherwise.
-int ares_launch_app(const char *pkg, const char *activity);
+// If `out_pid != NULL`, polls `pidof` after `am start` and writes the launched
+// PID; returns -1 if the app started but no PID could be resolved within 3s.
+int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid);
 
 // Uniform one-line launch banner ("launching <pkg> (uid N)") so every engine
 // announces its single fresh relaunch the same way. Prints to stdout.

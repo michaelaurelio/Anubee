@@ -1280,7 +1280,7 @@ int cmd_syscalls(int argc, char **argv)
 	// Standalone: tracing is armed (UID installed in setup); launch and own signals.
 	ares_install_stop_handler(&exiting);
 	ares_launch_banner(g_pkg, g_uid);
-	if (ares_launch_app(g_pkg, g_activity) != 0) {
+	if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
 		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
 		syscalls_teardown();
 		return 1;

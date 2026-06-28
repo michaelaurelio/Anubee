@@ -19,16 +19,17 @@ unsigned long seg_vaddr_to_off(const struct load_seg *segs, int n,
         if (vaddr >= segs[i].vaddr && vaddr < segs[i].vaddr + segs[i].filesz)
             return vaddr - segs[i].vaddr + segs[i].offset;
     }
-    return vaddr; // not in any PT_LOAD; caller gets vaddr back unchanged
+    return SEG_VADDR_BAD; // not in any PT_LOAD; caller must skip this symbol
 }
 
 // Build a PT_LOAD table from the open Elf handle and convert vaddr to file
-// offset. Cap at 32 segments (enough for any real .so).
+// offset. Cap at 32 segments (enough for any real .so); a vaddr outside all
+// collected segments yields SEG_VADDR_BAD — caller skips, not wrong-offset attach.
 static unsigned long vaddr_to_file_off(Elf *elf, unsigned long vaddr)
 {
     size_t phnum;
     if (elf_getphdrnum(elf, &phnum) != 0)
-        return vaddr;
+        return SEG_VADDR_BAD;
     struct load_seg segs[32];
     int n = 0;
     for (size_t i = 0; i < phnum && n < 32; i++) {
@@ -179,10 +180,15 @@ int resolve_targets(const struct probe_resolve_ctx *ctx, pid_t pid,
                     (!entry_match && ret_match) ? " (ret-only)" : "");
 
                 if (!is_duplicate(ctx->targets, *ctx->target_count + count, path, (unsigned long)sym.st_value)) {
+                    unsigned long off = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                    if (off == SEG_VADDR_BAD) {
+                        if (ctx->verbose) ctx->log("  [scan]   | skip %s: vaddr 0x%lx in no PT_LOAD\n", name, (unsigned long)sym.st_value);
+                        continue;
+                    }
                     targets[count].pid = pid;
                     copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                     copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
-                    targets[count].offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                    targets[count].offset = off;
                     targets[count].arg_count = -1;
                     memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                     targets[count].ret_only = !entry_match && ret_match;
@@ -267,10 +273,15 @@ int resolve_targets_for_file(const struct probe_resolve_ctx *ctx,
                 (!entry_match && ret_match) ? " (ret-only)" : "");
 
             if (!is_duplicate(ctx->targets, *ctx->target_count + count, path, (unsigned long)sym.st_value)) {
+                unsigned long off = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                if (off == SEG_VADDR_BAD) {
+                    if (ctx->verbose) ctx->log("  [scan]   | skip %s: vaddr 0x%lx in no PT_LOAD\n", name, (unsigned long)sym.st_value);
+                    continue;
+                }
                 targets[count].pid = pid;
                 copy_str(targets[count].mod_path, path, sizeof(targets[count].mod_path));
                 copy_str(targets[count].func_name, name, sizeof(targets[count].func_name));
-                targets[count].offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                targets[count].offset = off;
                 targets[count].arg_count = -1;
                 memset(targets[count].arg_types, 0, sizeof(targets[count].arg_types));
                 targets[count].ret_only = !entry_match && ret_match;
@@ -406,6 +417,7 @@ int resolve_custom_spec_for_path(pid_t pid, const char *path,
     out->ret_only = spec->ret_only;
 
     if (spec->offset > 0) {
+        // @offset is a FILE offset (not a readelf/nm vaddr) — used raw, no ELF parse.
         out->offset = spec->offset;
         return 0;
     }
@@ -433,8 +445,8 @@ int resolve_custom_spec_for_path(pid_t pid, const char *path,
             if (sym.st_value == 0) continue;
             const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
             if (name && strcmp(name, spec->func) == 0) {
-                out->offset = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
-                found = 0;
+                unsigned long off = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                if (off != SEG_VADDR_BAD) { out->offset = off; found = 0; }
             }
         }
     }

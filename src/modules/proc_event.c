@@ -16,6 +16,12 @@
 static struct proc_event_bpf *g_skel = NULL;
 static struct ring_buffer     *g_rb   = NULL;
 
+// ── event counters (tallied unconditionally so summary survives -o / quiet) ──
+
+static unsigned long g_forks    = 0;
+static unsigned long g_exits    = 0;
+static unsigned long g_sig_exits = 0;
+
 // ---- ring-buffer callback ---------------------------------------------------
 
 static int pe_handle_event(void *ctx, void *data, size_t sz)
@@ -28,6 +34,7 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct spawn_event))
             return 0;
         const struct spawn_event *e = data;
+        g_forks++;
         if (!mc->quiet)
             printf("[proc]  > [FORK]  PID:%u (%s) -> child PID:%u\n",
                    e->h.pid, e->comm, e->child_pid);
@@ -43,6 +50,8 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         const struct proc_exit_event *e = data;
         int sig    = e->exit_code & 0x7f;
         int status = (e->exit_code >> 8) & 0xff;
+        g_exits++;
+        if (sig) g_sig_exits++;
         if (!mc->quiet) {
             if (sig)
                 printf("[proc]  > [EXIT]  PID:%u (%s) killed by signal %d\n",
@@ -62,6 +71,21 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         return 0;
     }
     return 0;
+}
+
+// ---- summary ----------------------------------------------------------------
+
+static void pe_print_summary(void)
+{
+    if (g_forks == 0 && g_exits == 0) return;
+    printf("[proc] \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Process Event Summary "
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
+    printf("[proc]  %lu fork%s, %lu exit%s (%lu by signal)\n",
+           g_forks,    g_forks    == 1 ? "" : "s",
+           g_exits,    g_exits    == 1 ? "" : "s",
+           g_sig_exits);
 }
 
 // ---- BPF lifecycle ----------------------------------------------------------
@@ -110,5 +134,5 @@ const ares_analyzer_t analyzer_proc_event = {
     .description   = "Trace process fork and exit events (stealthy — kernel tracepoints, zero uprobes)",
     .setup         = pe_setup,
     .teardown      = pe_teardown,
-    .print_summary = NULL,
+    .print_summary = pe_print_summary,
 };

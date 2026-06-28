@@ -34,7 +34,7 @@ so history stays traceable.
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
-- `ares mod` audit (open): U2 `-v` asymmetry, O2 structured backtrace symbols, O3 prop schema, F1 `-p PID`, F2 auto-stop, F3 summaries, F4 `-b` ring wire
+- `ares mod` audit (open): U2 `-v` asymmetry, O2 structured backtrace symbols, O3 prop schema, F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
 
 ---
 
@@ -181,8 +181,10 @@ symbol path); vDSO frames are named (Phase 1).
   - **F1 — launch-only; no `-p PID`.** `-P` required; always `ares_launch_app`s. Opportunity:
     resolve uid from pid, skip launch.
   - **F2 — no `-d SECONDS` auto-stop.** Scripts wrap with `timeout`.
-  - **F3 — no summary for proc-event or execve.** `print_summary` is NULL for both. Cheap wins:
-    proc-event → fork/exit counts; execve → per-binary exec tally.
+  - **F3 — summaries added. DONE 2026-06-28.** proc-event prints fork/exit/signal counts;
+    execve prints a per-binary exec tally with `[!]`-flagged suspicious binaries (su, magisk,
+    busybox, mount, sh, bash, getprop/setprop, setenforce/getenforce). Tallied unconditionally
+    (survives `-o`).
   - **F4 — `-b` ring size wired nowhere.** Each analyzer hardcodes 1 MiB `events_rb`. Wire
     `bpf_map__set_max_entries` before load if `-b` is ever re-added.
 

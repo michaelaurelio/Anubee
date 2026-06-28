@@ -3,6 +3,9 @@
 // Owns the execve BPF skeleton lifecycle; the dispatcher in mod.c drives
 // the poll loop and teardown order. Kernel side: src/modules/execve.bpf.c.
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -12,6 +15,58 @@
 #include "common/symbolize.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
+
+// ── per-binary exec tally (tallied unconditionally so summary survives -o) ───
+
+#define EXEC_STAT_MAX 256
+
+typedef struct {
+    char     path[128];   // sized to execve_event.filename
+    uint32_t count;
+} exec_stat_t;
+
+static exec_stat_t exec_stats[EXEC_STAT_MAX];
+static int         exec_stat_count = 0;
+
+static void exec_stat_add(const char *path)
+{
+    for (int i = 0; i < exec_stat_count; i++) {
+        if (strcmp(exec_stats[i].path, path) == 0) {
+            exec_stats[i].count++;
+            return;
+        }
+    }
+    if (exec_stat_count >= EXEC_STAT_MAX) return;
+    strncpy(exec_stats[exec_stat_count].path, path, sizeof(exec_stats[0].path) - 1);
+    exec_stats[exec_stat_count].path[sizeof(exec_stats[0].path) - 1] = '\0';
+    exec_stats[exec_stat_count].count = 1;
+    exec_stat_count++;
+}
+
+static int exec_stat_cmp_desc(const void *a, const void *b)
+{
+    uint32_t ca = ((const exec_stat_t *)a)->count;
+    uint32_t cb = ((const exec_stat_t *)b)->count;
+    return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
+}
+
+// Basenames that indicate root-access or tamper-detection-relevant execution.
+// Edit freely; NULL-terminated like rasp_props in prop_read.c.
+static const char *const suspicious_bins[] = {
+    "su", "magisk", "busybox", "mount", "sh", "bash",
+    "getprop", "setprop", "setenforce", "getenforce",
+    NULL,
+};
+
+static bool is_suspicious_bin(const char *path)
+{
+    // compare basename only
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    for (int i = 0; suspicious_bins[i]; i++)
+        if (strcmp(suspicious_bins[i], base) == 0) return true;
+    return false;
+}
 
 static struct execve_bpf *g_skel       = NULL;
 static struct ring_buffer *g_rb        = NULL;
@@ -30,6 +85,8 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         return 0;
 
     const struct execve_event *e = data;
+
+    exec_stat_add(e->filename);
 
     if (!mc->quiet) {
         char argv_buf[MAX_ARGV_ENTRIES * (MAX_ARGV_STR + 4) + 4];
@@ -131,6 +188,60 @@ static void ex_teardown(void)
     if (g_skel)        { execve_bpf__destroy(g_skel);      g_skel        = NULL; }
 }
 
+// ---- summary ----------------------------------------------------------------
+
+static void ex_print_summary(void)
+{
+    if (exec_stat_count == 0) return;
+
+    qsort(exec_stats, exec_stat_count, sizeof(exec_stat_t), exec_stat_cmp_desc);
+
+    uint64_t total = 0;
+    int flagged = 0;
+    for (int i = 0; i < exec_stat_count; i++) {
+        total += exec_stats[i].count;
+        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+    }
+
+    int use_color = isatty(STDOUT_FILENO);
+
+#define EXEC_SEP "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80" \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"    \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"    \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"    \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"    \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"    \
+                 "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n"
+
+    printf("[exec] \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 Exec Summary "
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
+    printf("[exec]       Count  Binary\n");
+    printf("[exec]" EXEC_SEP);
+
+    for (int i = 0; i < exec_stat_count; i++) {
+        bool sus = is_suspicious_bin(exec_stats[i].path);
+        if (sus && use_color)
+            printf("[exec]  \033[1;33m[!] %6u  %s\033[0m\n",
+                   exec_stats[i].count, exec_stats[i].path);
+        else if (sus)
+            printf("[exec]  [!] %6u  %s\n",
+                   exec_stats[i].count, exec_stats[i].path);
+        else
+            printf("[exec]      %6u  %s\n",
+                   exec_stats[i].count, exec_stats[i].path);
+    }
+
+    printf("[exec]" EXEC_SEP);
+    printf("[exec]  %llu exec%s across %d unique binar%s (%d flagged)\n",
+           (unsigned long long)total, total == 1 ? "" : "s",
+           exec_stat_count, exec_stat_count == 1 ? "y" : "ies",
+           flagged);
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_execve = {
@@ -138,5 +249,5 @@ const ares_analyzer_t analyzer_execve = {
     .description   = "Trace execve syscalls with full argv and call stack (stealthy — kprobes, zero uprobes)",
     .setup         = ex_setup,
     .teardown      = ex_teardown,
-    .print_summary = NULL,
+    .print_summary = ex_print_summary,
 };

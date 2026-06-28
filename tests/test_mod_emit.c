@@ -143,6 +143,28 @@ int main(void)
     CHECK_HAS(j, "\"is_ret\":1",    "prop is_ret 1");
     CHECK_HAS(j, "\"found\":0",     "prop found 0");
 
+    // ---- prop SCAN: marker only — name/value/is_ret/found must be absent --------
+    struct prop_event ps = {0};
+    ps.h.type = MOD_EV_PROP_SCAN;
+    ps.h.pid  = 7000;
+    ps.h.tid  = 7000;
+    strncpy(ps.comm, "app", TASK_COMM_LEN - 1);
+
+    j.len = 0;
+    mod_emit_prop(&j, &ps);
+    CHECK_HAS(j, "\"op\":\"scan\"", "prop scan op");
+    CHECK_HAS(j, "\"pid\":7000",    "prop scan pid");
+    { char tmp[4096]; int n = (int)j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"name\""))   { failures++; printf("  FAIL: name emitted for SCAN\n    in: %s\n", tmp); }
+      checks++;
+      if (strstr(tmp, "\"value\""))  { failures++; printf("  FAIL: value emitted for SCAN\n    in: %s\n", tmp); }
+      checks++;
+      if (strstr(tmp, "\"is_ret\"")) { failures++; printf("  FAIL: is_ret emitted for SCAN\n    in: %s\n", tmp); }
+      checks++;
+      if (strstr(tmp, "\"found\""))  { failures++; printf("  FAIL: found emitted for SCAN\n    in: %s\n", tmp); }
+    }
+
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

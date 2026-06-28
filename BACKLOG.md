@@ -34,7 +34,7 @@ so history stays traceable.
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
-- `ares mod` audit (open): U2 `-v` asymmetry, O3 prop schema, F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
+- `ares mod` audit (open): F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
 
 ---
 
@@ -164,8 +164,9 @@ symbol path); vDSO frames are named (Phase 1).
   **UX / CLI:**
   - **U1 — dead flags advertised. DONE 2026-06-28.** `mod_options` hand-picks `-o/-v/-q` now
     (mirrors `lib.c`); `-J/-b/-Q` dropped from `--help`.
-  - **U2 — `-v` honored only by execve.** `mc->verbose` checked in `execve.c` but ignored by
-    proc-event and prop-read. Add verbose output to the other two, or document as execve-only.
+  - **U2 — resolved by documentation. DONE 2026-06-28.** U1 fix scoped the help text to
+    *"Verbose output (execve: full backtrace frames)"*; `-v` is intentionally execve-only.
+    proc-event and prop-read have no meaningful verbose output to add.
   - **U3 — setup banners standardized. DONE 2026-06-28.** Per-analyzer "enabled" lines removed from
     `execve.c` and `prop_read.c`; only dispatcher banner remains.
 
@@ -175,8 +176,9 @@ symbol path); vDSO frames are named (Phase 1).
     `const char *const *syms` param; analyzer resolves via `sym_resolve` and passes strings in.
     Each backtrace frame now emits `{"frame":N,"addr":"0x..","symbol":".."}` in `-o` JSONL.
     Builder stays libbpf-free; `test_mod_emit` covers both NULL (addr-only) and symbolized paths.
-  - **O3 — prop schema over-emits.** SCAN events emit `name`/`value`/`is_ret`/`found` even when
-    empty/zero. Minor; optional per-op field trimming.
+  - **O3 — prop SCAN fields trimmed. DONE 2026-06-28.** SCAN records now emit only
+    `type/op/pid/tid/comm`; the empty `name`/`value`/`is_ret`/`found` fields are suppressed.
+    GET/FIND/READ schema unchanged. `test_mod_emit` covers SCAN shape (positive + 4 negative checks).
 
   **Functionality:**
   - **F1 — launch-only; no `-p PID`.** `-P` required; always `ares_launch_app`s. Opportunity:

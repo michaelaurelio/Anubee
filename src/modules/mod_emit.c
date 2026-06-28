@@ -83,9 +83,12 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e)
     jb_s(j, ",\"pid\":");      jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");      jb_u64(j, e->h.tid);
     jb_s(j, ",\"comm\":\"");   jb_esc(j, e->comm); jb_c(j, '"');
-    jb_s(j, ",\"name\":\"");   jb_esc(j, e->name); jb_c(j, '"');
-    jb_s(j, ",\"value\":\"");  jb_esc(j, e->value); jb_c(j, '"');
-    jb_s(j, ",\"is_ret\":");   jb_u64(j, e->is_ret);
-    jb_s(j, ",\"found\":");    jb_u64(j, e->found);
+    // SCAN is a marker event only (no name/value captured); omit the empty fields.
+    if (e->h.type != MOD_EV_PROP_SCAN) {
+        jb_s(j, ",\"name\":\"");   jb_esc(j, e->name); jb_c(j, '"');
+        jb_s(j, ",\"value\":\"");  jb_esc(j, e->value); jb_c(j, '"');
+        jb_s(j, ",\"is_ret\":");   jb_u64(j, e->is_ret);
+        jb_s(j, ",\"found\":");    jb_u64(j, e->found);
+    }
     jb_c(j, '}');
 }

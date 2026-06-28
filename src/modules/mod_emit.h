@@ -25,8 +25,10 @@ void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
 // syms: per-frame resolved strings (NULL → addr-only; syms[i]==NULL/"" → omit that frame's symbol).
 void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms);
 
-// {"type":"prop","op":"get|find|scan|read","pid":N,"tid":N,"comm":"..",
+// {"type":"prop","op":"get|find|read","pid":N,"tid":N,"comm":"..",
 //  "name":"..","value":"..","is_ret":N,"found":N}
+// SCAN: {"type":"prop","op":"scan","pid":N,"tid":N,"comm":".."} — no name/value/is_ret/found
+//  (SCAN is a marker event with no property name captured).
 void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 
 #endif /* __ARES_MOD_EMIT_H */

@@ -203,15 +203,14 @@ struct corr_args {
     const char        *pkg;
     const char        *out_path;
     int                quiet;
-    pid_t              pids[64];
-    int                pid_count;
+    struct target_args tgt;
     custom_probe_spec_t specs[64];
     int                nspec;
 };
 
 // Only the flags actually wired. -J/-b/-Q have nothing to attach here.
 static const struct argp_option corr_options[] = {
-    { "pid",     'p', "PID[,...]", 0, "Attach to running PID(s); comma-separated, repeatable", 0 },
+    TARGET_ARGP_OPTIONS,
     { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
     { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable)", 0 },
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
@@ -227,16 +226,8 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg; break;
     case 'o': a->out_path = arg; break;
     case 'q': a->quiet    = 1;   break;
-    case 'p': {
-        char *tok = strtok(arg, ",");
-        while (tok && a->pid_count < 64) {
-            a->pids[a->pid_count++] = (pid_t)atoi(tok);
-            tok = strtok(NULL, ",");
-        }
-        if (tok)
-            fprintf(stderr, "correlate: warning — more than 64 PIDs given; extras ignored\n");
-        break;
-    }
+    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+        return parse_target_arg(key, arg, state, &a->tgt);
     case 'e':
         if (a->nspec >= 64)
             fprintf(stderr, "correlate: warning — spec cap (64) reached; '%s' ignored\n", arg);
@@ -259,7 +250,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
         break;
     }
     case ARGP_KEY_END:
-        if ((a->pid_count == 0 && !a->pkg) || (a->pid_count > 0 && a->pkg))
+        if ((a->tgt.n == 0 && !a->pkg) || (a->tgt.n > 0 && a->pkg))
             argp_error(state, "specify exactly one of -p or -P");
         if (a->nspec == 0)
             argp_error(state, "no probe specs given (-e SPEC or -F FILE)");
@@ -283,6 +274,7 @@ static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_d
 // Cross-phase state: published by correlate_setup, consumed by run/teardown.
 static struct ares_correlate *g_skel;
 static struct bpf_link        *g_kp;
+static struct bpf_link        *g_ff;
 static struct ring_buffer     *g_rb;
 static int                     g_total;
 
@@ -320,15 +312,22 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
         }
         sleep(1);  // let the process map its libs before uprobe attach
-        ca.pids[ca.pid_count++] = p;
+        ca.tgt.pids[ca.tgt.n++] = p;
     } else {
-        // -p: install each pid's UID.
-        for (int i = 0; i < ca.pid_count; i++) {
-            int uid = ares_get_pid_uid(ca.pids[i]);
-            if (install_uid(skel, uid) != 0)
-                fprintf(stderr, "correlate: install UID for PID %d failed\n", ca.pids[i]);
-            else
-                printf("[probe] > PID %d UID %d\n", ca.pids[i], uid);
+        // -p: arm target_pids for each PID; arm target_uids only if --siblings.
+        __u8 one = 1;
+        for (int i = 0; i < ca.tgt.n; i++) {
+            __u32 tgid = (__u32)ca.tgt.pids[i];
+            bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+            if (ca.tgt.siblings) {
+                int uid = ares_get_pid_uid(ca.tgt.pids[i]);
+                if (install_uid(skel, uid) != 0)
+                    fprintf(stderr, "correlate: install UID for PID %d failed\n", ca.tgt.pids[i]);
+            }
+        }
+        if (!ca.tgt.no_follow) {
+            g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+            if (!g_ff) fprintf(stderr, "correlate: follow-fork attach failed (non-fatal)\n");
         }
     }
 
@@ -337,8 +336,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (!kp) { fprintf(stderr, "correlate: attach do_el0_svc kprobe failed\n"); goto err_skel; }
 
     int total = 0;
-    for (int i = 0; i < ca.pid_count; i++) {
-        int n = attach_uprobes_for_pid(skel, ca.pids[i], ca.specs, ca.nspec);
+    for (int i = 0; i < ca.tgt.n; i++) {
+        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec);
         if (n > 0) total += n;
     }
     if (total == 0)
@@ -377,6 +376,10 @@ void correlate_teardown(void)
     if (g_kp) {
         bpf_link__destroy(g_kp);
         g_kp = NULL;
+    }
+    if (g_ff) {
+        bpf_link__destroy(g_ff);
+        g_ff = NULL;
     }
     destroy_uprobe_links();
     if (g_skel) {

@@ -23,6 +23,8 @@ struct {
 } events SEC(".maps");
 
 #include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
 
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"
@@ -32,7 +34,7 @@ SEC("uprobe")
 int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
                long a5, long a6, long a7, long a8)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     __u64 id  = bpf_get_current_pid_tgid();
@@ -77,7 +79,7 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
 SEC("kprobe/do_el0_svc")
 int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     __u64 id  = bpf_get_current_pid_tgid();

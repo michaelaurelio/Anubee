@@ -24,6 +24,7 @@ flowchart TD
     dump["dump — src/dump/<br/>kprobe live-mem dump engine<br/>+ own BPF skeleton"]
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
+    mod["mod — src/modules/<br/>analyzer dispatcher (proc-event · execve · prop-read)<br/>each analyzer owns its own BPF skeleton"]
     common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
@@ -35,6 +36,7 @@ flowchart TD
     main --> dump
     main --> correlate
     main --> tracecmd
+    main --> mod
     tracecmd --> syscalls
     tracecmd --> funcs
     tracecmd --> lib
@@ -43,16 +45,19 @@ flowchart TD
     lib --> common
     dump --> common
     correlate --> common
+    mod --> common
     common --> trace
     trace --> mcp
 ```
 
-- **One binary, six subcommands, selected by `argv[1]`.** `main()` calls the
+- **One binary, seven subcommands, selected by `argv[1]`.** `main()` calls the
   matching entry (`cmd_syscalls` / `cmd_funcs` / `cmd_lib` / `cmd_dump` /
-  `cmd_correlate` / `cmd_trace`), passing the remaining argv so each keeps its own
-  argument parser unchanged. Five are BPF engines (each owns one BPF object); the
-  sixth, `trace`, owns no BPF object — it is a coordinator that drives the
-  `syscalls` and `funcs` engines together from one app launch (see §6.5).
+  `cmd_correlate` / `cmd_trace` / `cmd_mod`), passing the remaining argv so each
+  keeps its own argument parser unchanged. Five are single-BPF engines (each owns
+  one BPF object); `mod` dispatches to per-analyzer BPF objects (each analyzer owns
+  its own skeleton — see §6.6); `trace` owns no BPF object — it is a coordinator
+  that drives the `syscalls` and `funcs` engines together from one app launch
+  (see §6.5).
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
   are *not* fused into a single always-on pass (see §9).
@@ -93,9 +98,9 @@ flowchart TD
   APK-embedded stored `.so` display names (ZIP central-dir parse). Per-pid
   Per-pid `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
   refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
-  (prevents unbounded growth on fork-heavy traces) and **flushed on process exit**
-  via `sym_flush_pid` wired to `ARES_EVENT_PROC_EXIT` (`-m proc-event`; the LRU
-  bound is the always-on backstop for the default config). The symbol result hash
+  (prevents unbounded growth on fork-heavy traces); the LRU bound is the always-on
+  eviction backstop. For prompt per-exit flushing via `sym_flush_pid`, run
+  `ares mod proc-event` alongside. The symbol result hash
   is bounded at `SC_MAX_CAP=256k` entries (clears and rebuilds at the ceiling).
   The line parser is shared: `src/common/maps.{c,h}` exposes `ares_parse_maps_line`
   and is used by all six `/proc/<pid>/maps` consumers across the codebase.
@@ -139,8 +144,10 @@ flowchart TD
   `correlate` into `trace` remains deferred — see BACKLOG.md GA2 deferred items.
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
-  userspace memory (the detectability firewall bit). Only uprobe-bearing capabilities
-  (`funcs`, `correlate`) set `writes_target_memory = true`; all others are `false`.
+  userspace memory (the detectability firewall bit). Uprobe-bearing capabilities set
+  `writes_target_memory = true`: `funcs`, `correlate`, and `mod:prop-read` (libc
+  uprobes); all kprobe/tracepoint capabilities (`syscalls`, `lib`, `dump`,
+  `mod:proc-event`, `mod:execve`) are `false`.
   Advisory by design: each subcommand loads exactly one object of known, documented
   loudness, so there is no implicit composition layer for a loud object to leak
   through. The registry is the single audit point + regression guard. Enforcement
@@ -248,10 +255,6 @@ expensive one:
   (`specs/*.spec`, format `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`) or by
   module+function regex. Captures typed arguments (string/value/fd), return
   values, call→return timing, and a call stack.
-- **Module plugin system** (`src/funcs/modules/module.h`): each module implements
-  `pre_attach`/`attach`/`detach`/`print_summary`/`handle_event`. Built-in modules:
-  `proc-event` (fork/exit tracepoints), `execve` (execve kprobes), `prop_read`
-  (Android `__system_property_*` hooks).
 - **Configurable ring buffer size** (`-b/--bufsize MB`): sets the BPF ring buffer
   (`events_rb`) to `MB` MiB (rounded up to the next power of two). Default: 4 MiB.
   The ring holds raw kernel events before userspace drains them; a larger ring
@@ -528,6 +531,29 @@ setup/run/teardown phases (§1).
 - **Detectability:** loud by construction — it loads the `funcs` uprobe (entry
   `BRK`) alongside the `syscalls` kprobe, so it never sits on the stealthy side of
   the firewall (§9). `capabilities.c` marks `trace` as writing target memory.
+
+## 6.6 The `mod` analyzers (`ares mod`)
+
+`ares mod <name>` runs a lightweight standalone analyzer that owns its own BPF
+object — no shared skeleton with `funcs`. Available analyzers:
+
+- **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Wires
+  `sym_flush_pid` on `ARES_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
+- **`execve`** — execve kprobes (stealthy: zero uprobes). Captures exec events for
+  child-process correlation.
+- **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
+  `BRK` into the target's libc pages).
+
+**Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
+via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
+other engines (see §7).
+
+**Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
+key (see §9). `proc-event` and `execve` are kprobe/tracepoint — stealthy;
+`prop-read` is a libc uprobe — loud.
+
+**Usage:** `ares mod <name> -P <pkg>` (optionally `-o <file>` for structured JSONL
+output).
 
 ## 7. Unified trace schema
 

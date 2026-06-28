@@ -148,8 +148,8 @@ output, making them compatible with the ares-mcp unified schema. Requires `-o
 wrapper is preserved).
 
 Common flags: `-p PID` / `-P package` target · `-I module` · `-i func-regex` ·
-`-r func-regex` (return-only) · `-e spec` / `-F spec-file` · `-m proc-event|execve`
-modules · `-o file` (`.jsonl`/`.csv`) · `-J` structured JSONL records (see below).
+`-r func-regex` (return-only) · `-e spec` / `-F spec-file` ·
+`-o file` (`.jsonl`/`.csv`) · `-J` structured JSONL records (see below).
 
 Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
 `libc.so!open(S)>V`.

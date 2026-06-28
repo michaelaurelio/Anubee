@@ -699,7 +699,18 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
 		if (is_interp_frame(sym))
 			jb_s(j, ",\"java\":\"interpreted (managed frame elided)\"");
+		// The frame-pointer chain cannot cross the JNI trampoline: the managed
+		// caller above it does not keep an AAPCS [fp,lr] frame, so the next
+		// bpf_get_stack frame is ART quick-frame data misread as fp/lr (a garbage
+		// [unmapped]/non-canonical address). Mark this frame as the FP-unwind
+		// boundary and stop — the crossed managed caller, when recoverable, is in
+		// the companion cfi_stack record (correlated by stack_id).
+		int fp_boundary = strstr(sym, "jni_trampoline") != NULL;
+		if (fp_boundary)
+			jb_s(j, ",\"fp_unwind_end\":\"jni-trampoline (managed caller in cfi_stack)\"");
 		jb_c(j, '}');
+		if (fp_boundary)
+			break;
 	}
 	jb_s(j, "]}");
 	ares_sink_emit(&g_sink);

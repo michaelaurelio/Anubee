@@ -59,10 +59,15 @@ struct mod_args {
     struct common_args c;
 };
 
+// Only advertise flags that are actually wired. -J/-b/-Q are NOT included:
+// mod polls the ring buffer directly (no queue) and the per-analyzer ring
+// size is hardcoded; -J is redundant with -o. Mirrors lib.c:89-96.
 static const struct argp_option mod_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity (default: auto-resolve)", 0 },
-    COMMON_ARGP_OPTIONS,
+    { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (implies -q)", 0 },
+    { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
+    { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
     { 0 }
 };
 

@@ -223,12 +223,19 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
     if (sz < sizeof(struct prop_event)) return 0;
     const struct prop_event *e = data;
 
+    // tally always — summary must populate even under -o (which forces quiet)
+    switch (e->h.type) {
+    case MOD_EV_PROP_GET:  if (!e->is_ret) prop_stat_add(e->name); break;
+    case MOD_EV_PROP_FIND: if (!e->is_ret) prop_stat_add(e->name); break;
+    case MOD_EV_PROP_READ: prop_stat_add(e->name);                 break;
+    default: break;
+    }
+
     if (!mc->quiet) {
         switch (e->h.type) {
 
         case MOD_EV_PROP_GET:
             if (!e->is_ret) {
-                prop_stat_add(e->name);
                 printf("[prop]  GET   CALL  PID:%-6d (%s)  %s\n",
                     e->h.pid, e->comm, e->name);
             } else {
@@ -240,7 +247,6 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
 
         case MOD_EV_PROP_FIND:
             if (!e->is_ret) {
-                prop_stat_add(e->name);
                 printf("[prop]  FIND  CALL  PID:%-6d (%s)  %s\n",
                     e->h.pid, e->comm, e->name);
             } else if (e->found) {
@@ -258,7 +264,6 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
             break;
 
         case MOD_EV_PROP_READ:
-            prop_stat_add(e->name);
             printf("[prop]  READCB      PID:%-6d (%s)  %s = %s\n",
                 e->h.pid, e->comm, e->name, e->value);
             break;
@@ -340,7 +345,7 @@ static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
         goto err;
     }
 
-    printf("[prop]  > property tracing enabled (%s)\n", libc_path);
+
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             pr_handle_event, mc, NULL);

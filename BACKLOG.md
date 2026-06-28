@@ -34,12 +34,16 @@ so history stays traceable.
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
+- `ares mod` audit (open): U2 `-v` asymmetry, O2 structured backtrace symbols, O3 prop schema, F1 `-p PID`, F2 auto-stop, F3 summaries, F4 `-b` ring wire
 
 ---
 
 ## Urgent — architectural / correctness-critical
 
-No outstanding urgent items.
+### B1 — prop-read RASP summary was silently empty under `-o` — **DONE 2026-06-28**
+
+`prop_stat_add()` calls hoisted out of the `if (!mc->quiet)` guard in `src/modules/prop_read.c`.
+Tally now always runs; `pr_print_summary` prints correctly whether or not `-o` is active.
 
 ---
 
@@ -154,6 +158,33 @@ symbol path); vDSO frames are named (Phase 1).
   for the new types.
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
+
+- **`ares mod` audit findings (2026-06-28). B1/U1/O1/U3 fixed 2026-06-28. Remaining deferred.**
+
+  **UX / CLI:**
+  - **U1 — dead flags advertised. DONE 2026-06-28.** `mod_options` hand-picks `-o/-v/-q` now
+    (mirrors `lib.c`); `-J/-b/-Q` dropped from `--help`.
+  - **U2 — `-v` honored only by execve.** `mc->verbose` checked in `execve.c` but ignored by
+    proc-event and prop-read. Add verbose output to the other two, or document as execve-only.
+  - **U3 — setup banners standardized. DONE 2026-06-28.** Per-analyzer "enabled" lines removed from
+    `execve.c` and `prop_read.c`; only dispatcher banner remains.
+
+  **Output / schema:**
+  - **O1 — execve prefix fixed. DONE 2026-06-28.** `execve.c` now prints `[exec]` (was `[proc]`).
+  - **O2 — structured execve backtrace addr-only.** Console resolves via `sym_resolve`
+    (`execve.c:53`); `-o` JSONL emits raw addresses only (`mod_emit.c:53-61`). Fix (medium):
+    resolve in analyzer, pass symbol strings into a richer emit path.
+  - **O3 — prop schema over-emits.** SCAN events emit `name`/`value`/`is_ret`/`found` even when
+    empty/zero. Minor; optional per-op field trimming.
+
+  **Functionality:**
+  - **F1 — launch-only; no `-p PID`.** `-P` required; always `ares_launch_app`s. Opportunity:
+    resolve uid from pid, skip launch.
+  - **F2 — no `-d SECONDS` auto-stop.** Scripts wrap with `timeout`.
+  - **F3 — no summary for proc-event or execve.** `print_summary` is NULL for both. Cheap wins:
+    proc-event → fork/exit counts; execve → per-binary exec tally.
+  - **F4 — `-b` ring size wired nowhere.** Each analyzer hardcodes 1 MiB `events_rb`. Wire
+    `bpf_map__set_max_entries` before load if `-b` is ever re-added.
 
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of
   unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings

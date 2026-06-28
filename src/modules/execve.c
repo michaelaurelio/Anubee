@@ -41,7 +41,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         }
         snprintf(argv_buf + off, sizeof(argv_buf) - off, "]");
 
-        printf("[proc]  > [EXEC]  PID:%d (%s) %s%s%s\n",
+        printf("[exec]  > [EXEC]  PID:%d (%s) %s%s%s\n",
                e->h.pid, e->comm, e->filename,
                e->argc ? " " : "",
                e->argc ? argv_buf : "");
@@ -105,9 +105,6 @@ static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
             goto err;
         }
     }
-
-    printf("[proc]  > execve tracing enabled%s\n",
-           (execve_link || execveat_link) ? "" : " (fallback: filename only)");
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             ex_handle_event, mc, NULL);

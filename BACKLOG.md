@@ -95,11 +95,13 @@ the thin-presets migration (Urgent).
   `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
   in (at that point B2 becomes cheaper than wiring more lock sites into modules).
 
-### CFI stack unwinder — all three tasks landed
+### CFI stack unwinder — engine + wiring landed; live cross has 3 known walls
 
-W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27 — see Resolved).
+W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27). The CFI engine is wired
+and unwinds native frames correctly on-device, but a *live* jni-trampoline→managed cross
+does not yet complete — three follow-up items below (W4–W6).
 
-- **W1 — DONE (2026-06-27): CFI unwinder wired to runtime; cross-trampoline confirmed.**
+- **W1 — DONE (2026-06-27): CFI unwinder wired to runtime.**
   `cfi_unwind_snapshot` (in `src/common/symbolize.c`, declared in `symbolize.h`) loops
   `cfi_get` + `cfi_step` over the frozen snapshot window. Reads only the frozen
   `snap->snap[]` bytes — no live target memory. Called from `emit_cfi_backtrace`
@@ -107,8 +109,34 @@ W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27 — see Resolved).
   a companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[{frame,addr,symbol,kind},...]}`.
   `kind` ∈ `native | jni-trampoline | managed | interp`. `cfi_unwind.c` + `dwarf.c`
   added to `COMMON_CSRC`; `cfi_unwind_snapshot` exported via `COMMON_API`.
-  Device test arm `syscalls-cfi` asserts jni-trampoline→managed cross (SKIP on timing
-  miss; hard-fail only on BPF-load error). On-device proof deferred to controller run.
+  **On-device (2026-06-27):** the RA-default fix (commit `ee5ed5f`) took native unwinding
+  from 1 frame to the full 18-frame libc→linker64 chain; the `art_jni_trampoline` FDE in
+  the real `boot.oat` resolves `CFA=sp, RA=same` → recovers the managed caller PC (verified
+  offline). The live cross is blocked by W4–W6 below; the `syscalls-cfi` arm SKIPs honestly
+  until they land.
+
+- **W4 — Snapshot window too small for deep stacks.** `ARES_SNAP_MAX` = 8192 B. A deep
+  frame's spilled-RA slot (e.g. `libandroid_runtime` at `CFA-56`) lands past `sp+8192`,
+  so `cfi_step`'s bounds-checked `read64` fails and the unwind truncates mid-native before
+  reaching the trampoline. Fix: make the window tunable / larger (cost: ring bandwidth;
+  snapshots are deduped so it's bounded), or a two-pass capture.
+
+- **W5 — JIT code-cache frames have no file-backed CFI.** Between the framework lib and
+  `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
+  `cfi_get` skips pseudo paths → returns NULL → unwind stops. ART publishes per-method
+  unwind info as in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES
+  already reads these for *symbols* (`jit_resolve` / `art_refresh`). Extend that path to
+  `cfi_load_elf` the JIT mini-ELF and feed it to `cfi_get`. (AOT-compiled callers, in
+  `base.odex`/`boot.oat`, do NOT hit this — they have `.debug_frame` — so fully-AOT JNI
+  paths can cross once W4 lands.)
+
+- **W6 — Library-filter mode misses runtime syscalls (separate from CFI).** With
+  `-l libc.so -s openat` only ~11 process-init `openat`s are captured per process, while
+  capture-all (`-a`) sees 2234 (1327 crossing the trampoline). Because snapshots are gated
+  to library-filtered mode (`!capture_all`), they never see runtime/JNI stacks. Root-cause
+  the lib-filter `stack_hits` path (every `openat`'s frame 0 is in libc, so it should match);
+  likely surfaced by the W1/W2 refactor. Until fixed, a live cross can only be observed via
+  a temporary capture-all-snapshot diagnostic build.
 
 - **Deferred — interpreter frame naming:** frames tagged `"kind":"interp"` are detected
   by `is_interp_frame` (ART interpreter entrypoints) but the managed method name is not

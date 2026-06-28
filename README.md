@@ -123,11 +123,18 @@ filter and `-o <file>`, each trapped syscall that lands inside the target librar
 captures a frozen register file + up to 8 KB of user-stack bytes. These are written
 to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
 unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
-using DWARF `.eh_frame`/`.debug_frame`, naturally crossing `art_jni_trampoline` into
-the ART-compiled Java caller. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
+using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
+
+**Status: native unwinding works; the live `art_jni_trampoline` cross is not yet
+complete.** The engine correctly unwinds the native frames (the RA-default fix in
+`ee5ed5f` took this from 1 frame to the full native chain), and the trampoline FDE in
+`boot.oat` is verified to recover the managed caller. Three follow-ups (BACKLOG **W4–W6**)
+gate a live cross: the 8 KB snapshot window truncates deep stacks (W4), JIT-compiled
+caller frames have no file-backed CFI (W5), and library-filter mode currently misses most
+runtime syscalls (W6). Fully ahead-of-time JNI paths can cross once W4 lands.
 
 **Limits of `--snapshot` / CFI unwind:**
-- Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. Interpreter frames (`ShadowFrame`) are tagged `"kind":"interp"` but the managed method name is not recovered.
+- Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. JIT-compiled callers (W5) and interpreter frames (`ShadowFrame`, tagged `"kind":"interp"`) are not yet crossed/named.
 - **Inlining defeats CFI attribution:** an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid, synchronous).
 

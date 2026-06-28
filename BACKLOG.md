@@ -113,11 +113,14 @@ does not yet complete — three follow-up items below (W4–W6).
   offline). The live cross is blocked by W4–W6 below; the `syscalls-cfi` arm SKIPs honestly
   until they land.
 
-- **W4 — Snapshot window too small for deep stacks.** `ARES_SNAP_MAX` = 8192 B. A deep
-  frame's spilled-RA slot (e.g. `libandroid_runtime` at `CFA-56`) lands past `sp+8192`,
-  so `cfi_step`'s bounds-checked `read64` fails and the unwind truncates mid-native before
-  reaching the trampoline. Fix: make the window tunable / larger (cost: ring bandwidth;
-  snapshots are deduped so it's bounded), or a two-pass capture.
+- **W4 — DONE (2026-06-27): snapshot window enlarged 8 KB → 32 KB + 3-tier fault fallback.**
+  Deep frames' spilled-RA slots (e.g. `libandroid_runtime` at `CFA-56`) sat past `sp+8192`,
+  so `cfi_step`'s bounds-checked `read64` failed and the unwind truncated mid-native before
+  the trampoline. `ARES_SNAP_MAX` is now 32768 with a `MAX → MID(8192) → SMALL(2048)` read
+  cascade (a fault on the big read still yields a useful window; `truncated` flags any fallback).
+  Cost: 32 KB ring record per snapshot, but records are deduped per distinct stack so it's
+  bounded. Remaining: a *very* deep stack can still exceed 32 KB → a two-pass / streamed
+  capture would be the next lever if 32 KB proves insufficient.
 
 - **W5 — JIT code-cache frames have no file-backed CFI.** Between the framework lib and
   `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).

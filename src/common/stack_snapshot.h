@@ -14,9 +14,16 @@
 
 #include "common/trace_schema.h"
 
-/* Full window; SNAP_SMALL is the fallback when SNAP_MAX faults near the top of
- * the stack region (both are power-of-two so bpf_probe_read_user is happy). */
-#define ARES_SNAP_MAX   8192
+/* User-stack capture window. SNAP_MAX is the full window; the unwinder needs it
+ * large enough to reach deep frames' spill slots (a frame's saved-RA can sit well
+ * above sp — e.g. a framework lib ~12 frames up past the JNI boundary), so the
+ * cross-trampoline unwind would otherwise truncate mid-stack. SNAP_MID/SNAP_SMALL
+ * are the fault fallbacks when the full read runs off the top of the mapped stack
+ * region (3 tiers so a fault on the big read still yields a useful window). All
+ * power-of-two so bpf_probe_read_user is happy. Records are deduped per distinct
+ * stack, so the larger window costs ring bandwidth only on first sight of a stack. */
+#define ARES_SNAP_MAX   32768
+#define ARES_SNAP_MID   8192
 #define ARES_SNAP_SMALL 2048
 #define ARES_SNAP_NREG  31   /* x0..x30 */
 

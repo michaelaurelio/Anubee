@@ -120,7 +120,7 @@ streamable JSON Lines) · `-q` quiet · `--snapshot` enable stack snapshots + CF
 
 **`--snapshot` and `cfi_stack` records:** When `--snapshot` is used with a library
 filter and `-o <file>`, each trapped syscall that lands inside the target library
-captures a frozen register file + up to 8 KB of user-stack bytes. These are written
+captures a frozen register file + up to 32 KB of user-stack bytes. These are written
 to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
 unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
 using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
@@ -129,7 +129,7 @@ using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_
 complete.** The engine correctly unwinds the native frames (the RA-default fix in
 `ee5ed5f` took this from 1 frame to the full native chain), and the trampoline FDE in
 `boot.oat` is verified to recover the managed caller. Three follow-ups (BACKLOG **W4–W6**)
-gate a live cross: the 8 KB snapshot window truncates deep stacks (W4), JIT-compiled
+gate a live cross: the snapshot window enlarged to 32 KB + 3-tier fault fallback (W4, done) but very deep stacks can still truncate, JIT-compiled
 caller frames have no file-backed CFI (W5), and library-filter mode currently misses most
 runtime syscalls (W6). Fully ahead-of-time JNI paths can cross once W4 lands.
 

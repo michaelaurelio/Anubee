@@ -42,7 +42,6 @@ static const char doc[] = "ares funcs — uprobe function tracer for Android app
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
-    { "pid",            'p', "PID[,PID...]", 0, "Process ID(s) to inspect",                                                          0 },
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
     { "activity",       'A', "ACTIVITY",    0, "Override launch activity component (default: auto-resolve)",                          0 },
     { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
@@ -55,13 +54,13 @@ static const struct argp_option options[] = {
     { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },
     { "no-snapshot",    2,   NULL,           0, "Disable stack snapshots (default)",                                                 0 },
     COMMON_ARGP_OPTIONS,
+    TARGET_ARGP_OPTIONS,
     { 0 }
 };
 
 struct args {
     struct common_args c;          // -o -v -q -J -b -Q (shared with syscalls)
-    pid_t pids[64];
-    int pid_count;
+    struct target_args tgt;
     char package_name[256];
     char activity[256];
     char mod_patterns[32][256];
@@ -92,18 +91,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 {
     struct args *args = state->input;
     switch(key) {
-        // Parse comma-separated PIDs
-        case 'p': {
-            char *tok = strtok(arg, ",");
-            while (tok && args->pid_count < 64) {
-                args->pids[args->pid_count++] = (pid_t)atoi(tok);
-                tok = strtok(NULL, ",");
-            }
-            if (tok)
-                fprintf(stderr, "funcs: warning — more than 64 PIDs given; extras ignored\n");
-            break;
-        }
-
         case 'P':
             copy_str(args->package_name, arg, sizeof(args->package_name));
             break;
@@ -174,12 +161,17 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         // No arguments case
         case ARGP_KEY_END:
-            if (args->pid_count > 0 && args->package_name[0] != '\0')
+            if (args->tgt.n > 0 && args->package_name[0] != '\0')
                 argp_error(state, "cannot use -p and -P together");
-            if (args->pid_count == 0 && args->package_name[0] == '\0')
+            if (args->tgt.n == 0 && args->package_name[0] == '\0')
                 argp_usage(state);
             break;
         
+        case 'p':
+        case ARES_KEY_SIBLINGS:
+        case ARES_KEY_NO_FOLLOW:
+            return parse_target_arg(key, arg, state, &args->tgt);
+
         // Default case
         default:
             return ARGP_ERR_UNKNOWN;
@@ -321,6 +313,7 @@ int custom_probe_spec_count = 0;
 
 struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
+static struct bpf_link *g_follow_fork_link = NULL;
 
 static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
 {
@@ -1008,13 +1001,13 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
-    if (args.pid_count > 0) {
+    if (args.tgt.n > 0) {
         if (mod_re_count > 0 || func_re_count > 0) {
-            for (int i = 0; i < args.pid_count; i++) {
-                ts_print("[probe] > resolving targets for PID %d\n", args.pids[i]);
+            for (int i = 0; i < args.tgt.n; i++) {
+                ts_print("[probe] > resolving targets for PID %d\n", args.tgt.pids[i]);
                 int resolved = resolve_targets(
                     &g_rctx,
-                    args.pids[i],
+                    args.tgt.pids[i],
                     probe_targets + probe_target_count,
                     sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
                 );
@@ -1029,18 +1022,25 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         }
 
         __u8 one = 1;
-        for (int i = 0; i < args.pid_count; i++) {
-            int pid_uid = ares_get_pid_uid(args.pids[i]);
-            if (pid_uid <= 0) {
-                err_print(" [probe] > could not resolve UID for PID %d\n", args.pids[i]);
-                continue;
+        for (int i = 0; i < args.tgt.n; i++) {
+            __u32 tgid = (__u32)args.tgt.pids[i];
+            bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+
+            if (args.tgt.siblings) {
+                int pid_uid = ares_get_pid_uid(args.tgt.pids[i]);
+                if (pid_uid < 0) {
+                    fprintf(stderr, "funcs: could not resolve UID for PID %d\n", args.tgt.pids[i]);
+                } else {
+                    __u32 vuid = (__u32)pid_uid;
+                    bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
+                }
             }
-            __u32 vuid = (__u32)pid_uid;
-            if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-                err_print(" [probe] > failed to set target UID %d: %s\n", pid_uid, strerror(errno));
-                goto cleanup;
-            }
-            ts_print("[probe] > PID %d UID %d\n", args.pids[i], pid_uid);
+        }
+
+        if (!args.tgt.no_follow) {
+            g_follow_fork_link = bpf_program__attach(skel->progs.ares_follow_fork);
+            if (!g_follow_fork_link)
+                fprintf(stderr, "funcs: follow-fork attach failed (non-fatal)\n");
         }
 
         if (mod_re_count > 0 || func_re_count > 0) {
@@ -1086,9 +1086,9 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
         // Apply custom probe specs for each PID
         if (custom_probe_spec_count > 0) {
-            for (int p = 0; p < args.pid_count; p++) {
+            for (int p = 0; p < args.tgt.n; p++) {
                 char maps_path[64];
-                snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", args.pids[p]);
+                snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", args.tgt.pids[p]);
                 FILE *mf = fopen(maps_path, "r");
                 if (!mf) continue;
                 char mline[512];
@@ -1096,7 +1096,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                     struct ares_map_line ml;
                     if (!ares_parse_maps_line(mline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
-                    apply_custom_specs_for_file(&g_rctx, args.pids[p], ml.path, args.pids[p], 0, 0);
+                    apply_custom_specs_for_file(&g_rctx, args.tgt.pids[p], ml.path, args.tgt.pids[p], 0, 0);
                 }
                 fclose(mf);
             }
@@ -1244,6 +1244,7 @@ void funcs_teardown(void)
         if (probe_links[i])     bpf_link__destroy(probe_links[i]);
         if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
     }
+    if (g_follow_fork_link) { bpf_link__destroy(g_follow_fork_link); g_follow_fork_link = NULL; }
     for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
     for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);

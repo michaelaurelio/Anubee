@@ -399,6 +399,8 @@ test:
 	$(BUILD)/test_dex tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps
 	$(BUILD)/test_maps
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_args.c -o $(BUILD)/test_target_args
+	$(BUILD)/test_target_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
 	$(BUILD)/test_mod_emit
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \

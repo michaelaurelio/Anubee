@@ -34,7 +34,7 @@ so history stays traceable.
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
-- `ares mod` audit (open): F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
+- `ares mod` audit closed 2026-06-28 (F1/F2 future features if wanted, F4 moot)
 
 ---
 
@@ -159,7 +159,7 @@ symbol path); vDSO frames are named (Phase 1).
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
-- **`ares mod` audit findings (2026-06-28). B1/U1/O1/U3 fixed 2026-06-28. Remaining deferred.**
+- **`ares mod` audit findings (2026-06-28). Audit closed 2026-06-28 — F1/F2 deferred by choice, F4 moot.**
 
   **UX / CLI:**
   - **U1 — dead flags advertised. DONE 2026-06-28.** `mod_options` hand-picks `-o/-v/-q` now
@@ -181,15 +181,16 @@ symbol path); vDSO frames are named (Phase 1).
     GET/FIND/READ schema unchanged. `test_mod_emit` covers SCAN shape (positive + 4 negative checks).
 
   **Functionality:**
-  - **F1 — launch-only; no `-p PID`.** `-P` required; always `ares_launch_app`s. Opportunity:
-    resolve uid from pid, skip launch.
-  - **F2 — no `-d SECONDS` auto-stop.** Scripts wrap with `timeout`.
+  - **F1 — deferred by choice (future feature).** Launch-only is intentional; `-p PID` attach
+    (resolve uid from pid, skip launch) is a future enhancement if attach-to-running is wanted.
+  - **F2 — deferred by choice (future feature).** `timeout`-wrap covers it for now; revisit if a
+    native `-d SECONDS` auto-stop is wanted.
   - **F3 — summaries added. DONE 2026-06-28.** proc-event prints fork/exit/signal counts;
     execve prints a per-binary exec tally with `[!]`-flagged suspicious binaries (su, magisk,
     busybox, mount, sh, bash, getprop/setprop, setenforce/getenforce). Tallied unconditionally
     (survives `-o`).
-  - **F4 — `-b` ring size wired nowhere.** Each analyzer hardcodes 1 MiB `events_rb`. Wire
-    `bpf_map__set_max_entries` before load if `-b` is ever re-added.
+  - **F4 — moot / won't-do.** U1 dropped `-b` from `mod_options`; nothing to wire.
+    Reopen only if a buffer-size flag is re-added.
 
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was suspected of
   unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded with user warnings

@@ -20,6 +20,8 @@ struct {
 } events_rb SEC(".maps");
 
 #include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
 
 // Per-tid span stack (shared with the correlate engine; see header).
 #include "common/span_stack.bpf.h"
@@ -49,7 +51,7 @@ static __always_inline bool is_user_ptr(unsigned long val)
 SEC("uprobe")
 int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     struct task_struct *task;
@@ -127,7 +129,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 SEC("uprobe")
 int BPF_KPROBE(uprobe_save_only, long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     __u64 id = bpf_get_current_pid_tgid();
@@ -146,7 +148,7 @@ int BPF_KPROBE(uprobe_save_only, long a1, long a2, long a3, long a4, long a5, lo
 SEC("uretprobe")
 int BPF_KRETPROBE(uretprobe_open)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     __u64 id = bpf_get_current_pid_tgid();

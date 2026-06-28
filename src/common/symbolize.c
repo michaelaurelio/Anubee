@@ -18,6 +18,9 @@
 #include "symbolize.h"
 #include "common/maps.h"      // ares_parse_maps_line
 #include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
+#include "common/cfi_unwind.h"
+#include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
+#include "common/stack_snapshot.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +34,7 @@
 #include <elf.h>
 #include <lzma.h>
 #include <pthread.h>
+#include <sys/stat.h>
 
 #define MAX_PATH_LEN 256
 #define REFRESH_MS   250
@@ -181,6 +185,19 @@ struct dynsym {
 
 static struct dynsym *g_ds;
 static size_t g_nds;
+
+// ---- per-module CFI cache (mirrors dynsym cache) -------------------------
+
+struct cfimod {
+	char     path[MAX_PATH_LEN];
+	uint64_t elf_off;
+	uint64_t load_base;        /* runtime base; module_vaddr = runtime_pc - load_base */
+	struct cfi_section sec;    /* owns its CFI bytes (sec.owned) */
+	int      ok;               /* 1 = loaded (sec valid, maybe 0 FDEs), 0 = failed/skip */
+};
+
+static struct cfimod *g_cfi;
+static size_t g_ncfi;
 
 static int sym_cmp(const void *a, const void *b)
 {
@@ -512,6 +529,160 @@ static const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta
 	}
 	*delta = d;
 	return ds->str + s->name_off;
+}
+
+// ---- CFI loader + cache --------------------------------------------------
+//
+// find_gnu_debugdata: locate the .gnu_debugdata section (xz-compressed mini-ELF
+// carrying .debug_frame for OAT/odex files) in an in-memory ELF64 image.
+// Every offset is untrusted (on-device file); bounds-check all accesses.
+//
+// cfi_get: cache-on-(elf_off,path); tries native .eh_frame/.debug_frame first,
+// then falls back to .debug_frame inside the xz-compressed .gnu_debugdata.
+// Mirrors dynsym_get's grow/append pattern exactly.
+
+/* Locate the .gnu_debugdata section in an in-memory ELF64 image.
+ * Returns 0 and fills *off and *size (byte offsets into buf) on success,
+ * -1 if absent or malformed. Every offset is bounds-checked against len. */
+static int __attribute__((unused))
+find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
+{
+	if (len < sizeof(Elf64_Ehdr))
+		return -1;
+
+	Elf64_Ehdr eh;
+	memcpy(&eh, buf, sizeof(eh));
+
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64)
+		return -1;
+	if (eh.e_shoff == 0 || eh.e_shnum == 0 || eh.e_shentsize < sizeof(Elf64_Shdr))
+		return -1;
+	if (eh.e_shoff > len)            /* else (len - e_shoff) underflows below */
+		return -1;
+
+	/* Overflow-safe: (e_shnum * e_shentsize) must not exceed (len - e_shoff). */
+	if (eh.e_shnum > (len - eh.e_shoff) / eh.e_shentsize)
+		return -1;
+
+	/* Validate shstrndx before use. */
+	if (eh.e_shstrndx == SHN_UNDEF || eh.e_shstrndx >= eh.e_shnum)
+		return -1;
+
+	/* Read the shstrtab section header. */
+	Elf64_Shdr shstr_hdr;
+	memcpy(&shstr_hdr, buf + eh.e_shoff + (size_t)eh.e_shstrndx * eh.e_shentsize,
+	       sizeof(shstr_hdr));
+
+	/* Bounds-check the shstrtab content. */
+	if (shstr_hdr.sh_size == 0 || shstr_hdr.sh_offset > len ||
+	    shstr_hdr.sh_size > len - shstr_hdr.sh_offset)
+		return -1;
+
+	const char *shstrtab = (const char *)buf + shstr_hdr.sh_offset;
+	size_t shstrn = (size_t)shstr_hdr.sh_size;
+
+	/* Walk section headers looking for ".gnu_debugdata". */
+	for (uint16_t i = 0; i < eh.e_shnum; i++) {
+		Elf64_Shdr sh;
+		memcpy(&sh, buf + eh.e_shoff + (size_t)i * eh.e_shentsize, sizeof(sh));
+
+		if (sh.sh_name == 0 || sh.sh_name >= shstrn)
+			continue;
+		if (strcmp(shstrtab + sh.sh_name, ".gnu_debugdata") != 0)
+			continue;
+		if (sh.sh_size == 0)
+			return -1;
+
+		/* Bounds-check the section content. */
+		if (sh.sh_offset > len || sh.sh_size > len - sh.sh_offset)
+			return -1;
+
+		*off  = (size_t)sh.sh_offset;
+		*size = (size_t)sh.sh_size;
+		return 0;
+	}
+	return -1;
+}
+
+#define CFI_MAX_MODULE_BYTES (256u << 20)  /* 256 MB sanity cap */
+
+/* Return the cached cfi_section for (path, elf_off), loading it on first sight.
+ * Returns NULL if the module has no usable CFI or could not be read.
+ * Mirrors dynsym_get: grow/append, ok=0 on failure so future calls short-circuit. */
+static struct cfi_section *
+cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
+	int pid, uint64_t vstart, uint64_t vend)
+{
+	/* 1. Cache hit by (elf_off, path). */
+	for (size_t i = 0; i < g_ncfi; i++) {
+		if (g_cfi[i].elf_off == elf_off && !strcmp(g_cfi[i].path, path))
+			return g_cfi[i].ok ? &g_cfi[i].sec : NULL;
+	}
+
+	/* 2. Append a new entry (failed-by-default). */
+	struct cfimod *nc = realloc(g_cfi, (g_ncfi + 1) * sizeof(*nc));
+	if (!nc)
+		return NULL;
+	g_cfi = nc;
+	struct cfimod *m = &g_cfi[g_ncfi++];
+	memset(m, 0, sizeof(*m));
+	snprintf(m->path, sizeof(m->path), "%s", path);
+	m->elf_off   = elf_off;
+	m->load_base = load_base;
+	m->ok        = 0;
+
+	/* Skip pseudo/anonymous paths (same guard as parse_symbols / dynsym_get). */
+	if (path[0] == '\0' || path[0] == '[')
+		return NULL;
+
+	int fd = open_module_file(path, pid, vstart, vend);
+	if (fd < 0)
+		return NULL;
+
+	/* 3. Read the module image from elf_off to EOF. */
+	struct stat stbuf;
+	if (fstat(fd, &stbuf) != 0 || (uint64_t)stbuf.st_size <= elf_off) {
+		close(fd);
+		return NULL;
+	}
+	size_t len = (size_t)((uint64_t)stbuf.st_size - elf_off);
+	if (len > CFI_MAX_MODULE_BYTES) {
+		close(fd);
+		return NULL;
+	}
+	uint8_t *buf = malloc(len);
+	if (!buf || pread_all(fd, buf, len, (off_t)elf_off) != 0) {
+		free(buf);
+		close(fd);
+		return NULL;
+	}
+	close(fd);
+
+	/* 4. Native path: .eh_frame (or .debug_frame) in the top-level ELF. */
+	if (cfi_load_elf(buf, len, &m->sec) == 0) {
+		free(buf);
+		m->ok = 1;
+		return &m->sec;
+	}
+
+	/* 5. OAT/odex path: .debug_frame inside xz-compressed .gnu_debugdata. */
+	size_t gd_off, gd_size;
+	if (find_gnu_debugdata(buf, len, &gd_off, &gd_size) == 0) {
+		uint8_t *inner = NULL;
+		size_t inner_len = 0;
+		if (decompress_xz(buf + gd_off, gd_size, &inner, &inner_len) == 0) {
+			int r = cfi_load_elf(inner, inner_len, &m->sec);
+			free(inner);
+			if (r == 0) {
+				free(buf);
+				m->ok = 1;
+				return &m->sec;
+			}
+		}
+	}
+
+	free(buf);
+	return NULL;   /* m->ok stays 0; future calls short-circuit */
 }
 
 // ---- public --------------------------------------------------------------
@@ -1425,6 +1596,42 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
 	}
 	return 1;
+}
+
+int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
+			uint64_t *out_pcs, int max)
+{
+	struct ares_unwind_regs r;
+	unwind_regs_from_snapshot(snap, &r);
+	/* cfi_step operates on uint64_t arrays; ares_unwind_regs uses __u64.
+	 * They are the same width but distinct types — copy to avoid -Wincompatible-pointer-types. */
+	uint64_t regs[CFI_NREG];
+	uint64_t sp = (uint64_t)r.sp;
+	uint64_t pc = (uint64_t)r.pc;
+	for (int k = 0; k < CFI_NREG; k++)
+		regs[k] = (uint64_t)r.x[k];
+	int n = 0;
+	for (int iter = 0; iter < max && iter < 256; iter++) {
+		out_pcs[n++] = pc;
+		if (n >= max) break;
+		if (pc == 0) break;
+		struct procmaps *pm = pm_get(pid);
+		if (!pm) break;
+		struct ares_map_line *hit = find_mapping(pm, pc);
+		if (!hit) break;
+		uint64_t load_base, elf_off, base_end;
+		module_base(pm, hit, &load_base, &elf_off, &base_end);
+		/* IMPORTANT: cfi_get returns a pointer into a realloc'able cache; use the
+		 * section (cfi_step) before the next iteration's cfi_get. Never hold it
+		 * across calls. */
+		struct cfi_section *sec = cfi_get(hit->path, elf_off, load_base, pid, hit->start, hit->end);
+		if (!sec) break;
+		uint64_t module_pc = pc - load_base;
+		int rc = cfi_step(sec, module_pc, regs, &sp, &pc,
+				  (const uint8_t *)snap->snap, snap->sp, (size_t)snap->snap_len);
+		if (rc != 1) break;
+	}
+	return n;
 }
 
 void sym_flush_pid(int pid)

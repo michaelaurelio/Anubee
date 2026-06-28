@@ -93,17 +93,56 @@ Per-engine comparison (post-GA2):
 - **B2** — worker-queue convergence was scoped for post-module-events; moot after
   `ares mod` migration (module events no longer route through the funcs worker queue).
 
-### CFI stack unwinder — W1 remaining
+### CFI stack unwinder — engine + wiring landed; live cross has 3 known walls
 
-W2 and W3 landed (2026-06-26 — see Resolved). One follow-up remains:
+W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27). The CFI engine is wired
+and unwinds native frames correctly on-device, but a *live* jni-trampoline→managed cross
+does not yet complete — three follow-up items below (W4–W6).
 
-- **W1 — CFI unwinder not wired to runtime.** `cfi_step` / `cfi_run_program` /
-  `unwind_regs_from_snapshot` are exercised only by host tests; no engine calls them at
-  runtime. Both `syscalls` and `funcs` now capture and emit `regs[31]` + the frozen stack
-  window, but neither produces an actual CFI backtrace yet.
-  Follow-up: add a runtime unwind driver that loads `.debug_frame`, maps runtime
-  PC→module-relative, and loops `cfi_step` over the frozen snapshot window to emit a
-  CFI-unwound call chain. Usable by both engines (shared sidecar format).
+- **W1 — DONE (2026-06-27): CFI unwinder wired to runtime.**
+  `cfi_unwind_snapshot` (in `src/common/symbolize.c`, declared in `symbolize.h`) loops
+  `cfi_get` + `cfi_step` over the frozen snapshot window. Reads only the frozen
+  `snap->snap[]` bytes — no live target memory. Called from `emit_cfi_backtrace`
+  in `syscalls.c` immediately after each raw `{"type":"stack"}` sidecar write; emits
+  a companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[{frame,addr,symbol,kind},...]}`.
+  `kind` ∈ `native | jni-trampoline | managed | interp`. `cfi_unwind.c` + `dwarf.c`
+  added to `COMMON_CSRC`; `cfi_unwind_snapshot` exported via `COMMON_API`.
+  **On-device (2026-06-27):** the RA-default fix (commit `ee5ed5f`) took native unwinding
+  from 1 frame to the full 18-frame libc→linker64 chain; the `art_jni_trampoline` FDE in
+  the real `boot.oat` resolves `CFA=sp, RA=same` → recovers the managed caller PC (verified
+  offline). The live cross is blocked by W4–W6 below; the `syscalls-cfi` arm SKIPs honestly
+  until they land.
+
+- **W4 — DONE (2026-06-27): snapshot window enlarged 8 KB → 32 KB + 3-tier fault fallback.**
+  Deep frames' spilled-RA slots (e.g. `libandroid_runtime` at `CFA-56`) sat past `sp+8192`,
+  so `cfi_step`'s bounds-checked `read64` failed and the unwind truncated mid-native before
+  the trampoline. `ARES_SNAP_MAX` is now 32768 with a `MAX → MID(8192) → SMALL(2048)` read
+  cascade (a fault on the big read still yields a useful window; `truncated` flags any fallback).
+  Cost: 32 KB ring record per snapshot, but records are deduped per distinct stack so it's
+  bounded. Remaining: a *very* deep stack can still exceed 32 KB → a two-pass / streamed
+  capture would be the next lever if 32 KB proves insufficient.
+
+- **W5 — JIT code-cache frames have no file-backed CFI.** Between the framework lib and
+  `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
+  `cfi_get` skips pseudo paths → returns NULL → unwind stops. ART publishes per-method
+  unwind info as in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES
+  already reads these for *symbols* (`jit_resolve` / `art_refresh`). Extend that path to
+  `cfi_load_elf` the JIT mini-ELF and feed it to `cfi_get`. (AOT-compiled callers, in
+  `base.odex`/`boot.oat`, do NOT hit this — they have `.debug_frame` — so fully-AOT JNI
+  paths can cross once W4 lands.)
+
+- **W6 — Library-filter mode misses runtime syscalls (separate from CFI).** With
+  `-l libc.so -s openat` only ~11 process-init `openat`s are captured per process, while
+  capture-all (`-a`) sees 2234 (1327 crossing the trampoline). Because snapshots are gated
+  to library-filtered mode (`!capture_all`), they never see runtime/JNI stacks. Root-cause
+  the lib-filter `stack_hits` path (every `openat`'s frame 0 is in libc, so it should match);
+  likely surfaced by the W1/W2 refactor. Until fixed, a live cross can only be observed via
+  a temporary capture-all-snapshot diagnostic build.
+
+- **Deferred — interpreter frame naming:** frames tagged `"kind":"interp"` are detected
+  by `is_interp_frame` (ART interpreter entrypoints) but the managed method name is not
+  recovered. Naming them requires an ART managed-stack (ShadowFrame) walk — out of scope
+  for the CFI unwinder. Parked alongside Phase 2b findings.
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 

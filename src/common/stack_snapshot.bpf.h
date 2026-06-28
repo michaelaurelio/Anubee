@@ -70,7 +70,10 @@ static __always_inline void ares_emit_stack_snapshot(struct pt_regs *user_regs,
 	const void *sp = (const void *)s->sp;
 	if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_MAX, sp) == 0)
 		s->snap_len = ARES_SNAP_MAX;
-	else if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_SMALL, sp) == 0) {
+	else if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_MID, sp) == 0) {
+		s->snap_len = ARES_SNAP_MID;
+		s->truncated = 1;
+	} else if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_SMALL, sp) == 0) {
 		s->snap_len = ARES_SNAP_SMALL;
 		s->truncated = 1;
 	}

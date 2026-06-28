@@ -25,7 +25,7 @@ flowchart TD
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
     mod["mod — src/modules/<br/>analyzer dispatcher (proc-event · execve · prop-read)<br/>each analyzer owns its own BPF skeleton"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter)<br/>cfi_unwind_snapshot (CFI-unwind a frozen snapshot across modules; emits cfi_stack records)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -239,9 +239,52 @@ expensive one:
   `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to
   `ARES_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
   (see §7). The register file is the CFI initial state for the DWARF-based software
-  unwinder (`src/common/dwarf.c` + `cfi_unwind.c`; see [BACKLOG W1](BACKLOG.md)).
-  The snapshot struct and BPF helpers live in `src/common/stack_snapshot.{h,bpf.h}` and
-  are shared with the `funcs` engine.
+  unwinder (`src/common/dwarf.c` + `cfi_unwind.c`). The snapshot struct and BPF
+  helpers live in `src/common/stack_snapshot.{h,bpf.h}` and are shared with the
+  `funcs` engine.
+
+### §2.1 CFI-unwind layer (`cfi_unwind_snapshot`)
+
+Immediately after writing the raw `{"type":"stack"}` sidecar record, `json_emit_stack`
+calls `emit_cfi_backtrace`, which CFI-unwinds the frozen snapshot and emits a companion
+`{"type":"cfi_stack"}` record to the same sidecar file. The two records are correlated
+by `stack_id`.
+
+```mermaid
+flowchart LR
+    snap["struct ares_stack_snapshot\n(regs + snap[] window)"]
+    unwind["cfi_unwind_snapshot(pid, snap)\nsrc/common/symbolize.c"]
+    step["cfi_step(sec, module_pc, regs, &sp, &pc,\n  snap->snap, snap->sp, snap->snap_len)\ncfi_unwind.c — reads only the frozen window"]
+    sym["sym_resolve(pid, pc, sym)\nsymbolize.c"]
+    emit["emit_cfi_backtrace\nsyscalls.c"]
+    out["{\"type\":\"cfi_stack\",\n\"cfi_backtrace\":[{frame,addr,symbol,kind},...]}"]
+
+    snap --> unwind
+    unwind --> step
+    step -->|"caller pc"| unwind
+    unwind -->|"out_pcs[]"| emit
+    emit --> sym
+    sym --> out
+```
+
+**Algorithm (`cfi_unwind_snapshot`):**
+1. `unwind_regs_from_snapshot(snap, &r)` — seed `regs[0..30]`, `sp`, `pc` from the frozen register file.
+2. Per iteration (cap 256): record `pc` → `out_pcs[n++]`; look up the mapping via `pm_get` + `find_mapping`; compute `load_base` via `module_base`; call `cfi_get(path, elf_off, load_base, ...)` to get the cached `cfi_section`; call `cfi_step` with the **frozen `snap->snap` window** (bounds-checked, never live target memory); stop when `cfi_step` returns 0 (no FDE, RA undefined, pc==0, or OOB stack).
+3. The `cfi_get` pointer is **consumed by `cfi_step` in the same iteration** before the next call — it points into a realloc'able cache and must not be held across iterations.
+
+**Frame classification (`kind` field):**
+- `"native"` — default; a C/C++ frame in any native `.so`.
+- `"jni-trampoline"` — symbol contains `art_jni_trampoline`; the ART bridge from native into managed code.
+- `"managed"` — symbol comes from a `.oat`, `.odex`, or `.vdex` file (ahead-of-time compiled Java).
+- `"interp"` — symbol is an ART interpreter entrypoint (see `is_interp_frame`); the managed method lives in a ShadowFrame and cannot be named by CFI.
+
+**Firewall:** `cfi_step` reads stack bytes exclusively from the `snap->snap[]` window captured in-kernel at trap time. It never calls `proc_mem_read` or touches live target memory. No uprobe is added. The firewall is clean.
+
+**Limits:**
+- Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
+- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"` but the managed method name is not recovered (no ART internal stack walk).
+- Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
+- Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
   option ordering does not matter; `--help` is auto-generated; `--version` prints
   `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).

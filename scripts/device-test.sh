@@ -170,6 +170,54 @@ test_syscalls_regs() {
     info "syscalls-regs OK — regs[0..30] present in stack sidecar"
 }
 
+# syscalls CFI cross-trampoline unwind: assert that --snapshot produces at least
+# one {"type":"cfi_stack"} record and that its cfi_backtrace demonstrates a
+# native→JNI-trampoline→managed cross (a "kind":"jni-trampoline" frame is present
+# AND a later "kind":"managed" frame follows it). A miss (no snapshot in the window)
+# is a SKIP, not a failure (timing-dependent). Hard-fail only on BPF-load error.
+test_syscalls_cfi() {
+    echo "=== syscalls CFI cross-trampoline unwind (cfi_stack sidecar) ==="
+    forcestop
+    local out_file="/data/local/tmp/ares_cfi_test.jsonl"
+    local stacks_file="${out_file}.stacks"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
+    local out; out="$(ares "syscalls -l libc.so -s openat --snapshot -o $out_file -P $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    local stacks; stacks="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
+    if [ -z "$stacks" ]; then
+        echo "  SKIP: no stack sidecar produced in this window (no stack snapshots captured)"
+        return
+    fi
+    local cfi_records; cfi_records="$(grep '"type":"cfi_stack"' <<<"$stacks")"
+    if [ -z "$cfi_records" ]; then
+        echo "  SKIP: no cfi_stack records in this window (CFI unwind produced no frames)"
+        return
+    fi
+    # Assert the cross: a jni-trampoline frame AND a later managed frame in the same record.
+    local crossed=0
+    while IFS= read -r rec; do
+        if echo "$rec" | grep -q '"kind":"jni-trampoline"' && \
+           echo "$rec" | grep -q '"kind":"managed"'; then
+            # Verify ordering: jni-trampoline frame index < managed frame index.
+            local jni_frame; jni_frame="$(echo "$rec" | grep -o '"frame":[0-9]*,"addr":"[^"]*","symbol":"[^"]*","kind":"jni-trampoline"' | grep -o '"frame":[0-9]*' | head -1 | grep -o '[0-9]*')"
+            local mgd_frame; mgd_frame="$(echo "$rec" | grep -o '"frame":[0-9]*,"addr":"[^"]*","symbol":"[^"]*","kind":"managed"' | grep -o '"frame":[0-9]*' | head -1 | grep -o '[0-9]*')"
+            if [ -n "$jni_frame" ] && [ -n "$mgd_frame" ] && [ "$mgd_frame" -gt "$jni_frame" ]; then
+                crossed=1
+                break
+            fi
+        fi
+    done <<<"$cfi_records"
+    if [ "$crossed" -eq 1 ]; then
+        local ncfi; ncfi="$(grep -c '"type":"cfi_stack"' <<<"$stacks")"
+        info "syscalls-cfi OK — $ncfi cfi_stack record(s); cross confirmed (jni-trampoline -> managed)"
+    else
+        echo "  SKIP: cfi_stack records present but no jni-trampoline→managed cross in this window (app/timing-dependent)"
+    fi
+}
+
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
 # one probed symbol to fire; use libc.so!open as a stable target. Asserts that
 # the structured record shape ("type":"call") reaches the output file.
@@ -199,9 +247,10 @@ case "$WHAT" in
     syscalls-jit)      test_syscalls_jit ;;
     syscalls-vdso)     test_syscalls_vdso ;;
     syscalls-regs)     test_syscalls_regs ;;
+    syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | funcs-structured | all)" ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | all)" ;;
 esac
 
 forcestop

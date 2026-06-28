@@ -25,7 +25,6 @@ so history stays traceable.
 **Major:**
 - GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
-- `funcs` module events: SPAWN/PROC_EXIT/EXECVE/PROP; B2 worker-queue routing
 - CFI W1: wire `cfi_step` unwinder to runtime (syscalls + funcs)
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
@@ -81,17 +80,14 @@ Per-engine comparison (post-GA2):
 - **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
   `/proc/maps` scan); tighten launch→attach timing so early calls aren't missed.
 
-### `funcs` structured records — module events (deferred)
+### `funcs` structured records — module events — **DONE 2026-06-28**
 
 - CALL/RETURN: **done.** MAP/UNMAP: **done (2026-06-25)** via `ares_libtrace_emit_lib/unlib`
   under `g_sink_lock` (Option A — drain emits directly, attach stays prompt).
-- **SPAWN/PROC_EXIT/EXECVE/PROP** still open: needs new `funcs_emit_*` builders
-  (one per type, host-tested) and a sink path on the module `handle_event` signature
-  (`module.h:19` currently has no output channel).
-- **B2 — route all map/unmap/module events through the worker queue** (syscalls
-  `process_event` model): converges funcs to single-writer, enables retiring the
-  `g_out_lock` dual-writer split. Bigger lift; revisit when module events are scoped
-  in (at that point B2 becomes cheaper than wiring more lock sites into modules).
+- **SPAWN/PROC_EXIT/EXECVE/PROP** — **done (2026-06-28)** via `ares mod` migration
+  (Phases 1–3); output channel in `src/modules/mod_emit.c`. See Resolved/Done 2026-06-28.
+- **B2** — worker-queue convergence was scoped for post-module-events; moot after
+  `ares mod` migration (module events no longer route through the funcs worker queue).
 
 ### CFI stack unwinder — W1 remaining
 
@@ -170,6 +166,13 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-28
+
+- **proc-event/execve/prop-read → `ares mod` migration (Phases 1–3).** SPAWN/PROC_EXIT/EXECVE/PROP
+  events migrated from the open `funcs` module-events backlog to the `ares mod` analyzer subsystem
+  (proc-event, execve, prop-read); output channel in `src/modules/mod_emit.c`. Closes the
+  SPAWN/PROC_EXIT/EXECVE/PROP deferred item and retires B2 as moot.
 
 ### 2026-06-27 (session 5)
 

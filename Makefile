@@ -76,9 +76,7 @@ BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) 
 
 # ---- userspace objects (compiled per engine, then localized) --------------
 SYSC_CSRC := $(SRC)/syscalls/syscalls.c
-FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c \
-             $(SRC)/funcs/modules/proc_event.c $(SRC)/funcs/modules/execve.c \
-             $(SRC)/funcs/modules/prop_read.c
+FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c
 
 # shared library-load tracing module (src/common), linked once; exports only its
 # ares_libtrace_* API (everything else localized, like the engines).
@@ -180,12 +178,9 @@ $(SYSC_BPF_OBJ): $(SRC)/syscalls/syscalls.bpf.c $(SRC)/syscalls/syscalls.h vmlin
 $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name syscalls > $@
 
-# ares-tracer.bpf.c #includes its module .bpf.c files and the shared lib_trace
-# probe; one compilation unit.
 $(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c $(SRC)/funcs/ares-tracer.h vmlinux.h $(LIBBPF_A) \
                  $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h \
-                 $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h \
-                 $(wildcard $(SRC)/funcs/modules/*.bpf.c)
+                 $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true

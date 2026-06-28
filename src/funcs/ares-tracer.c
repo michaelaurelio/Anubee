@@ -24,7 +24,6 @@
 #include "ares-tracer.h"
 #include "ares-tracer.skel.h"
 #include "ares-tracer-priv.h"
-#include "modules/module.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
@@ -34,15 +33,6 @@
 #include "common/engine_args.h"
 #include "common/maps.h"
 #include "common/stack_snapshot.h"
-
-static const ares_module_t *const all_modules[] = {
-    &module_proc_event,
-    &module_execve,
-    &module_prop_read,
-    NULL,
-};
-static const ares_module_t *active_modules[sizeof(all_modules)/sizeof(all_modules[0])];
-static int active_module_count = 0;
 
 // Argument parser module using argp.h
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
@@ -62,7 +52,6 @@ static const struct argp_option options[] = {
     { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",            0 },
     { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
-    { "module",         'm', "NAME",         0, "Activate a tracing module (repeatable). Available: proc-event, execve",            0 },
     { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },
     { "no-snapshot",    2,   NULL,           0, "Disable stack snapshots (default)",                                                 0 },
     COMMON_ARGP_OPTIONS,
@@ -182,22 +171,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 2:
             args->want_snap = 0;
             break;
-
-        case 'm': {
-            for (int i = 0; all_modules[i]; i++) {
-                if (strcmp(arg, all_modules[i]->name) == 0) {
-                    for (int j = 0; j < active_module_count; j++) {
-                        if (active_modules[j] == all_modules[i])
-                            return 0;  // already active, ignore duplicate
-                    }
-                    if (active_module_count < 16)
-                        active_modules[active_module_count++] = all_modules[i];
-                    return 0;
-                }
-            }
-            fprintf(stderr, "unknown module '%s'. Available: proc-event, execve, prop-read\n", arg);
-            return ARGP_ERR_UNKNOWN;
-        }
 
         // No arguments case
         case ARGP_KEY_END:
@@ -725,9 +698,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
     //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
     //   STACK  — done (drain, inline, to g_stacks sidecar — no lock needed)
-    //   SPAWN/PROC_EXIT/EXECVE/PROP — deferred; see BACKLOG "module events"
-    //     (needs funcs_emit_* builders + sink path on the module handle_event
-    //     signature; revisit with B2 worker-routing once module scope is confirmed)
 
     if (header->type == ARES_EVENT_STACK) {
         if (g_stacks && data_sz >= (int)sizeof(struct ares_stack_snapshot)) {
@@ -848,16 +818,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             pthread_mutex_unlock(&g_sink_lock);
         }
 
-        return 0;
-    }
-
-    // Route module event types (>= ARES_EVENT_SPAWN) to active modules
-    if (header->type >= ARES_EVENT_SPAWN) {
-        for (int i = 0; i < active_module_count; i++) {
-            if (!active_modules[i]->handle_event) continue;
-            if (active_modules[i]->handle_event(header, data, data_sz) == 0)
-                return 0;
-        }
         return 0;
     }
 
@@ -1001,9 +961,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     bpf_program__set_autoattach(skel->progs.uprobe_open, false);
     bpf_program__set_autoattach(skel->progs.uprobe_save_only, false);
     bpf_program__set_autoattach(skel->progs.uretprobe_open, false);
-    for (int i = 0; all_modules[i]; i++)
-        if (all_modules[i]->pre_attach)
-            all_modules[i]->pre_attach(skel);
 
     {
         int bufmb = args.c.bufmb;
@@ -1026,15 +983,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         goto cleanup;
     }
 
-    for (int i = 0; i < active_module_count; i++) {
-        if (active_modules[i]->attach) {
-            int r = active_modules[i]->attach(skel);
-            if (r == -1) { err = -1; goto cleanup; }
-            if (r == -2)
-                ts_print("[warn]  > module '%s' running in degraded mode — some events will be missing\n",
-                         active_modules[i]->name);
-        }
-    }
     elf_version(EV_CURRENT);
 
     // Resolution context: assigned into the file-static g_rctx (not a local) so
@@ -1271,10 +1219,6 @@ int funcs_run(volatile sig_atomic_t *stop)
     if (err < 0)
         err_print("   [err] > ring buffer poll error: %d\n", err);
 
-    for (int i = 0; i < active_module_count; i++)
-        if (active_modules[i]->print_summary)
-            active_modules[i]->print_summary();
-
     return err < 0 ? -err : 0;
 }
 
@@ -1300,9 +1244,6 @@ void funcs_teardown(void)
         if (probe_links[i])     bpf_link__destroy(probe_links[i]);
         if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
     }
-    for (int i = 0; i < active_module_count; i++)
-        if (active_modules[i]->detach)
-            active_modules[i]->detach();
     for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
     for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);

@@ -217,7 +217,3 @@ int BPF_KRETPROBE(uretprobe_open)
 // Shared mmap/munmap capture (emits lib_map_event / lib_unmap_event into events_rb).
 #define LIBTRACE_EVENTS_RB events_rb
 #include "common/lib_trace.bpf.h"
-
-#include "modules/prop_read.bpf.c"
-#include "modules/proc_event.bpf.c"
-#include "modules/execve.bpf.c"

@@ -122,7 +122,14 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
     }
 
     if (mc->sink != NULL) {
-        mod_emit_execve(&mc->sink->jb, e);
+        char symbuf[STACK_DEPTH][320];
+        const char *syms[STACK_DEPTH];
+        for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
+            if (!e->call_stack[i]) { syms[i] = NULL; continue; }
+            sym_resolve(hdr->pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+            syms[i] = symbuf[i];
+        }
+        mod_emit_execve(&mc->sink->jb, e, syms);
         ares_sink_emit(mc->sink);
     }
 

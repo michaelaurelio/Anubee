@@ -11,7 +11,7 @@
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
-void mod_emit_execve(struct jbuf *j, const struct execve_event *e);
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms);
 void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 
 static int checks = 0, failures = 0;
@@ -87,8 +87,9 @@ int main(void)
     ex.call_stack[0] = 0xdeadbeef000ULL;
     ex.call_stack[1] = 0xcafebabe000ULL;
 
+    // addr-only: syms=NULL → no "symbol" field
     j.len = 0;
-    mod_emit_execve(&j, &ex);
+    mod_emit_execve(&j, &ex, NULL);
     CHECK_HAS(j, "\"type\":\"execve\"",  "execve type");
     CHECK_HAS(j, "\"pid\":5000",          "execve pid");
     CHECK_HAS(j, "\"/bin/sh\"",           "execve filename");
@@ -96,6 +97,17 @@ int main(void)
     CHECK_HAS(j, "\"-c\"",               "execve argv[0]");
     CHECK_HAS(j, "\"id\"",               "execve argv[1]");
     CHECK_HAS(j, "\"addr\":\"",           "execve backtrace addr present");
+    { char tmp[4096]; int n = (int)j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"symbol\"")) { failures++; printf("  FAIL: symbol emitted when syms=NULL\n    in: %s\n", tmp); }
+    }
+
+    // symbolized: syms != NULL → "symbol" field present per frame
+    const char *syms2[2] = { "libc.so!fork+0x10", "app!main+0x40" };
+    j.len = 0;
+    mod_emit_execve(&j, &ex, syms2);
+    CHECK_HAS(j, "\"symbol\":\"libc.so!fork+0x10\"", "execve symbol frame 0");
+    CHECK_HAS(j, "\"symbol\":\"app!main+0x40\"",      "execve symbol frame 1");
 
     // ---- prop GET call (is_ret=0) --------------------------------------------
     struct prop_event pg = {0};

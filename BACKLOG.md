@@ -34,7 +34,7 @@ so history stays traceable.
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
-- `ares mod` audit (open): U2 `-v` asymmetry, O2 structured backtrace symbols, O3 prop schema, F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
+- `ares mod` audit (open): U2 `-v` asymmetry, O3 prop schema, F1 `-p PID`, F2 auto-stop, F4 `-b` ring wire
 
 ---
 
@@ -171,9 +171,10 @@ symbol path); vDSO frames are named (Phase 1).
 
   **Output / schema:**
   - **O1 — execve prefix fixed. DONE 2026-06-28.** `execve.c` now prints `[exec]` (was `[proc]`).
-  - **O2 — structured execve backtrace addr-only.** Console resolves via `sym_resolve`
-    (`execve.c:53`); `-o` JSONL emits raw addresses only (`mod_emit.c:53-61`). Fix (medium):
-    resolve in analyzer, pass symbol strings into a richer emit path.
+  - **O2 — structured execve backtrace symbolized. DONE 2026-06-28.** `mod_emit_execve` takes a
+    `const char *const *syms` param; analyzer resolves via `sym_resolve` and passes strings in.
+    Each backtrace frame now emits `{"frame":N,"addr":"0x..","symbol":".."}` in `-o` JSONL.
+    Builder stays libbpf-free; `test_mod_emit` covers both NULL (addr-only) and symbolized paths.
   - **O3 — prop schema over-emits.** SCAN events emit `name`/`value`/`is_ret`/`found` even when
     empty/zero. Minor; optional per-op field trimming.
 

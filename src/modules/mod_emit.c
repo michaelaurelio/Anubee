@@ -34,7 +34,9 @@ void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e)
     jb_c(j, '}');
 }
 
-void mod_emit_execve(struct jbuf *j, const struct execve_event *e)
+// syms: resolved symbol strings for each frame (NULL or syms[i]==NULL/"" → omit symbol field).
+// Caller (execve.c) resolves via sym_resolve; passing NULL produces addr-only output.
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_EXECVE)); jb_c(j, '"');
@@ -49,7 +51,6 @@ void mod_emit_execve(struct jbuf *j, const struct execve_event *e)
         jb_c(j, '"'); jb_esc(j, e->argv[i]); jb_c(j, '"');
     }
     jb_c(j, ']');
-    // addr-only (no sym_resolve) — host-testable, libbpf-free
     jb_s(j, ",\"backtrace\":[");
     for (int i = 0, first = 1; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
         if (e->call_stack[i] == 0) break;
@@ -57,6 +58,9 @@ void mod_emit_execve(struct jbuf *j, const struct execve_event *e)
         first = 0;
         jb_s(j, "{\"frame\":");  jb_u64(j, i);
         jb_s(j, ",\"addr\":\""); jb_hex(j, e->call_stack[i]); jb_c(j, '"');
+        if (syms && syms[i] && syms[i][0]) {
+            jb_s(j, ",\"symbol\":\""); jb_esc(j, syms[i]); jb_c(j, '"');
+        }
         jb_c(j, '}');
     }
     jb_c(j, ']');

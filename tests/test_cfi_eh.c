@@ -42,6 +42,14 @@ int main(int argc, char **argv)
 	assert(st.cols[29].kind == CFI_AT_CFA && st.cols[29].off == -272);
 	assert(st.cols[30].kind == CFI_AT_CFA && st.cols[30].off == -264);
 
+	/* Leaf frame: FDE [0x4e0,0x510) is nop-only (no RA rule), like a libc syscall
+	 * stub. The return-address register must default to SAME (RA lives in x30),
+	 * NOT undefined — else cfi_step would treat it as top-of-stack and stop the
+	 * unwind at the very first frame. */
+	struct cfi_cfa_state lst;
+	assert(cfi_run_program(&s, 0x4e0, &lst) == 0);
+	assert(lst.cols[30].kind == CFI_SAME);
+
 	cfi_section_free(&s);
 
 	/* negatives: non-ELF + truncated fail cleanly */

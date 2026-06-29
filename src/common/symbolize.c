@@ -1655,7 +1655,8 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 		if (!sec) break;
 		uint64_t module_pc = pc - load_base;
 		int rc = cfi_step(sec, module_pc, regs, &sp, &pc,
-				  (const uint8_t *)snap->snap, snap->sp, (size_t)snap->snap_len);
+				  (const uint8_t *)snap->snap, snap->sp, (size_t)snap->snap_len,
+				  NULL);
 		if (rc != 1) break;
 	}
 	return n;

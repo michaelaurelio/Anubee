@@ -76,6 +76,39 @@ struct cfi_rule {
 };
 enum { CFI_UNDEF = 0, CFI_SAME = 1, CFI_AT_CFA = 2 };
 
+/* Why a cfi_step stopped (diagnostic; see docs CFI-misstep design). */
+enum cfi_stop_reason {
+	CFI_OK = 0,        /* stepped fine */
+	CFI_NO_FDE,        /* cfi_lookup(module_pc) found nothing */
+	CFI_RA_READFAULT,  /* RA slot outside [stack_base, stack_base+stack_len) */
+	CFI_BAD_CFA_REG,   /* CFA register neither SP nor < CFI_NREG */
+	CFI_RA_UNDEF,      /* RA column is CFI_UNDEF */
+	CFI_RA_ZERO,       /* RA slot read but value == 0 */
+	CFI_RUN_FAIL,      /* cfi_run_program failed but an FDE exists */
+};
+
+/* Optional per-step diagnostic payload. cfi_step fills the FDE/CFA/RA fields;
+ * cfi_unwind_snapshot fills the mapping fields it owns (module_pc/load_base/
+ * elf_off/path). All zeroed by cfi_step on entry. Off by default (NULL). */
+struct cfi_step_diag {
+	/* filled by the caller (cfi_unwind_snapshot) — not by cfi_step */
+	uint64_t module_pc;
+	uint64_t load_base;
+	uint64_t elf_off;
+	char     path[256];
+	/* filled by cfi_step */
+	int      fde_found;
+	uint64_t fde_pc_lo, fde_pc_hi;
+	uint32_t cfa_reg;
+	int64_t  cfa_off;
+	uint64_t cfa;
+	uint8_t  ra_kind;
+	int64_t  ra_off;
+	uint64_t ra_slot;
+	uint64_t ra_value;
+	int      stop_reason;   /* enum cfi_stop_reason */
+};
+
 #define CFI_NREG 31       /* x0..x30 */
 #define CFI_REG_SP 31     /* DWARF reg 31 = sp on aarch64 */
 
@@ -100,6 +133,7 @@ int cfi_run_program(const struct cfi_section *s, uint64_t module_pc, struct cfi_
  * caller PC == 0, or a needed stack slot lies outside the window). Never reads outside the window. */
 int cfi_step(const struct cfi_section *s, uint64_t module_pc,
 	     uint64_t x[CFI_NREG], uint64_t *sp, uint64_t *pc,
-	     const uint8_t *stack, uint64_t stack_base, size_t stack_len);
+	     const uint8_t *stack, uint64_t stack_base, size_t stack_len,
+	     struct cfi_step_diag *diag);
 
 #endif

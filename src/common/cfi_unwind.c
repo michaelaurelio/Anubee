@@ -1098,11 +1098,25 @@ int cfi_run_program(const struct cfi_section *s, uint64_t module_pc,
 
 int cfi_step(const struct cfi_section *s, uint64_t module_pc,
              uint64_t x[CFI_NREG], uint64_t *sp, uint64_t *pc,
-             const uint8_t *stack, uint64_t stack_base, size_t stack_len)
+             const uint8_t *stack, uint64_t stack_base, size_t stack_len,
+             struct cfi_step_diag *diag)
 {
+    if (diag) {
+        diag->fde_found = 0;
+        diag->fde_pc_lo = diag->fde_pc_hi = 0;
+        diag->cfa_reg = 0; diag->cfa_off = 0; diag->cfa = 0;
+        diag->ra_kind = 0; diag->ra_off = 0; diag->ra_slot = 0; diag->ra_value = 0;
+        diag->stop_reason = CFI_OK;
+        const struct cfi_fde *f = cfi_lookup(s, module_pc);
+        if (f) { diag->fde_found = 1; diag->fde_pc_lo = f->pc_lo; diag->fde_pc_hi = f->pc_hi; }
+    }
     struct cfi_cfa_state st;
-    if (cfi_run_program(s, module_pc, &st) != 0)
+    if (cfi_run_program(s, module_pc, &st) != 0) {
+        if (diag) diag->stop_reason = diag->fde_found ? CFI_RUN_FAIL : CFI_NO_FDE;
         return 0;
+    }
+
+    if (diag) { diag->cfa_reg = st.cfa_reg; diag->cfa_off = st.cfa_off; }
 
     /* Compute CFA = regval(cfa_reg) + cfa_off */
     uint64_t cfa;
@@ -1110,8 +1124,11 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
         cfa = *sp + (uint64_t)(int64_t)st.cfa_off;
     else if (st.cfa_reg < CFI_NREG)
         cfa = x[st.cfa_reg] + (uint64_t)(int64_t)st.cfa_off;
-    else
+    else {
+        if (diag) diag->stop_reason = CFI_BAD_CFA_REG;
         return 0; /* unknown CFA register */
+    }
+    if (diag) diag->cfa = cfa;
 
     /* Bounds-checked 8-byte little-endian read from frozen stack window */
 #define read64(addr, valp) \
@@ -1131,19 +1148,26 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
     uint32_t ra_reg = 30; /* AArch64 LR */
     uint64_t caller_pc = 0;
     struct cfi_rule *ra_rule = &st.cols[ra_reg];
+    if (diag) { diag->ra_kind = ra_rule->kind; diag->ra_off = ra_rule->off; }
     if (ra_rule->kind == CFI_AT_CFA) {
         uint64_t slot = (uint64_t)(int64_t)(cfa + (uint64_t)(int64_t)ra_rule->off);
-        if (!read64(slot, &caller_pc))
+        if (diag) diag->ra_slot = slot;
+        if (!read64(slot, &caller_pc)) {
+            if (diag) diag->stop_reason = CFI_RA_READFAULT;
             return 0;
+        }
     } else if (ra_rule->kind == CFI_SAME) {
         caller_pc = x[ra_reg];
     } else {
-        /* CFI_UNDEF: top of stack */
-        return 0;
+        if (diag) diag->stop_reason = CFI_RA_UNDEF;
+        return 0; /* CFI_UNDEF: top of stack */
     }
 
-    if (caller_pc == 0)
+    if (caller_pc == 0) {
+        if (diag) diag->stop_reason = CFI_RA_ZERO;
         return 0;
+    }
+    if (diag) diag->ra_value = caller_pc;
 
     /* Restore registers: work on a copy, commit only on success */
     uint64_t newx[CFI_NREG];

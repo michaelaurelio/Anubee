@@ -202,9 +202,10 @@ test_syscalls_cfi() {
     fi
     # W3-window milestone = the chunked-capture snap_len spread (snapshots now
     # exceed the old 8 KB tier). The jni-trampoline reach below is the CFI cross
-    # PATH, NOT the W3-window goal: on-device the CFI walk dies one frame short in
-    # libandroid_runtime (a cfi_step mis-step, re-diagnosed 2026-06-29 — see
-    # BACKLOG), so a trampoline reach is not expected and stays a SKIP.
+    # PATH, NOT the W3-window goal: on-device the CFI walk dies at every
+    # libandroid_runtime frame (cfi_get returns NULL — root-caused to the
+    # ares_module_base_idx gapped walk-back, maps.c:31; see BACKLOG), so a
+    # trampoline reach is not expected and stays a SKIP until that fix lands.
     if grep -qE '"snap_len":(9[0-9]{3}|[1-9][0-9]{4,})' <<<"$stacks"; then
         local maxlen; maxlen="$(grep -o '"snap_len":[0-9]*' <<<"$stacks" | grep -o '[0-9]*' | sort -n | tail -1)"
         info "syscalls-cfi: W3-window goal met — chunked capture recovered tail, max snap_len=$maxlen (>8192)"

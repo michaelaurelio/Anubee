@@ -238,9 +238,15 @@ expensive one:
   and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
   one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
   syscalls). The BPF program captures up to
-  `ARES_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
-  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to a smaller
-  read; in practice the 32 KB read frequently faults to 8 KB — see §2.1 W3-window). These are emitted as a sidecar `{"type":"stack",...}` record
+  `ARES_SNAP_MAX` bytes from `sp` upward in **`ARES_SNAP_CHUNK` (4 KB) page-sized chunks**,
+  stopping at the first faulting (unmapped) chunk so the full contiguous stack prefix from
+  `sp` is kept instead of an all-or-nothing read (W3-window, 2026-06-29). Also captures the
+  **full GP register file** (x0..x30, `regs[31]`), pc/sp/fp/lr (legacy mirror), and a
+  `truncated` flag — **redefined**: `1` means `snap_len == ARES_SNAP_MAX` (the window filled
+  without faulting, so the stack may extend beyond what was captured = genuinely incomplete);
+  `0` means a chunk faulted, i.e. capture reached `stack_base` = all mapped stack captured =
+  complete. `snap_len` is now any multiple of 4 KB (on-device: a 4096→32768 spread), not the
+  old bimodal 8192/32768. These are emitted as a sidecar `{"type":"stack",...}` record
   (see §7). The register file is the CFI initial state for the DWARF-based software
   unwinder (`src/common/dwarf.c` + `cfi_unwind.c`). The snapshot struct and BPF
   helpers live in `src/common/stack_snapshot.{h,bpf.h}` and are shared with the
@@ -307,14 +313,23 @@ capture-all (**W6**, done 2026-06-29) and the maps-cache staleness that dead-end
 frame 0 is fixed (`find_mapping_refresh` + a one-shot forced maps re-read in
 `cfi_unwind_snapshot`), so under `-a` the CFI walk reaches the full native chain on
 JNI-originated stacks (`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross
-is still **not end-to-end** — two walls remain (BACKLOG):
-**W3-window** (the current blocker) — the 32 KB snapshot `bpf_probe_read_user` *faults* at
-runtime and the 3-tier fallback drops to 8 KB (on-device: 299/307 snapshots `truncated:1`,
-only 8 got 32 KB), so the spilled RA that would step `libandroid_runtime`→`art_jni_trampoline`
-sits beyond the captured window and the unwind dies one frame short; fix is a chunked
-(page-at-a-time) stack capture in BPF. **W5** — JIT code-cache (`[anon]`) frames have no
-file-backed CFI (needs ART's in-memory mini-ELF unwind info, the same source `jit_resolve`
-uses for symbols); unreachable until W3-window lands.
+is still **not end-to-end** — but the blocker has been **re-diagnosed** (on-device 2026-06-29).
+**W3-window** (chunked capture) is **DONE**: the snapshot is now read in 4 KB chunks stopping at
+the first fault, and on-device `snap_len` recovers the full contiguous prefix (a 4096→32768
+spread; 238/312 records >8 KB). This *disproved* the original "spilled RA sits beyond the
+captured window" hypothesis: with 20–32 KB now captured, the CFI walk **still** dies one frame
+short of `art_jni_trampoline`, terminating at a *consistent* `libandroid_runtime.so+0xd6054`
+(55/60 deaths, all `snap_len=20480` — ample headroom). That offset is **non-code** (it sits in
+`libandroid_runtime`'s `.eh_frame`; the executable PT_LOAD starts at vaddr `0xe0000`) and **no
+FDE covers it** — so `cfi_step`, unwinding *through* libandroid_runtime, computes a **bogus
+(non-code) return address**, `cfi_get` then finds no FDE, and the walk stops. The raw FP-walk
+crosses the trampoline 290× in the same run; normal native paths (e.g. libc→sqlite) unwind
+cleanly — so the CFI engine works generally but **derails in the libandroid_runtime JNI path**.
+The real gating wall is therefore a **`cfi_step`/`load_base` resolution bug for
+libandroid_runtime's multi-PT_LOAD layout** (the RO segment at vaddr `0` is a separate LOAD from
+the exec segment at `0xe0000`), *not* snapshot window size — see BACKLOG. **W5** — JIT
+code-cache (`[anon]`) frames have no file-backed CFI (needs ART's in-memory mini-ELF unwind
+info); unreachable until the CFI mis-step is fixed (the walk never reaches a JIT frame).
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
@@ -647,9 +662,11 @@ stream:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
-  register file at the trap point — the CFI initial state. `truncated` is 1 if the
-  stack window fell back to `ARES_SNAP_SMALL` (raw bytes still valid, but shorter than
-  `ARES_SNAP_MAX`). This schema is **shared** between `syscalls` (sidecar
+  register file at the trap point — the CFI initial state. `truncated` is 1 when
+  `snap_len == ARES_SNAP_MAX` (the chunked capture filled the whole window without
+  faulting, so the stack may extend beyond what was captured = incomplete); 0 when a
+  chunk faulted first (capture reached `stack_base` = all mapped stack = complete).
+  `snap_len` is any multiple of `ARES_SNAP_CHUNK` (4 KB). This schema is **shared** between `syscalls` (sidecar
   `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
   `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:

@@ -25,7 +25,8 @@ so history stays traceable.
 **Major:**
 - GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
-- CFI live cross: W3-window (snapshot 32 KB read faults → 8 KB) + W5 (JIT `[anon]` CFI) — see below
+- CFI live cross: **W3-window DONE** (chunked capture); real blocker re-diagnosed → **CFI
+  mis-step in `libandroid_runtime`** (non-code RA, multi-PT_LOAD base/`cfi_step` bug) + W5 (JIT `[anon]` CFI) — see below
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -93,27 +94,42 @@ Per-engine comparison (post-GA2):
 - **B2** — worker-queue convergence was scoped for post-module-events; moot after
   `ares mod` migration (module events no longer route through the funcs worker queue).
 
-### CFI stack unwinder — engine + wiring landed; live cross has 2 walls left
+### CFI stack unwinder — engine + wiring landed; live cross blocked by a CFI mis-step
 
-W1, W2, W3 landed; W6 (capture gating) + the maps-cache staleness blocker fixed
-2026-06-29 (see Resolved/Done). The CFI engine unwinds native frames correctly on-device
-and now, under capture-all, walks the full native chain on JNI-originated stacks
+W1, W2, W3, **W3-window** landed; W6 (capture gating) + the maps-cache staleness blocker
+fixed 2026-06-29 (see Resolved/Done). The CFI engine unwinds native frames correctly
+on-device and now, under capture-all, walks the full native chain on JNI-originated stacks
 (`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross still does not
-complete — **two** walls remain (the **W3-window** snapshot-truncation wall and **W5**),
-characterised on-device 2026-06-29:
+complete — but **W3-window disproved the window-size hypothesis**; the real gating wall is
+now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026-06-29):
 
-- **W3-window (NEW, the current blocker) — the 32 KB snapshot read faults to 8 KB.** The
-  W4 "32 KB window" does not deliver 32 KB at runtime: the single `bpf_probe_read_user`
-  of `ARES_SNAP_MAX` faults (the stack range near `sp` crosses unmapped pages) and the
-  3-tier fallback drops to **8 KB** (`MID`) or 2 KB (`SMALL`). On-device: **299/307
-  snapshots `truncated:1`; only 8 captured 32 KB, 259 got 8 KB.** The spilled RA that
-  would step `libandroid_runtime`→`art_jni_trampoline` sits *beyond* the 8 KB captured,
-  so `cfi_step`'s bounded `read64` fails and the unwind dies **one frame short of the
-  trampoline** (82/307 records terminate in `libandroid_runtime.so`, which *does* have
-  `.eh_frame`). Fix: capture the stack in page-sized chunks (loop `bpf_probe_read_user`,
-  stop at the first faulting chunk) so as much contiguous stack as exists is kept, instead
-  of all-or-nothing. Verifier-sensitive (bounded/unrolled loop). This is the gating wall —
-  W5 is unreachable until a snapshot reaches the trampoline.
+- **CFI-misstep (NEW gating wall) — `cfi_step` derails in `libandroid_runtime` to a non-code
+  return address, one frame short of the trampoline.** With W3-window chunked capture the
+  snapshot now keeps the full contiguous stack (on-device `snap_len` 4096→32768 spread,
+  238/312 records >8 KB), yet the CFI walk **still** dies one frame short: 55/60 JNI-stack
+  deaths land at a *consistent* `libandroid_runtime.so+0xd6054`, all with `snap_len=20480`
+  (ample headroom — **not** a window shortfall). That offset is **non-code** — it sits in
+  `libandroid_runtime`'s `.eh_frame` (the executable PT_LOAD starts at vaddr `0xe0000`) and
+  **no FDE covers it**. So `cfi_step`, unwinding *through* libandroid_runtime, computes a
+  **bogus (non-code) RA**; `cfi_get` then finds no FDE and the walk stops. Evidence the
+  engine is otherwise sound: the **raw FP-walk crosses `art_jni_trampoline` 290×** in the
+  same run, and normal native paths (e.g. `libc → sqlite` openat) unwind cleanly — it
+  derails **specifically in the libandroid_runtime JNI path**. Suspected cause: a
+  `cfi_step`/`load_base`/`elf_off` resolution bug for libandroid_runtime's **multi-PT_LOAD**
+  layout (RO segment at vaddr `0` is a separate LOAD from the exec segment at `0xe0000`),
+  or a CFA/RA rule mishandled for the relevant FDE. Next step: instrument `cfi_step`'s
+  failure reason (read-fault vs no-FDE vs unsupported-rule) and audit the base/offset used
+  for libandroid_runtime's executable segment. This is the gating wall — W5 is unreachable
+  until it is fixed (the walk never reaches a JIT frame).
+
+- **W3-window — DONE (2026-06-29): chunked fault-tolerant stack capture.** Replaced the
+  all-or-nothing 3-tier `bpf_probe_read_user` with a bounded, fully-unrolled, no-`break`
+  per-chunk loop (`ARES_SNAP_CHUNK` = 4 KB) that stops at the first faulting page and keeps
+  the contiguous prefix; `truncated` redefined to `snap_len == ARES_SNAP_MAX` (window-capped
+  = incomplete). On-device the old bimodal 8192/32768 became a 4096→32768 spread. **Outcome:
+  proved the window was never the cross blocker** (see CFI-misstep above). Commits
+  `b6bbe42`, `be59585`, `022b31b`. Spec/plan:
+  `docs/superpowers/{specs,plans}/2026-06-29-w3-window-chunked-snapshot*`.
 
 - **W1 — DONE (2026-06-27): CFI unwinder wired to runtime.**
   `cfi_unwind_snapshot` (in `src/common/symbolize.c`, declared in `symbolize.h`) loops
@@ -140,9 +156,10 @@ characterised on-device 2026-06-29:
   so the effective window is 8 KB, not 32 KB. The chunked/streamed capture noted here as a
   future lever is now the required fix (W3-window), not optional.
 
-- **W5 — JIT code-cache frames have no file-backed CFI. (Still open; unreachable until
-  W3-window lands — the unwind dies in `libandroid_runtime` before reaching any JIT frame.)**
-  Between the framework lib and
+- **W5 — JIT code-cache frames have no file-backed CFI. (Still open; unreachable until the
+  CFI-misstep wall above is fixed — the unwind dies in `libandroid_runtime` before reaching
+  any JIT frame. W3-window landing did NOT unblock this; the death is a CFI mis-step, not a
+  window shortfall.)** Between the framework lib and
   `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
   `cfi_get` skips pseudo paths → returns NULL → unwind stops. ART publishes per-method
   unwind info as in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES
@@ -261,6 +278,21 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-06-29
+
+- **W3-window — chunked fault-tolerant stack-snapshot capture (+ re-diagnosis of the JNI
+  cross blocker).** Replaced the all-or-nothing 3-tier `bpf_probe_read_user` in
+  `ares_emit_stack_snapshot` (`src/common/stack_snapshot.bpf.h`) with a bounded,
+  fully-unrolled, no-`break` per-chunk loop (`ARES_SNAP_CHUNK` = 4 KB, `src/common/stack_snapshot.h`
+  + `_Static_assert`) that stops at the first faulting page and keeps the full contiguous
+  prefix; `truncated` redefined to `snap_len == ARES_SNAP_MAX`. Host guard test for non-tier
+  `snap_len` round-trip (`tests/test_stack_snapshot.c`); device-test CFI arm asserts
+  `snap_len>8192` + `jni-trampoline` reach (`scripts/device-test.sh`). On-device: `snap_len`
+  went bimodal-8192/32768 → 4096→32768 spread (238/312 records >8 KB). **Key result — the
+  window was never the cross blocker:** with 20–32 KB now captured the CFI walk still dies one
+  frame short, at a consistent non-code `libandroid_runtime.so+0xd6054` (`.eh_frame`, no FDE) —
+  a `cfi_step` mis-step, not a capture shortfall (raw FP-walk crosses the trampoline 290× same
+  run). Re-framed the open wall → **CFI-misstep** (see CFI section above). Commits `b6bbe42`,
+  `be59585`, `022b31b`. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-29-w3-window-chunked-snapshot*`.
 
 - **W6-A — capture-all stack snapshots (decouple snapshot capture from lib-filter).**
   Dropped the `!capture_all` term in the `want_snapshots` gate (`syscalls.c`); host-testable

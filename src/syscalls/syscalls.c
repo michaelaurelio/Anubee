@@ -590,7 +590,7 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks) return;
 	uint64_t pcs[64];
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64);
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, NULL);
 	if (n <= 0) return;
 	struct jbuf *j = &g_sink.jb; j->len = 0;
 	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);

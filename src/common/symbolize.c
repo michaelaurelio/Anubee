@@ -1636,7 +1636,10 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 	for (int iter = 0; iter < max && iter < 256; iter++) {
 		out_pcs[n++] = pc;
 		if (n >= max) break;
-		if (pc == 0) break;
+		if (pc == 0) {
+			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_PC_ZERO;
+			break;
+		}
 		struct procmaps *pm = pm_get(pid);
 		if (!pm) break;
 		struct ares_map_line *hit = find_mapping_refresh(pm, pc);
@@ -1645,14 +1648,27 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 			read_proc_maps(pm);
 			hit = find_mapping(pm, pc);
 		}
-		if (!hit) break;
+		if (!hit) {
+			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
+			break;
+		}
 		uint64_t load_base, elf_off, base_end;
 		module_base(pm, hit, &load_base, &elf_off, &base_end);
 		/* IMPORTANT: cfi_get returns a pointer into a realloc'able cache; use the
 		 * section (cfi_step) before the next iteration's cfi_get. Never hold it
 		 * across calls. */
 		struct cfi_section *sec = cfi_get(hit->path, elf_off, load_base, pid, hit->start, hit->end);
-		if (!sec) break;
+		if (!sec) {
+			if (out_diags) {
+				struct cfi_step_diag *d = &out_diags[n - 1];
+				d->module_pc = pc - load_base;
+				d->load_base = load_base;
+				d->elf_off   = elf_off;
+				snprintf(d->path, sizeof(d->path), "%s", hit->path ? hit->path : "");
+				d->stop_reason = CFI_SNAP_CFI_GET_NULL;
+			}
+			break;
+		}
 		uint64_t module_pc = pc - load_base;
 		struct cfi_step_diag *dp = NULL;
 		if (out_diags) {

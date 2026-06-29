@@ -85,6 +85,11 @@ enum cfi_stop_reason {
 	CFI_RA_UNDEF,      /* RA column is CFI_UNDEF */
 	CFI_RA_ZERO,       /* RA slot read but value == 0 */
 	CFI_RUN_FAIL,      /* cfi_run_program failed but an FDE exists */
+	/* Set by cfi_unwind_snapshot (the unwind loop), NOT cfi_step: the walk
+	 * stopped before cfi_step could run for this frame. */
+	CFI_SNAP_PC_ZERO,        /* caller pc resolved to 0 (top of stack) */
+	CFI_SNAP_NO_MAPPING,     /* no /proc/<pid>/maps entry for pc (find_mapping miss) */
+	CFI_SNAP_CFI_GET_NULL,   /* cfi_get returned no CFI section for the module */
 };
 
 /* Optional per-step diagnostic payload. cfi_step fills the FDE/CFA/RA fields;

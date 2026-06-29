@@ -593,6 +593,7 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	static int dbg = -1;
 	if (dbg < 0) dbg = getenv("ARES_CFI_DEBUG") ? 1 : 0;
 	struct cfi_step_diag diags[64];
+	if (dbg) memset(diags, 0, sizeof(diags));
 	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, dbg ? diags : NULL);
 	if (n <= 0) return;
 	struct jbuf *j = &g_sink.jb; j->len = 0;

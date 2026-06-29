@@ -211,6 +211,8 @@ test_syscalls_cfi() {
     else
         echo "  NOTE: no snapshot exceeded 8192 in this window — chunked tail not exercised (W3-window unproven this run)"
     fi
+    echo "  NOTE: re-run with ARES_CFI_DEBUG=1 to enrich cfi_stack frames with per-step"
+    echo "        CFI internals (module_pc/load_base/fde_pc_lo..hi/cfa/ra_slot/ra_value/stop_reason)"
     if grep -q '"kind":"jni-trampoline"' <<<"$cfi_records"; then
         info "syscalls-cfi: CFI walk reached jni-trampoline (cross path; unexpected per CFI-misstep re-diagnosis)"
     else

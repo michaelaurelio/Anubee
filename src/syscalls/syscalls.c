@@ -590,7 +590,10 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks) return;
 	uint64_t pcs[64];
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, NULL);
+	static int dbg = -1;
+	if (dbg < 0) dbg = getenv("ARES_CFI_DEBUG") ? 1 : 0;
+	struct cfi_step_diag diags[64];
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, dbg ? diags : NULL);
 	if (n <= 0) return;
 	struct jbuf *j = &g_sink.jb; j->len = 0;
 	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
@@ -609,6 +612,22 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 			jb_s(j, ",\"kind\":\"managed\"");
 		else if (is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
 		else jb_s(j, ",\"kind\":\"native\"");
+		if (dbg) {
+			const struct cfi_step_diag *d = &diags[i];
+			jb_s(j, ",\"module_pc\":\""); jb_hex(j, d->module_pc);
+			jb_s(j, "\",\"load_base\":\""); jb_hex(j, d->load_base);
+			jb_s(j, "\",\"elf_off\":\""); jb_hex(j, d->elf_off);
+			jb_s(j, "\",\"fde_found\":"); jb_u64(j, (unsigned)d->fde_found);
+			jb_s(j, ",\"fde_pc_lo\":\""); jb_hex(j, d->fde_pc_lo);
+			jb_s(j, "\",\"fde_pc_hi\":\""); jb_hex(j, d->fde_pc_hi);
+			jb_s(j, "\",\"cfa_reg\":"); jb_u64(j, d->cfa_reg);
+			jb_s(j, ",\"cfa\":\""); jb_hex(j, d->cfa);
+			jb_s(j, "\",\"ra_kind\":"); jb_u64(j, d->ra_kind);
+			jb_s(j, ",\"ra_slot\":\""); jb_hex(j, d->ra_slot);
+			jb_s(j, "\",\"ra_value\":\""); jb_hex(j, d->ra_value);
+			jb_s(j, "\",\"stop_reason\":"); jb_u64(j, (unsigned)d->stop_reason);
+			jb_s(j, ",\"diag_path\":\""); jb_esc(j, d->path); jb_c(j, '"');
+		}
 		jb_c(j, '}');
 	}
 	jb_s(j, "]}\n");

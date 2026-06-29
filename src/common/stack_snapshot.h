@@ -27,6 +27,14 @@
 #define ARES_SNAP_SMALL 2048
 #define ARES_SNAP_NREG  31   /* x0..x30 */
 
+/* Per-chunk granularity for fault-tolerant capture (W3-window): the stack is
+ * read in ARES_SNAP_CHUNK-sized pieces, stopping at the first unmapped page, so
+ * a fault near the top of the mapped stack still yields the full contiguous
+ * prefix instead of dropping to a coarse 8 KB tier. 4096 = common Android page. */
+#define ARES_SNAP_CHUNK 4096
+_Static_assert(ARES_SNAP_MAX % ARES_SNAP_CHUNK == 0,
+               "ARES_SNAP_MAX must be a whole number of chunks (loop drops the remainder)");
+
 /* One stack snapshot: full GP register file + a bounded copy of the thread's
  * user stack from sp upward, captured at the point the thread trapped into the
  * kernel (kprobe/do_el0_svc for syscalls, BRK uprobe for funcs). Deduped by a

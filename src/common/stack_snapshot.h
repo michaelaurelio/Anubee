@@ -46,7 +46,7 @@ struct ares_stack_snapshot {
 	__u64 pc, sp, fp, lr;            /* user pc / sp / x29 / x30 (legacy mirror) */
 	__u64 regs[ARES_SNAP_NREG];      /* full GP file x0..x30 (CFI initial state) */
 	__u32 snap_len;                   /* bytes valid in snap[] (from sp up) */
-	__u8  truncated;                  /* 1 = snap[] smaller than stack used */
+	__u8  truncated;                  /* 1 = snap_len==ARES_SNAP_MAX (window-capped, stack may extend beyond); 0 = a chunk faulted = reached stack_base = all mapped stack captured */
 	__u8  _pad[3];
 	__u8  snap[ARES_SNAP_MAX];        /* user stack bytes starting at sp */
 };

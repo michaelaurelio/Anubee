@@ -153,6 +153,23 @@ static struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 	return NULL;
 }
 
+// find_mapping, re-reading /proc/<pid>/maps once (throttled to REFRESH_MS) on a
+// miss: a library may have loaded since the cache was last read. This is the one
+// place that recovers from a cache populated mid-launch (e.g. the maps were first
+// read while only the linker was mapped, before libc/libandroid_runtime), which
+// is common under capture-all where snapshots fire during early process launch.
+// Used by both the symbolizer (sym_resolve_uncached) and the CFI walk
+// (cfi_unwind_snapshot) so a stale cache can't dead-end the unwind at frame 0.
+static struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
+{
+	struct ares_map_line *hit = find_mapping(pm, addr);
+	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
+		read_proc_maps(pm);
+		hit = find_mapping(pm, addr);
+	}
+	return hit;
+}
+
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
 // Also returns the base mapping's [start,end), used to reach the file via
 // /proc/<pid>/map_files when its path is deleted/anonymous.
@@ -1506,11 +1523,7 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		return 0;
 	}
 
-	struct ares_map_line *hit = find_mapping(pm, (uint64_t)addr);
-	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
-		read_proc_maps(pm);             // a library may have loaded since
-		hit = find_mapping(pm, (uint64_t)addr);
-	}
+	struct ares_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
 	if (!hit) {
 		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
 		if (pm->gone)
@@ -1610,6 +1623,15 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 	uint64_t pc = (uint64_t)r.pc;
 	for (int k = 0; k < CFI_NREG; k++)
 		regs[k] = (uint64_t)r.x[k];
+	// One-shot forced maps re-read for this unwind: the snapshot is captured at
+	// syscall time but symbolized later in the drain. Under capture-all the first
+	// time we see a pid is often mid-launch, so its cached maps can predate the
+	// libraries this stack runs through (libc/libandroid_runtime), and the
+	// REFRESH_MS throttle suppresses the corrective re-read during the launch
+	// burst. cfi_unwind_snapshot runs once per *distinct* stack (deduped), so a
+	// single throttle-ignoring re-read here is bounded and unblocks the walk
+	// without touching the throttled FP-backtrace path.
+	int forced_reread = 0;
 	int n = 0;
 	for (int iter = 0; iter < max && iter < 256; iter++) {
 		out_pcs[n++] = pc;
@@ -1617,7 +1639,12 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 		if (pc == 0) break;
 		struct procmaps *pm = pm_get(pid);
 		if (!pm) break;
-		struct ares_map_line *hit = find_mapping(pm, pc);
+		struct ares_map_line *hit = find_mapping_refresh(pm, pc);
+		if (!hit && !forced_reread) {
+			forced_reread = 1;
+			read_proc_maps(pm);
+			hit = find_mapping(pm, pc);
+		}
 		if (!hit) break;
 		uint64_t load_base, elf_off, base_end;
 		module_base(pm, hit, &load_base, &elf_off, &base_end);

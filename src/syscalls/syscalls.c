@@ -50,6 +50,7 @@
 #include "syscalls.skel.h"
 #include "common/symbolize.h"
 #include "common/stack_snapshot.h"
+#include "syscalls/snapshot_gate.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
@@ -1090,11 +1091,20 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
 	}
-	// Stack snapshots: opt-in (--snapshot), library-filtered mode only (far too
-	// heavy for the -a firehose), and only when writing JSON (the snapshots go to
-	// a <out>.stacks sidecar for off-device CFI unwinding of obfuscated native
-	// frames — Java frames are resolved on-device by the symbolizer).
-	int want_snapshots = want_snap && !capture_all && json_path != NULL;
+	// Stack snapshots: opt-in (--snapshot), only when writing JSON (the snapshots
+	// go to a <out>.stacks sidecar for off-device CFI unwinding of obfuscated
+	// native frames — Java frames are resolved on-device by the symbolizer).
+	// W6-A: decoupled from library-filter mode so JNI-originated (capture-all)
+	// stacks get snapshotted and can cross art_jni_trampoline. Capture-all with no
+	// syscall filter is a firehose (a 32 KB snapshot per distinct stack across all
+	// syscalls) — warn and proceed so the user can bound it with -s/-x.
+	int want_snapshots = sysc_want_snapshots(want_snap, json_path != NULL);
+	if (want_snapshots &&
+	    sysc_snapshot_firehose_warn(want_snap, capture_all, syscall_mode))
+		fprintf(stderr,
+			"syscalls: warning — --snapshot with -a and no syscall filter ships a "
+			"32 KB snapshot per distinct stack across ALL syscalls; expect heavy "
+			"ring traffic. Add -s/-x to bound it.\n");
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;

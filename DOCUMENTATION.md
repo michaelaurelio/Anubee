@@ -234,10 +234,13 @@ expensive one:
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
-- **`--snapshot` captures a frozen user-stack window.** The BPF program captures up to
+- **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
+  and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
+  one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
+  syscalls). The BPF program captures up to
   `ARES_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
-  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to
-  `ARES_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
+  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to a smaller
+  read; in practice the 32 KB read frequently faults to 8 KB — see §2.1 W3-window). These are emitted as a sidecar `{"type":"stack",...}` record
   (see §7). The register file is the CFI initial state for the DWARF-based software
   unwinder (`src/common/dwarf.c` + `cfi_unwind.c`). The snapshot struct and BPF
   helpers live in `src/common/stack_snapshot.{h,bpf.h}` and are shared with the
@@ -269,7 +272,9 @@ flowchart LR
 
 **Algorithm (`cfi_unwind_snapshot`):**
 1. `unwind_regs_from_snapshot(snap, &r)` — seed `regs[0..30]`, `sp`, `pc` from the frozen register file.
-2. Per iteration (cap 256): record `pc` → `out_pcs[n++]`; look up the mapping via `pm_get` + `find_mapping`; compute `load_base` via `module_base`; call `cfi_get(path, elf_off, load_base, ...)` to get the cached `cfi_section`; call `cfi_step` with the **frozen `snap->snap` window** (bounds-checked, never live target memory); stop when `cfi_step` returns 0 (no FDE, RA undefined, pc==0, or OOB stack).
+2. Per iteration (cap 256): record `pc` → `out_pcs[n++]`; look up the mapping via `pm_get` + `find_mapping_refresh` (with a one-shot forced
+`/proc/<pid>/maps` re-read on a miss — a capture-all snapshot is often symbolized while the
+pid's cached maps still predate the libraries the stack runs through); compute `load_base` via `module_base`; call `cfi_get(path, elf_off, load_base, ...)` to get the cached `cfi_section`; call `cfi_step` with the **frozen `snap->snap` window** (bounds-checked, never live target memory); stop when `cfi_step` returns 0 (no FDE, RA undefined, pc==0, or OOB stack).
 3. The `cfi_get` pointer is **consumed by `cfi_step` in the same iteration** before the next call — it points into a realloc'able cache and must not be held across iterations.
 
 **Frame classification (`kind` field):**
@@ -297,13 +302,19 @@ actually crosses the trampoline. Interpreter bridges are left intact (the interp
 native C++ and keeps a valid FP chain through it).
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
-`boot.oat` trampoline FDE is verified to recover the managed caller, but a *live*
-jni-trampoline→managed cross is **not yet end-to-end**. Two follow-ups gate it (BACKLOG):
-**W5** — JIT code-cache (`[anon]`) frames have no file-backed CFI, so the unwind stops at a
-JIT-compiled caller (needs ART's in-memory mini-ELF unwind info, the same source `jit_resolve`
-uses for symbols); **W6** — library-filter mode (required for snapshots) captures only
-process-init syscalls, so snapshots rarely see a JNI stack. The capture window (**W4**, done)
-was enlarged 8 KB → 32 KB with a 3-tier fault fallback.
+`boot.oat` trampoline FDE is verified to recover the managed caller. Snapshots now flow under
+capture-all (**W6**, done 2026-06-29) and the maps-cache staleness that dead-ended the walk at
+frame 0 is fixed (`find_mapping_refresh` + a one-shot forced maps re-read in
+`cfi_unwind_snapshot`), so under `-a` the CFI walk reaches the full native chain on
+JNI-originated stacks (`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross
+is still **not end-to-end** — two walls remain (BACKLOG):
+**W3-window** (the current blocker) — the 32 KB snapshot `bpf_probe_read_user` *faults* at
+runtime and the 3-tier fallback drops to 8 KB (on-device: 299/307 snapshots `truncated:1`,
+only 8 got 32 KB), so the spilled RA that would step `libandroid_runtime`→`art_jni_trampoline`
+sits beyond the captured window and the unwind dies one frame short; fix is a chunked
+(page-at-a-time) stack capture in BPF. **W5** — JIT code-cache (`[anon]`) frames have no
+file-backed CFI (needs ART's in-memory mini-ELF unwind info, the same source `jit_resolve`
+uses for symbols); unreachable until W3-window lands.
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.

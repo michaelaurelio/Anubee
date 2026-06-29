@@ -25,7 +25,7 @@ so history stays traceable.
 **Major:**
 - GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
-- CFI W1: wire `cfi_step` unwinder to runtime (syscalls + funcs)
+- CFI live cross: W3-window (snapshot 32 KB read faults → 8 KB) + W5 (JIT `[anon]` CFI) — see below
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -93,11 +93,27 @@ Per-engine comparison (post-GA2):
 - **B2** — worker-queue convergence was scoped for post-module-events; moot after
   `ares mod` migration (module events no longer route through the funcs worker queue).
 
-### CFI stack unwinder — engine + wiring landed; live cross has 3 known walls
+### CFI stack unwinder — engine + wiring landed; live cross has 2 walls left
 
-W1, W2, and W3 all landed (W2+W3: 2026-06-26; W1: 2026-06-27). The CFI engine is wired
-and unwinds native frames correctly on-device, but a *live* jni-trampoline→managed cross
-does not yet complete — three follow-up items below (W4–W6).
+W1, W2, W3 landed; W6 (capture gating) + the maps-cache staleness blocker fixed
+2026-06-29 (see Resolved/Done). The CFI engine unwinds native frames correctly on-device
+and now, under capture-all, walks the full native chain on JNI-originated stacks
+(`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross still does not
+complete — **two** walls remain (the **W3-window** snapshot-truncation wall and **W5**),
+characterised on-device 2026-06-29:
+
+- **W3-window (NEW, the current blocker) — the 32 KB snapshot read faults to 8 KB.** The
+  W4 "32 KB window" does not deliver 32 KB at runtime: the single `bpf_probe_read_user`
+  of `ARES_SNAP_MAX` faults (the stack range near `sp` crosses unmapped pages) and the
+  3-tier fallback drops to **8 KB** (`MID`) or 2 KB (`SMALL`). On-device: **299/307
+  snapshots `truncated:1`; only 8 captured 32 KB, 259 got 8 KB.** The spilled RA that
+  would step `libandroid_runtime`→`art_jni_trampoline` sits *beyond* the 8 KB captured,
+  so `cfi_step`'s bounded `read64` fails and the unwind dies **one frame short of the
+  trampoline** (82/307 records terminate in `libandroid_runtime.so`, which *does* have
+  `.eh_frame`). Fix: capture the stack in page-sized chunks (loop `bpf_probe_read_user`,
+  stop at the first faulting chunk) so as much contiguous stack as exists is kept, instead
+  of all-or-nothing. Verifier-sensitive (bounded/unrolled loop). This is the gating wall —
+  W5 is unreachable until a snapshot reaches the trampoline.
 
 - **W1 — DONE (2026-06-27): CFI unwinder wired to runtime.**
   `cfi_unwind_snapshot` (in `src/common/symbolize.c`, declared in `symbolize.h`) loops
@@ -119,10 +135,14 @@ does not yet complete — three follow-up items below (W4–W6).
   the trampoline. `ARES_SNAP_MAX` is now 32768 with a `MAX → MID(8192) → SMALL(2048)` read
   cascade (a fault on the big read still yields a useful window; `truncated` flags any fallback).
   Cost: 32 KB ring record per snapshot, but records are deduped per distinct stack so it's
-  bounded. Remaining: a *very* deep stack can still exceed 32 KB → a two-pass / streamed
-  capture would be the next lever if 32 KB proves insufficient.
+  bounded. **Superseded 2026-06-29 by W3-window above:** on-device the 32 KB
+  `bpf_probe_read_user` itself *faults* and the fallback drops to 8 KB in 259/307 cases —
+  so the effective window is 8 KB, not 32 KB. The chunked/streamed capture noted here as a
+  future lever is now the required fix (W3-window), not optional.
 
-- **W5 — JIT code-cache frames have no file-backed CFI.** Between the framework lib and
+- **W5 — JIT code-cache frames have no file-backed CFI. (Still open; unreachable until
+  W3-window lands — the unwind dies in `libandroid_runtime` before reaching any JIT frame.)**
+  Between the framework lib and
   `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
   `cfi_get` skips pseudo paths → returns NULL → unwind stops. ART publishes per-method
   unwind info as in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES
@@ -131,13 +151,16 @@ does not yet complete — three follow-up items below (W4–W6).
   `base.odex`/`boot.oat`, do NOT hit this — they have `.debug_frame` — so fully-AOT JNI
   paths can cross once W4 lands.)
 
-- **W6 — Library-filter mode misses runtime syscalls (separate from CFI).** With
-  `-l libc.so -s openat` only ~11 process-init `openat`s are captured per process, while
-  capture-all (`-a`) sees 2234 (1327 crossing the trampoline). Because snapshots are gated
-  to library-filtered mode (`!capture_all`), they never see runtime/JNI stacks. Root-cause
-  the lib-filter `stack_hits` path (every `openat`'s frame 0 is in libc, so it should match);
-  likely surfaced by the W1/W2 refactor. Until fixed, a live cross can only be observed via
-  a temporary capture-all-snapshot diagnostic build.
+- **W6 — DONE 2026-06-29 (W6-A decouple): snapshots now flow under capture-all.** The
+  original framing ("root-cause the lib-filter `stack_hits` miss") was the wrong lever —
+  the lib-filter is a *narrow-targeting* feature; full JNI unwinding needs capture-all
+  breadth. Fix: dropped the `!capture_all` term in the `want_snapshots` gate
+  (`syscalls.c`), so `--snapshot` works with `-a` (warn-and-proceed firehose guard when no
+  `-s`/`-x` filter). On-device: `.stacks` sidecar went 0 → 307 records under `-a`. See
+  Resolved/Done 2026-06-29. **Separate open bug (left unfixed, sidestepped):** lib-filter
+  on `libc.so` *should* match every `openat` (frame-0 is always `libc!__openat`) yet drops
+  the runtime/JNI ones, keeping only native process-init — a real `stack_hits` defect, but
+  W6-A bypasses it so it no longer gates the cross.
 
 - **Deferred — interpreter frame naming:** frames tagged `"kind":"interp"` are detected
   by `is_interp_frame` (ART interpreter entrypoints) but the managed method name is not
@@ -236,6 +259,27 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-29
+
+- **W6-A — capture-all stack snapshots (decouple snapshot capture from lib-filter).**
+  Dropped the `!capture_all` term in the `want_snapshots` gate (`syscalls.c`); host-testable
+  predicates extracted to `src/syscalls/snapshot_gate.h` (`sysc_want_snapshots`,
+  `sysc_snapshot_firehose_warn`) with `tests/test_snapshot_gate.c`. Warn-and-proceed firehose
+  guard when `-a --snapshot` has no `-s`/`-x` filter. `device-test.sh` CFI arm repointed at
+  `-a`. On-device: `.stacks` sidecar 0 → 307 records under capture-all. Closes W6. Commits
+  `8992405`, `b73134d`, `0bd983e`. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-29-w6-*`.
+- **Maps-cache staleness fix — capture-all CFI unwinds past frame 0.** Under capture-all the
+  symbolizer first reads a pid's `/proc/<pid>/maps` mid-launch (libc not yet at its final
+  base) and caches it; the `REFRESH_MS=250` throttle suppressed the corrective re-read during
+  the drain burst, so snapshot PCs resolved `[unmapped]` and the CFI walk died at frame 0
+  (same pid+addr: 235 `[unmapped]` vs 59 resolved in one run). Factored refresh-on-miss into a
+  shared `find_mapping_refresh` (used by `sym_resolve` + the CFI walk) and added a one-shot
+  throttle-ignoring re-read in `cfi_unwind_snapshot` (bounded by per-distinct-stack dedup;
+  FP-storm path untouched). On-device: unwinds went 1-frame → full native chain
+  (`libc → … → libandroid_runtime`). Reads-only; firewall intact. Commit `fd4138a`. This
+  exposed the next wall (**W3-window**, see CFI section above): the 32 KB snapshot read faults
+  to 8 KB, so the unwind still dies one frame short of `art_jni_trampoline`.
 
 ### 2026-06-28
 

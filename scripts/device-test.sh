@@ -173,15 +173,19 @@ test_syscalls_regs() {
 # syscalls CFI cross-trampoline unwind: assert that --snapshot produces at least
 # one {"type":"cfi_stack"} record and that its cfi_backtrace demonstrates a
 # native→JNI-trampoline→managed cross (a "kind":"jni-trampoline" frame is present
-# AND a later "kind":"managed" frame follows it). A miss (no snapshot in the window)
-# is a SKIP, not a failure (timing-dependent). Hard-fail only on BPF-load error.
+# AND a later "kind":"managed" frame follows it). Runs in capture-all mode (W6-A:
+# snapshots are now available under -a; lib-filter mode only ever captured native
+# process-init stacks that never reach the trampoline). A miss (no snapshot in the
+# window) is a SKIP, not a failure (timing-dependent). A cfi_stack that stops at a
+# JIT [anon] frame instead of crossing is also a SKIP (pending W5: JIT mini-ELF
+# CFI), not a failure. Hard-fail only on BPF-load error.
 test_syscalls_cfi() {
     echo "=== syscalls CFI cross-trampoline unwind (cfi_stack sidecar) ==="
     forcestop
     local out_file="/data/local/tmp/ares_cfi_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "syscalls -l libc.so -s openat --snapshot -o $out_file -P $PKG")"
+    local out; out="$(ares "syscalls -a -s openat --snapshot -o $out_file -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi

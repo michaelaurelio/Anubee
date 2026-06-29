@@ -25,8 +25,10 @@ so history stays traceable.
 **Major:**
 - GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
-- CFI live cross: **W3-window DONE** (chunked capture); real blocker re-diagnosed → **CFI
-  mis-step in `libandroid_runtime`** (non-code RA, multi-PT_LOAD base/`cfi_step` bug) + W5 (JIT `[anon]` CFI) — see below
+- CFI live cross: **W3-window DONE** (chunked capture); blocker now **root-caused
+  CONCLUSIVELY** → **`ares_module_base_idx` gapped-walk-back bug** (`maps.c:31`) hands
+  `cfi_get` the wrong `elf_off` for libandroid_runtime's gapped multi-PT_LOAD → `cfi_get`
+  returns NULL; fix = bridge gaps (next session) + W5 (JIT `[anon]` CFI) — see below
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -114,13 +116,25 @@ now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026
   **bogus (non-code) RA**; `cfi_get` then finds no FDE and the walk stops. Evidence the
   engine is otherwise sound: the **raw FP-walk crosses `art_jni_trampoline` 290×** in the
   same run, and normal native paths (e.g. `libc → sqlite` openat) unwind cleanly — it
-  derails **specifically in the libandroid_runtime JNI path**. Suspected cause: a
-  `cfi_step`/`load_base`/`elf_off` resolution bug for libandroid_runtime's **multi-PT_LOAD**
-  layout (RO segment at vaddr `0` is a separate LOAD from the exec segment at `0xe0000`),
-  or a CFA/RA rule mishandled for the relevant FDE. Next step: instrument `cfi_step`'s
-  failure reason (read-fault vs no-FDE vs unsupported-rule) and audit the base/offset used
-  for libandroid_runtime's executable segment. This is the gating wall — W5 is unreachable
-  until it is fixed (the walk never reaches a JIT frame).
+  derails **specifically in the libandroid_runtime JNI path**. **ROOT CAUSE NOW CONCLUSIVE
+  (2026-06-29, instrumented device run):** the death is `cfi_get` returning NULL (`!sec`
+  break in `cfi_unwind_snapshot`, `symbolize.c:1655`) — **81/81** libandroid_runtime
+  terminal frames report `stop_reason = SNAP_CFI_GET_NULL`. The diag shows `module_base`
+  hands `cfi_get` `elf_off = 0xe0000` / `load_base = exec-segment start` instead of `0` / RO
+  start. Bug located in **`ares_module_base_idx` (`src/common/maps.c:31`)**: its walk-back
+  uses a strict `m[i-1].end == m[i].start` contiguity test, but libandroid_runtime has a
+  **1-page gap** between its RO (off `0`) and exec (off `0xe0000`) segments, so the walk
+  stops at the exec mapping and returns the wrong base; `cfi_get` then reads the ELF from
+  file offset `0xe0000` (past the header) and fails. libc/linker64 are unaffected (their
+  RO→exec mappings are contiguous). It is **candidate (1) base/offset, in shared
+  `module_base` — NOT `cfi_step`, NOT a CFA/RA rule** (candidate 2 refuted: CFI reaches the
+  genuine libandroid_runtime RA, matching the raw FP-walk). Blast radius is broader than CFI:
+  symbol naming is also degraded for gapped libs. **Fix = bridge inter-segment gaps in
+  `ares_module_base_idx`** (next session; seed spec
+  `docs/superpowers/specs/2026-06-29-cfi-misstep-fix-module-base-design.md`). Diagnostic
+  instrumentation (`ARES_CFI_DEBUG=1` → per-step `cfi_step_diag` fields in `cfi_stack`) landed
+  this session: commits `cd0c628`, `d861340`, `275d3a2`, `8b35511`. This is the gating wall —
+  W5 is unreachable until it is fixed (the walk never reaches a JIT frame).
 
 - **W3-window — DONE (2026-06-29): chunked fault-tolerant stack capture.** Replaced the
   all-or-nothing 3-tier `bpf_probe_read_user` with a bounded, fully-unrolled, no-`break`

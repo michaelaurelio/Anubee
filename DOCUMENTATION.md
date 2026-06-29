@@ -319,17 +319,31 @@ the first fault, and on-device `snap_len` recovers the full contiguous prefix (a
 spread; 238/312 records >8 KB). This *disproved* the original "spilled RA sits beyond the
 captured window" hypothesis: with 20–32 KB now captured, the CFI walk **still** dies one frame
 short of `art_jni_trampoline`, terminating at a *consistent* `libandroid_runtime.so+0xd6054`
-(55/60 deaths, all `snap_len=20480` — ample headroom). That offset is **non-code** (it sits in
-`libandroid_runtime`'s `.eh_frame`; the executable PT_LOAD starts at vaddr `0xe0000`) and **no
-FDE covers it** — so `cfi_step`, unwinding *through* libandroid_runtime, computes a **bogus
-(non-code) return address**, `cfi_get` then finds no FDE, and the walk stops. The raw FP-walk
-crosses the trampoline 290× in the same run; normal native paths (e.g. libc→sqlite) unwind
-cleanly — so the CFI engine works generally but **derails in the libandroid_runtime JNI path**.
-The real gating wall is therefore a **`cfi_step`/`load_base` resolution bug for
-libandroid_runtime's multi-PT_LOAD layout** (the RO segment at vaddr `0` is a separate LOAD from
-the exec segment at `0xe0000`), *not* snapshot window size — see BACKLOG. **W5** — JIT
-code-cache (`[anon]`) frames have no file-backed CFI (needs ART's in-memory mini-ELF unwind
-info); unreachable until the CFI mis-step is fixed (the walk never reaches a JIT frame).
+(ample headroom). **The blocker was then root-caused CONCLUSIVELY (instrumented device run,
+2026-06-29)** via an `ARES_CFI_DEBUG=1` per-step diagnostic (below): it is **not** a bogus RA
+and **not** a `cfi_step` CFA/RA-rule bug. CFI reaches the *genuine* libandroid_runtime return
+address (it matches the raw FP-walk, which crosses the trampoline 290× in the same run). The
+walk dies because **`cfi_get` returns NULL for libandroid_runtime** (the `!sec` break in
+`cfi_unwind_snapshot`) — 81/81 libandroid_runtime terminal frames report
+`stop_reason = SNAP_CFI_GET_NULL`. Cause: **`ares_module_base_idx` (`src/common/maps.c:31`)**
+walks back to a module's base mapping with a strict `m[i-1].end == m[i].start` contiguity test;
+libandroid_runtime has a **1-page gap** between its RO (file off `0`) and exec (off `0xe0000`)
+segments, so the walk-back stops at the exec mapping and `module_base` returns
+`elf_off = 0xe0000` instead of `0`. `cfi_get` then opens the ELF at file offset `0xe0000` —
+past the real header at `0` — and fails to parse. libc/linker64 are unaffected (their RO→exec
+mappings are contiguous, so they unwind cleanly). This is **candidate (1) base/offset, in the
+shared `module_base` resolution** — its blast radius is broader than CFI (symbol naming is also
+degraded for gapped libs). The fix (bridge inter-segment gaps in `ares_module_base_idx`) is the
+next session — see BACKLOG and `docs/superpowers/specs/2026-06-29-cfi-misstep-fix-module-base-design.md`.
+**W5** — JIT code-cache (`[anon]`) frames have no file-backed CFI (needs ART's in-memory
+mini-ELF unwind info); unreachable until the module-base fix lets the walk cross the trampoline.
+
+**Diagnostic flag (`ARES_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
+`cfi_stack` frame with per-step CFI internals (`module_pc`, `load_base`, `elf_off`, `fde_found`,
+`fde_pc_lo/hi`, `cfa`, `ra_slot`, `ra_value`, and a `stop_reason` — `CFI_OK`/`NO_FDE`/
+`RA_READFAULT`/…/`SNAP_NO_MAPPING`/`SNAP_CFI_GET_NULL`). Off by default → the sidecar schema is
+byte-identical; reads only the frozen snapshot (firewall unaffected). It is the tool that
+located the module-base bug and stays available for future CFI diagnosis.
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.

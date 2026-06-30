@@ -28,7 +28,7 @@ int ares_parse_maps_line(const char *line, struct ares_map_line *out)
 size_t ares_module_base_idx(const struct ares_map_line *m, size_t hit)
 {
 	size_t i = hit;
-	while (i > 0 && m[i-1].end == m[i].start && !strcmp(m[i-1].path, m[i].path))
+	while (i > 0 && !strcmp(m[i-1].path, m[i].path) && m[i-1].off < m[i].off)
 		i--;
 	return i;
 }

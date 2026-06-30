@@ -50,6 +50,7 @@
 #include "syscalls.skel.h"
 #include "common/symbolize.h"
 #include "common/stack_snapshot.h"
+#include "common/art_nterp.h"
 #include "syscalls/snapshot_gate.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
@@ -581,7 +582,7 @@ static void json_emit_stack(const struct ares_stack_snapshot *s)
 static int is_interp_frame(const char *sym)
 {
 	return strstr(sym, "ToInterpreterBridge") ||      // art{Quick,Interpreter}ToInterpreterBridge
-	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter
+	       strstr(sym, "nterp")                ||      // nterp_helper / ExecuteNterpImpl (fast interp)
 	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
 	       strstr(sym, "artInterpreterToCompiledCodeBridge");
 }
@@ -590,11 +591,12 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks) return;
 	uint64_t pcs[64];
+	uint64_t sps[64];
 	static int dbg = -1;
 	if (dbg < 0) dbg = getenv("ARES_CFI_DEBUG") ? 1 : 0;
 	struct cfi_step_diag diags[64];
 	if (dbg) memset(diags, 0, sizeof(diags));
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, dbg ? diags : NULL);
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, dbg ? diags : NULL);
 	if (n <= 0) return;
 	struct jbuf *j = &g_sink.jb; j->len = 0;
 	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
@@ -630,6 +632,19 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 			jb_s(j, ",\"diag_path\":\""); jb_esc(j, d->path); jb_c(j, '"');
 		}
 		jb_c(j, '}');
+	}
+	// Cross the final native->managed gap: if the walk died in ART's interpreter
+	// (the terminal frame is nterp), name the interpreted Java method by reading its
+	// ArtMethod* from the managed frame just above the terminal SP and chasing ART
+	// structs out-of-process. `sym` still holds the terminal frame's symbol here.
+	if (is_interp_frame(sym)) {
+		char mname[256];
+		if (nterp_name((int)s->h.pid, s, sps[n - 1], mname, sizeof(mname))) {
+			jb_c(j, ',');
+			jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)n);
+			jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, mname);
+			jb_s(j, "\",\"kind\":\"interp\"}");
+		}
 	}
 	jb_s(j, "]}\n");
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);

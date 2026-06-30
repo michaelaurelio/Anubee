@@ -1612,7 +1612,8 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 }
 
 int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
-			uint64_t *out_pcs, int max, struct cfi_step_diag *out_diags)
+			uint64_t *out_pcs, int max, uint64_t *out_sps,
+			struct cfi_step_diag *out_diags)
 {
 	struct ares_unwind_regs r;
 	unwind_regs_from_snapshot(snap, &r);
@@ -1634,6 +1635,7 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 	int forced_reread = 0;
 	int n = 0;
 	for (int iter = 0; iter < max && iter < 256; iter++) {
+		if (out_sps) out_sps[n] = sp;   /* SP of the frame whose PC we record */
 		out_pcs[n++] = pc;
 		if (n >= max) break;
 		if (pc == 0) {

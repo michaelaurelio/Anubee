@@ -117,6 +117,13 @@ struct cfi_step_diag {
 #define CFI_NREG 31       /* x0..x30 */
 #define CFI_REG_SP 31     /* DWARF reg 31 = sp on aarch64 */
 
+/* Strip AArch64 Pointer-Authentication (PAC) signature bits from a code pointer.
+ * User VAs are <= 48 bits (TTBR0, bit 55 = 0); PAC stuffs the auth code in the high
+ * bits. Masking to the low 48 bits recovers a signed pointer AND is a no-op on an
+ * unsigned one (high bits already clear) — so it is safe to apply unconditionally
+ * whenever the CFI row marks the RA as signed. */
+static inline uint64_t ares_pac_strip(uint64_t ptr) { return ptr & 0x0000FFFFFFFFFFFFull; }
+
 /* CFA + per-register rules at one PC row. CFA = regval(cfa_reg) + cfa_off,
  * where regval(31)=sp, regval(r)=x[r] otherwise. */
 struct cfi_cfa_state {

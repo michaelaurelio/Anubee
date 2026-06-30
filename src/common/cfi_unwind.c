@@ -860,6 +860,7 @@ struct cfi_saved_state {
     uint32_t        cfa_reg;
     int64_t         cfa_off;
     struct cfi_rule cols[CFI_NREG];
+    uint8_t         ra_signed;
 };
 
 /*
@@ -997,6 +998,7 @@ static int run_program(const struct cfi_section *s,
                 slot->cfa_off = st->cfa_off;
                 for (int i = 0; i < CFI_NREG; i++)
                     slot->cols[i] = st->cols[i];
+                slot->ra_signed = st->ra_signed;
                 break;
             }
             case 0x0b: { /* DW_CFA_restore_state */
@@ -1007,6 +1009,7 @@ static int run_program(const struct cfi_section *s,
                 st->cfa_off = slot->cfa_off;
                 for (int i = 0; i < CFI_NREG; i++)
                     st->cols[i] = slot->cols[i];
+                st->ra_signed = slot->ra_signed;
                 break;
             }
 
@@ -1030,6 +1033,10 @@ static int run_program(const struct cfi_section *s,
                 st->cfa_off = (int64_t)off;
                 break;
             }
+
+            case 0x2d: /* DW_CFA_AARCH64_negate_ra_state (== DW_CFA_GNU_window_save) */
+                st->ra_signed ^= 1;
+                break;
 
             default:
                 return -1; /* unknown extended opcode */
@@ -1057,6 +1064,7 @@ int cfi_run_program(const struct cfi_section *s, uint64_t module_pc,
     struct cfi_cfa_state st;
     st.cfa_reg = 0;
     st.cfa_off = 0;
+    st.ra_signed = 0;
     for (int i = 0; i < CFI_NREG; i++) {
         st.cols[i].kind = CFI_UNDEF;
         st.cols[i].off  = 0;

@@ -11,6 +11,30 @@ static const uint8_t DF5[] = {
     0x00, 0x00, 0x00, 0x0c, 0x1d, 0x10, 0x9d, 0x04, 0x9e, 0x02, 0x00
 };
 
+/* Same CIE as DF5 (CFA=sp+0, RA=reg30, data_align=-4). One FDE over [0x100,0x200)
+ * whose program is: def_cfa x29,16; offset x29,-16; offset x30,-8;
+ * DW_CFA_AARCH64_negate_ra_state (0x2d); nop.  FDE body = 29 bytes (len 0x1d). */
+static const uint8_t DF_PAC1[] = {
+    0x14,0x00,0x00,0x00, 0xff,0xff,0xff,0xff, 0x04,0x00,0x08,0x00, 0x01,0x7c,0x1e,
+    0x0c,0x1f,0x00, 0x00,0x00,0x00,0x00,0x00,0x00,
+    0x1d,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x0c,0x1d,0x10, 0x9d,0x04, 0x9e,0x02, 0x2d, 0x00
+};
+
+/* Same CIE. FDE program: def_cfa x29,16; negate(ra_signed=1); remember;
+ * negate(ra_signed=0); restore(-> ra_signed=1); offset x30,-8; nop.
+ * FDE body = 30 bytes (len 0x1e). Proves ra_signed survives remember/restore. */
+static const uint8_t DF_PAC2[] = {
+    0x14,0x00,0x00,0x00, 0xff,0xff,0xff,0xff, 0x04,0x00,0x08,0x00, 0x01,0x7c,0x1e,
+    0x0c,0x1f,0x00, 0x00,0x00,0x00,0x00,0x00,0x00,
+    0x1e,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x0c,0x1d,0x10, 0x2d, 0x0a, 0x2d, 0x0b, 0x9e,0x02, 0x00
+};
+
 static void st64(uint8_t *buf, uint64_t v) { for (int i=0;i<8;i++) buf[i]=(uint8_t)(v>>(8*i)); }
 
 int main(void)
@@ -85,6 +109,30 @@ int main(void)
 	assert(ares_pac_strip(0x0000007405ccb054ull) == 0x0000007405ccb054ull); /* unsigned -> unchanged */
 	assert(ares_pac_strip(0x00bd007405ccb054ull) == 0x0000007405ccb054ull); /* signed   -> stripped  */
 	assert(ares_pac_strip(0xffff007405ccb054ull) == 0x0000007405ccb054ull); /* all high -> stripped  */
+
+	/* 0x2d no longer aborts the program; CFA/cols intact; ra_signed tracked. */
+	{
+		struct cfi_section sp1;
+		assert(cfi_parse_debug_frame(&sp1, DF_PAC1, sizeof(DF_PAC1)) == 0 && sp1.nfde == 1);
+		struct cfi_cfa_state stp1;
+		assert(cfi_run_program(&sp1, 0x140, &stp1) == 0);          /* was -1 before the fix */
+		assert(stp1.cfa_reg == 29 && stp1.cfa_off == 16);
+		assert(stp1.cols[29].kind == CFI_AT_CFA && stp1.cols[29].off == -16);
+		assert(stp1.cols[30].kind == CFI_AT_CFA && stp1.cols[30].off == -8);
+		assert(stp1.ra_signed == 1);
+		cfi_section_free(&sp1);
+	}
+
+	/* ra_signed survives remember_state/restore_state. */
+	{
+		struct cfi_section sp2;
+		assert(cfi_parse_debug_frame(&sp2, DF_PAC2, sizeof(DF_PAC2)) == 0 && sp2.nfde == 1);
+		struct cfi_cfa_state stp2;
+		assert(cfi_run_program(&sp2, 0x140, &stp2) == 0);
+		assert(stp2.ra_signed == 1);                                /* negate, remember, negate, restore -> 1 */
+		assert(stp2.cols[30].kind == CFI_AT_CFA && stp2.cols[30].off == -8);
+		cfi_section_free(&sp2);
+	}
 
 	return 0;
 }

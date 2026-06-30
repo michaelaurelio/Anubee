@@ -130,6 +130,7 @@ struct cfi_cfa_state {
 	uint32_t cfa_reg;
 	int64_t  cfa_off;
 	struct cfi_rule cols[CFI_NREG];
+	uint8_t  ra_signed;   /* AArch64 PAC: RA is signed (DW_CFA_AARCH64_negate_ra_state) */
 };
 
 /* Interpret the CIE initial instructions then the FDE instructions, accumulating rules up to

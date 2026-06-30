@@ -49,8 +49,14 @@ static int rd_u64(art_reader rd, void *rc, uint64_t va, uint64_t *out)
 
 // ---- DexFile image cache (keyed by DexFile.begin_) ------------------------------
 // nterp_name runs once per *distinct* stack (deduped by the caller), but many
-// stacks share a DexFile, so cache the built maps. Bounded, no eviction (the set of
-// loaded DexFiles in one process is small). Guarded — the drain may be threaded.
+// stacks share a DexFile, so cache the built maps. The mutex guards the shared array
+// so a future multi-worker drain stays consistent. A cached map pointer is handed to
+// the caller and dereferenced after the lock is dropped, so cached maps are
+// IMMORTAL: once stored they are never freed (eviction drops the slot but leaks the
+// map) — that keeps a returned pointer valid even if a second worker evicts
+// concurrently. The set of loaded DexFiles is small (tens), so the FIFO cap is rarely
+// hit and the leak is bounded. art_nterp_cache_reset (host-test teardown only) frees
+// everything and must not run while any resolve is in flight.
 struct dex_cache_ent { uint64_t begin; struct dex_method_map *map; };
 static struct dex_cache_ent g_dexc[64];
 static size_t g_ndexc;
@@ -101,8 +107,9 @@ static struct dex_method_map *dexmap_get(art_reader rd, void *rc,
             dex_map_free(m);
             return winner;
         }
-    if (g_ndexc == cap) {                 // full — evict oldest (FIFO)
-        dex_map_free(g_dexc[0].map);
+    if (g_ndexc == cap) {                 // full — drop oldest slot (FIFO).
+        // Do NOT dex_map_free here: another worker may hold this map pointer
+        // (returned under no lock). Leak the evicted map — bounded, see header.
         memmove(&g_dexc[0], &g_dexc[1], (cap - 1) * sizeof(g_dexc[0]));
         g_ndexc--;
     }

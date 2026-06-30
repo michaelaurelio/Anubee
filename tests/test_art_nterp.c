@@ -128,6 +128,19 @@ int main(int argc, char **argv)
           strcmp(out, "com.ares.Sample.greet") == 0,
           "second lookup hits dex cache, still resolves");
 
+    // DexFile size sanity: a target-supplied size of 0 or an absurd size must be
+    // rejected before reading the image (don't trust the target's size blindly).
+    { uint8_t df0[48]; memcpy(df0, df, sizeof(df0)); w64(df0 + O_DF_SIZE, 0);
+      struct mem mz = m; mz.r[3].data = df0;
+      art_nterp_cache_reset();
+      CHECK(art_method_resolve(memrd, &mz, AM, out, sizeof(out)) == 0,
+            "zero dex size -> miss"); }
+    { uint8_t dfb[48]; memcpy(dfb, df, sizeof(dfb)); w64(dfb + O_DF_SIZE, 1ull << 30);
+      struct mem mb = m; mb.r[3].data = dfb;
+      art_nterp_cache_reset();
+      CHECK(art_method_resolve(memrd, &mb, AM, out, sizeof(out)) == 0,
+            "absurd dex size -> miss"); }
+
     art_nterp_cache_reset();
     free(dex);
     printf("%s: %d checks, %d failures\n", argv[0], checks, failures);

@@ -633,11 +633,14 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 		}
 		jb_c(j, '}');
 	}
-	// Cross the final native->managed gap: if the walk died in ART's interpreter
-	// (the terminal frame is nterp), name the interpreted Java method by reading its
-	// ArtMethod* from the managed frame just above the terminal SP and chasing ART
-	// structs out-of-process. `sym` still holds the terminal frame's symbol here.
-	if (is_interp_frame(sym)) {
+	// Cross the final native->managed gap: if the walk died in ART's *nterp* fast
+	// interpreter, name the interpreted Java method by reading its ArtMethod* from
+	// the managed frame just above the terminal SP and chasing ART structs
+	// out-of-process. `sym` still holds the terminal frame's symbol here. Gate on
+	// nterp specifically (not the broader is_interp_frame): only nterp places the
+	// ArtMethod* at the managed frame base, so the switch-interpreter /
+	// ToInterpreterBridge terminals would otherwise mis-attribute a nearby method.
+	if (strstr(sym, "nterp")) {
 		char mname[256];
 		if (nterp_name((int)s->h.pid, s, sps[n - 1], mname, sizeof(mname))) {
 			jb_c(j, ',');

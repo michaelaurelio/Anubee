@@ -1113,7 +1113,7 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
         diag->fde_found = 0;
         diag->fde_pc_lo = diag->fde_pc_hi = 0;
         diag->cfa_reg = 0; diag->cfa_off = 0; diag->cfa = 0;
-        diag->ra_kind = 0; diag->ra_off = 0; diag->ra_slot = 0; diag->ra_value = 0;
+        diag->ra_kind = 0; diag->ra_off = 0; diag->ra_slot = 0; diag->ra_value = 0; diag->ra_signed = 0;
         diag->stop_reason = CFI_OK;
         const struct cfi_fde *f = cfi_lookup(s, module_pc);
         if (f) { diag->fde_found = 1; diag->fde_pc_lo = f->pc_lo; diag->fde_pc_hi = f->pc_hi; }
@@ -1125,6 +1125,7 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
     }
 
     if (diag) { diag->cfa_reg = st.cfa_reg; diag->cfa_off = st.cfa_off; }
+    if (diag) diag->ra_signed = st.ra_signed;
 
     /* Compute CFA = regval(cfa_reg) + cfa_off */
     uint64_t cfa;
@@ -1170,6 +1171,9 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
         if (diag) diag->stop_reason = CFI_RA_UNDEF;
         return 0; /* CFI_UNDEF: top of stack */
     }
+
+    if (st.ra_signed)
+        caller_pc = ares_pac_strip(caller_pc);
 
     if (caller_pc == 0) {
         if (diag) diag->stop_reason = CFI_RA_ZERO;

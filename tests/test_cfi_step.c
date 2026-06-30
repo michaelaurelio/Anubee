@@ -134,5 +134,26 @@ int main(void)
 		cfi_section_free(&sp2);
 	}
 
+	/* cfi_step strips PAC bits from the RA when the row is ra_signed.
+	 * DF_PAC1: CFA=x29+16, x29@CFA-16, x30(RA)@CFA-8, ra_signed=1.
+	 * x29=0x8010 -> CFA=0x8020 -> RA slot 0x8018. Put a signed PC there. */
+	{
+		struct cfi_section psec;
+		assert(cfi_parse_debug_frame(&psec, DF_PAC1, sizeof(DF_PAC1)) == 0 && psec.nfde == 1);
+		uint8_t pstk[0x40]; memset(pstk, 0, sizeof(pstk));
+		st64(&pstk[0x10], 0x0000000000008030ull);   /* 0x8010 = caller x29 */
+		st64(&pstk[0x18], 0x00bd000001234560ull);   /* 0x8018 = caller pc/RA, PAC-signed */
+
+		uint64_t xp[31]; memset(xp, 0, sizeof(xp)); xp[29] = 0x8010;
+		uint64_t spp = 0x8000, pcp = 0x140;
+		struct cfi_step_diag dp; memset(&dp, 0, sizeof(dp));
+		int rp = cfi_step(&psec, 0x140, xp, &spp, &pcp, pstk, 0x8000, sizeof(pstk), &dp);
+		assert(rp == 1);
+		assert(pcp == 0x0000000001234560ull);   /* PAC bits 0x00bd.. masked off */
+		assert(dp.ra_signed == 1);
+		assert(dp.ra_value == 0x0000000001234560ull);  /* diag reports the stripped PC */
+		cfi_section_free(&psec);
+	}
+
 	return 0;
 }

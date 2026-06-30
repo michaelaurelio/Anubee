@@ -111,6 +111,7 @@ struct cfi_step_diag {
 	int64_t  ra_off;
 	uint64_t ra_slot;
 	uint64_t ra_value;
+	uint8_t  ra_signed;
 	int      stop_reason;   /* enum cfi_stop_reason */
 };
 

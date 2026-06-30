@@ -14,6 +14,7 @@
 #include "modules/mod_emit.h"
 
 static struct proc_event_bpf *g_skel = NULL;
+static struct bpf_link       *pe_ff  = NULL;
 static struct ring_buffer     *g_rb   = NULL;
 
 // ── event counters (tallied unconditionally so summary survives -o / quiet) ──
@@ -101,11 +102,25 @@ static struct ring_buffer *pe_setup(int uid, struct ares_mod_ctx *mc)
         fprintf(stderr, "mod proc-event: failed to load BPF\n");
         goto err;
     }
-    __u32 u = (__u32)uid; __u8 one = 1;
-    bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    __u8 one = 1;
+    if (uid > 0) {
+        __u32 u = (__u32)uid;
+        bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    }
+    if (mc->tgt && mc->tgt->n > 0) {
+        for (int i = 0; i < mc->tgt->n; i++) {
+            __u32 tgid = (__u32)mc->tgt->pids[i];
+            bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_pids), &tgid, &one, BPF_ANY);
+        }
+    }
+    bpf_program__set_autoattach(g_skel->progs.ares_follow_fork, 0);
     if (proc_event_bpf__attach(g_skel)) {
         fprintf(stderr, "mod proc-event: failed to attach\n");
         goto err;
+    }
+    if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
+        pe_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        if (!pe_ff) fprintf(stderr, "mod proc-event: follow-fork attach failed (non-fatal)\n");
     }
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             pe_handle_event, mc, NULL);
@@ -123,6 +138,7 @@ err:
 
 static void pe_teardown(void)
 {
+    if (pe_ff)  { bpf_link__destroy(pe_ff);            pe_ff  = NULL; }
     if (g_rb)   { ring_buffer__free(g_rb);             g_rb   = NULL; }
     if (g_skel) { proc_event_bpf__destroy(g_skel);     g_skel = NULL; }
 }

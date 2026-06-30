@@ -57,6 +57,7 @@ struct mod_args {
     const char *pkg;
     const char *activity;
     struct common_args c;
+    struct target_args tgt; // -p / --siblings / --no-follow-fork
 };
 
 // Only advertise flags that are actually wired. -J/-b/-Q are NOT included:
@@ -68,6 +69,7 @@ static const struct argp_option mod_options[] = {
     { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (implies -q)", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
+    TARGET_ARGP_OPTIONS,
     { 0 }
 };
 
@@ -81,11 +83,15 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
         if (!a->name) a->name = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
+    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+        return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_END:
         if (!a->name)
             argp_error(state, "analyzer name is required (first positional)");
-        if (!a->pkg)
-            argp_error(state, "package is required (-P PACKAGE)");
+        if (a->tgt.n > 0 && a->pkg)
+            argp_error(state, "specify exactly one of -p or -P");
+        if (!a->tgt.n && !a->pkg)
+            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
         break;
     default:
         return parse_common_arg(key, arg, state, &a->c);
@@ -109,10 +115,16 @@ int cmd_mod(int argc, char **argv)
         return 1;
     }
 
-    int uid = ares_resolve_uid(ma.pkg);
-    if (uid < 0) {
-        fprintf(stderr, "mod: could not resolve UID for '%s' (installed? run as root?)\n", ma.pkg);
-        return 1;
+    int uid;
+    if (ma.tgt.n > 0) {
+        // ponytail: siblings → grab UID from first PID; precise → uid=0 (BPF gate uses TGID)
+        uid = ma.tgt.siblings ? ares_get_pid_uid(ma.tgt.pids[0]) : 0;
+    } else {
+        uid = ares_resolve_uid(ma.pkg);
+        if (uid < 0) {
+            fprintf(stderr, "mod: could not resolve UID for '%s' (installed? run as root?)\n", ma.pkg);
+            return 1;
+        }
     }
 
     if (ma.c.output_file && ares_sink_open(&g_sink, ma.c.output_file, "event", 1) != 0) {
@@ -125,6 +137,7 @@ int cmd_mod(int argc, char **argv)
         .sink    = ma.c.output_file ? &g_sink : NULL,
         .quiet   = quiet,
         .verbose = ma.c.verbose,
+        .tgt     = &ma.tgt,
     };
 
     libbpf_set_print(ares_libbpf_quiet);
@@ -145,13 +158,14 @@ int cmd_mod(int argc, char **argv)
         printf("[mod]   > stealthy: %s uses kernel-only probes\n", ma.name);
 
     ares_install_stop_handler(&exiting);
-    ares_launch_banner(ma.pkg, uid);
-
-    if (ares_launch_app(ma.pkg, ma.activity, NULL) != 0) {
-        fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
-        an->teardown();
-        if (ma.c.output_file) ares_sink_close(&g_sink);
-        return 1;
+    if (ma.pkg) {
+        ares_launch_banner(ma.pkg, uid);
+        if (ares_launch_app(ma.pkg, ma.activity, NULL) != 0) {
+            fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
+            an->teardown();
+            if (ma.c.output_file) ares_sink_close(&g_sink);
+            return 1;
+        }
     }
 
     printf("tracing uid %d (%s) ... Ctrl-C to stop\n", uid, ma.name);

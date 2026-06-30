@@ -140,10 +140,12 @@ struct dump_args {
     int on_map;
     int raw;
     int quiet;
+    struct target_args tgt;
 };
 
 // Synthetic keys for long-only options (must be > 127 to avoid short-option collision).
-enum { KEY_ON_MAP = 256, KEY_RAW };
+// Use 0x200+ to avoid collision with ARES_KEY_SIBLINGS (0x100) / ARES_KEY_NO_FOLLOW (0x101).
+enum { KEY_ON_MAP = 0x200, KEY_RAW };
 
 static const struct argp_option dump_options[] = {
     { "package",  'P',        "PACKAGE",  0, "App package to launch and dump", 0 },
@@ -152,6 +154,7 @@ static const struct argp_option dump_options[] = {
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
+    TARGET_ARGP_OPTIONS,
     { 0 }
 };
 
@@ -165,15 +168,21 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;
+    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+        return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
-        if      (!a->pkg)     a->pkg     = arg;
+        if      (!a->pkg && a->tgt.n == 0)  a->pkg     = arg;
         else if (!a->pattern) a->pattern = arg;
         else if (!a->activity) a->activity = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
-        if (!a->pkg)     argp_error(state, "package is required (-P PACKAGE or first positional)");
-        if (!a->pattern) argp_error(state, "pattern is required (second positional)");
+        if (a->tgt.n > 0 && a->pkg)
+            argp_error(state, "specify exactly one of -p or -P");
+        if (!a->tgt.n && !a->pkg)
+            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+        if (!a->pattern)
+            argp_error(state, "pattern is required");
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -194,6 +203,7 @@ static struct ring_buffer *g_rb;
 static int                 g_uid;
 static const char         *g_pkg;
 static const char         *g_activity;
+static struct bpf_link    *g_ff;
 
 int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
@@ -211,10 +221,14 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_quiet    = da.quiet;
     if (da.raw) dump_set_raw(1);
 
-    g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
-    if (g_uid < 0) {
-        fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
-        return 1;
+    if (da.tgt.n > 0) {
+        g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
+    } else {
+        g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+        if (g_uid < 0) {
+            fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
+            return 1;
+        }
     }
 
     libbpf_set_print(ares_libbpf_quiet);
@@ -229,15 +243,39 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         goto err_skel;
     }
 
-    __u32 vuid = (__u32)g_uid; __u8 one = 1;
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-        fprintf(stderr, "dump: failed to install target UID\n");
-        goto err_skel;
+    if (da.tgt.n > 0) {
+        // -p mode: arm target_pids; target_uids only if --siblings.
+        __u8 one = 1;
+        for (int i = 0; i < da.tgt.n; i++) {
+            __u32 tgid = (__u32)da.tgt.pids[i];
+            bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+            if (da.tgt.siblings) {
+                int uid = ares_get_pid_uid(da.tgt.pids[i]);
+                if (uid > 0) {
+                    __u32 vuid = (__u32)uid;
+                    bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
+                }
+            }
+        }
+    } else {
+        // -P mode: arm target_uids.
+        __u32 vuid = (__u32)g_uid; __u8 one = 1;
+        if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
+            fprintf(stderr, "dump: failed to install target UID\n");
+            goto err_skel;
+        }
     }
+
+    bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
 
     if (ares_dump__attach(skel)) {
         fprintf(stderr, "dump: failed to attach (uprobe_mmap in kallsyms?)\n");
         goto err_skel;
+    }
+
+    if (da.tgt.n > 0 && !da.tgt.no_follow) {
+        g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+        if (!g_ff) fprintf(stderr, "dump: follow-fork attach failed (non-fatal)\n");
     }
 
     struct ring_buffer *rb =
@@ -288,6 +326,10 @@ void dump_teardown(void)
         ring_buffer__free(g_rb);
         g_rb = NULL;
     }
+    if (g_ff) {
+        bpf_link__destroy(g_ff);
+        g_ff = NULL;
+    }
     if (g_skel) {
         ares_dump__destroy(g_skel);
         g_skel = NULL;
@@ -306,11 +348,13 @@ int cmd_dump(int argc, char **argv)
     // Standalone: tracing is armed (UID installed in setup); install 2-stage
     // stop handler, launch, run, then teardown.
     ares_install_stop_handler(&exiting);
-    ares_launch_banner(g_pkg, g_uid);
-    if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
-        fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
-        dump_teardown();
-        return 1;
+    if (g_pkg) {
+        ares_launch_banner(g_pkg, g_uid);
+        if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+            fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
+            dump_teardown();
+            return 1;
+        }
     }
 
     dump_run(&exiting);

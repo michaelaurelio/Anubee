@@ -21,4 +21,7 @@ struct {
 } events SEC(".maps");
 
 #include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
+#define LIBTRACE_EXTRA_GATE() pid_matches()  // ponytail: opts in shared mmap probes to PID gate
 #include "common/lib_trace.bpf.h"

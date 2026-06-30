@@ -14,12 +14,14 @@ struct {
 } events_rb SEC(".maps");
 
 #include "common/uid_filter.bpf.h"
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
 #include "modules/mod_events.h"
 
 SEC("tp/sched/sched_process_fork")
 int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
-	if (!uid_matches())
+	if (!uid_matches() && !pid_matches())
 		return 0;
 
 	struct spawn_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
@@ -44,7 +46,7 @@ struct trace_event_raw_sched_process_exit;
 SEC("tp/sched/sched_process_exit")
 int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
 {
-	if (!uid_matches())
+	if (!uid_matches() && !pid_matches())
 		return 0;
 
 	__u64 id  = bpf_get_current_pid_tgid();

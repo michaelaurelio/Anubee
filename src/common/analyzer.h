@@ -8,6 +8,7 @@
 
 struct ares_sink;   // common/emit.h — full def needed by callers that open a sink
 struct ring_buffer; // libbpf — full def needed to poll
+struct target_args; // common/engine_args.h — full def at setup() call site
 
 // Console/sink context the dispatcher builds once and hands to setup(); the
 // analyzer stores the pointer and passes it as the ring_buffer sample-fn ctx.
@@ -15,6 +16,7 @@ struct ares_mod_ctx {
     struct ares_sink *sink;  // NULL when no -o (console-only mode)
     int quiet;               // suppress human-readable console lines
     int verbose;             // extra console detail
+    const struct target_args *tgt; // NULL → launch/UID mode; n>0 → PID attach
 };
 
 // One entry in the analyzer registry.

@@ -63,6 +63,9 @@ struct {
 } events SEC(".maps");
 
 #include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
+#define LIBTRACE_EXTRA_GATE() pid_matches()  // ponytail: opts in shared mmap probes to PID gate
 
 // Per-process (keyed by tgid) executable ranges of the target library. The
 // loader populates this in response to the mmap events we emit below.
@@ -171,7 +174,7 @@ static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *sta
 SEC("kprobe/do_el0_svc")
 int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 {
-	if (!uid_matches())
+	if (!uid_matches() && !pid_matches())
 		return 0;
 
 	__u64 nr = BPF_CORE_READ(user_regs, regs[8]);

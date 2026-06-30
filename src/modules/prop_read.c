@@ -140,6 +140,7 @@ static void pr_print_summary(void)
 
 static struct prop_read_bpf *g_skel         = NULL;
 static struct ring_buffer   *g_rb           = NULL;
+static struct bpf_link      *pr_ff          = NULL;
 
 static struct bpf_link *pr_link_get      = NULL;
 static struct bpf_link *pr_link_get_ret  = NULL;
@@ -295,8 +296,17 @@ static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
         goto err;
     }
 
-    __u32 u = (__u32)uid; __u8 one = 1;
-    bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    __u8 one = 1;
+    if (uid > 0) {
+        __u32 u = (__u32)uid;
+        bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    }
+    if (mc->tgt && mc->tgt->n > 0) {
+        for (int i = 0; i < mc->tgt->n; i++) {
+            __u32 tgid = (__u32)mc->tgt->pids[i];
+            bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_pids), &tgid, &one, BPF_ANY);
+        }
+    }
 
     // Manual uprobe attach — symbols have no auto-attach target in the BPF SEC.
     elf_version(EV_CURRENT);
@@ -345,7 +355,10 @@ static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
         goto err;
     }
 
-
+    if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
+        pr_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        if (!pr_ff) fprintf(stderr, "mod prop-read: follow-fork attach failed (non-fatal)\n");
+    }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             pr_handle_event, mc, NULL);
@@ -356,6 +369,7 @@ static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
     return g_rb;
 
 err:
+    if (pr_ff)            { bpf_link__destroy(pr_ff);            pr_ff            = NULL; }
     if (pr_link_get)      { bpf_link__destroy(pr_link_get);      pr_link_get      = NULL; }
     if (pr_link_get_ret)  { bpf_link__destroy(pr_link_get_ret);  pr_link_get_ret  = NULL; }
     if (pr_link_find)     { bpf_link__destroy(pr_link_find);     pr_link_find     = NULL; }
@@ -369,6 +383,7 @@ err:
 
 static void pr_teardown(void)
 {
+    if (pr_ff)            { bpf_link__destroy(pr_ff);            pr_ff            = NULL; }
     if (pr_link_get)      { bpf_link__destroy(pr_link_get);      pr_link_get      = NULL; }
     if (pr_link_get_ret)  { bpf_link__destroy(pr_link_get_ret);  pr_link_get_ret  = NULL; }
     if (pr_link_find)     { bpf_link__destroy(pr_link_find);     pr_link_find     = NULL; }

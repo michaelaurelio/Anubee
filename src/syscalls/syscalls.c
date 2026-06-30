@@ -145,6 +145,7 @@ static unsigned long long g_stack_count;        // snapshots written so far
 // (standalone via cmd_syscalls, or by the `trace` coordinator). See syscalls.h.
 static struct syscalls *g_skel;
 static struct ring_buffer *g_rb;
+static struct bpf_link *g_ff;
 static pthread_t g_worker;
 static int g_worker_started;
 static int g_dropfd = -1;
@@ -936,6 +937,7 @@ struct sysc_args {
 	int  want_snap;              // --snapshot
 	const char *syscall_list;    // value of -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
+	struct target_args tgt;      // -p / --siblings / --no-follow-fork
 };
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -950,6 +952,7 @@ static const struct argp_option sysc_options[] = {
 	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)",                        0 },
 	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
 	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names",            0 },
+	TARGET_ARGP_OPTIONS,
 	{ 0 }
 };
 
@@ -971,9 +974,13 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
 		a->syscall_list = arg; a->syscall_mode = 2;
 		break;
+	case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+		return parse_target_arg(key, arg, state, &a->tgt);
 	case ARGP_KEY_END:
-		if (a->package_name[0] == '\0')
-			argp_error(state, "-P <package> is required");
+		if (a->tgt.n > 0 && a->package_name[0])
+			argp_error(state, "specify exactly one of -p or -P");
+		if (!a->tgt.n && !a->package_name[0])
+			argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
 		if (!a->capture_all && a->lib_sel[0] == '\0')
 			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
 		break;
@@ -1022,14 +1029,21 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	const char *syscall_list = sa.syscall_list;
 	int syscall_mode         = sa.syscall_mode;
 
-	int uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
-	if (uid < 0) {
-		fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
-		return 1;
+	int uid;
+	if (sa.tgt.n > 0) {
+		uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
+	} else {
+		uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+		if (uid < 0) {
+			fprintf(stderr, "could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
+			return 1;
+		}
 	}
 	g_uid = uid;
 	g_capture_all = capture_all;
-	if (capture_all)
+	if (sa.tgt.n > 0)
+		printf("pid mode: %d pid(s), capturing %s\n", sa.tgt.n, capture_all ? "ALL syscalls" : g_lib);
+	else if (capture_all)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
@@ -1096,19 +1110,42 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	install_arg_types(bpf_map__fd(skel->maps.arg_types));
 	install_sock_args(bpf_map__fd(skel->maps.sock_args));
 
-	__u32 vuid = (__u32)uid; __u8 one = 1;
-	if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-		fprintf(stderr, "failed to set target uid: %s\n", strerror(errno));
-		goto out;
+	__u8 one = 1;
+	if (sa.tgt.n > 0) {
+		// -p mode: arm target_pids; target_uids only if --siblings.
+		for (int i = 0; i < sa.tgt.n; i++) {
+			__u32 tgid = (__u32)sa.tgt.pids[i];
+			bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+			if (sa.tgt.siblings) {
+				int puid = ares_get_pid_uid(sa.tgt.pids[i]);
+				if (puid > 0) {
+					__u32 vuid = (__u32)puid;
+					bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
+				}
+			}
+		}
+	} else {
+		__u32 vuid = (__u32)uid;
+		if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
+			fprintf(stderr, "failed to set target uid: %s\n", strerror(errno));
+			goto out;
+		}
 	}
 
 	// We attach the return probe ourselves (classic kretprobes, per function),
-	// so disable its autoattach.
+	// so disable its autoattach. Also disable follow-fork autoattach; it is
+	// attached manually below only in PID mode.
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
+	bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
 
 	if (syscalls__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
+	}
+
+	if (sa.tgt.n > 0 && !sa.tgt.no_follow) {
+		g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+		if (!g_ff) fprintf(stderr, "syscalls: follow-fork attach failed (non-fatal)\n");
 	}
 
 	int nret = attach_return_probes(skel);
@@ -1232,6 +1269,10 @@ void syscalls_teardown(void)
 	}
 	free(g_pend);
 	g_pend = NULL;
+	if (g_ff) {
+		bpf_link__destroy(g_ff);
+		g_ff = NULL;
+	}
 	if (g_skel) {
 		syscalls__destroy(g_skel);
 		g_skel = NULL;
@@ -1243,13 +1284,15 @@ int cmd_syscalls(int argc, char **argv)
 	if (syscalls_setup(argc, argv, NULL) != 0)
 		return 1;
 
-	// Standalone: tracing is armed (UID installed in setup); launch and own signals.
+	// Standalone: tracing is armed; in -P mode launch, in -p mode just run.
 	ares_install_stop_handler(&exiting);
-	ares_launch_banner(g_pkg, g_uid);
-	if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
-		fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
-		syscalls_teardown();
-		return 1;
+	if (g_pkg[0]) {
+		ares_launch_banner(g_pkg, g_uid);
+		if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+			fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
+			syscalls_teardown();
+			return 1;
+		}
 	}
 
 	syscalls_run(&exiting);

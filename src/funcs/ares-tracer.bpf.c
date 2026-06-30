@@ -218,4 +218,5 @@ int BPF_KRETPROBE(uretprobe_open)
 
 // Shared mmap/munmap capture (emits lib_map_event / lib_unmap_event into events_rb).
 #define LIBTRACE_EVENTS_RB events_rb
+#define LIBTRACE_EXTRA_GATE() pid_matches()  // ponytail: closes UID-empty gap in precise -p mode
 #include "common/lib_trace.bpf.h"

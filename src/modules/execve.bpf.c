@@ -14,6 +14,8 @@ struct {
 } events_rb SEC(".maps");
 
 #include "common/uid_filter.bpf.h"
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
 #include "modules/mod_events.h"
 
 // Full execve tracing via kprobe on __arm64_sys_execve.
@@ -22,7 +24,7 @@ struct {
 SEC("kprobe/__arm64_sys_execve")
 int BPF_KPROBE(on_execve, const struct pt_regs *regs)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
@@ -74,7 +76,7 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
 SEC("kprobe/__arm64_sys_execveat")
 int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
@@ -123,7 +125,7 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
 SEC("tp/sched/sched_process_exec")
 int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
 {
-    if (!uid_matches())
+    if (!uid_matches() && !pid_matches())
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);

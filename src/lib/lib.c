@@ -41,6 +41,7 @@ static struct ring_buffer *g_rb;
 static int                 g_uid;
 static const char         *g_pkg;
 static const char         *g_activity;
+static struct bpf_link    *g_ff;
 
 // ---- ring-buffer event handling ------------------------------------------
 
@@ -82,6 +83,7 @@ struct lib_args {
     const char      *pkg;
     const char      *activity;
     struct common_args c;   // -o/-v/-q
+    struct target_args tgt; // -p / --siblings / --no-follow-fork
 };
 
 // Only advertise flags that are actually wired. -J/-b/-Q are NOT included:
@@ -92,6 +94,7 @@ static const struct argp_option lib_options[] = {
     { "output",   'o', "FILE",     0, "Write structured JSONL ({\"type\":\"lib\",...}) (implies -q)", 0 },
     { "verbose",  'v', NULL,       0, "Also print [unlib] unmap lines (default: [lib] only)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress human-readable [lib] console lines", 0 },
+    TARGET_ARGP_OPTIONS,
     { 0 }
 };
 
@@ -101,14 +104,18 @@ static error_t lib_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
+    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+        return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
-        if      (!a->pkg)      a->pkg      = arg;
-        else if (!a->activity) a->activity = arg;
+        if      (!a->pkg && a->tgt.n == 0) a->pkg      = arg;
+        else if (!a->activity)             a->activity = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
-        if (!a->pkg)
-            argp_error(state, "package is required (-P PACKAGE or first positional)");
+        if (a->tgt.n > 0 && a->pkg)
+            argp_error(state, "specify exactly one of -p or -P");
+        if (!a->tgt.n && !a->pkg)
+            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
         break;
     default:
         return parse_common_arg(key, arg, state, &a->c);
@@ -138,10 +145,14 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_quiet    = la.c.quiet || (la.c.output_file != NULL);
     g_verbose  = la.c.verbose;
 
-    g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
-    if (g_uid < 0) {
-        fprintf(stderr, "lib: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
-        return 1;
+    if (la.tgt.n > 0) {
+        g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
+    } else {
+        g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+        if (g_uid < 0) {
+            fprintf(stderr, "lib: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
+            return 1;
+        }
     }
 
     if (la.c.output_file && ares_sink_open(&g_sink, la.c.output_file, "lib", 1) != 0) {
@@ -161,16 +172,39 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         goto err_skel;
     }
 
-    // Install the target UID BEFORE launching, so the first mapping is caught.
-    __u32 vuid = (__u32)g_uid; __u8 one = 1;
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
-        fprintf(stderr, "lib: failed to install target UID\n");
-        goto err_skel;
+    // Arm the filter BEFORE launching so the first mapping is caught.
+    __u8 one = 1;
+    if (la.tgt.n > 0) {
+        // -p mode: arm target_pids; target_uids only if --siblings.
+        for (int i = 0; i < la.tgt.n; i++) {
+            __u32 tgid = (__u32)la.tgt.pids[i];
+            bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+            if (la.tgt.siblings) {
+                int puid = ares_get_pid_uid(la.tgt.pids[i]);
+                if (puid > 0) {
+                    __u32 vuid = (__u32)puid;
+                    bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
+                }
+            }
+        }
+    } else {
+        __u32 vuid = (__u32)g_uid;
+        if (bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY) != 0) {
+            fprintf(stderr, "lib: failed to install target UID\n");
+            goto err_skel;
+        }
     }
+
+    bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
 
     if (ares_lib__attach(skel)) {
         fprintf(stderr, "lib: failed to attach (uprobe_mmap in kallsyms?)\n");
         goto err_skel;
+    }
+
+    if (la.tgt.n > 0 && !la.tgt.no_follow) {
+        g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+        if (!g_ff) fprintf(stderr, "lib: follow-fork attach failed (non-fatal)\n");
     }
 
     struct ring_buffer *rb =
@@ -208,6 +242,10 @@ void lib_teardown(void)
         ring_buffer__free(g_rb);
         g_rb = NULL;
     }
+    if (g_ff) {
+        bpf_link__destroy(g_ff);
+        g_ff = NULL;
+    }
     if (g_skel) {
         ares_lib__destroy(g_skel);
         g_skel = NULL;
@@ -222,13 +260,15 @@ int cmd_lib(int argc, char **argv)
     if (lib_setup(argc, argv, NULL) != 0)
         return 1;
 
-    // Standalone: tracing is armed (UID installed in setup); launch and own signals.
+    // Standalone: tracing is armed; in -P mode launch, in -p mode just run.
     ares_install_stop_handler(&exiting);
-    ares_launch_banner(g_pkg, g_uid);
-    if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
-        fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
-        lib_teardown();
-        return 1;
+    if (g_pkg) {
+        ares_launch_banner(g_pkg, g_uid);
+        if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+            fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
+            lib_teardown();
+            return 1;
+        }
     }
 
     lib_run(&exiting);

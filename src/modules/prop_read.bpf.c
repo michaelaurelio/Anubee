@@ -14,6 +14,8 @@ struct {
 } events_rb SEC(".maps");
 
 #include "common/uid_filter.bpf.h"
+#include "common/pid_filter.bpf.h"
+#include "common/follow_fork.bpf.h"
 #include "modules/mod_events.h"
 
 // prop_read.bpf.c — BPF programs for all Android system property APIs.
@@ -78,7 +80,7 @@ static __always_inline struct prop_event *reserve_prop_event(__u32 type)
 SEC("uprobe")
 int BPF_KPROBE(on_prop_get, const char *name, char *buf)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
 
     __u64 tid = (__u32)bpf_get_current_pid_tgid();
     struct prop_entry_ctx ectx = { (unsigned long)name, (unsigned long)buf };
@@ -95,7 +97,7 @@ int BPF_KPROBE(on_prop_get, const char *name, char *buf)
 SEC("uretprobe")
 int BPF_KRETPROBE(on_prop_get_ret)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
 
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct prop_entry_ctx *saved = bpf_map_lookup_elem(&prop_entry_map, &tid);
@@ -120,7 +122,7 @@ int BPF_KRETPROBE(on_prop_get_ret)
 SEC("uprobe")
 int BPF_KPROBE(on_prop_find, const char *name)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
 
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct prop_entry_ctx ectx = { (unsigned long)name, 0 };
@@ -137,7 +139,7 @@ int BPF_KPROBE(on_prop_find, const char *name)
 SEC("uretprobe")
 int BPF_KRETPROBE(on_prop_find_ret)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
 
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct prop_entry_ctx *saved = bpf_map_lookup_elem(&prop_entry_map, &tid);
@@ -167,7 +169,7 @@ int BPF_KRETPROBE(on_prop_find_ret)
 SEC("uprobe")
 int BPF_KPROBE(on_prop_fore)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
     struct prop_event *e = reserve_prop_event(MOD_EV_PROP_SCAN);
     if (!e) return 0;
     bpf_ringbuf_submit(e, 0);
@@ -180,7 +182,7 @@ int BPF_KPROBE(on_prop_fore)
 SEC("uprobe")
 int BPF_KPROBE(on_prop_read_callback, const void *pi)
 {
-    if (!uid_matches()) return 0;
+    if (!uid_matches() && !pid_matches()) return 0;
     struct prop_event *e = reserve_prop_event(MOD_EV_PROP_READ);
     if (!e) return 0;
     read_prop_info((unsigned long)pi, e->name, sizeof(e->name), e->value, sizeof(e->value));

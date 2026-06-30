@@ -28,11 +28,16 @@
 #ifndef LIBTRACE_TYPE_UNMAP
 #define LIBTRACE_TYPE_UNMAP LIB_EV_UNMAP
 #endif
+#ifndef LIBTRACE_EXTRA_GATE
+// ponytail: default 0 — every current includer is unaffected; engines with PID
+// mode #define this to pid_matches() before including lib_trace.bpf.h.
+#define LIBTRACE_EXTRA_GATE() 0
+#endif
 
 SEC("kprobe/uprobe_mmap")
 int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
 {
-	if (!uid_matches())
+	if (!uid_matches() && !LIBTRACE_EXTRA_GATE())
 		return 0;
 
 	struct file *file = BPF_CORE_READ(vma, vm_file);
@@ -86,7 +91,7 @@ int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
 SEC("kprobe/uprobe_munmap")
 int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start, unsigned long end)
 {
-	if (!uid_matches())
+	if (!uid_matches() && !LIBTRACE_EXTRA_GATE())
 		return 0;
 
 	struct file *file = BPF_CORE_READ(vma, vm_file);

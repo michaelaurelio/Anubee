@@ -69,6 +69,7 @@ static bool is_suspicious_bin(const char *path)
 }
 
 static struct execve_bpf *g_skel       = NULL;
+static struct bpf_link   *ex_ff        = NULL;
 static struct ring_buffer *g_rb        = NULL;
 static struct bpf_link    *execve_link   = NULL;
 static struct bpf_link    *execveat_link = NULL;
@@ -150,8 +151,17 @@ static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
         goto err;
     }
 
-    __u32 u = (__u32)uid; __u8 one = 1;
-    bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    __u8 one = 1;
+    if (uid > 0) {
+        __u32 u = (__u32)uid;
+        bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_uids), &u, &one, BPF_ANY);
+    }
+    if (mc->tgt && mc->tgt->n > 0) {
+        for (int i = 0; i < mc->tgt->n; i++) {
+            __u32 tgid = (__u32)mc->tgt->pids[i];
+            bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_pids), &tgid, &one, BPF_ANY);
+        }
+    }
 
     execve_link   = bpf_program__attach(g_skel->progs.on_execve);
     execveat_link = bpf_program__attach(g_skel->progs.on_execveat);
@@ -170,6 +180,11 @@ static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
         }
     }
 
+    if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
+        ex_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        if (!ex_ff) fprintf(stderr, "mod execve: follow-fork attach failed (non-fatal)\n");
+    }
+
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             ex_handle_event, mc, NULL);
     if (!g_rb) {
@@ -179,6 +194,7 @@ static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
     return g_rb;
 
 err:
+    if (ex_ff)         { bpf_link__destroy(ex_ff);         ex_ff         = NULL; }
     if (execve_link)   { bpf_link__destroy(execve_link);   execve_link   = NULL; }
     if (execveat_link) { bpf_link__destroy(execveat_link); execveat_link = NULL; }
     if (exec_link)     { bpf_link__destroy(exec_link);     exec_link     = NULL; }
@@ -188,6 +204,7 @@ err:
 
 static void ex_teardown(void)
 {
+    if (ex_ff)         { bpf_link__destroy(ex_ff);         ex_ff         = NULL; }
     if (execve_link)   { bpf_link__destroy(execve_link);   execve_link   = NULL; }
     if (execveat_link) { bpf_link__destroy(execveat_link); execveat_link = NULL; }
     if (exec_link)     { bpf_link__destroy(exec_link);     exec_link     = NULL; }

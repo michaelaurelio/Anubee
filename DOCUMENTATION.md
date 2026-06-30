@@ -298,6 +298,15 @@ stub itself) emit no RA rule, so without this default they read as top-of-stack 
 unwind stops at frame 0. With it, native unwinding walks the full chain (verified on-device:
 1 → 18 frames). Any explicit CIE/FDE rule overrides the default.
 
+**PAC-signed return addresses (`DW_CFA_AARCH64_negate_ra_state`).** PAC-built AArch64
+libs — the ART apex set (`libart`, `libjavacore`, `libnativeloader`, `libartbase`,
+`libdexfile`) — emit `DW_CFA_AARCH64_negate_ra_state` (opcode `0x2d`) to toggle the
+`ra_signed` column in the CFI row state; `remember`/`restore` correctly preserves
+`ra_signed` across nested CIE state. `cfi_step` calls `ares_pac_strip` to mask PAC bits
+from the recovered RA before use. Without this, these libs produced a terminal
+`CFI_RUN_FAIL` (dominant failure on `a real RASP-protected target app`: 167/201 stacks, 83%).
+Fixed in commits `c905f78`, `e2e026a`, `655314f`.
+
 **Raw vs CFI backtrace.** The syscall event's own `backtrace` is the cheap kernel
 frame-pointer walk (`bpf_get_stack`). The FP chain cannot cross `art_jni_trampoline` — the
 managed caller above it keeps no AAPCS `[fp,lr]` frame — so that backtrace **stops at the
@@ -308,35 +317,23 @@ actually crosses the trampoline. Interpreter bridges are left intact (the interp
 native C++ and keeps a valid FP chain through it).
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
-`boot.oat` trampoline FDE is verified to recover the managed caller. Snapshots now flow under
-capture-all (**W6**, done 2026-06-29) and the maps-cache staleness that dead-ended the walk at
-frame 0 is fixed (`find_mapping_refresh` + a one-shot forced maps re-read in
-`cfi_unwind_snapshot`), so under `-a` the CFI walk reaches the full native chain on
-JNI-originated stacks (`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross
-is still **not end-to-end** — but the blocker has been **re-diagnosed** (on-device 2026-06-29).
-**W3-window** (chunked capture) is **DONE**: the snapshot is now read in 4 KB chunks stopping at
-the first fault, and on-device `snap_len` recovers the full contiguous prefix (a 4096→32768
-spread; 238/312 records >8 KB). This *disproved* the original "spilled RA sits beyond the
-captured window" hypothesis: with 20–32 KB now captured, the CFI walk **still** dies one frame
-short of `art_jni_trampoline`, terminating at a *consistent* `libandroid_runtime.so+0xd6054`
-(ample headroom). **The blocker was then root-caused CONCLUSIVELY (instrumented device run,
-2026-06-29)** via an `ARES_CFI_DEBUG=1` per-step diagnostic (below): it is **not** a bogus RA
-and **not** a `cfi_step` CFA/RA-rule bug. CFI reaches the *genuine* libandroid_runtime return
-address (it matches the raw FP-walk, which crosses the trampoline 290× in the same run). The
-walk dies because **`cfi_get` returns NULL for libandroid_runtime** (the `!sec` break in
-`cfi_unwind_snapshot`) — 81/81 libandroid_runtime terminal frames report
-`stop_reason = SNAP_CFI_GET_NULL`. Cause: **`ares_module_base_idx` (`src/common/maps.c:31`)**
-walks back to a module's base mapping with a strict `m[i-1].end == m[i].start` contiguity test;
-libandroid_runtime has a **1-page gap** between its RO (file off `0`) and exec (off `0xe0000`)
-segments, so the walk-back stops at the exec mapping and `module_base` returns
-`elf_off = 0xe0000` instead of `0`. `cfi_get` then opens the ELF at file offset `0xe0000` —
-past the real header at `0` — and fails to parse. libc/linker64 are unaffected (their RO→exec
-mappings are contiguous, so they unwind cleanly). This is **candidate (1) base/offset, in the
-shared `module_base` resolution** — its blast radius is broader than CFI (symbol naming is also
-degraded for gapped libs). The fix (bridge inter-segment gaps in `ares_module_base_idx`) is the
-next session — see BACKLOG and `docs/superpowers/specs/2026-06-29-cfi-misstep-fix-module-base-design.md`.
-**W5** — JIT code-cache (`[anon]`) frames have no file-backed CFI (needs ART's in-memory
-mini-ELF unwind info); unreachable until the module-base fix lets the walk cross the trampoline.
+`boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers
+to a live jni-trampoline→managed cross are resolved: **W6** (capture-all snapshots, done
+2026-06-29), maps-cache staleness (`find_mapping_refresh`), **W3-window** (chunked capture,
+done 2026-06-29), **CFI-misstep** (module_base gapped walk-back, done 2026-06-30 — commits
+`73a9ceb`, `e8fd9e2`), and **PAC `negate_ra_state`** (done 2026-06-30 — commits `c905f78`,
+`e2e026a`, `655314f`, `63f1570`). On `a real RASP-protected target app` (real RASP target):
+`CFI_RUN_FAIL` **167/201 → 0**; `art_jni_trampoline` crossings **59 → 131**;
+reached-managed-frame **21 → 74**. Full re-measure:
+`docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
+
+The **remaining wall is nterp interpreter frames**: 120/201 stacks now terminate cleanly
+(`CFI_OK`) at `libart!nterp_helper` — the app's RASP methods run interpreted (nterp);
+0 `the app's own` frames resolve. Naming them requires an ART managed-stack (ShadowFrame)
+walk (ART-version-coupled — see
+`docs/superpowers/research/2026-06-24-art-managed-stack-walk.md`). **W5** (JIT `[anon]`
+code-cache mini-ELF CFI) is now technically reachable but ≈0 payoff on measured workloads
+(9/201 stacks); not the immediate priority.
 
 **Diagnostic flag (`ARES_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
 `cfi_stack` frame with per-step CFI internals (`module_pc`, `load_base`, `elf_off`, `fde_found`,

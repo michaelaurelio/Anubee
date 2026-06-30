@@ -25,10 +25,11 @@ so history stays traceable.
 **Major:**
 - GA2 deferred: wire `correlate`→`trace`, `dump`→`trace`
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
-- CFI live cross: **W3-window DONE** (chunked capture); blocker now **root-caused
-  CONCLUSIVELY** → **`ares_module_base_idx` gapped-walk-back bug** (`maps.c:31`) hands
-  `cfi_get` the wrong `elf_off` for libandroid_runtime's gapped multi-PT_LOAD → `cfi_get`
-  returns NULL; fix = bridge gaps (next session) + W5 (JIT `[anon]` CFI) — see below
+- CFI live cross: **W3-window DONE**; **CFI-misstep DONE** (module_base gapped walk-back,
+  device-verified 2026-06-30); **PAC `negate_ra_state` DONE** (2026-06-30;
+  `CFI_RUN_FAIL` 167/201 → 0); real remaining wall = **nterp interpreter frames**
+  (120/201 stacks terminate at `libart!nterp_helper`; needs ART managed-stack walk);
+  W5 (JIT `[anon]`) ≈ 0 payoff on measured workloads — see below
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -96,17 +97,24 @@ Per-engine comparison (post-GA2):
 - **B2** — worker-queue convergence was scoped for post-module-events; moot after
   `ares mod` migration (module events no longer route through the funcs worker queue).
 
-### CFI stack unwinder — engine + wiring landed; live cross blocked by a CFI mis-step
+### CFI stack unwinder — engine + wiring landed; CFI-misstep + PAC DONE; nterp frames remain
 
-W1, W2, W3, **W3-window** landed; W6 (capture gating) + the maps-cache staleness blocker
-fixed 2026-06-29 (see Resolved/Done). The CFI engine unwinds native frames correctly
-on-device and now, under capture-all, walks the full native chain on JNI-originated stacks
-(`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross still does not
-complete — but **W3-window disproved the window-size hypothesis**; the real gating wall is
-now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026-06-29):
+W1, W2, W3, **W3-window**, **CFI-misstep** (module_base gapped walk-back), and **PAC
+`negate_ra_state`** all landed; W6 (capture gating) + maps-cache staleness fixed 2026-06-29;
+CFI-misstep + PAC fix device-verified 2026-06-30 (see Resolved/Done). The CFI engine now
+crosses `art_jni_trampoline` into AOT-compiled Java; on `a real RASP-protected target app` (real RASP
+target) `CFI_RUN_FAIL` went **167/201 → 0** and reached-managed-frame went **21 → 74**.
+Remaining wall = **nterp interpreter frames** (120/201 stacks terminate at
+`libart!nterp_helper`; ART managed-stack walk needed to name interpreted app methods).
+Previously resolved blockers (context only):
 
-- **CFI-misstep (NEW gating wall) — `cfi_step` derails in `libandroid_runtime` to a non-code
-  return address, one frame short of the trampoline.** With W3-window chunked capture the
+- **CFI-misstep — DONE 2026-06-30 (device-verified). Commits `73a9ceb` (monotonic offset
+  walk-back bridging gapped multi-PT_LOAD) + `e8fd9e2` (skip `[page size compat]` filler
+  mappings). CFI now crosses `art_jni_trampoline` into AOT-compiled Java
+  (`boot.oat!android.os.BinderProxy.transact`, full `…→ActivityThread.main` chains; ~95
+  crossings on deskclock). Root cause (characterised on-device 2026-06-29): `cfi_step`
+  derailed in `libandroid_runtime` — not a bogus RA or CFA/RA-rule bug but a wrong
+  `elf_off` from `module_base`.** With W3-window chunked capture the
   snapshot now keeps the full contiguous stack (on-device `snap_len` 4096→32768 spread,
   238/312 records >8 KB), yet the CFI walk **still** dies one frame short: 55/60 JNI-stack
   deaths land at a *consistent* `libandroid_runtime.so+0xd6054`, all with `snap_len=20480`
@@ -129,12 +137,22 @@ now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026
   RO→exec mappings are contiguous). It is **candidate (1) base/offset, in shared
   `module_base` — NOT `cfi_step`, NOT a CFA/RA rule** (candidate 2 refuted: CFI reaches the
   genuine libandroid_runtime RA, matching the raw FP-walk). Blast radius is broader than CFI:
-  symbol naming is also degraded for gapped libs. **Fix = bridge inter-segment gaps in
-  `ares_module_base_idx`** (next session; seed spec
+  symbol naming is also improved for gapped libs. **Fixed by bridging inter-segment gaps in
+  `ares_module_base_idx`** (seed spec
   `docs/superpowers/specs/2026-06-29-cfi-misstep-fix-module-base-design.md`). Diagnostic
-  instrumentation (`ARES_CFI_DEBUG=1` → per-step `cfi_step_diag` fields in `cfi_stack`) landed
-  this session: commits `cd0c628`, `d861340`, `275d3a2`, `8b35511`. This is the gating wall —
-  W5 is unreachable until it is fixed (the walk never reaches a JIT frame).
+  instrumentation (`ARES_CFI_DEBUG=1` → per-step `cfi_step_diag` fields in `cfi_stack`)
+  commits: `cd0c628`, `d861340`, `275d3a2`, `8b35511`.
+
+- **PAC `negate_ra_state` — DONE 2026-06-30 (device-verified).** ART apex libs (`libart`,
+  `libjavacore`, `libnativeloader`, `libartbase`, `libdexfile`) are PAC-built and emit
+  `DW_CFA_AARCH64_negate_ra_state` (opcode `0x2d`); the CFI program interpreter previously
+  hit `default: return -1` → terminal `CFI_RUN_FAIL`. Fix: `c905f78` (`ares_pac_strip`
+  helper), `e2e026a` (handle opcode `0x2d` + `ra_signed` row state through
+  remember/restore), `655314f` (PAC-strip recovered RA in `cfi_step`), `63f1570`
+  (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on `a real RASP-protected target app`:
+  `CFI_RUN_FAIL` **167/201 (83%) → 0**; `art_jni_trampoline` crossings **59 → 131**;
+  reached-managed-frame **21 → 74**. See
+  `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
 - **W3-window — DONE (2026-06-29): chunked fault-tolerant stack capture.** Replaced the
   all-or-nothing 3-tier `bpf_probe_read_user` with a bounded, fully-unrolled, no-`break`
@@ -170,17 +188,16 @@ now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026
   so the effective window is 8 KB, not 32 KB. The chunked/streamed capture noted here as a
   future lever is now the required fix (W3-window), not optional.
 
-- **W5 — JIT code-cache frames have no file-backed CFI. (Still open; unreachable until the
-  CFI-misstep wall above is fixed — the unwind dies in `libandroid_runtime` before reaching
-  any JIT frame. W3-window landing did NOT unblock this; the death is a CFI mis-step, not a
-  window shortfall.)** Between the framework lib and
+- **W5 — JIT code-cache frames have no file-backed CFI. (Demoted; ≈0 payoff on measured
+  workloads: JIT `[anon]` frames appear in only 9/201 stacks on `a real RASP-protected target app`
+  post-fix. Technically reachable now that the CFI-misstep is fixed, but not the next wall —
+  keep in backlog, not urgent.)** Between the framework lib and
   `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
   `cfi_get` skips pseudo paths → returns NULL → unwind stops. ART publishes per-method
   unwind info as in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES
   already reads these for *symbols* (`jit_resolve` / `art_refresh`). Extend that path to
   `cfi_load_elf` the JIT mini-ELF and feed it to `cfi_get`. (AOT-compiled callers, in
-  `base.odex`/`boot.oat`, do NOT hit this — they have `.debug_frame` — so fully-AOT JNI
-  paths can cross once W4 lands.)
+  `base.odex`/`boot.oat`, do NOT hit this — they have `.debug_frame`.)
 
 - **W6 — DONE 2026-06-29 (W6-A decouple): snapshots now flow under capture-all.** The
   original framing ("root-cause the lib-filter `stack_hits` miss") was the wrong lever —
@@ -193,10 +210,14 @@ now a **CFI mis-step inside `libandroid_runtime`** (characterised on-device 2026
   the runtime/JNI ones, keeping only native process-init — a real `stack_hits` defect, but
   W6-A bypasses it so it no longer gates the cross.
 
-- **Deferred — interpreter frame naming:** frames tagged `"kind":"interp"` are detected
-  by `is_interp_frame` (ART interpreter entrypoints) but the managed method name is not
-  recovered. Naming them requires an ART managed-stack (ShadowFrame) walk — out of scope
-  for the CFI unwinder. Parked alongside Phase 2b findings.
+- **Remaining wall — nterp interpreter frames:** post CFI-misstep + PAC fix, 120/201 stacks
+  on `a real RASP-protected target app` terminate cleanly (`CFI_OK`) at `libart!nterp_helper` — the
+  app's RASP methods run interpreted (nterp); 0 `the app's own` frames resolve. Frames tagged
+  `"kind":"interp"` are detected by `is_interp_frame` (ART interpreter entrypoints) but the
+  managed method name is not recovered. Naming them requires an ART managed-stack
+  (ShadowFrame) walk (ART-version-coupled; see
+  `docs/superpowers/research/2026-06-24-art-managed-stack-walk.md`). Re-measure detail:
+  `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
 ### Managed-frame symbolization (OAT / ODEX / VDEX)
 
@@ -290,6 +311,29 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-30
+
+- **CFI-misstep (module_base gapped walk-back) — DONE (device-verified 2026-06-30).**
+  `ares_module_base_idx` (`src/common/maps.c`) now bridges gaps between inter-segment
+  mappings using a monotonic offset walk-back (commit `73a9ceb`) and skips `[page size
+  compat]` filler mappings (commit `e8fd9e2`). The CFI walk crosses `art_jni_trampoline`
+  into AOT-compiled Java (`boot.oat!android.os.BinderProxy.transact`, full
+  `…→ActivityThread.main` chains). On deskclock ~95 crossings. Blast radius beyond CFI:
+  symbol naming also improved for gapped libs (libandroid_runtime and others with a
+  gap between their RO and exec PT_LOAD segments).
+
+- **PAC `negate_ra_state` — DONE (device-verified 2026-06-30).** ART apex libs (`libart`,
+  `libjavacore`, `libnativeloader`, `libartbase`, `libdexfile`) are PAC-built and emit
+  `DW_CFA_AARCH64_negate_ra_state` (opcode `0x2d`); the CFI program interpreter previously
+  hit `default: return -1` → terminal `CFI_RUN_FAIL` (dominant failure: 167/201 stacks,
+  83%). Fix: commit `c905f78` (`ares_pac_strip` helper to mask PAC bits from the recovered
+  RA), `e2e026a` (handle opcode `0x2d` + `ra_signed` row state, correctly preserved through
+  `remember`/`restore`), `655314f` (call `ares_pac_strip` on recovered RA in `cfi_step`),
+  `63f1570` (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on real RASP target
+  `a real RASP-protected target app`: `CFI_RUN_FAIL` **167/201 (83%) → 0**; `art_jni_trampoline`
+  crossings **59 → 131**; reached-managed-frame **21 → 74**. Full re-measure:
+  `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
 ### 2026-06-29
 

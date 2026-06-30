@@ -185,7 +185,10 @@ test_syscalls_cfi() {
     local out_file="/data/local/tmp/ares_cfi_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "syscalls -a -s openat --snapshot -o $out_file -P $PKG")"
+    # Run with ARES_CFI_DEBUG=1 so per-step diag fields (incl. stop_reason) land in
+    # the sidecar — the PAC RUN_FAIL guard below greps that debug-only field. Own
+    # su -c (the load-bearing gotcha); mirrors the ares() wrapper + the env prefix.
+    local out; out="$(adb shell "su -c 'ARES_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -a -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -217,11 +220,15 @@ test_syscalls_cfi() {
     # every PAC-built ART apex lib with terminal stop_reason 6 (CFI_RUN_FAIL) —
     # ~83% of stacks on a real RASP target. Post-fix that count should be ~0. The
     # numeric enum (not the name) is emitted in the sidecar. Soft NOTE only.
-    local nrunfail; nrunfail="$(grep -o '"stop_reason":6' <<<"$stacks" | grep -c . || true)"
-    if [ "$nrunfail" -gt 0 ]; then
-        echo "  NOTE: $nrunfail terminal CFI_RUN_FAIL (stop_reason 6) — PAC negate_ra_state regression? expected ~0 post-fix"
+    if ! grep -q '"stop_reason":' <<<"$stacks"; then
+        echo "  NOTE: no stop_reason in sidecar (ARES_CFI_DEBUG off?) — PAC RUN_FAIL guard skipped"
     else
-        info "syscalls-cfi: 0 terminal CFI_RUN_FAIL — PAC negate_ra_state handling holds"
+        local nrunfail; nrunfail="$(grep -o '"stop_reason":6' <<<"$stacks" | grep -c . || true)"
+        if [ "$nrunfail" -gt 0 ]; then
+            echo "  NOTE: $nrunfail terminal CFI_RUN_FAIL (stop_reason 6) — PAC negate_ra_state regression? expected ~0 post-fix"
+        else
+            info "syscalls-cfi: 0 terminal CFI_RUN_FAIL — PAC negate_ra_state handling holds"
+        fi
     fi
     if grep -q '"kind":"jni-trampoline"' <<<"$cfi_records"; then
         info "syscalls-cfi: CFI walk reached jni-trampoline (cross path — expected post module_base + PAC fixes)"

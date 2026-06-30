@@ -49,6 +49,8 @@
 #include "syscalls.h"
 #include "syscalls.skel.h"
 #include "common/symbolize.h"
+#include "common/stack_snapshot.h"
+#include "syscalls/snapshot_gate.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
@@ -556,6 +558,9 @@ static void render_ret(long long ret, char *out, size_t outsz)
 
 // Write one stack snapshot to the sidecar stream. Delegates serialisation to
 // the shared ares_stack_snapshot_emit_json; owns only the file write.
+// After writing the raw snapshot, emit a companion cfi_stack record.
+static void emit_cfi_backtrace(const struct ares_stack_snapshot *s);
+
 static void json_emit_stack(const struct ares_stack_snapshot *s)
 {
 	if (!g_stacks)
@@ -566,6 +571,7 @@ static void json_emit_stack(const struct ares_stack_snapshot *s)
 	if (j->b && j->len)
 		fwrite(j->b, 1, j->len, g_stacks);
 	g_stack_count++;
+	emit_cfi_backtrace(s);
 }
 
 // A frame inside one of ART's interpreter entrypoints means a Java method is
@@ -579,6 +585,35 @@ static int is_interp_frame(const char *sym)
 	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter
 	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
 	       strstr(sym, "artInterpreterToCompiledCodeBridge");
+}
+
+static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
+{
+	if (!g_stacks) return;
+	uint64_t pcs[64];
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64);
+	if (n <= 0) return;
+	struct jbuf *j = &g_sink.jb; j->len = 0;
+	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
+	jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
+	jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
+	jb_s(j, ",\"cfi_backtrace\":[");
+	char sym[320];
+	for (int i = 0; i < n; i++) {
+		if (i) jb_c(j, ',');
+		sym_resolve((int)s->h.pid, pcs[i], sym, sizeof(sym));
+		jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)i);
+		jb_s(j, ",\"addr\":\""); jb_hex(j, pcs[i]);
+		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
+		if (strstr(sym, "art_jni_trampoline")) jb_s(j, ",\"kind\":\"jni-trampoline\"");
+		else if (strstr(sym, ".oat!") || strstr(sym, ".odex!") || strstr(sym, ".vdex!"))
+			jb_s(j, ",\"kind\":\"managed\"");
+		else if (is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
+		else jb_s(j, ",\"kind\":\"native\"");
+		jb_c(j, '}');
+	}
+	jb_s(j, "]}\n");
+	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 }
 
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,
@@ -666,7 +701,18 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
 		if (is_interp_frame(sym))
 			jb_s(j, ",\"java\":\"interpreted (managed frame elided)\"");
+		// The frame-pointer chain cannot cross the JNI trampoline: the managed
+		// caller above it does not keep an AAPCS [fp,lr] frame, so the next
+		// bpf_get_stack frame is ART quick-frame data misread as fp/lr (a garbage
+		// [unmapped]/non-canonical address). Mark this frame as the FP-unwind
+		// boundary and stop — the crossed managed caller, when recoverable, is in
+		// the companion cfi_stack record (correlated by stack_id).
+		int fp_boundary = strstr(sym, "jni_trampoline") != NULL;
+		if (fp_boundary)
+			jb_s(j, ",\"fp_unwind_end\":\"jni-trampoline (managed caller in cfi_stack)\"");
 		jb_c(j, '}');
+		if (fp_boundary)
+			break;
 	}
 	jb_s(j, "]}");
 	ares_sink_emit(&g_sink);
@@ -1059,11 +1105,20 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		fprintf(stderr, "open failed (run as root? SELinux permissive?)\n");
 		return 1;
 	}
-	// Stack snapshots: opt-in (--snapshot), library-filtered mode only (far too
-	// heavy for the -a firehose), and only when writing JSON (the snapshots go to
-	// a <out>.stacks sidecar for off-device CFI unwinding of obfuscated native
-	// frames — Java frames are resolved on-device by the symbolizer).
-	int want_snapshots = want_snap && !capture_all && json_path != NULL;
+	// Stack snapshots: opt-in (--snapshot), only when writing JSON (the snapshots
+	// go to a <out>.stacks sidecar for off-device CFI unwinding of obfuscated
+	// native frames — Java frames are resolved on-device by the symbolizer).
+	// W6-A: decoupled from library-filter mode so JNI-originated (capture-all)
+	// stacks get snapshotted and can cross art_jni_trampoline. Capture-all with no
+	// syscall filter is a firehose (a 32 KB snapshot per distinct stack across all
+	// syscalls) — warn and proceed so the user can bound it with -s/-x.
+	int want_snapshots = sysc_want_snapshots(want_snap, json_path != NULL);
+	if (want_snapshots &&
+	    sysc_snapshot_firehose_warn(want_snap, capture_all, syscall_mode))
+		fprintf(stderr,
+			"syscalls: warning — --snapshot with -a and no syscall filter ships a "
+			"32 KB snapshot per distinct stack across ALL syscalls; expect heavy "
+			"ring traffic. Add -s/-x to bound it.\n");
 	skel->rodata->capture_all = capture_all;
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;

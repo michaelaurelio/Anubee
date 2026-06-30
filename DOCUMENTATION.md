@@ -25,7 +25,7 @@ flowchart TD
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
     mod["mod — src/modules/<br/>analyzer dispatcher (proc-event · execve · prop-read)<br/>each analyzer owns its own BPF skeleton"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter — staged, not yet wired to runtime)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter)<br/>cfi_unwind_snapshot (CFI-unwind a frozen snapshot across modules; emits cfi_stack records)"]
     trace["JSONL trace"]
     mcp["host: tools/ares-mcp (DuckDB + MCP)"]
 
@@ -255,15 +255,94 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
 - Output: structured per-event JSONL (see §7).
-- **`--snapshot` captures a frozen user-stack window.** The BPF program captures up to
+- **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
+  and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
+  one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
+  syscalls). The BPF program captures up to
   `ARES_SNAP_MAX` bytes from `sp` upward, plus the **full GP register file** (x0..x30,
-  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to
-  `ARES_SNAP_SMALL`). These are emitted as a sidecar `{"type":"stack",...}` record
+  `regs[31]`), pc/sp/fp/lr (legacy mirror), and a `truncated` flag (1 = fell back to a smaller
+  read; in practice the 32 KB read frequently faults to 8 KB — see §2.1 W3-window). These are emitted as a sidecar `{"type":"stack",...}` record
   (see §7). The register file is the CFI initial state for the DWARF-based software
   unwinder (`src/common/dwarf.c` + `cfi_unwind.c`; see [BACKLOG W1](BACKLOG.md)).
   The snapshot struct and BPF helpers live in `src/common/stack_snapshot.{h,bpf.h}` and
   are shared with the `funcs` engine.
 - Supports both attach modes (see [Attach modes](#attach-modes-launch--p-vs-pid--p)): `-P PACKAGE` (fresh launch) or `-p PID[,PID...]` (attach to running; skips launch). `--siblings` widens to same-UID in `-p` mode; `--no-follow-fork` disables child-following.
+
+### §2.1 CFI-unwind layer (`cfi_unwind_snapshot`)
+
+Immediately after writing the raw `{"type":"stack"}` sidecar record, `json_emit_stack`
+calls `emit_cfi_backtrace`, which CFI-unwinds the frozen snapshot and emits a companion
+`{"type":"cfi_stack"}` record to the same sidecar file. The two records are correlated
+by `stack_id`.
+
+```mermaid
+flowchart LR
+    snap["struct ares_stack_snapshot\n(regs + snap[] window)"]
+    unwind["cfi_unwind_snapshot(pid, snap)\nsrc/common/symbolize.c"]
+    step["cfi_step(sec, module_pc, regs, &sp, &pc,\n  snap->snap, snap->sp, snap->snap_len)\ncfi_unwind.c — reads only the frozen window"]
+    sym["sym_resolve(pid, pc, sym)\nsymbolize.c"]
+    emit["emit_cfi_backtrace\nsyscalls.c"]
+    out["{\"type\":\"cfi_stack\",\n\"cfi_backtrace\":[{frame,addr,symbol,kind},...]}"]
+
+    snap --> unwind
+    unwind --> step
+    step -->|"caller pc"| unwind
+    unwind -->|"out_pcs[]"| emit
+    emit --> sym
+    sym --> out
+```
+
+**Algorithm (`cfi_unwind_snapshot`):**
+1. `unwind_regs_from_snapshot(snap, &r)` — seed `regs[0..30]`, `sp`, `pc` from the frozen register file.
+2. Per iteration (cap 256): record `pc` → `out_pcs[n++]`; look up the mapping via `pm_get` + `find_mapping_refresh` (with a one-shot forced
+`/proc/<pid>/maps` re-read on a miss — a capture-all snapshot is often symbolized while the
+pid's cached maps still predate the libraries the stack runs through); compute `load_base` via `module_base`; call `cfi_get(path, elf_off, load_base, ...)` to get the cached `cfi_section`; call `cfi_step` with the **frozen `snap->snap` window** (bounds-checked, never live target memory); stop when `cfi_step` returns 0 (no FDE, RA undefined, pc==0, or OOB stack).
+3. The `cfi_get` pointer is **consumed by `cfi_step` in the same iteration** before the next call — it points into a realloc'able cache and must not be held across iterations.
+
+**Frame classification (`kind` field):**
+- `"native"` — default; a C/C++ frame in any native `.so`.
+- `"jni-trampoline"` — symbol contains `art_jni_trampoline`; the ART bridge from native into managed code.
+- `"managed"` — symbol comes from a `.oat`, `.odex`, or `.vdex` file (ahead-of-time compiled Java).
+- `"interp"` — symbol is an ART interpreter entrypoint (see `is_interp_frame`); the managed method lives in a ShadowFrame and cannot be named by CFI.
+
+**Firewall:** `cfi_step` reads stack bytes exclusively from the `snap->snap[]` window captured in-kernel at trap time. It never calls `proc_mem_read` or touches live target memory. No uprobe is added. The firewall is clean.
+
+**Native-frame unwinding (RA default).** The CFI return-address register defaults to
+*same-value* — until a function spills its link register the return address is still live in
+x30. Leaf frames (every libc syscall stub such as `__openat`, and the `art_jni_trampoline`
+stub itself) emit no RA rule, so without this default they read as top-of-stack and the
+unwind stops at frame 0. With it, native unwinding walks the full chain (verified on-device:
+1 → 18 frames). Any explicit CIE/FDE rule overrides the default.
+
+**Raw vs CFI backtrace.** The syscall event's own `backtrace` is the cheap kernel
+frame-pointer walk (`bpf_get_stack`). The FP chain cannot cross `art_jni_trampoline` — the
+managed caller above it keeps no AAPCS `[fp,lr]` frame — so that backtrace **stops at the
+trampoline**, tagging the frame `"fp_unwind_end":"jni-trampoline (managed caller in
+cfi_stack)"` rather than emitting a misread ART quick-frame value (a garbage
+`[unmapped]`/non-canonical address). The companion `cfi_stack` record is the path that
+actually crosses the trampoline. Interpreter bridges are left intact (the interpreter is
+native C++ and keeps a valid FP chain through it).
+
+**Current status & remaining walls.** Native unwinding works on-device and the real
+`boot.oat` trampoline FDE is verified to recover the managed caller. Snapshots now flow under
+capture-all (**W6**, done 2026-06-29) and the maps-cache staleness that dead-ended the walk at
+frame 0 is fixed (`find_mapping_refresh` + a one-shot forced maps re-read in
+`cfi_unwind_snapshot`), so under `-a` the CFI walk reaches the full native chain on
+JNI-originated stacks (`libc → … → libandroid_runtime`). A *live* jni-trampoline→managed cross
+is still **not end-to-end** — two walls remain (BACKLOG):
+**W3-window** (the current blocker) — the 32 KB snapshot `bpf_probe_read_user` *faults* at
+runtime and the 3-tier fallback drops to 8 KB (on-device: 299/307 snapshots `truncated:1`,
+only 8 got 32 KB), so the spilled RA that would step `libandroid_runtime`→`art_jni_trampoline`
+sits beyond the captured window and the unwind dies one frame short; fix is a chunked
+(page-at-a-time) stack capture in BPF. **W5** — JIT code-cache (`[anon]`) frames have no
+file-backed CFI (needs ART's in-memory mini-ELF unwind info, the same source `jit_resolve`
+uses for symbols); unreachable until W3-window lands.
+
+**Limits:**
+- Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
+- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"` but the managed method name is not recovered (no ART internal stack walk).
+- Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
+- Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);
   option ordering does not matter; `--help` is auto-generated; `--version` prints
   `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).

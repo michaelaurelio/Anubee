@@ -84,7 +84,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
                $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
-               $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c
+               $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
+               $(SRC)/common/cfi_unwind.c $(SRC)/common/dwarf.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -103,7 +104,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
-               sym_resolve sym_flush_pid \
+               sym_resolve sym_flush_pid cfi_unwind_snapshot \
                ares_parse_maps_line ares_module_base_idx ares_map_files_path \
                ares_stack_snapshot_emit_json
 
@@ -395,8 +396,16 @@ test:
 	$(BUILD)/test_cfi_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_step.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_step
 	$(BUILD)/test_cfi_step
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_elf.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_elf
+	$(BUILD)/test_cfi_elf tests/fixtures/debug_frame_sample.elf
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_eh.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_eh
+	$(BUILD)/test_cfi_eh tests/fixtures/eh_frame_sample.so
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_cfi_load.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_cfi_load
+	$(BUILD)/test_cfi_load tests/fixtures/eh_frame_sample.so tests/fixtures/debug_frame_sample.elf
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_snapshot_gate.c -o $(BUILD)/test_snapshot_gate
+	$(BUILD)/test_snapshot_gate
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps
 	$(BUILD)/test_maps
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_args.c -o $(BUILD)/test_target_args

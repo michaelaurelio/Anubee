@@ -108,10 +108,38 @@ ares syscalls -o trace.jsonl com.example.app librasp.so
 
 # Capture ALL of an app's syscalls (no library filter):
 ares syscalls -a -o trace.jsonl com.example.app
+
+# Capture stack snapshots + CFI-unwind into Java callers (capture-all reaches JNI stacks):
+ares syscalls -a -s openat --snapshot -o trace.jsonl -P com.example.app
+# Writes trace.jsonl  (syscall events)
+# Writes trace.jsonl.stacks  ({"type":"stack",...} raw snapshot + {"type":"cfi_stack",...} CFI backtrace)
 ```
 
 Common flags: `-a` all syscalls · `-s/-x list` include/exclude syscalls · `-o file` (`.jsonl` =
-streamable JSON Lines) · `-q` quiet.
+streamable JSON Lines) · `-q` quiet · `--snapshot` enable stack snapshots + CFI unwind.
+
+**`--snapshot` and `cfi_stack` records:** When `--snapshot` is used with `-o <file>`
+(in either library-filter or capture-all `-a` mode — capture-all is what reaches
+JNI-originated stacks), each trapped syscall
+captures a frozen register file + up to 32 KB of user-stack bytes. These are written
+to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
+unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
+using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
+
+**Status: native unwinding works; the live `art_jni_trampoline` cross is not yet
+complete.** Under capture-all the engine now unwinds the full native chain on JNI-originated
+stacks (`libc → … → libandroid_runtime`) — snapshots flow under `-a` (W6, done) and the
+maps-cache staleness that stopped the walk at frame 0 is fixed (2026-06-29). The trampoline
+FDE in `boot.oat` is verified to recover the managed caller. **Two** follow-ups (BACKLOG) gate
+a live cross: **W3-window** — the 32 KB snapshot `bpf_probe_read_user` faults to 8 KB at
+runtime (299/307 snapshots truncate on-device), so the unwind dies one frame short of the
+trampoline; fix is a chunked stack capture. **W5** — JIT-compiled caller frames have no
+file-backed CFI; unreachable until W3-window lands.
+
+**Limits of `--snapshot` / CFI unwind:**
+- Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. JIT-compiled callers (W5) and interpreter frames (`ShadowFrame`, tagged `"kind":"interp"`) are not yet crossed/named.
+- **Inlining defeats CFI attribution:** an inlined callee has no FDE and cannot be named.
+- Cross-thread offloaded syscalls are not attributed (CFI is per-tid, synchronous).
 
 ### `ares funcs` — function tracer
 

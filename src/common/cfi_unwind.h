@@ -76,8 +76,54 @@ struct cfi_rule {
 };
 enum { CFI_UNDEF = 0, CFI_SAME = 1, CFI_AT_CFA = 2 };
 
+/* Why a cfi_step stopped (diagnostic; see docs CFI-misstep design). */
+enum cfi_stop_reason {
+	CFI_OK = 0,        /* stepped fine */
+	CFI_NO_FDE,        /* cfi_lookup(module_pc) found nothing */
+	CFI_RA_READFAULT,  /* RA slot outside [stack_base, stack_base+stack_len) */
+	CFI_BAD_CFA_REG,   /* CFA register neither SP nor < CFI_NREG */
+	CFI_RA_UNDEF,      /* RA column is CFI_UNDEF */
+	CFI_RA_ZERO,       /* RA slot read but value == 0 */
+	CFI_RUN_FAIL,      /* cfi_run_program failed but an FDE exists */
+	/* Set by cfi_unwind_snapshot (the unwind loop), NOT cfi_step: the walk
+	 * stopped before cfi_step could run for this frame. */
+	CFI_SNAP_PC_ZERO,        /* caller pc resolved to 0 (top of stack) */
+	CFI_SNAP_NO_MAPPING,     /* no /proc/<pid>/maps entry for pc (find_mapping miss) */
+	CFI_SNAP_CFI_GET_NULL,   /* cfi_get returned no CFI section for the module */
+};
+
+/* Optional per-step diagnostic payload. cfi_step fills the FDE/CFA/RA fields;
+ * cfi_unwind_snapshot fills the mapping fields it owns (module_pc/load_base/
+ * elf_off/path). All zeroed by cfi_step on entry. Off by default (NULL). */
+struct cfi_step_diag {
+	/* filled by the caller (cfi_unwind_snapshot) — not by cfi_step */
+	uint64_t module_pc;
+	uint64_t load_base;
+	uint64_t elf_off;
+	char     path[256];
+	/* filled by cfi_step */
+	int      fde_found;
+	uint64_t fde_pc_lo, fde_pc_hi;
+	uint32_t cfa_reg;
+	int64_t  cfa_off;
+	uint64_t cfa;
+	uint8_t  ra_kind;
+	int64_t  ra_off;
+	uint64_t ra_slot;
+	uint64_t ra_value;
+	uint8_t  ra_signed;
+	int      stop_reason;   /* enum cfi_stop_reason */
+};
+
 #define CFI_NREG 31       /* x0..x30 */
 #define CFI_REG_SP 31     /* DWARF reg 31 = sp on aarch64 */
+
+/* Strip AArch64 Pointer-Authentication (PAC) signature bits from a code pointer.
+ * User VAs are <= 48 bits (TTBR0, bit 55 = 0); PAC stuffs the auth code in the high
+ * bits. Masking to the low 48 bits recovers a signed pointer AND is a no-op on an
+ * unsigned one (high bits already clear) — so it is safe to apply unconditionally
+ * whenever the CFI row marks the RA as signed. */
+static inline uint64_t ares_pac_strip(uint64_t ptr) { return ptr & 0x0000FFFFFFFFFFFFull; }
 
 /* CFA + per-register rules at one PC row. CFA = regval(cfa_reg) + cfa_off,
  * where regval(31)=sp, regval(r)=x[r] otherwise. */
@@ -85,6 +131,7 @@ struct cfi_cfa_state {
 	uint32_t cfa_reg;
 	int64_t  cfa_off;
 	struct cfi_rule cols[CFI_NREG];
+	uint8_t  ra_signed;   /* AArch64 PAC: RA is signed (DW_CFA_AARCH64_negate_ra_state) */
 };
 
 /* Interpret the CIE initial instructions then the FDE instructions, accumulating rules up to
@@ -100,6 +147,7 @@ int cfi_run_program(const struct cfi_section *s, uint64_t module_pc, struct cfi_
  * caller PC == 0, or a needed stack slot lies outside the window). Never reads outside the window. */
 int cfi_step(const struct cfi_section *s, uint64_t module_pc,
 	     uint64_t x[CFI_NREG], uint64_t *sp, uint64_t *pc,
-	     const uint8_t *stack, uint64_t stack_base, size_t stack_len);
+	     const uint8_t *stack, uint64_t stack_base, size_t stack_len,
+	     struct cfi_step_diag *diag);
 
 #endif

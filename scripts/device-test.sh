@@ -185,7 +185,10 @@ test_syscalls_cfi() {
     local out_file="/data/local/tmp/ares_cfi_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "syscalls -a -s openat --snapshot -o $out_file -P $PKG")"
+    # Run with ARES_CFI_DEBUG=1 so per-step diag fields (incl. stop_reason) land in
+    # the sidecar — the PAC RUN_FAIL guard below greps that debug-only field. Own
+    # su -c (the load-bearing gotcha); mirrors the ares() wrapper + the env prefix.
+    local out; out="$(adb shell "su -c 'ARES_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -a -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -199,6 +202,38 @@ test_syscalls_cfi() {
     if [ -z "$cfi_records" ]; then
         echo "  SKIP: no cfi_stack records in this window (CFI unwind produced no frames)"
         return
+    fi
+    # W3-window milestone = the chunked-capture snap_len spread (snapshots now
+    # exceed the old 8 KB tier). The jni-trampoline reach below is the CFI cross
+    # PATH: as of the module_base gapped walk-back fix (maps.c) AND the PAC
+    # negate_ra_state fix (cfi_unwind.c), the CFI walk steps through the ART apex
+    # libs and crosses into managed Java, so a trampoline reach IS now expected.
+    if grep -qE '"snap_len":(9[0-9]{3}|[1-9][0-9]{4,})' <<<"$stacks"; then
+        local maxlen; maxlen="$(grep -o '"snap_len":[0-9]*' <<<"$stacks" | grep -o '[0-9]*' | sort -n | tail -1)"
+        info "syscalls-cfi: W3-window goal met — chunked capture recovered tail, max snap_len=$maxlen (>8192)"
+    else
+        echo "  NOTE: no snapshot exceeded 8192 in this window — chunked tail not exercised (W3-window unproven this run)"
+    fi
+    echo "  NOTE: re-run with ARES_CFI_DEBUG=1 to enrich cfi_stack frames with per-step"
+    echo "        CFI internals (module_pc/load_base/fde_pc_lo..hi/cfa/ra_slot/ra_value/stop_reason)"
+    # PAC regression guard: before the negate_ra_state fix the CFI walk failed in
+    # every PAC-built ART apex lib with terminal stop_reason 6 (CFI_RUN_FAIL) —
+    # ~83% of stacks on a real RASP target. Post-fix that count should be ~0. The
+    # numeric enum (not the name) is emitted in the sidecar. Soft NOTE only.
+    if ! grep -q '"stop_reason":' <<<"$stacks"; then
+        echo "  NOTE: no stop_reason in sidecar (ARES_CFI_DEBUG off?) — PAC RUN_FAIL guard skipped"
+    else
+        local nrunfail; nrunfail="$(grep -o '"stop_reason":6' <<<"$stacks" | grep -c . || true)"
+        if [ "$nrunfail" -gt 0 ]; then
+            echo "  NOTE: $nrunfail terminal CFI_RUN_FAIL (stop_reason 6) — PAC negate_ra_state regression? expected ~0 post-fix"
+        else
+            info "syscalls-cfi: 0 terminal CFI_RUN_FAIL — PAC negate_ra_state handling holds"
+        fi
+    fi
+    if grep -q '"kind":"jni-trampoline"' <<<"$cfi_records"; then
+        info "syscalls-cfi: CFI walk reached jni-trampoline (cross path — expected post module_base + PAC fixes)"
+    else
+        echo "  SKIP: CFI walk did not reach jni-trampoline in this window (timing/app-dependent)"
     fi
     # Assert the cross: a jni-trampoline frame AND a later managed frame in the same record.
     local crossed=0

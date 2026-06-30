@@ -15,6 +15,7 @@
 #include <bpf/bpf.h>
 #include "prop_read.skel.h"
 #include "common/analyzer.h"
+#include "common/engine_args.h"
 #include "common/emit.h"
 #include "common/probe_resolve.h"
 #include "modules/mod_events.h"

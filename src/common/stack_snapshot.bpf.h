@@ -64,19 +64,29 @@ static __always_inline void ares_emit_stack_snapshot(struct pt_regs *user_regs,
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < ARES_SNAP_NREG; i++)
 		s->regs[i] = BPF_CORE_READ(user_regs, regs[i]);
-	s->truncated = 0;
 	s->_pad[0] = 0; s->_pad[1] = 0; s->_pad[2] = 0;
 	s->snap_len = 0;
-	const void *sp = (const void *)s->sp;
-	if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_MAX, sp) == 0)
-		s->snap_len = ARES_SNAP_MAX;
-	else if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_MID, sp) == 0) {
-		s->snap_len = ARES_SNAP_MID;
-		s->truncated = 1;
-	} else if (s->sp && bpf_probe_read_user(s->snap, ARES_SNAP_SMALL, sp) == 0) {
-		s->snap_len = ARES_SNAP_SMALL;
-		s->truncated = 1;
+	/* Fault-tolerant chunked capture (W3-window). Read the stack from sp in
+	 * ARES_SNAP_CHUNK pieces; on the first faulting (unmapped) chunk, latch
+	 * `stop` so later chunks are skipped — never skip a hole and continue
+	 * (the unwinder requires snap[k] == *(sp+k)). No `break`: a data-dependent
+	 * break can defeat unroll(full); the stop-flag form unrolls to straight-line
+	 * conditionals matching this file's proven idiom. */
+	int stop = 0;
+	#pragma clang loop unroll(full)
+	for (int i = 0; i < ARES_SNAP_MAX / ARES_SNAP_CHUNK; i++) {
+		if (!stop && s->sp &&
+		    bpf_probe_read_user(s->snap + i * ARES_SNAP_CHUNK,
+					ARES_SNAP_CHUNK,
+					(const __u8 *)s->sp + i * ARES_SNAP_CHUNK) == 0)
+			s->snap_len = (i + 1) * ARES_SNAP_CHUNK;
+		else
+			stop = 1;
 	}
+	/* truncated = "window-capped, stack may extend beyond capture" (genuinely
+	 * incomplete). A fault stop gives snap_len < MAX = reached stack_base =
+	 * captured all mapped stack = complete (truncated 0). */
+	s->truncated = (s->snap_len == ARES_SNAP_MAX);
 	bpf_ringbuf_submit(s, 0);
 }
 

@@ -50,6 +50,20 @@ int main(void)
     ares_stack_snapshot_emit_json(&j2, &s);
     CHECK(j2.b && strstr(j2.b, "\"truncated\":1"), "truncated=1 present");
 
+    /* W3-window: read side must serialise ANY snap_len, not just the legacy
+     * 8K/32K tiers. 16384 is deliberately not a former tier size. */
+    struct jbuf j3 = {0};
+    struct ares_stack_snapshot s3;
+    memset(&s3, 0, sizeof(s3));
+    s3.h.pid   = 1234;
+    s3.snap_len = 16384;
+    s3.snap[0] = 0x01;
+    s3.snap[16383] = 0x02;
+    ares_stack_snapshot_emit_json(&j3, &s3);
+    CHECK(j3.b && strstr(j3.b, "\"snap_len\":16384"), "non-tier snap_len serialises");
+    CHECK(strstr(j3.b, "\"snapshot\":\""),            "non-tier snapshot field present");
+    free(j3.b);
+
     free(j.b);
     free(j2.b);
     printf("test_stack_snapshot: ok\n");

@@ -11,6 +11,7 @@
 #include <bpf/bpf.h>
 #include "execve.skel.h"
 #include "common/analyzer.h"
+#include "common/engine_args.h"
 #include "common/emit.h"
 #include "common/symbolize.h"
 #include "modules/mod_events.h"

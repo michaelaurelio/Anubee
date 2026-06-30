@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "common/cfi_unwind.h"
 
 /* Resolve `addr` in process `pid` into `out` (e.g. "librasp.so!checkRoot+0x2c",
  * "libc.so+0x7e0b4", or "0x7..." if no module is found). */
@@ -27,6 +28,6 @@ void sym_flush_pid(int pid);
  * never touches live target memory. */
 struct ares_stack_snapshot;
 int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
-			uint64_t *out_pcs, int max);
+			uint64_t *out_pcs, int max, struct cfi_step_diag *out_diags);
 
 #endif /* SYSCALLS_SYMBOLIZE_H */

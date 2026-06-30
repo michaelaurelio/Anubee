@@ -102,8 +102,8 @@ Per-engine comparison (post-GA2):
 W1, W2, W3, **W3-window**, **CFI-misstep** (module_base gapped walk-back), and **PAC
 `negate_ra_state`** all landed; W6 (capture gating) + maps-cache staleness fixed 2026-06-29;
 CFI-misstep + PAC fix device-verified 2026-06-30 (see Resolved/Done). The CFI engine now
-crosses `art_jni_trampoline` into AOT-compiled Java; on `a real RASP-protected target app` (real RASP
-target) `CFI_RUN_FAIL` went **167/201 → 0** and reached-managed-frame went **21 → 74**.
+crosses `art_jni_trampoline` into AOT-compiled Java; on a real RASP-protected target app
+`CFI_RUN_FAIL` went **167/201 → 0** and reached-managed-frame went **21 → 74**.
 Remaining wall = **nterp interpreter frames** (120/201 stacks terminate at
 `libart!nterp_helper`; ART managed-stack walk needed to name interpreted app methods).
 Previously resolved blockers (context only):
@@ -149,7 +149,7 @@ Previously resolved blockers (context only):
   hit `default: return -1` → terminal `CFI_RUN_FAIL`. Fix: `c905f78` (`ares_pac_strip`
   helper), `e2e026a` (handle opcode `0x2d` + `ra_signed` row state through
   remember/restore), `655314f` (PAC-strip recovered RA in `cfi_step`), `63f1570`
-  (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on `a real RASP-protected target app`:
+  (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on a real RASP-protected target app:
   `CFI_RUN_FAIL` **167/201 (83%) → 0**; `art_jni_trampoline` crossings **59 → 131**;
   reached-managed-frame **21 → 74**. See
   `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
@@ -189,7 +189,7 @@ Previously resolved blockers (context only):
   future lever is now the required fix (W3-window), not optional.
 
 - **W5 — JIT code-cache frames have no file-backed CFI. (Demoted; ≈0 payoff on measured
-  workloads: JIT `[anon]` frames appear in only 9/201 stacks on `a real RASP-protected target app`
+  workloads: JIT `[anon]` frames appear in only 9/201 stacks on a real RASP-protected target app
   post-fix. Technically reachable now that the CFI-misstep is fixed, but not the next wall —
   keep in backlog, not urgent.)** Between the framework lib and
   `art_jni_trampoline` sits a JIT-compiled Java frame (`[anon]+…` / `[anon_shmem:dalvik-jit-code-cache]`).
@@ -211,8 +211,8 @@ Previously resolved blockers (context only):
   W6-A bypasses it so it no longer gates the cross.
 
 - **Remaining wall — nterp interpreter frames:** post CFI-misstep + PAC fix, 120/201 stacks
-  on `a real RASP-protected target app` terminate cleanly (`CFI_OK`) at `libart!nterp_helper` — the
-  app's RASP methods run interpreted (nterp); 0 `the app's own` frames resolve. Frames tagged
+  on a real RASP-protected target app terminate cleanly (`CFI_OK`) at `libart!nterp_helper` — the
+  app's RASP methods run interpreted (nterp); 0 the app's own frames resolve. Frames tagged
   `"kind":"interp"` are detected by `is_interp_frame` (ART interpreter entrypoints) but the
   managed method name is not recovered. Naming them requires an ART managed-stack
   (ShadowFrame) walk (ART-version-coupled; see
@@ -331,7 +331,7 @@ is in DOCUMENTATION.md and the referenced specs.
   RA), `e2e026a` (handle opcode `0x2d` + `ra_signed` row state, correctly preserved through
   `remember`/`restore`), `655314f` (call `ares_pac_strip` on recovered RA in `cfi_step`),
   `63f1570` (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on real RASP target
-  `a real RASP-protected target app`: `CFI_RUN_FAIL` **167/201 (83%) → 0**; `art_jni_trampoline`
+  a real RASP-protected target app: `CFI_RUN_FAIL` **167/201 (83%) → 0**; `art_jni_trampoline`
   crossings **59 → 131**; reached-managed-frame **21 → 74**. Full re-measure:
   `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 

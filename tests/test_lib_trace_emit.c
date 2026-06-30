@@ -57,7 +57,7 @@ int main(void)
     // path with JSON-significant chars
     ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/lib\"evil\".so", NULL);
     // with soname
-    ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libsentinel.so", "libsentinel.so");
+    ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libexample.so", "libexample.so");
 
     struct lib_unmap_event u = {0};
     u.h.pid = 5678; u.h.tid = 5680;
@@ -77,7 +77,7 @@ int main(void)
     CHECK_HAS(out, "\"start\":\"0xb4000000\"",            "lib start hex");
     CHECK_HAS(out, "\"inode\":42",                        "lib inode");
     CHECK_HAS(out, "\\\"evil\\\"",                        "lib escaped quotes in path");
-    CHECK_HAS(out, "\"soname\":\"libsentinel.so\"",           "lib soname field");
+    CHECK_HAS(out, "\"soname\":\"libexample.so\"",           "lib soname field");
     CHECK_HAS(out, "\"type\":\"unlib\"",                  "unlib type field");
     CHECK_HAS(out, "\"pid\":5678",                        "unlib pid");
     CHECK_HAS(out, "\"start\":\"0xc0000000\"",            "unlib start hex");

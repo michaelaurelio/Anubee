@@ -304,7 +304,7 @@ libs — the ART apex set (`libart`, `libjavacore`, `libnativeloader`, `libartba
 `ra_signed` column in the CFI row state; `remember`/`restore` correctly preserves
 `ra_signed` across nested CIE state. `cfi_step` calls `ares_pac_strip` to mask PAC bits
 from the recovered RA before use. Without this, these libs produced a terminal
-`CFI_RUN_FAIL` (dominant failure on `a real RASP-protected target app`: 167/201 stacks, 83%).
+`CFI_RUN_FAIL` (dominant failure on a real RASP-protected target app: 167/201 stacks, 83%).
 Fixed in commits `c905f78`, `e2e026a`, `655314f`.
 
 **Raw vs CFI backtrace.** The syscall event's own `backtrace` is the cheap kernel
@@ -322,14 +322,14 @@ to a live jni-trampoline→managed cross are resolved: **W6** (capture-all snaps
 2026-06-29), maps-cache staleness (`find_mapping_refresh`), **W3-window** (chunked capture,
 done 2026-06-29), **CFI-misstep** (module_base gapped walk-back, done 2026-06-30 — commits
 `73a9ceb`, `e8fd9e2`), and **PAC `negate_ra_state`** (done 2026-06-30 — commits `c905f78`,
-`e2e026a`, `655314f`, `63f1570`). On `a real RASP-protected target app` (real RASP target):
+`e2e026a`, `655314f`, `63f1570`). On a real RASP-protected target app:
 `CFI_RUN_FAIL` **167/201 → 0**; `art_jni_trampoline` crossings **59 → 131**;
 reached-managed-frame **21 → 74**. Full re-measure:
 `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
 The **remaining wall is nterp interpreter frames**: 120/201 stacks now terminate cleanly
 (`CFI_OK`) at `libart!nterp_helper` — the app's RASP methods run interpreted (nterp);
-0 `the app's own` frames resolve. Naming them requires an ART managed-stack (ShadowFrame)
+0 the app's own frames resolve. Naming them requires an ART managed-stack (ShadowFrame)
 walk (ART-version-coupled — see
 `docs/superpowers/research/2026-06-24-art-managed-stack-walk.md`). **W5** (JIT `[anon]`
 code-cache mini-ELF CFI) is now technically reachable but ≈0 payoff on measured workloads

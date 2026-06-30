@@ -61,13 +61,14 @@ flowchart TD
 - **Each engine loads only its own BPF object.** The stealthy syscall engine can
   run without the detectable uprobe engine ever touching the target. The engines
   are *not* fused into a single always-on pass (see §9).
-- **The kernel-side UID filter is shared, not duplicated.** `src/common/uid_filter.bpf.h`
-  defines the `target_uids` BPF HASH-set map and the `uid_matches()` inline, and is
-  `#include`d into all five BPF objects. Each loader inserts the target app's UID
-  before launch (`key=uid, value=1`). The HASH-set shape accommodates multi-UID
-  gating (needed by `funcs`, which can trace several PIDs with distinct UIDs) at no
-  extra cost for single-UID callers; the detectability firewall (§9) is preserved
-  because each engine still compiles its own BPF object.
+- **The kernel-side gate filter is shared, not duplicated.** `src/common/uid_filter.bpf.h`
+  defines the `target_uids` BPF HASH-set map and `uid_matches()`. The parallel
+  `src/common/pid_filter.bpf.h` defines the `target_pids` map (keyed by TGID) and
+  `pid_matches()`. Every engine gates on `uid_matches() || pid_matches()`, so a UID-launch
+  or a PID-attach run is a pure map-population choice with no BPF recompile. The HASH-set
+  shape accommodates multi-UID gating (needed by `funcs`, which can trace several PIDs with
+  distinct UIDs) at no extra cost for single-UID callers; the detectability firewall (§9) is
+  preserved because each engine still compiles its own BPF object. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - **Library-load tracing is shared, not duplicated.** The mmap/munmap capture,
   `/proc/<pid>/maps` full-path resolution, and the `[lib]` text/JSONL emitter live
   once in `src/common/lib_trace.*` and are used by all five engines. The BPF probe
@@ -221,6 +222,26 @@ expensive one:
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
    grep -q` pipe SIGPIPEs under `pipefail` on large output).
 
+### Attach modes: launch (`-P`) vs PID (`-p`)
+
+Every standalone engine supports two mutually exclusive attach modes, unified via
+`src/common/engine_args.h` (`struct target_args`, `TARGET_ARGP_OPTIONS`, `parse_target_arg`):
+
+- **`-P PACKAGE`** (launch mode, default): resolves the package UID, arms `target_uids`
+  (or `target_pids` if `-p` accompanies), then calls `ares_launch_app` to force-stop and
+  relaunch the app. Every event from the first thread is captured.
+- **`-p PID[,PID...]`** (PID mode): arms `target_pids` (key = TGID, value = 1) for each
+  listed PID. No app launch. The BPF gate is `uid_matches() || pid_matches()`, so running
+  processes are traced precisely by TGID without touching UIDs. `-p` and `-P` are mutually
+  exclusive; exactly one is required.
+- **`--siblings`** (opt-in widen): when used with `-p`, also resolves each PID's UID and
+  arms `target_uids`, so processes sharing the same app UID are included. Implemented in
+  userspace (the `||` gate makes it a map-fill choice).
+- **Follow-fork** (`src/common/follow_fork.bpf.h`): in PID mode an `ares_follow_fork`
+  program on `sched/sched_process_fork` inserts a child's TGID into `target_pids` when its
+  parent is tracked. On by default; `--no-follow-fork` disables it. Zero cost when
+  `target_pids` is empty (launch/UID mode).
+
 ---
 
 ## 2. The `syscalls` engine (kprobe, injectionless)
@@ -242,7 +263,8 @@ expensive one:
   unwinder (`src/common/dwarf.c` + `cfi_unwind.c`; see [BACKLOG W1](BACKLOG.md)).
   The snapshot struct and BPF helpers live in `src/common/stack_snapshot.{h,bpf.h}` and
   are shared with the `funcs` engine.
-- All capture behavior is flag-driven via GNU argp (`-P`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`);
+- Supports both attach modes (see [Attach modes](#attach-modes-launch--p-vs-pid--p)): `-P PACKAGE` (fresh launch) or `-p PID[,PID...]` (attach to running; skips launch). `--siblings` widens to same-UID in `-p` mode; `--no-follow-fork` disables child-following.
+- All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);
   option ordering does not matter; `--help` is auto-generated; `--version` prints
   `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).
   The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's verbose
@@ -276,6 +298,9 @@ expensive one:
   `-J`/`--jsonl` forces JSONL framing (one record per line, no enclosing `[...]`);
   without `-J` and when the filename doesn't end in `.jsonl`, the sink writes
   array-framed output.
+- **Attach modes:** `-P PACKAGE` launches fresh under UID-filter; `-p PID[,PID...]` attaches
+  to a running process (precise, TGID-gated, follow-fork on by default). `--siblings` widens
+  to the target's UID; `--no-follow-fork` disables child-following. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - **Quiet mode** (`-q`): suppresses all per-event console output in
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
 - **Stack snapshot** (`--snapshot`, requires `-o`): mirrors the `syscalls` `--snapshot`
@@ -340,10 +365,10 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
   and no uprobes — nothing is written into the target, so it sits on the stealthy
   side of the detectability firewall (§9).
-- **CLI:** `ares lib [-P PACKAGE | PACKAGE] [-A ACTIVITY | ACTIVITY] [-o FILE] [-v] [-q]`.
-  Package and activity can be given as `-P`/`-A` flags (consistent with other engines)
-  or as positional arguments (back-compat). `--help`, `--usage`, and `--version`
-  (`ares lib`) are auto-generated by argp.
+- **CLI:** `ares lib {-P PACKAGE | PACKAGE | -p PID[,PID...]} [-A ACTIVITY] [-o FILE] [-v] [-q] [--siblings] [--no-follow-fork]`.
+  `-p` attaches to a running process (skips launch); `-P` or a positional PACKAGE launches fresh.
+  Package and activity can also be given as positional arguments (back-compat). `--help`, `--usage`,
+  and `--version` (`ares lib`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - Output: the unified `[lib] pid <N> <fullpath> [start,end) off=.. inode=.. ppid=..`
   line, plus optional structured JSONL via `-o`
   (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §7). `[unlib]` unmap lines are
@@ -356,9 +381,10 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   `am start -S`), using the shared `src/common/lib_trace` probe (mmap/munmap capture +
   `/proc/<pid>/maps` resolver) to track every library mapping. No uprobes — nothing
   written into the target.
-- **CLI:** `ares dump [-P PACKAGE | PACKAGE] [-A ACTIVITY | ACTIVITY] PATTERN [-d DIR] [--on-map] [--raw] [-q]`.
-  Package and activity accept `-P`/`-A` flags or positional arguments (back-compat).
-  `--help`, `--usage`, and `--version` (`ares dump`) are auto-generated by argp.
+- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-A ACTIVITY] [-d DIR] [--on-map] [--raw] [-q] [--siblings] [--no-follow-fork]`.
+  `-p` attaches to a running process (skips launch); `-P` or a positional PACKAGE launches fresh.
+  Package and activity also accept positional arguments (back-compat). `--help`, `--usage`, and
+  `--version` (`ares dump`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - **Two dump triggers:**
   - Default (on-exit): after the app terminates, rescans `/proc/<pid>/maps` for all
     mappings that match the user-supplied glob and dumps each one.
@@ -470,7 +496,9 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
   per resolved `(path,offset)` plus the one shared kprobe, then drains the ring.
   Uses GNU argp (`--help`/`--usage`/`--version` — prints `ares correlate`); flags:
-  `-p PID[,…]`, `-P PACKAGE`, `-e SPEC`, `-F FILE`, `-o FILE`, `-q`.
+  `-p PID[,…]` (precise, follow-fork by default; `--siblings` to widen to same-UID),
+  `-P PACKAGE`, `--siblings`, `--no-follow-fork`, `-e SPEC`, `-F FILE`, `-o FILE`, `-q`.
+  See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - **Output**: flat, type-discriminated JSONL via the shared serializer
   (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `-o FILE` opens the shared
   `ares_sink` (8 MB buffered, periodic flush, `wrote N event(s)` report at teardown),
@@ -552,8 +580,9 @@ other engines (see §7).
 key (see §9). `proc-event` and `execve` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
-**Usage:** `ares mod <name> -P <pkg>` (optionally `-o <file>` for structured JSONL
-output).
+**Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
+output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
+`-P` launches fresh. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 
 ## 7. Unified trace schema
 

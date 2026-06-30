@@ -29,12 +29,12 @@ so history stays traceable.
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
-- F2 — `ares funcs -p` PID attach, needs repro
+- Phase 3d (deferred) — coordinator-wide `-p` in `trace` (see BACKLOG item below)
 - R9 — `syscall_name()` linear scan → bsearch; C9 — `funcs` sockaddr decode
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
-- `ares mod` audit closed 2026-06-28 (F1/F2 future features if wanted, F4 moot)
+- `ares mod` audit closed 2026-06-28 (F2/F4 moot; F1 PID-attach shipped 2026-06-30)
 
 ---
 
@@ -136,10 +136,13 @@ symbol path); vDSO frames are named (Phase 1).
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
-- **F2 — PID attach mode error in `ares funcs` (and others). NEEDS REPRO.** The `-p`
-  parse and uprobe attach loop are structurally sound; the failure is likely runtime
-  (attach perms / per-PID `/proc` symbol resolution). Share exact `stderr` output +
-  invocation before assigning a root cause. Also check `correlate -p`.
+- **Phase 3d (deferred) — coordinator-wide `-p` in `trace`.** The standalone engines
+  each support `-p PID[,…]` (shipped 2026-06-30). The `trace` coordinator
+  (`src/trace/trace.c`) resolves one UID from `-P` and drives `syscalls`/`funcs`/`lib`
+  from a single launch; it does not use `engine_args.h` and has no `-p` today. Extending
+  it would require adding a PID set to `struct ares_run_ctx` (`launch.h`), wiring `-p`
+  into `trace_args.h`'s bespoke splitter, and having each engine's setup read `rc->pids`.
+  Deferred — revisit only if a single PID applied across the whole `trace` run is wanted.
 - **R9 — `syscall_name()` linear scan per syscall event** (`correlate` + the
   equivalent in `syscalls`). Fine at current volume; if rates climb, sort the
   generated table once and `bsearch`, or index by `nr`.
@@ -181,10 +184,11 @@ symbol path); vDSO frames are named (Phase 1).
     GET/FIND/READ schema unchanged. `test_mod_emit` covers SCAN shape (positive + 4 negative checks).
 
   **Functionality:**
-  - **F1 — deferred by choice (future feature).** Launch-only is intentional; `-p PID` attach
-    (resolve uid from pid, skip launch) is a future enhancement if attach-to-running is wanted.
-  - **F2 — deferred by choice (future feature).** `timeout`-wrap covers it for now; revisit if a
-    native `-d SECONDS` auto-stop is wanted.
+  - **F1 — DONE 2026-06-30.** Global PID-attach mode shipped: all 6 standalone engines now support
+    `-p PID[,PID...]` (precise, TGID-gated, follow-fork by default, `--siblings` to widen). This
+    supersedes the old launch-only design and the prior broken per-engine `-p` (F2 below).
+  - **F2 — moot (superseded by global PID-attach 2026-06-30).** See Done entry.
+    `timeout`-wrap covers auto-stop for now; revisit `-d SECONDS` if wanted.
   - **F3 — summaries added. DONE 2026-06-28.** proc-event prints fork/exit/signal counts;
     execve prints a per-binary exec tally with `[!]`-flagged suspicious binaries (su, magisk,
     busybox, mount, sh, bash, getprop/setprop, setenforce/getenforce). Tallied unconditionally
@@ -203,6 +207,20 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-06-30
+
+- **Global PID-attach mode — Phases 1–3 (all 6 standalone engines).** Real per-process
+  PID-attach across every standalone engine (`funcs`, `correlate`, `dump`, `syscalls`, `lib`,
+  `mod`). Shared infrastructure in `src/common/`: `pid_filter.bpf.h` (TGID-keyed
+  `target_pids` map + `pid_matches()`), `follow_fork.bpf.h` (`ares_follow_fork` tracepoint
+  self-propagates tracked TGIDs to forked children), `engine_args.h` (`struct target_args`,
+  `TARGET_ARGP_OPTIONS`, `parse_target_arg` — `-p`/`--siblings`/`--no-follow-fork`). BPF
+  gate in every engine is now `uid_matches() || pid_matches()`. Semantics: `-p` is precise
+  (only listed TGIDs + forked children); `--siblings` also arms the PID's UID (widen);
+  `--no-follow-fork` disables child-following. Phase 3d (coordinator-wide `-p` in `trace`)
+  deferred — see Minor backlog. Supersedes the old broken per-engine `-p` (F2) and the
+  launch-only `ares mod` design (F1). Host-covered by `test_target_args`.
 
 ### 2026-06-28
 

@@ -142,6 +142,42 @@ int main(void)
         snprintf(apk2[k].path, sizeof(apk2[k].path), "/data/app/com.example/base.apk");
     CHECK(ares_module_base_idx(apk2, 3) == 0, "base_idx: same-APK multi-lib merges (known limit)");
 
+    // --- Part 2: filler-mapping skip (the on-device [page size compat] root cause) ---
+
+    // Case 6: [page size compat] guard mapping (different path) between RO and exec.
+    // The walk must SKIP the guard and collapse to the off-0 RO base. Reproduces the
+    // exact on-device libandroid_runtime layout that defeated Task 1's fix.
+    struct ares_map_line pgc[3];
+    pgc[0].start = 0xb15000; pgc[0].end = 0xbf4000; pgc[0].off = 0;
+    snprintf(pgc[0].path, sizeof(pgc[0].path), "/system/lib64/libandroid_runtime.so");
+    pgc[1].start = 0xbf4000; pgc[1].end = 0xbf5000; pgc[1].off = 0;
+    snprintf(pgc[1].path, sizeof(pgc[1].path), "[page size compat]");
+    pgc[2].start = 0xbf5000; pgc[2].end = 0xd87000; pgc[2].off = 0xe0000;
+    snprintf(pgc[2].path, sizeof(pgc[2].path), "/system/lib64/libandroid_runtime.so");
+    CHECK(ares_module_base_idx(pgc, 2) == 0, "base_idx: skips [page size compat] guard");
+
+    // Case 7: anonymous (empty-path) filler between segments is skipped too.
+    struct ares_map_line anon[3];
+    anon[0].start = 0x100000; anon[0].end = 0x110000; anon[0].off = 0;
+    snprintf(anon[0].path, sizeof(anon[0].path), "/system/lib64/libfoo.so");
+    anon[1].start = 0x110000; anon[1].end = 0x111000; anon[1].off = 0;
+    anon[1].path[0] = '\0';                                   // empty-path anon filler
+    anon[2].start = 0x111000; anon[2].end = 0x200000; anon[2].off = 0xe0000;
+    snprintf(anon[2].path, sizeof(anon[2].path), "/system/lib64/libfoo.so");
+    CHECK(ares_module_base_idx(anon, 2) == 0, "base_idx: skips empty-path anon filler");
+
+    // Case 8: a filler does NOT cause a merge into a DIFFERENT real file. With other.so
+    // (different path) before the filler, the walk breaks and returns the exec index
+    // itself — never merging libfoo into other.so.
+    struct ares_map_line mix[3];
+    mix[0].start = 0x100000; mix[0].end = 0x110000; mix[0].off = 0;
+    snprintf(mix[0].path, sizeof(mix[0].path), "/system/lib64/other.so");
+    mix[1].start = 0x110000; mix[1].end = 0x111000; mix[1].off = 0;
+    snprintf(mix[1].path, sizeof(mix[1].path), "[page size compat]");
+    mix[2].start = 0x111000; mix[2].end = 0x200000; mix[2].off = 0xe0000;
+    snprintf(mix[2].path, sizeof(mix[2].path), "/system/lib64/libfoo.so");
+    CHECK(ares_module_base_idx(mix, 2) == 2, "base_idx: filler does not merge unrelated files");
+
     // ares_map_files_path: check the format string.
     char mfbuf[96];
     ares_map_files_path(mfbuf, sizeof(mfbuf), 1234, 0x7b4a200000ULL, 0x7b4a210000ULL);

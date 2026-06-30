@@ -19,8 +19,10 @@ int ares_parse_maps_line(const char *line, struct ares_map_line *out);
 
 // Walk back over an address-sorted ares_map_line array to find the load-base
 // index: the lowest index in the same-path run reachable by strictly-decreasing
-// file offsets (bridges inter-segment address gaps; an offset reset stops the
-// walk, separating a distinct re-load of the same path).
+// file offsets, skipping filler mappings (anonymous or "[...]"-bracket pseudo-
+// mappings such as the Android 16 KB-page "[page size compat]" guard) that may
+// separate one ELF's PT_LOAD segments. An offset reset stops the walk, separating
+// a distinct re-load of the same path.
 // Requires m[] to be address-sorted (as /proc/<pid>/maps always is).
 size_t ares_module_base_idx(const struct ares_map_line *m, size_t hit);
 

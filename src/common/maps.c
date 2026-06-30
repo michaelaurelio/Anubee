@@ -25,11 +25,27 @@ int ares_parse_maps_line(const char *line, struct ares_map_line *out)
 	return 1;
 }
 
+// A mapping that is not a named file: anonymous (empty path) or a kernel
+// pseudo-mapping ("[page size compat]", "[anon:...]", "[stack]", ...). PT_LOAD
+// segments of one ELF can be separated by these — notably the Android 16 KB-page
+// "[page size compat]" guard between the RO and exec segments.
+static int ares_is_filler_map(const struct ares_map_line *m)
+{
+	return m->path[0] == '\0' || m->path[0] == '[';
+}
+
 size_t ares_module_base_idx(const struct ares_map_line *m, size_t hit)
 {
 	size_t i = hit;
-	while (i > 0 && !strcmp(m[i-1].path, m[i].path) && m[i-1].off < m[i].off)
-		i--;
+	while (i > 0) {
+		size_t j = i - 1;
+		while (j > 0 && ares_is_filler_map(&m[j]))
+			j--;
+		if (!strcmp(m[j].path, m[i].path) && m[j].off < m[i].off)
+			i = j;
+		else
+			break;
+	}
 	return i;
 }
 

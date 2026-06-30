@@ -21,4 +21,11 @@ void dex_map_free(struct dex_method_map *m);
 int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
                    char *out, size_t outsz);
 
+// Resolve a DEX method_ids index directly to "pkg.Class.method" (the index-keyed
+// sibling of dex_map_lookup, for callers that already hold a method_index — e.g.
+// an ART managed-stack walk). On a hit writes "pkg.Class.method" to out and
+// returns 1; on a bad/unresolvable index or buffer overflow returns 0.
+int dex_name_by_index(const struct dex_method_map *m, uint32_t method_idx,
+                      char *out, size_t outsz);
+
 #endif /* ARES_COMMON_DEX_H */

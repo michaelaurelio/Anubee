@@ -54,6 +54,31 @@ int main(int argc, char **argv)
     CHECK(dex_map_lookup(m, 0x10, out, sizeof(out)) == 0, "0x10 header -> miss");
     CHECK(dex_map_lookup(m, 0x180, out, sizeof(out)) == 0, "0x180 gap -> miss");
     CHECK(dex_map_lookup(m, 0x300, out, sizeof(out)) == 0, "0x300 past-last -> miss");
+
+    // dex_name_by_index: every method reachable by index resolves to its name.
+    {
+        int saw_add = 0, saw_greet = 0, saw_init = 0;
+        char nb[256];
+        for (uint32_t idx = 0; idx < 4096; idx++) {
+            if (dex_name_by_index(m, idx, nb, sizeof(nb)) != 1)
+                continue;
+            if (strcmp(nb, "com.ares.Sample.add") == 0)    saw_add = 1;
+            if (strcmp(nb, "com.ares.Sample.greet") == 0)   saw_greet = 1;
+            if (strcmp(nb, "com.ares.Sample.<init>") == 0)  saw_init = 1;
+        }
+        CHECK(saw_add,   "dex_name_by_index resolves add");
+        CHECK(saw_greet, "dex_name_by_index resolves greet");
+        CHECK(saw_init,  "dex_name_by_index resolves <init>");
+        // out-of-range index -> miss, no crash, out untouched-as-miss.
+        CHECK(dex_name_by_index(m, 0xffffffu, nb, sizeof(nb)) == 0,
+              "dex_name_by_index out-of-range -> miss");
+        // tiny buffer -> miss (overflow guarded).
+        char tiny[4];
+        CHECK(dex_name_by_index(m, 0, tiny, sizeof(tiny)) == 0 ||
+              strlen(tiny) < sizeof(tiny),
+              "dex_name_by_index respects buffer bound");
+    }
+
     dex_map_free(m);
 
     // truncated buffer (cut mid-class_data) -> build NULL or lookup miss, no crash.

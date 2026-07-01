@@ -87,7 +87,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
                $(SRC)/common/cfi_unwind.c $(SRC)/common/dwarf.c \
                $(SRC)/common/dex.c $(SRC)/common/art_nterp.c \
-               $(SRC)/common/managed_frame.c $(SRC)/common/art_buildid.c
+               $(SRC)/common/managed_frame.c $(SRC)/common/art_buildid.c \
+               $(SRC)/common/art_shadow.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -378,7 +379,7 @@ test:
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit
 	$(BUILD)/test_emit
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
 	$(BUILD)/test_decode
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c src/common/decode.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
@@ -416,6 +417,8 @@ test:
 	$(BUILD)/test_art_nterp tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_art_buildid.c src/common/art_buildid.c src/common/maps.c -o $(BUILD)/test_art_buildid
 	$(BUILD)/test_art_buildid
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_art_shadow.c src/common/art_shadow.c src/common/art_nterp.c src/common/art_buildid.c src/common/dex.c src/common/maps.c src/common/proc_mem.c -o $(BUILD)/test_art_shadow -lpthread
+	$(BUILD)/test_art_shadow tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_snapshot_gate.c -o $(BUILD)/test_snapshot_gate
 	$(BUILD)/test_snapshot_gate
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_managed_frame.c src/common/managed_frame.c src/common/emit.c -o $(BUILD)/test_managed_frame -lpthread

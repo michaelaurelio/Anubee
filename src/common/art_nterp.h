@@ -39,6 +39,14 @@ typedef size_t (*art_reader)(void *ctx, uint64_t va, void *dst, size_t len);
 int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
                        char *out, size_t outsz);
 
+// Chase one ArtMethod* to its DEX (method_idx, image begin_, code_item map) WITHOUT
+// naming it. Exposed so the ShadowFrame walk can corroborate a live dex_pc against the
+// method's own bytecode. Returns 1 on a fully-valid chain. `begin_out`/`map_out` may be NULL.
+struct dex_method_map;   // opaque (full def in dex.h)
+int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
+                     uint32_t *midx_out, uint64_t *begin_out,
+                     struct dex_method_map **map_out);
+
 // Core locator, exposed for host testing. Scans stack slots upward from nterp_sp
 // (bytes in `stack`, addresses `stack_base..stack_base+stack_len`) for the managed
 // frame's ArtMethod*, corroborating each candidate against a live dex_pc for the

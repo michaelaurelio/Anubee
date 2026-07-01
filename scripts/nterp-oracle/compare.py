@@ -105,7 +105,7 @@ def score(matches):
             continue
         s["matched"] += 1
         truth = set(f["java"])
-        s["truth_frames"] += len(f["java"])
+        s["truth_frames"] += len(truth)
         a_names = [n for n, _ in a["interp"]]
         s["recalled"] += len(truth & set(a_names))
         for name, corro in a["interp"]:

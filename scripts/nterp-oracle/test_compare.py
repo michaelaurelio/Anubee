@@ -88,6 +88,15 @@ class TestJoinScore(unittest.TestCase):
         self.assertEqual(s["truth_frames"], 2)
         self.assertEqual(s["recalled"], 1)         # only A.b recalled
 
+    def test_score_recall_distinct_on_recursion(self):
+        matches = [(
+            {"interp":[("A.b",True),("A.run",True)]},
+            {"java":["A.b","A.b","A.run"]},   # A.b repeated (recursion)
+        )]
+        s = compare.score(matches)
+        self.assertEqual(s["truth_frames"], 2)   # distinct: A.b, A.run
+        self.assertEqual(s["recalled"], 2)       # both distinct names recalled
+
     def test_score_unmatched_counted(self):
         s = compare.score([({"interp":[("A.b",True)]}, None)])
         self.assertEqual(s["unmatched"], 1)

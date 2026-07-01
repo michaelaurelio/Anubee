@@ -1725,12 +1725,16 @@ int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
         sym_resolve(pid, pcs[i], store[i], sizeof(store[i]));
         syms[i] = store[i];
     }
-    char mname[256];
-    const char *nterp = NULL;
-    if (strstr(syms[m - 1], "nterp_helper") &&
-        nterp_name(pid, s, sps[m - 1], mname, sizeof(mname)))
-        nterp = mname;
-    return ares_managed_chain_build(syms, m, nterp, out, cap);
+    char chain[16][256];
+    const char *nptr[16];
+    int nn = 0;
+    if (strstr(syms[m - 1], "nterp_helper")) {
+        nn = nterp_chain(pid, s, sps[m - 1], chain, 16);
+        if (nn == 0 && nterp_name(pid, s, sps[m - 1], chain[0], sizeof(chain[0])))
+            nn = 1;   /* fallback: never regress today's single-frame naming */
+        for (int k = 0; k < nn; k++) nptr[k] = chain[k];
+    }
+    return ares_managed_chain_build(syms, m, nptr, nn, out, cap);
 }
 
 void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
@@ -1773,11 +1777,17 @@ void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
         jb_c(j, '}');
     }
     if (n > 0 && strstr(sym, "nterp_helper")) {
-        char mname[256];
-        if (nterp_name(pid, s, sps[n - 1], mname, sizeof(mname))) {
+        /* Name the full interpreted chain above the terminal; fall back to the
+         * single-frame nterp_name so we never regress. Innermost-first; each frame
+         * numbered continuing from n. */
+        char chain[16][256];
+        int nn = nterp_chain(pid, s, sps[n - 1], chain, 16);
+        if (nn == 0 && nterp_name(pid, s, sps[n - 1], chain[0], sizeof(chain[0])))
+            nn = 1;
+        for (int k = 0; k < nn; k++) {
             jb_c(j, ',');
-            jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)n);
-            jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, mname);
+            jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)(n + k));
+            jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, chain[k]);
             jb_s(j, "\",\"kind\":\"interp\"}");
         }
     }

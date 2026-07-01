@@ -31,13 +31,15 @@ so history stays traceable.
   device-verified, commit `8c5da1e` — snapshot-scan `ArtMethod*` chase to
   `pkg.Class.method`; `reached_APP_frame` 0 → 17 on a neutral obfuscated app);
   W5 (JIT `[anon]`) ≈ 0 payoff on measured workloads — see below
-- **nterp naming — residual drawbacks (resolve later):** ~~(1) **precision** — stale
-  `ArtMethod*` spill risk~~ **(1) resolved 2026-07-01** — dex_pc corroboration now
-  rejects stale candidates (see Resolved/Done). (2) **hit-rate** ~39% (17/44 nterp
-  terminals on the test app) — window widened 4096→8192; re-measure pending on-device.
-  ~~(3) **`+0x<dex_pc>` suffix deferred**~~ **(3) resolved 2026-07-01** — corroborated
-  names now carry `+0x<dexpc>` (see Resolved/Done). (4) version gate keys on apex
-  `370549100` only (BuildID is the stronger anchor; still-open).
+- **nterp naming — residual drawbacks (resolve later):** ~~(1) **precision**~~ resolved
+  2026-07-01 (dex_pc corroboration). ~~(2) **hit-rate** — only the terminal frame named~~
+  **resolved 2026-07-02** — `nterp_chain` now names the *full* interpreted chain (13+
+  frames deep, device-verified). ~~(3) **`+0x<dex_pc>` suffix deferred**~~ resolved
+  2026-07-01. ~~**silent failure on tagged-DexFile targets**~~ **resolved 2026-07-02** —
+  `art_method_chase` TBI-untag fix (was resolving nothing on the real RASP target). (4)
+  version gate keys on apex `370549100` only (BuildID is the stronger anchor; still-open).
+  Remaining: recall bounded by snapshot window; switch-interpreter (ShadowFrame, off-stack)
+  frames need the parked heap `Thread→ManagedStack` walk (Path X spike, dev-only).
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -338,6 +340,28 @@ symbol path); vDSO frames are named (Phase 1).
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-02
+
+- **Full interpreted-chain naming (`nterp_chain`) + TBI-tagged DexFile fix.** The nterp
+  resolver now names the *entire* interpreted call chain, not just the terminal frame.
+  `nterp_chain`/`nterp_chain_pick` (`src/common/art_nterp.c`) scan the frozen snapshot
+  upward from the nterp terminal and emit every dex_pc-corroborated frame (innermost-first,
+  `+0x<dexpc>` suffix) as consecutive `"kind":"interp"` cfi_stack frames; uncorroborated
+  candidates are dropped (precision over recall). `nterp_name` stays the single-frame
+  fallback (naming never regresses). Wired at both `symbolize.c` sites (`ares_managed_chain`,
+  `ares_emit_cfi_stack_json`); `ares_managed_chain_build` now takes a chain of names.
+  **Root-cause fix shipped alongside:** `art_method_chase` did not strip the Android
+  top-byte pointer tag (TBI) from the native `DexCache.dex_file_` / `DexFile.begin_`
+  pointers, so on targets that tag them the chase read a tagged address (`/proc/mem`
+  rejects it) → `begin=0` → chase aborted → nterp naming silently resolved **nothing**.
+  `ART_PTR_UNTAG` fixes it (host regression in `test_art_nterp`). Device-verified on the
+  real RASP target: interpreted naming went 0 → deep chains (13+ frames; 85 multi-frame
+  `cfi_stack` records in one run). Host-covered by `test_art_nterp` (chain + tagged-ptr)
+  and `test_managed_frame` (multi-name build). Reads-only; firewall intact. The heap
+  `Thread→ManagedStack` walk (Path X) was spiked and **parked dev-only** as the
+  authoritative-but-version-coupled alternative for off-stack (switch-interpreter
+  ShadowFrame) frames.
 
 ### 2026-07-01
 

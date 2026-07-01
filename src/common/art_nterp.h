@@ -48,6 +48,15 @@ int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
 int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
                size_t stack_len, uint64_t nterp_sp, char *out, size_t outsz);
 
+// Name the FULL interpreted call chain above the nterp terminal at `nterp_sp`.
+// Scans the frozen snapshot upward, emitting each dex_pc-corroborated method
+// (innermost-first, "pkg.Class.method+0x<dexpc>") into out[0..return). Returns the
+// count. Superset of nterp_name; uncorroborated frames are dropped.
+int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+                char out[][256], int max_frames);
+int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+                     size_t stack_len, uint64_t nterp_sp, char out[][256], int max_frames);
+
 // Drop the cached DexFile image maps (host tests reset state between cases).
 void art_nterp_cache_reset(void);
 

@@ -37,7 +37,8 @@ int ares_is_interp_frame(const char *sym)
 }
 
 int ares_managed_chain_build(const char *const *syms, int n,
-                             const char *nterp_name, char *out, size_t cap)
+                             const char *const *nterp_names, int nterp_n,
+                             char *out, size_t cap)
 {
     struct jbuf j = {0};
     int count = 0;
@@ -49,9 +50,12 @@ int ares_managed_chain_build(const char *const *syms, int n,
         jb_c(&j, '"'); jb_esc(&j, m); jb_c(&j, '"');
         count++;
     }
-    if (nterp_name && nterp_name[0]) {
+    // Interpreted (nterp) frames the CFI walk can't reach, innermost-first, appended
+    // after the native-resolved managed frames.
+    for (int i = 0; i < nterp_n; i++) {
+        if (!nterp_names[i] || !nterp_names[i][0]) continue;
         if (count) jb_c(&j, ',');
-        jb_c(&j, '"'); jb_esc(&j, nterp_name); jb_c(&j, '"');
+        jb_c(&j, '"'); jb_esc(&j, nterp_names[i]); jb_c(&j, '"');
         count++;
     }
     jb_c(&j, ']');

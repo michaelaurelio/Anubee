@@ -83,6 +83,13 @@ static uint32_t idx_of2(uint8_t *dex, size_t dexlen, const char *want)
 #define O_DF_BEGIN 0x08
 #define O_DF_SIZE 0x20
 
+// Method names used in the nterp_chain_pick test.
+// Indices from sample.dex: 0=<init> 1=add 2=greet 5=StringBuilder.append
+#define METHOD0_NAME "com.ares.Sample.add"
+#define METHOD1_NAME "com.ares.Sample.greet"
+#define METHOD2_NAME "com.ares.Sample.<init>"
+#define STALE_NAME   "java.lang.StringBuilder.append"
+
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : "tests/fixtures/sample.dex";
@@ -116,6 +123,25 @@ int main(int argc, char **argv)
     CHECK(art_method_resolve(memrd, &m, AM, out, sizeof(out)) == 1 &&
           strcmp(out, "com.ares.Sample.greet") == 0,
           "ArtMethod chase resolves greet");
+
+    // TBI-tagged native pointers: DexCache.dex_file_ and DexFile.begin_ carry an
+    // Android top-byte tag on some targets. They must be untagged before deref
+    // (/proc/mem rejects tagged addresses) — regression for the tagged-DexFile bug
+    // that made nterp naming silently resolve nothing on such targets.
+    {
+        const uint64_t TAG = 0xb4ULL << 56;
+        uint8_t dc_t[32] = {0}; w64(dc_t + O_DC_DF, TAG | DF);
+        uint8_t df_t[48] = {0}; w64(df_t + O_DF_BEGIN, TAG | BEGIN);
+                                w64(df_t + O_DF_SIZE, dexlen);
+        struct mem mt = m;      // regions: 0=AM 1=C 2=DC 3=DF 4=BEGIN
+        mt.r[2].data = dc_t;
+        mt.r[3].data = df_t;
+        art_nterp_cache_reset();
+        CHECK(art_method_resolve(memrd, &mt, AM, out, sizeof(out)) == 1 &&
+              strcmp(out, "com.ares.Sample.greet") == 0,
+              "TBI-tagged DexFile/begin pointers untagged -> chase resolves");
+    }
+    art_nterp_cache_reset();
 
     // Misaligned / tiny pointer -> rejected before any read.
     CHECK(art_method_resolve(memrd, &m, AM + 1, out, sizeof(out)) == 0,
@@ -203,6 +229,50 @@ int main(int argc, char **argv)
     CHECK(nterp_pick(memrd, &m, stack4, STK, sizeof(stack4), NSP, pk, sizeof(pk)) == 1 &&
           strcmp(pk, "com.ares.Sample.add+0x0") == 0,
           "nterp_pick: nearest corroborated (add+0x0) wins over farther corroborated (greet+0x6)");
+
+    // ---- nterp_chain_pick: 3-frame chain with one interleaved stale ---------------
+    // Frame layout ascending from NSP (innermost-first == lowest offset):
+    //   NSP+0x10: AM_ADD  (add,   METHOD0) + dex_pc BEGIN+0x170 at NSP+0x18 -> +0x0
+    //   NSP+0x60: AM_STALE (StringBuilder.append) — valid chase, no bytecode range
+    //             in sample.dex so corroboration always fails: dropped
+    //   NSP+0x80: AM      (greet, METHOD1) + dex_pc BEGIN+0x190 at NSP+0x88 -> +0x6
+    //   NSP+0x100: AM_INIT (<init>, METHOD2) + dex_pc BEGIN+0x1bc at NSP+0x108 -> +0x0
+    uint32_t init_i = idx_of2(dex, dexlen, METHOD2_NAME);
+
+    const uint64_t AM_INIT = 0x8000;
+    uint8_t am_init[16] = {0};
+    w32(am_init + O_DECL, (uint32_t)C);
+    w32(am_init + O_MIDX, init_i);
+    add_region(&m, AM_INIT, am_init, sizeof(am_init));
+
+    // Stale: midx=5 (java.lang.StringBuilder.append) has no bytecode in sample.dex,
+    // so dex_lookup_range never matches rmidx==5 — corroboration always fails.
+    const uint64_t AM_STALE = 0x9000;
+    uint8_t am_stale[16] = {0};
+    w32(am_stale + O_DECL, (uint32_t)C);
+    w32(am_stale + O_MIDX, 5);                /* StringBuilder.append */
+    add_region(&m, AM_STALE, am_stale, sizeof(am_stale));
+
+    uint8_t stack_chain[0x400] = {0};
+    w64(stack_chain + (size_t)((NSP + 0x10)  - STK), AM_ADD);          /* f0: add   */
+    w64(stack_chain + (size_t)((NSP + 0x18)  - STK), BEGIN + 0x170);   /* f0 dex_pc -> add+0x0   */
+    w64(stack_chain + (size_t)((NSP + 0x60)  - STK), AM_STALE);        /* stale: no dex_pc       */
+    w64(stack_chain + (size_t)((NSP + 0x80)  - STK), AM);              /* f1: greet */
+    w64(stack_chain + (size_t)((NSP + 0x88)  - STK), BEGIN + 0x190);   /* f1 dex_pc -> greet+0x6 */
+    w64(stack_chain + (size_t)((NSP + 0x100) - STK), AM_INIT);         /* f2: <init>             */
+    w64(stack_chain + (size_t)((NSP + 0x108) - STK), BEGIN + 0x1bc);   /* f2 dex_pc -> <init>+0x0 */
+
+    char chain[8][256];
+    art_nterp_cache_reset();
+    int nc = nterp_chain_pick(memrd, &m, stack_chain, STK, sizeof(stack_chain), NSP,
+                              chain, 8);
+    CHECK(nc == 3, "three corroborated frames");
+    CHECK(nc > 0 && strstr(chain[0], METHOD0_NAME) && strstr(chain[0], "+0x"),
+          "f0 named + dexpc");
+    CHECK(nc > 1 && strstr(chain[1], METHOD1_NAME), "f1 named");
+    CHECK(nc > 2 && strstr(chain[2], METHOD2_NAME), "f2 named");
+    for (int i = 0; i < nc; i++)
+        CHECK(!strstr(chain[i], STALE_NAME), "stale skipped");
 
     art_nterp_cache_reset();
     free(dex);

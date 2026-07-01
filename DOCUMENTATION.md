@@ -349,12 +349,20 @@ done 2026-06-29), **CFI-misstep** (module_base gapped walk-back, done 2026-06-30
 reached-managed-frame **21 → 74**. Full re-measure:
 `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
-The **nterp interpreter-frame naming wall is resolved (2026-07-01)**: the snapshot-scan
+The **nterp interpreter-frame naming wall is resolved**: the snapshot-scan
 locator (`nterp_name`, `src/common/art_nterp.c`) corroborates each `ArtMethod*` candidate
 against a live dex_pc in the frame window (via `dex_lookup_range`), rejecting stale spills,
-and emits the method name with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits;
-uncorroborated candidates fall back to a bare best-effort name. See BACKLOG Resolved/Done
-2026-07-01 for full detail. **W5** (JIT `[anon]` code-cache mini-ELF CFI) is technically
+and emits the method name with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits.
+The **full interpreted call chain** is named (2026-07-02) by `nterp_chain`: from the nterp
+terminal it keeps scanning the frozen snapshot upward, emitting *every* dex_pc-corroborated
+frame (innermost-first) as consecutive `"kind":"interp"` cfi_stack frames — not just the
+terminal (`nterp_name` remains the single-frame fallback when the chain is empty, so naming
+never regresses). Precision-over-recall: uncorroborated candidates are dropped.
+**TBI fix (2026-07-02):** `art_method_chase` now strips the Android top-byte tag from the
+native `DexCache.dex_file_` / `DexFile.begin_` pointers before deref — without this the
+chase aborts (`/proc/mem` rejects tagged addresses) and nterp naming silently resolves
+nothing on tagged-DexFile targets. Device-verified on a real target: the interpreted chain
+reaches 13+ frames deep. See BACKLOG Resolved/Done for full detail. **W5** (JIT `[anon]` code-cache mini-ELF CFI) is technically
 reachable but ≈0 payoff on measured workloads (9/201 stacks); not the immediate priority.
 
 **Diagnostic flag (`ARES_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
@@ -366,7 +374,7 @@ located the module-base bug and stays available for future CFI diagnosis.
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
-- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"`. The snapshot-scan locator (`nterp_name`) corroborates an `ArtMethod*` candidate against a live dex_pc in the frame window (via `dex_lookup_range`), rejects stale spills, and names the method with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits; uncorroborated frames fall back to a bare name but retain the pre-fix wrong-method risk (first-resolvable stale ArtMethod* may be named); full precision requires the ART `Thread→ManagedStack` walk (parked).
+- Interpreter frames are detected by `is_interp_frame` and tagged `"kind":"interp"`. `nterp_chain` names the full interpreted chain from the terminal (each frame dex_pc-corroborated via `dex_lookup_range`, `+0x<dexpc>` suffix, innermost-first); uncorroborated frames are dropped (precision over recall). `nterp_name` is the single-frame fallback. Recall is bounded by the snapshot window (a chain deeper than the captured window truncates), and adjacent frames of the *same* `ArtMethod*` are deduped — so a directly-recursive `A→A` collapses to one entry (`A→B→A` is unaffected). The ART `Thread→ManagedStack` heap walk (spiked, parked) remains the authoritative-but-version-coupled alternative for deeper/off-stack (switch-interpreter ShadowFrame) frames.
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);

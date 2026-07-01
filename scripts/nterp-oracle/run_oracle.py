@@ -11,7 +11,7 @@ def on_msg(m,data):
 dev=frida.get_usb_device(timeout=10)
 pid=dev.spawn([PKG])
 sess=dev.attach(pid)
-js=open("'oracle.bundle.js'").read()
+js=open("oracle.bundle.js").read()
 scr=sess.create_script(js)
 scr.on("message",on_msg)
 scr.load()

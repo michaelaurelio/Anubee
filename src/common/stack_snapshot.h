@@ -45,7 +45,6 @@ struct ares_stack_snapshot {
 	__u64 stack_id;
 	__u64 pc, sp, fp, lr;            /* user pc / sp / x29 / x30 (legacy mirror) */
 	__u64 regs[ARES_SNAP_NREG];      /* full GP file x0..x30 (CFI initial state) */
-	__u64 tls_base;                   /* target TPIDR_EL0 (task_struct->thread.uw.tp_value); 0 if unread. ART Thread* = *(void**)(tls_base + TLS_SLOT_ART_THREAD_SELF*8) */
 	__u32 snap_len;                   /* bytes valid in snap[] (from sp up) */
 	__u8  truncated;                  /* 1 = snap_len==ARES_SNAP_MAX (window-capped, stack may extend beyond); 0 = a chunk faulted = reached stack_base = all mapped stack captured */
 	__u8  _pad[3];

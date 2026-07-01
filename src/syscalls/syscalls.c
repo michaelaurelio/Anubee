@@ -51,7 +51,6 @@
 #include "common/symbolize.h"
 #include "common/stack_snapshot.h"
 #include "common/art_nterp.h"
-#include "common/managed_stack_spike.h"
 #include "syscalls/snapshot_gate.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
@@ -597,8 +596,6 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	char frag[208];
 	if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
 		ares_jcache_put(s->stack_id, frag);
-
-	ares_mstack_spike((int)s->h.pid, s);   /* env-gated (ARES_MSTACK_SPIKE); no-op otherwise */
 }
 
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,

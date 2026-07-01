@@ -64,18 +64,6 @@ int main(void)
     CHECK(strstr(j3.b, "\"snapshot\":\""),            "non-tier snapshot field present");
     free(j3.b);
 
-    /* tls_base round-trips into the {"type":"stack"} record */
-    {
-        struct ares_stack_snapshot s4; memset(&s4, 0, sizeof s4);
-        s4.h.pid = 1000; s4.h.tid = 1001; s4.stack_id = 7;
-        s4.tls_base = 0x7b1234abcdULL;
-        s4.snap_len = 0;
-        struct jbuf j4 = {0};
-        ares_stack_snapshot_emit_json(&j4, &s4);
-        CHECK(strstr(j4.b, "\"tls_base\":\"0x7b1234abcd\"") != NULL, "tls_base hex present");
-        free(j4.b);
-    }
-
     free(j.b);
     free(j2.b);
     printf("test_stack_snapshot: ok\n");

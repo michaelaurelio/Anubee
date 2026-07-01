@@ -582,7 +582,8 @@ static void json_emit_stack(const struct ares_stack_snapshot *s)
 static int is_interp_frame(const char *sym)
 {
 	return strstr(sym, "ToInterpreterBridge") ||      // art{Quick,Interpreter}ToInterpreterBridge
-	       strstr(sym, "nterp")                ||      // nterp_helper / ExecuteNterpImpl (fast interp)
+	       strstr(sym, "nterp_helper")         ||      // nterp fast-interp native bridge
+	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter loop
 	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
 	       strstr(sym, "artInterpreterToCompiledCodeBridge");
 }
@@ -640,7 +641,9 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	// nterp specifically (not the broader is_interp_frame): only nterp places the
 	// ArtMethod* at the managed frame base, so the switch-interpreter /
 	// ToInterpreterBridge terminals would otherwise mis-attribute a nearby method.
-	if (strstr(sym, "nterp")) {
+	// Anchor on "nterp_helper" — plain "nterp" is a substring of "Interpreter" and
+	// would (wrongly) match the *ToInterpreterBridge terminals this gate excludes.
+	if (strstr(sym, "nterp_helper")) {
 		char mname[256];
 		if (nterp_name((int)s->h.pid, s, sps[n - 1], mname, sizeof(mname))) {
 			jb_c(j, ',');

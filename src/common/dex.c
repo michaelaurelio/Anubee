@@ -360,6 +360,27 @@ int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
     return method_idx_to_name(m, hit->method_idx, out, outsz);
 }
 
+int dex_lookup_range(const struct dex_method_map *m, uint32_t off,
+                     uint32_t *method_idx, uint32_t *insns_off)
+{
+    if (!m)
+        return 0;
+    size_t lo = 0, hi = m->nranges;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (off < m->ranges[mid].start)
+            hi = mid;
+        else if (off >= m->ranges[mid].end)
+            lo = mid + 1;
+        else {
+            if (method_idx) *method_idx = m->ranges[mid].method_idx;
+            if (insns_off)  *insns_off  = m->ranges[mid].start;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int dex_name_by_index(const struct dex_method_map *m, uint32_t method_idx,
                       char *out, size_t outsz)
 {

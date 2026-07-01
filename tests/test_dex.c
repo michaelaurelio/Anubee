@@ -55,6 +55,24 @@ int main(int argc, char **argv)
     CHECK(dex_map_lookup(m, 0x180, out, sizeof(out)) == 0, "0x180 gap -> miss");
     CHECK(dex_map_lookup(m, 0x300, out, sizeof(out)) == 0, "0x300 past-last -> miss");
 
+    // dex_lookup_range: returns the covering method's index + insns start.
+    {
+        uint32_t midx = 0xdead, ioff = 0xdead;
+        // find greet's method_idx via the index API (fixture-internal-agnostic).
+        uint32_t greet_idx = 0xffffffffu; char nb[256];
+        for (uint32_t idx = 0; idx < 4096; idx++)
+            if (dex_name_by_index(m, idx, nb, sizeof(nb)) == 1 &&
+                strcmp(nb, "com.ares.Sample.greet") == 0) { greet_idx = idx; break; }
+        CHECK(greet_idx != 0xffffffffu, "greet index found for range test");
+        CHECK(dex_lookup_range(m, 0x190, &midx, &ioff) == 1 &&
+              midx == greet_idx && ioff == 0x184,
+              "0x190 -> greet range: idx + insns_off 0x184");
+        CHECK(dex_lookup_range(m, 0x180, &midx, &ioff) == 0,
+              "0x180 gap -> range miss");
+        CHECK(dex_lookup_range(m, 0x300, &midx, &ioff) == 0,
+              "0x300 past-last -> range miss");
+    }
+
     // dex_name_by_index: every method reachable by index resolves to its name.
     {
         int saw_add = 0, saw_greet = 0, saw_init = 0;

@@ -44,7 +44,7 @@ so history stays traceable.
 
 **Minor:**
 - Phase 3d (deferred) — coordinator-wide `-p` in `trace` (see BACKLOG item below)
-- R9 — `syscall_name()` linear scan → bsearch; C9 — `funcs` sockaddr decode
+- C9 — `funcs` sockaddr decode
 - `vmlinux.h` dedup; drop committed `vmlinux.btf`
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
@@ -276,9 +276,15 @@ symbol path); vDSO frames are named (Phase 1).
   it would require adding a PID set to `struct ares_run_ctx` (`launch.h`), wiring `-p`
   into `trace_args.h`'s bespoke splitter, and having each engine's setup read `rc->pids`.
   Deferred — revisit only if a single PID applied across the whole `trace` run is wanted.
-- **R9 — `syscall_name()` linear scan per syscall event** (`correlate` + the
-  equivalent in `syscalls`). Fine at current volume; if rates climb, sort the
-  generated table once and `bsearch`, or index by `nr`.
+- **R9 — `syscall_name()` linear scan per syscall event — DONE 2026-07-01.**
+  Both `correlate`'s `syscall_name` and `syscalls`' `sysname` now use an
+  nr-indexed lookup (`src/common/syscall_index.h`, header-only `static inline`
+  helper), built once at engine setup; O(1) hot path, retained cold linear
+  fallback for `nr >= 512`. Host-tested (`tests/test_syscall_index.c`). Each
+  engine's fallback string (`"?"` / `sys_%llu`) is unchanged. **Residual (tracked):**
+  the generated table *data* is still compiled twice (`syscall_names[]` in
+  correlate, `g_sys[]` in syscalls — two copies of `syscalls_gen.h`); collapsing
+  them into one shared `common/syscall_table` TU is a separate future item.
 - **C8 (remaining) — duplicate `vmlinux.h`** — signal handlers, `dropped`
   map/`bump_dropped()`, and `syscalls_hdr` alias are unified; `vmlinux.h` dedup still
   open.

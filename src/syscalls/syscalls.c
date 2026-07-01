@@ -57,20 +57,22 @@
 #include "common/launch.h"
 #include "common/engine_args.h"
 #include "common/managed_frame.h"
+#include "common/syscall_index.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 
-static const struct sysent { long nr; const char *name; } g_sys[] = {
+static const struct ares_sysent g_sys[] = {
 #include "syscalls_gen.h"
 };
 static const int g_nsys = (int)(sizeof(g_sys) / sizeof(g_sys[0]));
+static struct ares_sysindex g_sysidx;
 
 static const char *sysname(unsigned long long nr)
 {
+	const char *n = ares_sysindex_name(&g_sysidx, (long)nr);
+	if (n)
+		return n;
 	static char buf[32];
-	for (int i = 0; i < g_nsys; i++)
-		if ((unsigned long long)g_sys[i].nr == nr)
-			return g_sys[i].name;
 	snprintf(buf, sizeof(buf), "sys_%llu", nr);
 	return buf;
 }
@@ -1036,6 +1038,7 @@ static const struct argp sysc_argp = {
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
+	ares_sysindex_build(&g_sysidx, g_sys, (size_t)g_nsys);
 	// ponytail: g_pkg/g_lib/g_activity alias into sa; static so they stay valid
 	// through the run/launch phases after setup returns. setup runs once per process.
 	static struct sysc_args sa = { .c = COMMON_ARGS_INIT };

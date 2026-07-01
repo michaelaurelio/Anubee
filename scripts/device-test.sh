@@ -270,6 +270,16 @@ test_syscalls_cfi() {
     else
         echo "  SKIP: no named nterp interp frame in this window ($PKG may be fully AOT / no interpreted app code ran)"
     fi
+    # full interpreted-chain naming (nterp_chain): a cfi_stack record can now carry
+    # MULTIPLE consecutive named {"kind":"interp"} frames (the interpreted call chain),
+    # not just the terminal. Detect two adjacent named interp frames. Workload-dependent
+    # (needs a deep interpreted chain), so INFO on miss — but proves the multi-frame
+    # extension when present.
+    if grep -qE '"kind":"interp"\},\{"frame":[0-9]+,"addr":"0x0","symbol":"[^"!]*\.[^"!]*","kind":"interp"' <<<"$cfi_records"; then
+        info "syscalls-cfi: full interpreted chain — multiple named interp frames in one cfi_stack record"
+    else
+        echo "  INFO: no multi-frame interpreted chain this window (single-frame or AOT)"
+    fi
     # inline java_stack on syscall records (Task 3): when the managed chain was built
     # and cached by emit_cfi_backtrace, each matching syscall record in the main JSONL
     # carries a "java_stack" array. WARN on miss: not all targets run interpreted code.

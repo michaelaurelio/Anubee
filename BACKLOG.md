@@ -276,6 +276,30 @@ symbol path); vDSO frames are named (Phase 1).
   header tracking) so incremental builds are correct. Related pre-existing note: "Makefile
   common-header prereq is a flat list; `-MMD/-MP` is the real fix."
 
+- **SW1 — switch-interp ShadowFrame walk: follow-ups (non-blocking).** The switch-interpreter
+  ShadowFrame walk shipped and is device-verified (`src/common/art_shadow.c` — names interpreted
+  app Java methods at an `ExecuteSwitchImpl` `cfi_stack` terminal via ART's live
+  `Thread → ManagedStack → ShadowFrame` chain; reads-only, BuildID-gated default-off). Deferred
+  polish:
+  - **`art_buildid` ELF-note parser hardening** (`src/common/art_buildid.c`,
+    `read_build_id_hex`): section-header fields are read at fixed offsets after
+    `fread(sh, min(shentsize,64), …)`; a malformed `shentsize < 0x28` would read uninitialized
+    `sh[]` bytes. Harmless today (fails closed → NULL → gate off), but add a
+    `shentsize < 0x28 → skip` guard.
+  - **Unused `sf_dex_instr`** in `struct art_offsets` (`src/common/art_buildid.h`): populated
+    in the table but never read (corroboration uses `sf_dex_pc_ptr` vs `DexFile.begin_`). Drop
+    it or mark reserved.
+  - **BuildID offset-table generalization**: the table carries one ART build; any other
+    `libart.so` BuildID makes the walk a no-op (default-off). Add rows per device/ART build.
+  - **Formal precision cross-check**: validate the *named* switch-interp frames against an
+    in-process ART StackVisitor oracle. The oracle must hook `open64`/`__openat` (not only the
+    public `openat`, which ART bypasses) so its captures overlap the tracer's `openat` frames.
+  - **Liveness tightening (optional)**: the chain is read live at drain (best-effort — the
+    thread may have unwound frames by then). A future variant could capture the `ManagedStack`
+    top-of-chain pointer in BPF at the syscall instant for exactness.
+  - **`ARES_CFI_DEBUG` `[shadow]` diagnostics** in `art_shadow.c` are intentional (match the
+    CFI diag convention); keep unless a dedicated verbosity split is wanted.
+
 - **N1 — `funcs` CFI/managed-chain work runs inline on the drain thread.**
   In `funcs` (`ares-tracer.c` STACK handler), the CFI walk (`cfi_unwind_snapshot`) and managed-chain
   build (`ares_managed_chain`) run inline on the ring-buffer drain thread, whereas in `syscalls` the

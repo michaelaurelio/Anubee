@@ -19,11 +19,13 @@ int ares_is_interp_frame(const char *sym);
 /* Build a JSON-array fragment of managed method names from `n` resolved frame
  * symbols (innermost-first). A frame is managed iff its symbol contains
  * ".oat!" / ".odex!" / ".vdex!"; the emitted name is the text after the last
- * '!'. If nterp_name is non-empty it is appended last. Writes a NUL-terminated
+ * '!'. Any non-empty `nterp_names` (the interpreted chain, innermost-first) are
+ * appended after the native-resolved managed frames. Writes a NUL-terminated
  * fragment (e.g. ["pkg.A.b","pkg.C.d"]) into out (<= cap). Returns the number
  * of methods; 0 => out is left untouched. */
 int ares_managed_chain_build(const char *const *syms, int n,
-                             const char *nterp_name, char *out, size_t cap);
+                             const char *const *nterp_names, int nterp_n,
+                             char *out, size_t cap);
 
 /* Bounded, mutex-guarded stack_id -> fragment cache.
  * put() stores frag (must fit within JC_FRAG bytes including NUL) for stack_id.

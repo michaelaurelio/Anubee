@@ -20,7 +20,8 @@ int main(void)
         "boot.oat!pkg.Inner.method",                 // managed -> kept
         "base.odex!pkg.Outer.method",                // managed -> kept
     };
-    int n = ares_managed_chain_build(a, 4, NULL, out, sizeof(out));
+    const char *nt1[] = { "pkg.Nterp.run" };
+    int n = ares_managed_chain_build(a, 4, NULL, 0, out, sizeof(out));
     CHECK(n == 2, "counts only managed frames");
     CHECK(strcmp(out, "[\"pkg.Inner.method\",\"pkg.Outer.method\"]") == 0,
           "strips module prefix, order preserved, natives elided");
@@ -28,25 +29,37 @@ int main(void)
     // Pure-native stack: nothing to emit.
     const char *b[] = { "libc.so!read", "linker64!__dl__Z" };
     out[0] = 'X';
-    n = ares_managed_chain_build(b, 2, NULL, out, sizeof(out));
+    n = ares_managed_chain_build(b, 2, NULL, 0, out, sizeof(out));
     CHECK(n == 0, "no managed frame -> 0");
     CHECK(out[0] == 'X', "out untouched when empty");
 
     // nterp terminal: no managed frames, single interpreted method appended.
     const char *c[] = { "libc.so!__openat", "libart.so!nterp_helper" };
-    n = ares_managed_chain_build(c, 2, "pkg.Nterp.run", out, sizeof(out));
+    n = ares_managed_chain_build(c, 2, nt1, 1, out, sizeof(out));
     CHECK(n == 1, "nterp name appended as one method");
     CHECK(strcmp(out, "[\"pkg.Nterp.run\"]") == 0, "nterp-only chain");
 
-    // Managed frames + nterp terminal appended last.
-    n = ares_managed_chain_build(a, 4, "pkg.Nterp.run", out, sizeof(out));
-    CHECK(n == 3, "managed + nterp counted");
-    CHECK(strcmp(out, "[\"pkg.Inner.method\",\"pkg.Outer.method\",\"pkg.Nterp.run\"]") == 0,
-          "nterp appended after managed");
+    // Multi-frame interpreted chain: all appended, innermost-first.
+    const char *nt3[] = { "pkg.A.a+0x2", "pkg.B.b+0x4", "pkg.C.c" };
+    n = ares_managed_chain_build(c, 2, nt3, 3, out, sizeof(out));
+    CHECK(n == 3, "full nterp chain counted");
+    CHECK(strcmp(out, "[\"pkg.A.a+0x2\",\"pkg.B.b+0x4\",\"pkg.C.c\"]") == 0,
+          "nterp chain innermost-first");
+
+    // Empty strings in the nterp array are skipped, not counted.
+    const char *nt_gap[] = { "pkg.A.a", "", "pkg.C.c" };
+    n = ares_managed_chain_build(c, 2, nt_gap, 3, out, sizeof(out));
+    CHECK(n == 2 && strcmp(out, "[\"pkg.A.a\",\"pkg.C.c\"]") == 0, "empty nterp name skipped");
+
+    // Managed frames + nterp chain appended last.
+    n = ares_managed_chain_build(a, 4, nt3, 3, out, sizeof(out));
+    CHECK(n == 5, "managed + full nterp chain counted");
+    CHECK(strcmp(out, "[\"pkg.Inner.method\",\"pkg.Outer.method\",\"pkg.A.a+0x2\",\"pkg.B.b+0x4\",\"pkg.C.c\"]") == 0,
+          "nterp chain appended after managed");
 
     // JSON escaping of a pathological method name.
     const char *d[] = { "boot.oat!pkg.Q\"x" };
-    n = ares_managed_chain_build(d, 1, NULL, out, sizeof(out));
+    n = ares_managed_chain_build(d, 1, NULL, 0, out, sizeof(out));
     CHECK(n == 1 && strcmp(out, "[\"pkg.Q\\\"x\"]") == 0, "escapes quote in name");
 
     // art_jni_trampoline lives in boot.oat (resolves "boot.oat!art_jni_trampoline+..")
@@ -56,7 +69,7 @@ int main(void)
         "boot.oat!art_jni_trampoline+0x6c",          // bridge -> excluded
         "boot.oat!pkg.Inner.method",                 // managed -> kept
     };
-    n = ares_managed_chain_build(t, 3, NULL, out, sizeof(out));
+    n = ares_managed_chain_build(t, 3, NULL, 0, out, sizeof(out));
     CHECK(n == 1, "art_jni_trampoline excluded from managed chain");
     CHECK(strcmp(out, "[\"pkg.Inner.method\"]") == 0, "trampoline not in java_stack");
 

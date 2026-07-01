@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -359,6 +360,25 @@ static const struct flagdef t_mfd[] = {
 
 // ---- specialised decoders ------------------------------------------------
 
+// Append a printf-formatted piece to out[0..n), advancing *pos. Never lets *pos
+// run past the buffer: snprintf returns the would-be length, so a naive
+// `*pos += snprintf(...)` overshoots on truncation and the *next* append then
+// writes out of bounds (out + *pos past the end, with n - *pos underflowed to a
+// huge size_t). Clamp *pos to the actual bytes written here.
+static void dec_apnd(char *out, size_t n, size_t *pos, const char *fmt, ...)
+{
+	if (*pos >= n)
+		return;
+	va_list ap;
+	va_start(ap, fmt);
+	int w = vsnprintf(out + *pos, n - *pos, fmt, ap);
+	va_end(ap);
+	if (w < 0)
+		return;
+	size_t avail = n - *pos;              // >= 1 here (*pos < n)
+	*pos += ((size_t)w < avail) ? (size_t)w : avail - 1;
+}
+
 static void dec_open(unsigned long long v, char *out, size_t n)
 {
 	const char *acc = (v & 3) == 0 ? "O_RDONLY" :
@@ -392,10 +412,10 @@ static void dec_socktype(unsigned long long v, char *out, size_t n)
 	fbuf[0] = '\0';
 	size_t pos = 0;
 #ifdef SOCK_NONBLOCK
-	if (v & SOCK_NONBLOCK) pos += snprintf(fbuf + pos, sizeof(fbuf) - pos, "|SOCK_NONBLOCK");
+	if (v & SOCK_NONBLOCK) dec_apnd(fbuf, sizeof(fbuf), &pos, "|SOCK_NONBLOCK");
 #endif
 #ifdef SOCK_CLOEXEC
-	if (v & SOCK_CLOEXEC) pos += snprintf(fbuf + pos, sizeof(fbuf) - pos, "|SOCK_CLOEXEC");
+	if (v & SOCK_CLOEXEC) dec_apnd(fbuf, sizeof(fbuf), &pos, "|SOCK_CLOEXEC");
 #endif
 	snprintf(out, n, "%s%s", b, fbuf);
 }
@@ -441,11 +461,11 @@ static void dec_clone(unsigned long long v, char *out, size_t n)
 	size_t pos = 0;
 	out[0] = '\0';
 	if (buf[0])
-		pos += snprintf(out + pos, n - pos, "%s", buf);
+		dec_apnd(out, n, &pos, "%s", buf);
 	if (rem)
-		pos += snprintf(out + pos, n - pos, "%s0x%llx", pos ? "|" : "", rem);
+		dec_apnd(out, n, &pos, "%s0x%llx", pos ? "|" : "", rem);
 	if (sigpart[0])
-		snprintf(out + pos, n - pos, "%s%s", pos ? "|" : "", sigpart);
+		dec_apnd(out, n, &pos, "%s%s", pos ? "|" : "", sigpart);
 	if (!out[0])
 		snprintf(out, n, "0");
 }

@@ -60,3 +60,20 @@ def load_ares(events_path, stacks_path):
             "interp": chains.get(sid, []),
         })
     return out
+
+_LOC = re.compile(r"\(.*\)$")
+
+def normalize_java(frame):
+    """Strip Frida's trailing (File.java:NN) source location."""
+    return _LOC.sub("", frame).strip()
+
+def load_frida(path):
+    out = []
+    for rec in _iter_jsonl(path):
+        out.append({
+            "syscall": rec.get("syscall"),
+            "path": rec.get("path"),
+            "tid": rec.get("tid"),
+            "java": [normalize_java(x) for x in rec.get("java_stack", [])],
+        })
+    return out

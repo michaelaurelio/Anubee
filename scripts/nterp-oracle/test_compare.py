@@ -47,5 +47,24 @@ class TestLoadAres(unittest.TestCase):
         os.unlink(events); os.unlink(stacks)
         self.assertEqual(recs, [])
 
+class TestFrida(unittest.TestCase):
+    def test_normalize_strips_source_location(self):
+        self.assertEqual(
+            compare.normalize_java("icu.nullptr.applistdetector.Detector.check(Detector.java:42)"),
+            "icu.nullptr.applistdetector.Detector.check")
+    def test_normalize_no_paren_passthrough(self):
+        self.assertEqual(compare.normalize_java("a.b.C.d"), "a.b.C.d")
+
+    def test_load_frida(self):
+        import tempfile, os
+        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        f.write(json.dumps({"tid":100,"syscall":"openat","path":"/proc/net/unix",
+                            "java_stack":["icu.A.check(A.java:1)","icu.A.run(A.java:9)"]})+"\n")
+        f.close()
+        recs = compare.load_frida(f.name)
+        os.unlink(f.name)
+        self.assertEqual(recs, [{"syscall":"openat","path":"/proc/net/unix","tid":100,
+                                 "java":["icu.A.check","icu.A.run"]}])
+
 if __name__ == "__main__":
     unittest.main()

@@ -697,8 +697,12 @@ stream:
 - `ares syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
-  "backtrace":[{frame,addr,symbol}..]}`, plus `{"type":"stack",...}` sidecar
-  snapshots emitted by `--snapshot`. Stack snapshot schema:
+  "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
+  snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
+  (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
+  Best-effort: AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
+  limits (see BACKLOG). The authoritative full native+managed walk stays in the `.stacks` sidecar `cfi_stack`
+  record, joinable by `stack_id`. Stack snapshot schema:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
@@ -711,10 +715,15 @@ stream:
   `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
-  "args":[..],"backtrace":[{"frame":0,"addr":"0x.."},..]}` and
+  "args":[..],"backtrace":[{"frame":0,"addr":"0x.."},..], "java_stack":[...]}` and
   `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
   "retval":..,"elapsed_ns":..}` (see §3.1). CALL records always carry a `backtrace`
-  array of raw addresses (addr-only, no inline symbols — see §3.1). The `-o` file receives structured records
+  array of raw addresses (addr-only, no inline symbols — see §3.1). `java_stack` (optional, `--snapshot` + `-o`):
+  the managed/Java call chain (innermost-first, native frames elided) that issued the event, e.g.
+  `["pkg.Inner.method","pkg.Outer.method"]`. Best-effort: AOT frames are reliable; interpreted (nterp) frames
+  inherit the documented precision/hit-rate limits (see BACKLOG). The authoritative full native+managed walk
+  stays in the `.stacks` sidecar `cfi_stack` record, joinable by `stack_id`. `funcs` now also writes
+  `{"type":"cfi_stack"}` records to its sidecar (parity with syscalls). The `-o` file receives structured records
   only; human-readable console output is suppressed when `-o` is active (implied `-q`).
   `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.

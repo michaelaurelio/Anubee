@@ -332,6 +332,23 @@ symbol path); vDSO frames are named (Phase 1).
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
+### 2026-07-01
+
+- **`java_stack` inline managed chain + funcs `cfi_stack` parity (Tasks 1–5).** Shared
+  `ares_managed_frame_chain_build` extractor + `ares_jcache_{put,get,reset}` `stack_id`
+  cache (thread-safe via mutex), both engines' CFI walks populate the cache on STACK
+  events. `syscalls` and `funcs` CALL/RETURN records now carry optional `"java_stack":[...]`
+  field (innermost-first, native frames elided) when a managed caller resolves; emitted
+  only under `--snapshot` + `-o`. `funcs` now also writes `{"type":"cfi_stack",...}` records
+  to its sidecar (parity with syscalls). Best-effort: AOT-compiled Java frames are reliable;
+  interpreted (nterp) frames inherit documented precision/~39% hit-rate limits; the
+  authoritative full native+managed walk stays in the `.stacks` sidecar, joinable by
+  `stack_id`. **Residuals (resolve later):** (a) `correlate` not covered; (b) both `syscalls`
+  and `funcs` each walk CFI on the STACK event (funcs' walk is net-new); (c) `java_stack`
+  inherits nterp precision limits; (d) `ares_jcache_get` returns an internal pointer released
+  before the caller copies it — a rare torn-string race under concurrent same-slot access,
+  worth hardening later.
+
 ### 2026-06-30
 
 - **Global PID-attach mode — Phases 1–3 (all 6 standalone engines).** Real per-process

@@ -14,6 +14,11 @@
 static const char *managed_method(const char *sym)
 {
     if (!sym) return NULL;
+    // The JNI bridge lives in boot.oat, so it resolves as
+    // "boot.oat!art_jni_trampoline+.." and would match the .oat! test below — but
+    // it is a native->managed bridge, not a Java method. Exclude it, mirroring the
+    // kind-classifier precedence in ares_emit_cfi_stack_json (jni-trampoline first).
+    if (strstr(sym, "art_jni_trampoline")) return NULL;
     if (!strstr(sym, ".oat!") && !strstr(sym, ".odex!") && !strstr(sym, ".vdex!"))
         return NULL;
     const char *bang = strrchr(sym, '!');

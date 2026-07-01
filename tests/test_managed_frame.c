@@ -49,6 +49,17 @@ int main(void)
     n = ares_managed_chain_build(d, 1, NULL, out, sizeof(out));
     CHECK(n == 1 && strcmp(out, "[\"pkg.Q\\\"x\"]") == 0, "escapes quote in name");
 
+    // art_jni_trampoline lives in boot.oat (resolves "boot.oat!art_jni_trampoline+..")
+    // but is a native bridge, not a Java method — must be excluded from the chain.
+    const char *t[] = {
+        "libc.so!__openat",
+        "boot.oat!art_jni_trampoline+0x6c",          // bridge -> excluded
+        "boot.oat!pkg.Inner.method",                 // managed -> kept
+    };
+    n = ares_managed_chain_build(t, 3, NULL, out, sizeof(out));
+    CHECK(n == 1, "art_jni_trampoline excluded from managed chain");
+    CHECK(strcmp(out, "[\"pkg.Inner.method\"]") == 0, "trampoline not in java_stack");
+
     // is_interp_frame classification.
     CHECK(ares_is_interp_frame("libart.so!nterp_helper"), "nterp_helper is interp");
     CHECK(ares_is_interp_frame("libart.so!art_quick_to_interpreter_bridge_ToInterpreterBridge"),

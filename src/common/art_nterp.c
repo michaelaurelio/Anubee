@@ -373,6 +373,8 @@ int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t sta
 int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
                 char out[][256], int max_frames)
 {
+    if (!snap || !out || max_frames <= 0)
+        return 0;
     if (!art_version_ok())
         return 0;
     int fd = proc_mem_open(pid);

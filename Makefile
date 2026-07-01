@@ -42,6 +42,13 @@ endif
 LD          := aarch64-linux-gnu-ld
 OBJCOPY     := aarch64-linux-gnu-objcopy
 
+# Compiler-generated header dependencies. -MMD writes a .d per object next to it;
+# -MP adds phony targets for each header so a deleted/renamed header never breaks
+# the build. Threaded into every compile below and -include'd at the tail. This is
+# what keeps a shared *.bpf.h / struct-header edit from silently shipping a stale
+# BPF object (BLD1).
+DEPFLAGS := -MMD -MP
+
 BUILD       := build
 SRC         := src
 LIBBPF_SRC  := third_party/libbpf/src
@@ -72,7 +79,7 @@ EXECVE_SKEL        := $(BUILD)/execve.skel.h
 PROP_READ_BPF_OBJ  := $(BUILD)/prop_read.bpf.o
 PROP_READ_SKEL     := $(BUILD)/prop_read.skel.h
 
-BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I.
+BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I. $(DEPFLAGS)
 
 # ---- userspace objects (compiled per engine, then localized) --------------
 SYSC_CSRC := $(SRC)/syscalls/syscalls.c
@@ -137,7 +144,7 @@ TRACE_PART := $(BUILD)/trace.part.o
 MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
-MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC)
+MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 
 SYSC_PART := $(BUILD)/syscalls.part.o
 FUNC_PART := $(BUILD)/funcs.part.o
@@ -145,13 +152,13 @@ LIB_PART  := $(BUILD)/lib.part.o
 MAIN_OBJ  := $(BUILD)/main.o
 
 # -I$(SRC) lets engines and the common module resolve "common/lib_trace.h".
-SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC)
-FUNC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC)
-LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC)
-CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC)
-DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC)
-TRACE_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/trace -I$(LIBBPF_INC)
-COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC)
+SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
+FUNC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC) $(DEPFLAGS)
+LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
+CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
+DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
+TRACE_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/trace -I$(LIBBPF_INC) $(DEPFLAGS)
+COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC) $(DEPFLAGS)
 
 # Static link: libelf (zstd-enabled) pulls in zstd+zlib; liblzma decodes
 # .gnu_debugdata mini-debug-info in the symbolizer. Superset of both engines.
@@ -180,17 +187,14 @@ $(LIBBPF_A):
 		CC=$(CC) AR=$(AR) install install_uapi_headers
 
 # ---- BPF objects + skeletons (host clang) ---------------------------------
-$(SYSC_BPF_OBJ): $(SRC)/syscalls/syscalls.bpf.c $(SRC)/syscalls/syscalls.h vmlinux.h $(LIBBPF_A) \
-                 $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h
+$(SYSC_BPF_OBJ): $(SRC)/syscalls/syscalls.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/syscalls -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name syscalls > $@
 
-$(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c $(SRC)/funcs/ares-tracer.h vmlinux.h $(LIBBPF_A) \
-                 $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h \
-                 $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h
+$(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -198,7 +202,7 @@ $(FUNC_SKEL): $(FUNC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_tracer_bpf > $@
 
 # lib engine BPF: minimal maps + uid gate, then #includes the shared probe.
-$(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h vmlinux.h $(LIBBPF_A)
+$(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/lib -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -206,7 +210,7 @@ $(LIB_SKEL): $(LIB_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_lib > $@
 
 # correlate engine BPF: span stack + entry uprobe + span-gated do_el0_svc kprobe.
-$(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c $(SRC)/correlate/correlate.h $(SRC)/common/span_stack.bpf.h $(SRC)/common/trace_schema.h vmlinux.h $(LIBBPF_A)
+$(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/correlate -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -214,7 +218,7 @@ $(CORR_SKEL): $(CORR_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_correlate > $@
 
 # dump engine BPF: minimal maps + uid gate, then #includes the shared probe.
-$(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c $(SRC)/common/lib_trace.h $(SRC)/common/lib_trace.bpf.h vmlinux.h $(LIBBPF_A)
+$(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/dump -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -222,27 +226,21 @@ $(DUMP_SKEL): $(DUMP_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name ares_dump > $@
 
 # proc-event analyzer BPF: own ring buffer + uid gate + fork/exit tracepoints.
-$(PROC_EVENT_BPF_OBJ): $(SRC)/modules/proc_event.bpf.c vmlinux.h \
-                        $(SRC)/modules/mod_events.h \
-                        $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+$(PROC_EVENT_BPF_OBJ): $(SRC)/modules/proc_event.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(PROC_EVENT_SKEL): $(PROC_EVENT_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name proc_event_bpf > $@
 
-$(EXECVE_BPF_OBJ): $(SRC)/modules/execve.bpf.c vmlinux.h \
-                   $(SRC)/modules/mod_events.h \
-                   $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+$(EXECVE_BPF_OBJ): $(SRC)/modules/execve.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(EXECVE_SKEL): $(EXECVE_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name execve_bpf > $@
 
-$(PROP_READ_BPF_OBJ): $(SRC)/modules/prop_read.bpf.c vmlinux.h \
-                      $(SRC)/modules/mod_events.h \
-                      $(SRC)/common/uid_filter.bpf.h $(LIBBPF_A)
+$(PROP_READ_BPF_OBJ): $(SRC)/modules/prop_read.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -268,25 +266,25 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(FUNC_CFLAGS) -c $< -o $@
 
-$(BUILD)/common/%.o: $(SRC)/common/%.c $(SRC)/common/lib_trace.h $(SRC)/common/proc_mem.h $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/common/trace_schema.h $(SRC)/common/emit.h $(SRC)/common/decode.h $(SRC)/common/capabilities.h $(SRC)/common/runtime.h $(SRC)/common/evqueue.h $(SRC)/common/symbolize.h $(SRC)/common/maps.h $(SRC)/common/dex.h $(SRC)/common/art_nterp.h $(LIBBPF_A)
+$(BUILD)/common/%.o: $(SRC)/common/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
-$(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(SRC)/common/lib_trace.h $(LIBBPF_A)
+$(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
-$(BUILD)/correlate/%.o: $(SRC)/correlate/%.c $(CORR_SKEL) $(SYSCALLS_TBL) $(SRC)/common/launch.h $(SRC)/common/probe_resolve.h $(SRC)/correlate/correlate.h $(LIBBPF_A)
+$(BUILD)/correlate/%.o: $(SRC)/correlate/%.c $(CORR_SKEL) $(SYSCALLS_TBL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(CORR_CFLAGS) -c $< -o $@
 
-$(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(SRC)/common/proc_mem.h $(SRC)/common/lib_trace.h $(LIBBPF_A)
+$(BUILD)/dump/%.o: $(SRC)/dump/%.c $(DUMP_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(DUMP_CFLAGS) -c $< -o $@
 
 # trace has no BPF skeleton; it only needs the shared launch header + the engine
 # driver symbols (resolved at the final link from the syscalls/funcs parts).
-$(BUILD)/trace/%.o: $(SRC)/trace/%.c $(SRC)/common/launch.h $(LIBBPF_A)
+$(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
@@ -296,7 +294,7 @@ $(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PRO
 
 $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
-	$(CC) -O2 -Wall -Wextra -c $< -o $@
+	$(CC) -O2 -Wall -Wextra $(DEPFLAGS) -c $< -o $@
 
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
 # syscalls/funcs/lib also export their setup/run/teardown phases so a trace-style
@@ -439,3 +437,15 @@ test:
 
 clean:
 	rm -rf $(BUILD) $(FUNC_SKEL)
+
+# ---- auto-generated header deps (-MMD -MP) --------------------------------
+# Absent on a clean build → -include (leading dash) keeps the first pass silent;
+# the explicit source + generated-skeleton/table + vmlinux.h + libbpf.a prereqs
+# above guarantee correct first-build ordering. Thereafter these carry every
+# fine-grained header dependency, so a shared *.bpf.h / struct-header edit rebuilds
+# exactly the objects that include it, all the way to $(BIN).
+ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
+                $(DUMP_OBJ) $(TRACE_OBJ) $(MOD_OBJ) $(MAIN_OBJ)
+ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
+                $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ)
+-include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

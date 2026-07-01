@@ -304,3 +304,83 @@ int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_s
     close(fd);
     return ret;
 }
+
+// Scan the whole interpreted call chain above the nterp terminal at nterp_sp.
+// Same corroboration loop as nterp_pick but continues past the first hit: emits
+// every dex_pc-corroborated frame innermost-first, deduping consecutive identical
+// ArtMethod* pointers. Uncorroborated candidates are dropped (precision over recall).
+int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+                     size_t stack_len, uint64_t nterp_sp, char out[][256], int max_frames)
+{
+    if (!stack || !out || max_frames <= 0)
+        return 0;
+    int nc = 0;
+    uint64_t last_art = 0;
+    for (uint64_t off = 0; off <= NTERP_SCAN_WIN && nc < max_frames; off += 8) {
+        uint64_t addr = nterp_sp + off;
+        if (addr < stack_base)
+            continue;
+        size_t so = (size_t)(addr - stack_base);
+        if (so + 8 > stack_len)
+            break;
+        uint64_t cand;
+        memcpy(&cand, stack + so, 8);
+        if (cand == last_art)
+            continue;
+
+        uint32_t midx; uint64_t begin; struct dex_method_map *map;
+        if (!art_method_chase(rd, rc, cand, &midx, &begin, &map))
+            continue;
+
+        /* Corroborate: a stack value above this slot that is a live dex_pc into
+         * THIS method's own bytecode (same method_idx). */
+        int corrob = 0;
+        uint32_t dexpc = 0;
+        for (uint64_t c = 0; c <= NTERP_CORROB_SPAN; c += 8) {
+            uint64_t va = addr + c;
+            if (va < stack_base)
+                continue;
+            size_t cso = (size_t)(va - stack_base);
+            if (cso + 8 > stack_len)
+                break;
+            uint64_t v;
+            memcpy(&v, stack + cso, 8);
+            if (v < begin)
+                continue;
+            uint64_t rel = v - begin;
+            if (rel > 0xffffffffULL)
+                continue;
+            uint32_t rmidx, rinsns;
+            if (dex_lookup_range(map, (uint32_t)rel, &rmidx, &rinsns) && rmidx == midx) {
+                corrob = 1;
+                dexpc = ((uint32_t)rel - rinsns) / 2;
+                break;
+            }
+        }
+        if (!corrob)
+            continue;                 /* precision over recall */
+
+        char nm[240];   /* 240 + "+0x" + 8 hex digits = 251 < 256: no truncation */
+        if (!dex_name_by_index(map, midx, nm, sizeof(nm)))
+            continue;
+        snprintf(out[nc], 256, "%s+0x%x", nm, dexpc);
+        last_art = cand;
+        nc++;
+    }
+    return nc;
+}
+
+int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+                char out[][256], int max_frames)
+{
+    if (!art_version_ok())
+        return 0;
+    int fd = proc_mem_open(pid);
+    if (fd < 0)
+        return 0;
+    int nc = nterp_chain_pick(pm_reader, (void *)(intptr_t)fd,
+                              snap->snap, snap->sp, (size_t)snap->snap_len,
+                              nterp_sp, out, max_frames);
+    close(fd);
+    return nc;
+}

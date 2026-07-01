@@ -279,6 +279,15 @@ test_syscalls_cfi() {
     else
         echo "WARN: no inline java_stack (expected on a managed/nterp target app)"
     fi
+    # dex_pc corroboration suffix (Task 3): a corroborated nterp name carries a
+    # "+0x<dexpc>" bytecode-offset suffix inside a java_stack entry. Corroboration
+    # firing is workload-dependent, so this is informational (not a hard fail) —
+    # but it must never regress to zero once seen.
+    if grep -oE '"java_stack":\[[^]]*\]' <<<"$mainout" 2>/dev/null | grep -qE '\+0x[0-9a-f]+"'; then
+        echo "PASS: nterp java_stack carries +0x<dexpc> suffix (corroborated)"
+    else
+        echo "INFO: no +0x<dexpc> suffix this run (corroboration did not fire)"
+    fi
 }
 
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least

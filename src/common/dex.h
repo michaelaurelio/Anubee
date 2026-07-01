@@ -21,6 +21,14 @@ void dex_map_free(struct dex_method_map *m);
 int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
                    char *out, size_t outsz);
 
+// Resolve a byte offset into the DEX image to the covering method's index and the
+// image offset of its code_item.insns (bytecode start). On a hit writes both
+// out-params and returns 1; on a miss returns 0 and leaves them untouched. Used to
+// corroborate an nterp ArtMethod* candidate against a live dex_pc found on the stack
+// (same method + a valid in-range dex_pc => the true managed frame).
+int dex_lookup_range(const struct dex_method_map *m, uint32_t off,
+                     uint32_t *method_idx, uint32_t *insns_off);
+
 // Resolve a DEX method_ids index directly to "pkg.Class.method" (the index-keyed
 // sibling of dex_map_lookup, for callers that already hold a method_index — e.g.
 // an ART managed-stack walk). On a hit writes "pkg.Class.method" to out and

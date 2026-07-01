@@ -39,6 +39,15 @@ typedef size_t (*art_reader)(void *ctx, uint64_t va, void *dst, size_t len);
 int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
                        char *out, size_t outsz);
 
+// Core locator, exposed for host testing. Scans stack slots upward from nterp_sp
+// (bytes in `stack`, addresses `stack_base..stack_base+stack_len`) for the managed
+// frame's ArtMethod*, corroborating each candidate against a live dex_pc for the
+// same method. Writes "pkg.Class.method+0x<dexpc>" (corroborated) or bare
+// "pkg.Class.method" (uncorroborated fallback) and returns 1; returns 0 on no
+// resolvable candidate. Chases ArtMethod structs via rd; reads dex_pc from `stack`.
+int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+               size_t stack_len, uint64_t nterp_sp, char *out, size_t outsz);
+
 // Drop the cached DexFile image maps (host tests reset state between cases).
 void art_nterp_cache_reset(void);
 

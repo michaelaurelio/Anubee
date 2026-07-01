@@ -31,15 +31,13 @@ so history stays traceable.
   device-verified, commit `8c5da1e` — snapshot-scan `ArtMethod*` chase to
   `pkg.Class.method`; `reached_APP_frame` 0 → 17 on a neutral obfuscated app);
   W5 (JIT `[anon]`) ≈ 0 payoff on measured workloads — see below
-- **nterp naming — shipped with known drawbacks (resolve later):** (1) **precision** —
-  the locator scans a window above the nterp terminal SP and takes the *first*
-  candidate `ArtMethod*` whose chase resolves; it can pick a nearby/stale ArtMethod
-  → a real-but-wrong method for that exact frame. Anchor on the managed-frame base
-  (offset 0) or cross-check the dex_pc slot. (2) **hit-rate** ~39% (17/44 nterp
-  terminals on the test app) — widen/centre the scan; some terminals' managed frame
-  may sit beyond the window. (3) **`+0x<dex_pc>` suffix deferred** (needs
-  `NterpGetDexPC` + per-method `out_regs`); emits the bare `pkg.Class.method`.
-  (4) version gate keys on apex `370549100` only (BuildID is the stronger anchor).
+- **nterp naming — residual drawbacks (resolve later):** ~~(1) **precision** — stale
+  `ArtMethod*` spill risk~~ **(1) resolved 2026-07-01** — dex_pc corroboration now
+  rejects stale candidates (see Resolved/Done). (2) **hit-rate** ~39% (17/44 nterp
+  terminals on the test app) — window widened 4096→8192; re-measure pending on-device.
+  ~~(3) **`+0x<dex_pc>` suffix deferred**~~ **(3) resolved 2026-07-01** — corroborated
+  names now carry `+0x<dexpc>` (see Resolved/Done). (4) version gate keys on apex
+  `370549100` only (BuildID is the stronger anchor; still-open).
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**
@@ -357,6 +355,20 @@ is in DOCUMENTATION.md and the referenced specs.
   inherits nterp precision limits; (d) `ares_jcache_get` returns an internal pointer released
   before the caller copies it — a rare torn-string race under concurrent same-slot access,
   worth hardening later.
+
+- **nterp naming precision — dex_pc corroboration + `+0x<dexpc>` suffix.** The nterp
+  locator (`art_nterp.c`) no longer names the first resolvable `ArtMethod*` (which
+  could be a stale spill → real-but-wrong method). It now accepts only a candidate
+  the frame *corroborates* — a live dex_pc on the stack pointing into that same
+  method's bytecode (via new `dex_lookup_range`, reusing existing code_item ranges;
+  no nterp frame-layout offsets). The corroborating dex_pc yields the previously
+  deferred `+0x<dexpc>` suffix. With false positives filtered structurally, the scan
+  window widened 4096→8192 for hit-rate. Reads-only; firewall intact. Host-covered
+  by `test_dex` (range lookup) + `test_art_nterp` (stale-vs-real selection, suffix,
+  fallback). **Residual:** uncorroborated candidates fall back to a bare name, but retain
+  the pre-fix wrong-method risk (first-resolvable stale ArtMethod* may be named); full
+  precision still requires the ART `Thread→ManagedStack` walk (parked). BuildID
+  version-gating still deferred.
 
 ### 2026-06-30
 

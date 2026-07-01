@@ -120,8 +120,12 @@ static struct dex_method_map *dexmap_get(art_reader rd, void *rc,
     return m;
 }
 
-int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
-                       char *out, size_t outsz)
+// Chase one candidate ArtMethod* to its {method_idx, DexFile begin_, dexmap} via rd.
+// Returns 1 on success. Split out of art_method_resolve so nterp_pick can corroborate
+// the candidate (dex_lookup_range needs begin_ + map) before committing to the name.
+static int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
+                            uint32_t *midx_out, uint64_t *begin_out,
+                            struct dex_method_map **map_out)
 {
     // Implausible / misaligned pointer — not an ArtMethod.
     if (artmethod < 0x1000 || (artmethod & 7))
@@ -156,7 +160,21 @@ int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
     struct dex_method_map *m = dexmap_get(rd, rc, begin, dsize);
     if (!m)
         return 0;
-    return dex_name_by_index(m, midx, out, outsz);
+
+    if (midx_out)  *midx_out  = midx;
+    if (begin_out) *begin_out = begin;
+    if (map_out)   *map_out   = m;
+    return 1;
+}
+
+int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
+                       char *out, size_t outsz)
+{
+    uint32_t midx;
+    struct dex_method_map *map;
+    if (!art_method_chase(rd, rc, artmethod, &midx, NULL, &map))
+        return 0;
+    return dex_name_by_index(map, midx, out, outsz);
 }
 
 // ---- ART version gate ----------------------------------------------------------

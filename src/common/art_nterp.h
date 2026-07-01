@@ -39,6 +39,14 @@ typedef size_t (*art_reader)(void *ctx, uint64_t va, void *dst, size_t len);
 int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
                        char *out, size_t outsz);
 
+// Chase an ArtMethod* to its {method_idx, DexFile begin_, dexmap}. Exposed so a
+// caller can corroborate the candidate (dex_lookup_range needs begin_ + map) before
+// naming it — used by the ManagedStack walk. Returns 1 on success.
+struct dex_method_map;
+int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
+                     uint32_t *midx_out, uint64_t *begin_out,
+                     struct dex_method_map **map_out);
+
 // Core locator, exposed for host testing. Scans stack slots upward from nterp_sp
 // (bytes in `stack`, addresses `stack_base..stack_base+stack_len`) for the managed
 // frame's ArtMethod*, corroborating each candidate against a live dex_pc for the

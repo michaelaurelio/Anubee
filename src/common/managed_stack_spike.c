@@ -6,7 +6,8 @@
 #include <linux/types.h>
 #include "common/stack_snapshot.h"
 #include "common/proc_mem.h"
-#include "common/art_nterp.h"   // art_reader, art_method_resolve
+#include "common/art_nterp.h"   // art_reader, art_method_resolve, art_method_chase
+#include "common/dex.h"         // dex_lookup_range, dex_name_by_index
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,13 +95,34 @@ void ares_mstack_spike(int pid, const struct ares_stack_snapshot *snap) {
 				if (!rd64(rd, &pc, a, &v)) break;
 				v = UNTAG(v);
 				if (!v || v == last) continue;
-				char nm[256];
-				if (art_method_resolve(rd, &pc, v, nm, sizeof nm)) {
-					fprintf(stderr, "[mstack] tid=%u seg%d f%d @+0x%llx %s\n",
-						snap->h.tid, seg, frames,
-						(unsigned long long)(a - sp), nm);
-					last = v; frames++; printed = 1;
+				uint32_t midx; uint64_t begin; struct dex_method_map *map;
+				if (!art_method_chase(rd, &pc, v, &midx, &begin, &map))
+					continue;
+				// Corroborate: a live dex_pc into THIS method's bytecode sitting
+				// near the frame base confirms a real interpreted (nterp) frame; a
+				// spilled ArtMethod* arg ref has none. (AOT frames also lack one.)
+				int corrob = 0; uint32_t dexpc = 0;
+				for (uint64_t c = 0; c <= 0x200; c += 8) {
+					uint64_t w = 0;
+					if (!rd64(rd, &pc, a + c, &w)) break;
+					w = UNTAG(w);
+					if (w < begin) continue;
+					uint64_t rel = w - begin;
+					if (rel > 0xffffffffULL) continue;
+					uint32_t rmidx, rinsns;
+					if (dex_lookup_range(map, (uint32_t)rel, &rmidx, &rinsns) && rmidx == midx) {
+						corrob = 1; dexpc = ((uint32_t)rel - rinsns) / 2; break;
+					}
 				}
+				char nm[256];
+				if (!dex_name_by_index(map, midx, nm, sizeof nm)) continue;
+				if (corrob)
+					fprintf(stderr, "[mstack] tid=%u seg%d f%d @+0x%llx C %s+0x%x\n",
+						snap->h.tid, seg, frames, (unsigned long long)(a - sp), nm, dexpc);
+				else
+					fprintf(stderr, "[mstack] tid=%u seg%d f%d @+0x%llx u %s\n",
+						snap->h.tid, seg, frames, (unsigned long long)(a - sp), nm);
+				last = v; frames++; printed = 1;
 			}
 		}
 

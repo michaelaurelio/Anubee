@@ -55,7 +55,6 @@ int main(int argc,char**argv){
     const uint64_t DC=0x50000000ULL, DF=0x50001000ULL;  // DexCache, DexFile
     const uint64_t ARTM=0x60000000ULL;                  // ArtMethod
     const uint64_t SF1=0x70000000ULL, SF0=0x70001000ULL;// ShadowFrames (SF0 innermost)
-    const uint64_t MS=0x71000000ULL;                    // ManagedStack
     const uint64_t THREAD=0x72000000ULL;
     const uint64_t TLS=0x73000000ULL;
 
@@ -75,10 +74,12 @@ int main(int argc,char**argv){
     w64(sf0+0x08, ARTM);
     w64(sf0+0x18, DEX_BASE + insns);        // dex_pc_ptr_: method start (dex_pc 0, always in-range)
     w64(sf0+0x20, DEX_BASE + insns);        // dex_instructions_
-    // ShadowFrame SF1 (outer): link_ -> 0, method_ -> ARTM, dex_pc_ptr_ OUT of range (drop)
+    // ShadowFrame SF1 (outer): link_ -> 0, method_ -> ARTM, dex_pc_ptr_ OUT of range.
+    // method_ is authoritative (chase succeeds) so SF1 is still NAMED, but bare (no
+    // +0x<dexpc> suffix) because its dex_pc doesn't corroborate.
     w64(sf1+0x00, 0);
     w64(sf1+0x08, ARTM);
-    w64(sf1+0x18, DEX_BASE + (uint64_t)dexlen + 0x1000); // beyond image -> no corroboration
+    w64(sf1+0x18, DEX_BASE + (uint64_t)dexlen + 0x1000); // beyond image -> no suffix
     w64(sf1+0x20, DEX_BASE);
     // ManagedStack: link_=0, top_shadow_frame_=SF0
     w64(ms+0x08, 0);
@@ -104,11 +105,15 @@ int main(int argc,char**argv){
 
     char out[8][256];
     int n = shadow_frame_pick(memrd, &m, TLS, &o, out, 8);
-    CHECK(n == 1, "one corroborated frame (bad dex_pc dropped)");
+    // Both frames named (method_ authoritative). SF0 corroborated -> +0x0 suffix;
+    // SF1 uncorroborated -> bare name (not dropped).
+    CHECK(n == 2, "both frames named (authoritative method_; SF1 bare, not dropped)");
     if (n >= 1) {
         char want[300]; snprintf(want, sizeof want, "%s+0x0", mname);
-        CHECK(strcmp(out[0], want) == 0, "innermost frame named with dex_pc suffix");
+        CHECK(strcmp(out[0], want) == 0, "innermost frame: corroborated dex_pc suffix");
     }
+    if (n >= 2)
+        CHECK(strcmp(out[1], mname) == 0, "outer frame: bare name (uncorroborated dex_pc)");
     // gate: tls_base 0 -> nothing
     CHECK(shadow_frame_pick(memrd, &m, 0, &o, out, 8) == 0, "tls_base 0 -> 0 frames");
 

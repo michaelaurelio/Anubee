@@ -304,7 +304,9 @@ symbol path); vDSO frames are named (Phase 1).
   (`[spawn] >`, `[uprobe] >`, …); other engines use prose banners. Masked under
   `trace -o`. Low value / high cosmetic churn across 5 files — **not recommended**.
   (`[lib]`/`[unlib]` are output lines, not banners — keep their format.)
-- **Drop the 6 MB committed `vmlinux.btf`** in favor of regenerate-on-demand.
+- ~~**Drop the 6 MB committed `vmlinux.btf`**~~ **DONE 2026-07-01** — untracked +
+  gitignored; `make regen-vmlinux ARES_VMLINUX_BTF=<btf>` regenerates the committed
+  `vmlinux.h` (default `/sys/kernel/btf/vmlinux`). Regen guide in DOCUMENTATION.md.
 - **Unified MCP richness (follow-on).** Minimal ingest + span join done; remaining:
   call histograms, timing views, symbol/module filters, full `server.py` tool surface
   for the new types.

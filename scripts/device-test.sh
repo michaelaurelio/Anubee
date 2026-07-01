@@ -193,6 +193,7 @@ test_syscalls_cfi() {
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
     local stacks; stacks="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    local mainout; mainout="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
     if [ -z "$stacks" ]; then
         echo "  SKIP: no stack sidecar produced in this window (no stack snapshots captured)"
@@ -268,6 +269,15 @@ test_syscalls_cfi() {
         info "syscalls-cfi: nterp naming works — $nnamed interpreted Java method(s) named (reached_APP_frame>0)"
     else
         echo "  SKIP: no named nterp interp frame in this window ($PKG may be fully AOT / no interpreted app code ran)"
+    fi
+    # inline java_stack on syscall records (Task 3): when the managed chain was built
+    # and cached by emit_cfi_backtrace, each matching syscall record in the main JSONL
+    # carries a "java_stack" array. WARN on miss: not all targets run interpreted code.
+    jstack=$(grep -c '"java_stack":\[' <<<"$mainout" 2>/dev/null || echo 0)
+    if [ "$jstack" -gt 0 ]; then
+        echo "PASS: $jstack syscall record(s) carry inline java_stack"
+    else
+        echo "WARN: no inline java_stack (expected on a managed/nterp target app)"
     fi
 }
 

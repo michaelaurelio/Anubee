@@ -1,31 +1,44 @@
-// Ground-truth Java stack per libc syscall wrapper, via ART.
-// Emits one JSONL object per hit. Run: frida -U -f $PKG -l oracle.js --no-pause
-'use strict';
+// Ground-truth Java stack per libc syscall wrapper, via ART's own StackVisitor.
+// Emits one JSONL object per hit: {tid, syscall, path, java_stack:[...]} (outermost-last).
+//
+// Frida 17 removed the global `Java` bridge and `Module.findExportByName`. This is an ESM
+// source that imports frida-java-bridge; build a self-contained bundle before loading:
+//
+//   npm install frida-java-bridge
+//   frida-compile oracle.js -o oracle.bundle.js
+//   python3 run_oracle.py <out.jsonl>     # spawns $PKG, loads the bundle, drives UI
+//
+// (openat is hooked but ART often opens via open64/__openat; faccessat/readlinkat via
+//  libcore Os.* reliably carry the app Java caller.)
+import Java from 'frida-java-bridge';
 
 function javaStack() {
-  // Uses the ART VM's own stack walk — the authoritative managed backtrace.
-  var frames = [];
-  Java.perform(function () {
-    var Thread = Java.use('java.lang.Thread');
-    var els = Thread.currentThread().getStackTrace();
-    for (var i = 0; i < els.length; i++) {
-      var e = els[i];
-      frames.push(e.getClassName() + '.' + e.getMethodName());
-    }
-  });
+  const frames = [];
+  try {
+    Java.perform(() => {
+      const els = Java.use('java.lang.Thread').currentThread().getStackTrace();
+      for (let i = 0; i < els.length; i++)
+        frames.push(els[i].getClassName() + '.' + els[i].getMethodName());
+    });
+  } catch (e) {}
   return frames;
 }
 
+function resolve(name) {
+  try { if (Module.getGlobalExportByName) return Module.getGlobalExportByName(name); } catch (e) {}
+  try { return Process.getModuleByName('libc.so').getExportByName(name); } catch (e) {}
+  return null;
+}
+
 function hook(name, pathArgIndex) {
-  var p = Module.findExportByName('libc.so', name);
+  const p = resolve(name);
   if (!p) return;
   Interceptor.attach(p, {
-    onEnter: function (args) {
-      var path = '';
+    onEnter(args) {
+      let path = '';
       try { path = args[pathArgIndex].readUtf8String(); } catch (e) {}
-      var rec = { tid: Process.getCurrentThreadId(), syscall: name,
-                  path: path, java_stack: javaStack() };
-      send(JSON.stringify(rec));
+      send(JSON.stringify({ tid: Process.getCurrentThreadId(), syscall: name,
+                            path: path, java_stack: javaStack() }));
     }
   });
 }

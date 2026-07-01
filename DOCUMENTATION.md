@@ -189,10 +189,46 @@ former `main()` to its `cmd_*` name.
    with `-lelf -lz -lzstd -llzma` (superset across all engines; lzma decodes
    `.gnu_debugdata` mini-debug-info in the symbolizer).
 
-`vmlinux.h` (committed, with `vmlinux.btf` for `make regen-vmlinux`) is shared by
-all five BPF objects. The container build (`misc/Dockerfile` + `scripts/build.sh`) just
+`vmlinux.h` (committed) is the build input shared by all BPF objects; it is
+regenerated manually from kernel BTF only on a kernel change — see
+[Regenerating `vmlinux.h`](#regenerating-vmlinuxh-kernel-btf). The 6 MB `vmlinux.btf`
+blob is no longer committed. The container build (`misc/Dockerfile` + `scripts/build.sh`) just
 runs this same Makefile inside a pinned image, so there is a single source of
 build truth.
+
+#### Regenerating `vmlinux.h` (kernel BTF)
+
+`vmlinux.h` is generated from a kernel's BTF. Regenerate it only when targeting a
+kernel whose types differ from the committed header.
+
+**Requirement:** a kernel built with `CONFIG_DEBUG_INFO_BTF=y`, which exposes BTF at
+`/sys/kernel/btf/vmlinux`, plus `bpftool`.
+
+**Which kernels have BTF:** Android **GKI** kernels (Android 12+ / kernel 5.10+, and
+5.4 GKI) ship BTF by default. Vendor, older, or heavily customized kernels frequently
+do not. Check on the device:
+
+    adb shell ls -l /sys/kernel/btf/vmlinux
+
+**From the target device (recommended — types match the kernel ARES runs on):**
+
+    adb pull /sys/kernel/btf/vmlinux vmlinux-device.btf
+    make regen-vmlinux ARES_VMLINUX_BTF=vmlinux-device.btf
+
+**From the host kernel** (most modern distros — Ubuntu 20.10+, Debian 11+, Fedora —
+expose `/sys/kernel/btf/vmlinux`):
+
+    make regen-vmlinux
+
+**Fallback (kernel lacks embedded BTF):** encode BTF from a `vmlinux` ELF that carries
+DWARF, using `pahole` (Debian/Ubuntu `dwarves` package), then point the override at it:
+
+    pahole --btf_encode_detached vmlinux.btf vmlinux
+    make regen-vmlinux ARES_VMLINUX_BTF=vmlinux.btf
+
+**CO-RE note:** prefer the device kernel's BTF. CO-RE relocations tolerate a
+host/target type mismatch as long as every field the BPF code reads exists in the BTF
+used, but generating from the target kernel avoids surprises.
 
 ### Testing tiers
 

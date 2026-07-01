@@ -64,6 +64,9 @@ git submodule update --init --recursive
 make                         # -> build/ares
 ```
 
+> Building on a kernel that differs from the committed `vmlinux.h`? Regenerate it from
+> your kernel's BTF — see *Regenerating `vmlinux.h`* in DOCUMENTATION.md.
+
 > The `:arm64` multiarch packages are Debian/Ubuntu-specific and the usual
 > source of build pain. If they won't install, use the container build — it
 > sidesteps them entirely.

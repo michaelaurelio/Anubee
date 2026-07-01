@@ -29,20 +29,20 @@
 #include "common/engine_args.h"
 #include "common/runtime.h"
 #include "common/maps.h"
+#include "common/syscall_index.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 // nr -> name table (generated for the device's arm64 ABI).
-static const struct { long nr; const char *name; } syscall_names[] = {
+static const struct ares_sysent syscall_names[] = {
 #include "syscalls_gen.h"
 };
+static struct ares_sysindex g_sysidx;
 
 static const char *syscall_name(long nr)
 {
-    for (size_t i = 0; i < sizeof(syscall_names) / sizeof(syscall_names[0]); i++)
-        if (syscall_names[i].nr == nr)
-            return syscall_names[i].name;
-    return "?";
+    const char *n = ares_sysindex_name(&g_sysidx, nr);
+    return n ? n : "?";
 }
 
 static volatile sig_atomic_t exiting = 0;
@@ -280,6 +280,8 @@ static int                     g_total;
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
+    ares_sysindex_build(&g_sysidx, syscall_names,
+                        sizeof(syscall_names) / sizeof(syscall_names[0]));
     (void)rc;  // plumbed for parity; trace --correlate wiring deferred (post-launch attach)
     // ponytail: static so specs/pkg strings (pointing into argv) outlive setup.
     static struct corr_args ca = { 0 };

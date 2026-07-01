@@ -26,7 +26,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive   # vendored libbpf
-      - name: Cross-build ares
+      - name: Cross-build ares (with BLD1 dep-graph guard)
         run: ./scripts/build.sh
+        env:
+          ARES_CHECK_DEPS: "1"
       - name: Verify binary produced
         run: test -f build/ares && file build/ares

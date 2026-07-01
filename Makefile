@@ -87,12 +87,12 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
                $(SRC)/common/cfi_unwind.c $(SRC)/common/dwarf.c \
                $(SRC)/common/dex.c $(SRC)/common/art_nterp.c \
-               $(SRC)/common/managed_frame.c
+               $(SRC)/common/managed_frame.c $(SRC)/common/managed_stack_spike.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_libtrace_emit_lib ares_libtrace_emit_unlib \
-               proc_mem_open proc_mem_read nterp_name \
+               proc_mem_open proc_mem_read nterp_name ares_mstack_spike \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
                ares_launch_app ares_launch_banner \
                mod_matches is_duplicate resolve_targets resolve_targets_for_file \

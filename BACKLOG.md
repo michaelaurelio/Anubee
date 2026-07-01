@@ -27,9 +27,19 @@ so history stays traceable.
 - `correlate` remaining: `--returns`; syscall/sockaddr/fd/string decode; regex `-I/-i`; `-P` attach timing
 - CFI live cross: **W3-window DONE**; **CFI-misstep DONE** (module_base gapped walk-back,
   device-verified 2026-06-30); **PAC `negate_ra_state` DONE** (2026-06-30;
-  `CFI_RUN_FAIL` 167/201 → 0); real remaining wall = **nterp interpreter frames**
-  (120/201 stacks terminate at `libart!nterp_helper`; needs ART managed-stack walk);
+  `CFI_RUN_FAIL` 167/201 → 0); **nterp interpreter-frame naming DONE** (2026-07-01,
+  device-verified, commit `8c5da1e` — snapshot-scan `ArtMethod*` chase to
+  `pkg.Class.method`; `reached_APP_frame` 0 → 17 on a neutral obfuscated app);
   W5 (JIT `[anon]`) ≈ 0 payoff on measured workloads — see below
+- **nterp naming — shipped with known drawbacks (resolve later):** (1) **precision** —
+  the locator scans a window above the nterp terminal SP and takes the *first*
+  candidate `ArtMethod*` whose chase resolves; it can pick a nearby/stale ArtMethod
+  → a real-but-wrong method for that exact frame. Anchor on the managed-frame base
+  (offset 0) or cross-check the dex_pc slot. (2) **hit-rate** ~39% (17/44 nterp
+  terminals on the test app) — widen/centre the scan; some terminals' managed frame
+  may sit beyond the window. (3) **`+0x<dex_pc>` suffix deferred** (needs
+  `NterpGetDexPC` + per-method `out_regs`); emits the bare `pkg.Class.method`.
+  (4) version gate keys on apex `370549100` only (BuildID is the stronger anchor).
 - Managed-frame OAT/ODEX: future — parked pending proper ART parsing
 
 **Minor:**

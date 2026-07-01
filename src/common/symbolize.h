@@ -25,9 +25,12 @@ void sym_flush_pid(int pid);
 /* CFI-unwind a frozen stack snapshot across modules. Writes up to `max` return
  * addresses (innermost first, starting at snap->pc) into out_pcs. Returns the
  * count of PCs written. Reads stack bytes only from the frozen snap->snap window;
- * never touches live target memory. */
+ * never touches live target memory. If out_sps is non-NULL it receives each
+ * frame's SP (the value used to unwind that frame), parallel to out_pcs — the
+ * nterp namer needs the terminal frame's SP to locate its managed ArtMethod*. */
 struct ares_stack_snapshot;
 int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
-			uint64_t *out_pcs, int max, struct cfi_step_diag *out_diags);
+			uint64_t *out_pcs, int max, uint64_t *out_sps,
+			struct cfi_step_diag *out_diags);
 
 #endif /* SYSCALLS_SYMBOLIZE_H */

@@ -255,6 +255,20 @@ test_syscalls_cfi() {
     else
         echo "  SKIP: cfi_stack records present but no jni-trampoline→managed cross in this window (app/timing-dependent)"
     fi
+
+    # nterp interpreter-frame naming (commit 8c5da1e): when the walk terminates in
+    # ART's nterp fast interpreter, the resolver appends a {"kind":"interp"} frame
+    # whose symbol is the interpreted Java method ("pkg.Class.method" — dotted, and
+    # NOT a "module!symbol" native frame). Its presence means reached_APP_frame>0.
+    # SKIP on miss: a fully-AOT target (e.g. stock system apps) runs no interpreted
+    # app code, and interpreted execution is timing-dependent — this is not a failure.
+    if grep -oE '"symbol":"[^"]*","kind":"interp"' <<<"$cfi_records" \
+         | grep -qE '"symbol":"[A-Za-z0-9_$.]+\.[A-Za-z0-9_$<>]+","kind":"interp"'; then
+        local nnamed; nnamed="$(grep -oE '"symbol":"[^"!]*\.[^"!]*","kind":"interp"' <<<"$cfi_records" | sort -u | wc -l | tr -d ' ')"
+        info "syscalls-cfi: nterp naming works — $nnamed interpreted Java method(s) named (reached_APP_frame>0)"
+    else
+        echo "  SKIP: no named nterp interp frame in this window ($PKG may be fully AOT / no interpreted app code ran)"
+    fi
 }
 
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least

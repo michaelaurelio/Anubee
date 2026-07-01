@@ -289,6 +289,54 @@ static int dex_string(const struct dex_method_map *m, uint32_t idx,
     return 1;
 }
 
+// Format method_ids[method_idx] as "pkg.Class.method" into out. Shared by
+// dex_map_lookup (offset-keyed) and dex_name_by_index (index-keyed). Every table
+// access is bounds-checked; returns 1 on success, 0 on any miss/overflow.
+static int method_idx_to_name(const struct dex_method_map *m, uint32_t method_idx,
+                              char *out, size_t outsz)
+{
+    if (method_idx >= m->method_ids_size)
+        return 0;
+    const uint8_t *mid_ent = m->img + m->method_ids_off +
+                             (size_t)method_idx * METHOD_ID_STRIDE;
+    uint16_t class_idx = rd_u16(mid_ent + 0);
+    uint32_t name_idx  = rd_u32(mid_ent + 4);
+
+    char name[256];
+    if (!dex_string(m, name_idx, name, sizeof(name)))
+        return 0;
+
+    if (class_idx >= m->type_ids_size)
+        return 0;
+    uint32_t desc_idx = rd_u32(m->img + m->type_ids_off +
+                               (size_t)class_idx * TYPE_ID_STRIDE);
+    char desc[256];
+    if (!dex_string(m, desc_idx, desc, sizeof(desc)))
+        return 0;
+
+    size_t dl = strlen(desc);
+    if (dl < 2 || desc[0] != 'L' || desc[dl - 1] != ';')
+        return 0;
+
+    size_t o = 0;
+    for (size_t i = 1; i + 1 < dl; i++) {
+        char c = desc[i] == '/' ? '.' : desc[i];
+        if (o + 1 >= outsz)
+            return 0;
+        out[o++] = c;
+    }
+    if (o + 1 >= outsz)
+        return 0;
+    out[o++] = '.';
+    for (size_t i = 0; name[i]; i++) {
+        if (o + 1 >= outsz)
+            return 0;
+        out[o++] = name[i];
+    }
+    out[o] = 0;
+    return 1;
+}
+
 int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
                    char *out, size_t outsz)
 {
@@ -309,49 +357,13 @@ int dex_map_lookup(const struct dex_method_map *m, uint32_t off,
     if (!hit)
         return 0;
 
-    // method_ids[idx]: class_idx (u16 @0), name_idx (u32 @4). Index already
-    // validated < method_ids_size at build time, but re-check defensively.
-    if (hit->method_idx >= m->method_ids_size)
-        return 0;
-    const uint8_t *mid_ent = m->img + m->method_ids_off +
-                             (size_t)hit->method_idx * METHOD_ID_STRIDE;
-    uint16_t class_idx = rd_u16(mid_ent + 0);
-    uint32_t name_idx  = rd_u32(mid_ent + 4);
+    return method_idx_to_name(m, hit->method_idx, out, outsz);
+}
 
-    char name[256];
-    if (!dex_string(m, name_idx, name, sizeof(name)))
+int dex_name_by_index(const struct dex_method_map *m, uint32_t method_idx,
+                      char *out, size_t outsz)
+{
+    if (!m || !out || outsz == 0)
         return 0;
-
-    // class_idx -> type_ids[class_idx] (descriptor_idx) -> string "Lpkg/Class;".
-    if (class_idx >= m->type_ids_size)
-        return 0;
-    uint32_t desc_idx = rd_u32(m->img + m->type_ids_off +
-                               (size_t)class_idx * TYPE_ID_STRIDE);
-    char desc[256];
-    if (!dex_string(m, desc_idx, desc, sizeof(desc)))
-        return 0;
-
-    // descriptor must be a class type "L...;" (array/primitive cannot have methods).
-    size_t dl = strlen(desc);
-    if (dl < 2 || desc[0] != 'L' || desc[dl - 1] != ';')
-        return 0;
-
-    // format out = dotted(desc[1..dl-1]) + "." + name, bounded by outsz.
-    size_t o = 0;
-    for (size_t i = 1; i + 1 < dl; i++) {
-        char c = desc[i] == '/' ? '.' : desc[i];
-        if (o + 1 >= outsz)
-            return 0;
-        out[o++] = c;
-    }
-    if (o + 1 >= outsz)
-        return 0;
-    out[o++] = '.';
-    for (size_t i = 0; name[i]; i++) {
-        if (o + 1 >= outsz)
-            return 0;
-        out[o++] = name[i];
-    }
-    out[o] = 0;
-    return 1;
+    return method_idx_to_name(m, method_idx, out, outsz);
 }

@@ -30,6 +30,11 @@
 #define DEXFILE_DATASIZE_OFF  0x20  // DexFile.data_.size_ (size_t) — NOT +0x10:
                                     // size_ was renamed unused_size_=0 on A15.
 
+// Strip the Android top-byte pointer tag (TBI / MTE) from a native pointer before
+// dereferencing via /proc/<pid>/mem, which rejects tagged addresses. Compressed
+// (32-bit) references never carry a tag; only full 64-bit native pointers do.
+#define ART_PTR_UNTAG(p) ((uint64_t)(p) & 0x00FFFFFFFFFFFFFFULL)
+
 // How far above nterp_helper's SP to scan for the managed frame's ArtMethod*.
 // nterp's native helper frames vary in size, so the managed frame base can sit a
 // few KB up. Corroboration (below) filters false positives structurally, so this
@@ -154,10 +159,13 @@ int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
     uint64_t dexfile;
     if (!rd_u64(rd, rc, dexcache + DEXCACHE_DEXFILE_OFF, &dexfile) || dexfile == 0)
         return 0;
+    dexfile = ART_PTR_UNTAG(dexfile);   // DexCache.dex_file_ is a full native ptr;
+                                        // Android top-byte tags it (TBI) on some targets.
 
     uint64_t begin, dsize;
     if (!rd_u64(rd, rc, dexfile + DEXFILE_BEGIN_OFF, &begin) || begin == 0)
         return 0;
+    begin = ART_PTR_UNTAG(begin);       // DexFile.begin_ likewise; used for image reads.
     if (!rd_u64(rd, rc, dexfile + DEXFILE_DATASIZE_OFF, &dsize))
         return 0;
     if (dsize < 0x70 || dsize > (64u << 20))      // sane DEX image bounds

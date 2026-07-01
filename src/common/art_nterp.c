@@ -134,9 +134,9 @@ static struct dex_method_map *dexmap_get(art_reader rd, void *rc,
 // Chase one candidate ArtMethod* to its {method_idx, DexFile begin_, dexmap} via rd.
 // Returns 1 on success. Split out of art_method_resolve so nterp_pick can corroborate
 // the candidate (dex_lookup_range needs begin_ + map) before committing to the name.
-static int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
-                            uint32_t *midx_out, uint64_t *begin_out,
-                            struct dex_method_map **map_out)
+int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
+                     uint32_t *midx_out, uint64_t *begin_out,
+                     struct dex_method_map **map_out)
 {
     // Implausible / misaligned pointer — not an ArtMethod.
     if (artmethod < 0x1000 || (artmethod & 7))

@@ -280,6 +280,13 @@ test_syscalls_cfi() {
     else
         echo "  INFO: no multi-frame interpreted chain this window (single-frame or AOT)"
     fi
+    # Switch-interpreter ShadowFrame naming: a cfi_stack with an ExecuteSwitchImpl terminal
+    # should now carry >=1 named interp frame (addr 0x0) from the live ManagedStack walk
+    # (shadow_frame_chain). Same JSON shape as the nterp block above (kind:interp,
+    # addr:0x0), so this counts all such frames regardless of which walker produced them;
+    # non-vacuous only on a target that runs switch-interpreted Java. INFO-only on miss.
+    local sw_named; sw_named="$(grep -c '"addr":"0x0","symbol"' <<<"$cfi_records" 2>/dev/null || echo 0)"
+    echo "  switch-interp named frames: $sw_named"
     # inline java_stack on syscall records (Task 3): when the managed chain was built
     # and cached by emit_cfi_backtrace, each matching syscall record in the main JSONL
     # carries a "java_stack" array. WARN on miss: not all targets run interpreted code.

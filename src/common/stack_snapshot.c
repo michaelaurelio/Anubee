@@ -23,6 +23,7 @@ void ares_stack_snapshot_emit_json(struct jbuf *j, const struct ares_stack_snaps
 		jb_c(j, '"'); jb_hex(j, s->regs[i]); jb_c(j, '"');
 	}
 	jb_c(j, ']');
+	jb_s(j, ",\"tls_base\":\""); jb_hex(j, s->tls_base); jb_c(j, '"');
 	jb_s(j, ",\"snap_len\":"); jb_u64(j, s->snap_len);
 	jb_s(j, ",\"truncated\":"); jb_u64(j, s->truncated);
 	jb_s(j, ",\"snapshot\":\"");

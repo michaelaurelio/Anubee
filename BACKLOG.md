@@ -260,6 +260,22 @@ symbol path); vDSO frames are named (Phase 1).
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+- **BLD1 — BPF→skeleton→binary dependency chain is disconnected (stale-BPF trap).**
+  Touching a shared `*.bpf.h` (e.g. `src/common/stack_snapshot.bpf.h`) does **not** rebuild
+  the engine BPF object *and propagate to the binary* under an incremental `make`: the
+  engine `.bpf.o` prereq lists are hand-maintained (miss most shared `.bpf.h`), and even when
+  the `.bpf.o` does rebuild the `skel → userspace .o → .part.o → ares` chain fails to
+  re-trigger (the final link doesn't re-run). Result: a stale BPF object silently mismatches
+  the userspace struct layout — e.g. adding `tls_base` to the snapshot struct gave a binary
+  that wrote the old (smaller) BPF struct while userspace read the new one → **0 snapshots
+  emitted, no error** (cost hours during the ShadowFrame device-verify, 2026-07-02). A
+  `-MMD -MP` auto-dep attempt fixed the `.bpf.o` rebuild but not the downstream propagation
+  (reverted as an incomplete half-fix). **Mitigation today: `make clean && make` after any
+  shared-BPF-header change** (a clean build wires everything correctly — verified). Real fix:
+  reconnect the BPF→skel→userspace→partial-link→binary prereq graph (and add `-MMD -MP` for
+  header tracking) so incremental builds are correct. Related pre-existing note: "Makefile
+  common-header prereq is a flat list; `-MMD/-MP` is the real fix."
+
 - **N1 — `funcs` CFI/managed-chain work runs inline on the drain thread.**
   In `funcs` (`ares-tracer.c` STACK handler), the CFI walk (`cfi_unwind_snapshot`) and managed-chain
   build (`ares_managed_chain`) run inline on the ring-buffer drain thread, whereas in `syscalls` the

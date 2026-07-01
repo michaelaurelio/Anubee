@@ -22,6 +22,7 @@
 #include "common/emit.h"      // struct jbuf, jb_s / jb_u64 / jb_hex / jb_esc / jb_c
 #include "common/managed_frame.h" // ares_is_interp_frame, ares_managed_chain_build (impure bodies here)
 #include "common/art_nterp.h" // nterp_name
+#include "common/art_shadow.h"   // shadow_frame_chain — switch-interp ShadowFrame naming
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
 #include "common/stack_snapshot.h"
 
@@ -1784,6 +1785,19 @@ void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
         int nn = nterp_chain(pid, s, sps[n - 1], chain, 16);
         if (nn == 0 && nterp_name(pid, s, sps[n - 1], chain[0], sizeof(chain[0])))
             nn = 1;
+        for (int k = 0; k < nn; k++) {
+            jb_c(j, ',');
+            jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)(n + k));
+            jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, chain[k]);
+            jb_s(j, "\",\"kind\":\"interp\"}");
+        }
+    }
+    else if (n > 0 && strstr(sym, "ExecuteSwitchImpl")) {
+        /* Switch-interpreter terminal: the Java caller runs on heap ShadowFrames, not
+         * on the captured stack. Walk ART's live Thread->ManagedStack->ShadowFrame chain
+         * (BuildID-gated, /proc/mem reads only). Innermost-first; numbered continuing from n. */
+        char chain[16][256];
+        int nn = shadow_frame_chain(pid, s->tls_base, chain, 16);
         for (int k = 0; k < nn; k++) {
             jb_c(j, ',');
             jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)(n + k));

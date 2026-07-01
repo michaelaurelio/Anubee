@@ -15,7 +15,7 @@
 #
 #   make            # build build/ares
 #   make push       # adb push to /data/local/tmp
-#   make regen-vmlinux   # rebuild vmlinux.h from vmlinux.btf
+#   make regen-vmlinux   # rebuild vmlinux.h from kernel BTF (ARES_VMLINUX_BTF)
 #
 # Why partial-link + objcopy: the two engines were independent programs that each
 # own the global namespace (ares exposes bare globals like `verbose`, `skel`,

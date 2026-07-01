@@ -66,5 +66,32 @@ class TestFrida(unittest.TestCase):
         self.assertEqual(recs, [{"syscall":"openat","path":"/proc/net/unix","tid":100,
                                  "java":["icu.A.check","icu.A.run"]}])
 
+class TestJoinScore(unittest.TestCase):
+    def test_join_by_syscall_path(self):
+        a = [{"syscall":"openat","path":"/p","tid":1,"stack_id":1,"interp":[("A.b",True)]}]
+        f = [{"syscall":"openat","path":"/p","tid":9,"java":["A.b","A.run"]}]
+        m = compare.join(a, f)
+        self.assertEqual(len(m), 1)
+        self.assertIsNotNone(m[0][1])
+
+    def test_score_precision_split(self):
+        # A.b corroborated + correct; X.y uncorroborated + wrong; A.run truth-only (recall miss)
+        matches = [(
+            {"interp":[("A.b",True),("X.y",False)]},
+            {"java":["A.b","A.run"]},
+        )]
+        s = compare.score(matches)
+        self.assertEqual(s["corr_named"], 1)
+        self.assertEqual(s["corr_correct"], 1)     # A.b in truth
+        self.assertEqual(s["uncorr_named"], 1)
+        self.assertEqual(s["uncorr_correct"], 0)   # X.y not in truth
+        self.assertEqual(s["truth_frames"], 2)
+        self.assertEqual(s["recalled"], 1)         # only A.b recalled
+
+    def test_score_unmatched_counted(self):
+        s = compare.score([({"interp":[("A.b",True)]}, None)])
+        self.assertEqual(s["unmatched"], 1)
+        self.assertEqual(s["corr_named"], 0)
+
 if __name__ == "__main__":
     unittest.main()

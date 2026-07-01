@@ -77,3 +77,73 @@ def load_frida(path):
             "java": [normalize_java(x) for x in rec.get("java_stack", [])],
         })
     return out
+
+def join(ares_recs, frida_recs):
+    by_key = {}
+    for fr in frida_recs:
+        by_key.setdefault((fr["syscall"], fr["path"]), []).append(fr)
+    matches = []
+    for a in ares_recs:
+        cands = by_key.get((a["syscall"], a["path"]), [])
+        chosen = None
+        a_names = {n for n, _ in a["interp"]}
+        for c in cands:
+            if a_names & set(c["java"]):
+                chosen = c
+                break
+        if chosen is None and cands:
+            chosen = cands[0]
+        matches.append((a, chosen))
+    return matches
+
+def score(matches):
+    s = dict(corr_named=0, corr_correct=0, uncorr_named=0, uncorr_correct=0,
+             truth_frames=0, recalled=0, exact_chains=0, matched=0, unmatched=0)
+    for a, f in matches:
+        if f is None:
+            s["unmatched"] += 1
+            continue
+        s["matched"] += 1
+        truth = set(f["java"])
+        s["truth_frames"] += len(f["java"])
+        a_names = [n for n, _ in a["interp"]]
+        s["recalled"] += len(truth & set(a_names))
+        for name, corro in a["interp"]:
+            key = "corr" if corro else "uncorr"
+            s[key + "_named"] += 1
+            if name in truth:
+                s[key + "_correct"] += 1
+        if a_names and a_names == f["java"]:
+            s["exact_chains"] += 1
+    return s
+
+def _pct(n, d):
+    return "n/a" if d == 0 else f"{100.0*n/d:.1f}%"
+
+def format_report(s):
+    return "\n".join([
+        "nterp precision oracle report",
+        f"  matched syscalls   : {s['matched']}  (unmatched: {s['unmatched']})",
+        f"  corroborated frames: {s['corr_named']} named, "
+        f"{s['corr_correct']} correct -> precision {_pct(s['corr_correct'], s['corr_named'])}",
+        f"  uncorrob.  frames  : {s['uncorr_named']} named, "
+        f"{s['uncorr_correct']} correct -> precision {_pct(s['uncorr_correct'], s['uncorr_named'])}",
+        f"  recall (frames)    : {s['recalled']}/{s['truth_frames']} "
+        f"({_pct(s['recalled'], s['truth_frames'])})",
+        f"  exact chains       : {s['exact_chains']}/{s['matched']}",
+    ])
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="nterp precision oracle scorer")
+    ap.add_argument("--ares-events", required=True)
+    ap.add_argument("--ares-stacks", required=True)
+    ap.add_argument("--frida", required=True)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+    matches = join(load_ares(a.ares_events, a.ares_stacks), load_frida(a.frida))
+    s = score(matches)
+    print(json.dumps(s, indent=2) if a.json else format_report(s))
+
+if __name__ == "__main__":
+    main()

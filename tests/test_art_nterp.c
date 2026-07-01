@@ -124,6 +124,25 @@ int main(int argc, char **argv)
           strcmp(out, "com.ares.Sample.greet") == 0,
           "ArtMethod chase resolves greet");
 
+    // TBI-tagged native pointers: DexCache.dex_file_ and DexFile.begin_ carry an
+    // Android top-byte tag on some targets. They must be untagged before deref
+    // (/proc/mem rejects tagged addresses) — regression for the tagged-DexFile bug
+    // that made nterp naming silently resolve nothing on such targets.
+    {
+        const uint64_t TAG = 0xb4ULL << 56;
+        uint8_t dc_t[32] = {0}; w64(dc_t + O_DC_DF, TAG | DF);
+        uint8_t df_t[48] = {0}; w64(df_t + O_DF_BEGIN, TAG | BEGIN);
+                                w64(df_t + O_DF_SIZE, dexlen);
+        struct mem mt = m;      // regions: 0=AM 1=C 2=DC 3=DF 4=BEGIN
+        mt.r[2].data = dc_t;
+        mt.r[3].data = df_t;
+        art_nterp_cache_reset();
+        CHECK(art_method_resolve(memrd, &mt, AM, out, sizeof(out)) == 1 &&
+              strcmp(out, "com.ares.Sample.greet") == 0,
+              "TBI-tagged DexFile/begin pointers untagged -> chase resolves");
+    }
+    art_nterp_cache_reset();
+
     // Misaligned / tiny pointer -> rejected before any read.
     CHECK(art_method_resolve(memrd, &m, AM + 1, out, sizeof(out)) == 0,
           "misaligned ArtMethod -> miss");

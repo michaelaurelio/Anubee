@@ -34,7 +34,6 @@
 #include "common/maps.h"
 #include "common/stack_snapshot.h"
 #include "common/managed_frame.h"
-#include "common/symbolize.h"
 
 // Argument parser module using argp.h
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
@@ -508,7 +507,9 @@ static void process_call_return(const void *data, size_t data_sz)
             if (g_sink.f) {
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
-                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, ares_jcache_get(e->stack_id));
+                char js[208];
+                const char *jsp = ares_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp);
                 ares_sink_emit(&g_sink);
                 pthread_mutex_unlock(&g_sink_lock);
             }

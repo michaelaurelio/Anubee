@@ -25,11 +25,15 @@ int ares_is_interp_frame(const char *sym);
 int ares_managed_chain_build(const char *const *syms, int n,
                              const char *nterp_name, char *out, size_t cap);
 
-/* Bounded, mutex-guarded stack_id -> fragment cache. get() returns an internal
- * pointer valid until the next put() to the same slot, or NULL on miss. */
-void        ares_jcache_put(uint64_t stack_id, const char *frag);
-const char *ares_jcache_get(uint64_t stack_id);
-void        ares_jcache_reset(void);
+/* Bounded, mutex-guarded stack_id -> fragment cache.
+ * put() stores frag (must fit within JC_FRAG bytes including NUL) for stack_id.
+ * get() copies the cached fragment into out (NUL-terminated, <= cap) while
+ *   holding the lock; returns 1 if found (out written), 0 on miss or cap-too-small
+ *   (out untouched either way).
+ * reset() clears all slots (test / teardown only). */
+void ares_jcache_put(uint64_t stack_id, const char *frag);
+int  ares_jcache_get(uint64_t stack_id, char *out, size_t cap);
+void ares_jcache_reset(void);
 
 /* ---- IMPURE (symbolize.c; declared here, device-tested) ----------------- */
 

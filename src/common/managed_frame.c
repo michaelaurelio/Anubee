@@ -80,13 +80,20 @@ void ares_jcache_put(uint64_t stack_id, const char *frag)
     pthread_mutex_unlock(&g_jc_lock);
 }
 
-const char *ares_jcache_get(uint64_t stack_id)
+int ares_jcache_get(uint64_t stack_id, char *out, size_t cap)
 {
+    int found = 0;
     pthread_mutex_lock(&g_jc_lock);
     struct jc_ent *e = &g_jc[stack_id & (JC_SLOTS - 1)];
-    const char *r = (e->used && e->id == stack_id) ? e->frag : NULL;
+    if (e->used && e->id == stack_id) {
+        size_t len = strlen(e->frag);
+        if (len + 1 <= cap) {
+            memcpy(out, e->frag, len + 1);
+            found = 1;
+        }
+    }
     pthread_mutex_unlock(&g_jc_lock);
-    return r;
+    return found;
 }
 
 void ares_jcache_reset(void)

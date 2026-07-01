@@ -260,6 +260,15 @@ symbol path); vDSO frames are named (Phase 1).
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+- **N1 — `funcs` CFI/managed-chain work runs inline on the drain thread.**
+  In `funcs` (`ares-tracer.c` STACK handler), the CFI walk (`cfi_unwind_snapshot`) and managed-chain
+  build (`ares_managed_chain`) run inline on the ring-buffer drain thread, whereas in `syscalls` the
+  equivalent work runs on the worker thread (off the drain path). On the loud engine this raises drain
+  latency and can increase event or snapshot drop rate under load. Correctness is unaffected (the
+  walk is deduped per distinct `stack_id`, bounded by `n <= 64` frames). Deferred optimization: move
+  the `funcs` STACK-event CFI/chain work to the worker thread (or a dedicated CFI step), mirroring
+  the `syscalls` model.
+
 - **Phase 3d (deferred) — coordinator-wide `-p` in `trace`.** The standalone engines
   each support `-p PID[,…]` (shipped 2026-06-30). The `trace` coordinator
   (`src/trace/trace.c`) resolves one UID from `-P` and drives `syscalls`/`funcs`/`lib`

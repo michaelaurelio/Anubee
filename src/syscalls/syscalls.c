@@ -666,11 +666,10 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		}
 	}
 
-	if (e->stack_id)
-		{ jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
 	if (e->stack_id) {
-		const char *js = ares_jcache_get(e->stack_id);
-		if (js) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
+		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
+		char js[208];
+		if (ares_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
 	}
 
 	jb_s(j, ",\"backtrace\":[");

@@ -57,17 +57,16 @@ int main(void)
     CHECK(!ares_is_interp_frame(NULL), "NULL is not interp");
 
     // Cache: put/get round-trip, miss, overwrite, reset.
+    char buf[208];
     ares_jcache_reset();
-    CHECK(ares_jcache_get(42) == NULL, "cache miss before put");
+    CHECK(ares_jcache_get(42, buf, sizeof(buf)) == 0, "cache miss before put");
     ares_jcache_put(42, "[\"pkg.A.b\"]");
-    const char *g = ares_jcache_get(42);
-    CHECK(g && strcmp(g, "[\"pkg.A.b\"]") == 0, "cache hit round-trip");
-    CHECK(ares_jcache_get(43) == NULL, "different id misses");
+    CHECK(ares_jcache_get(42, buf, sizeof(buf)) == 1 && strcmp(buf, "[\"pkg.A.b\"]") == 0, "cache hit round-trip");
+    CHECK(ares_jcache_get(43, buf, sizeof(buf)) == 0, "different id misses");
     ares_jcache_put(42, "[\"pkg.C.d\"]");
-    g = ares_jcache_get(42);
-    CHECK(g && strcmp(g, "[\"pkg.C.d\"]") == 0, "put overwrites same id");
+    CHECK(ares_jcache_get(42, buf, sizeof(buf)) == 1 && strcmp(buf, "[\"pkg.C.d\"]") == 0, "put overwrites same id");
     ares_jcache_reset();
-    CHECK(ares_jcache_get(42) == NULL, "reset clears");
+    CHECK(ares_jcache_get(42, buf, sizeof(buf)) == 0, "reset clears");
 
     printf(fails ? "\n%d FAILED\n" : "\nALL PASSED\n", fails);
     return fails ? 1 : 0;

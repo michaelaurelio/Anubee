@@ -65,6 +65,16 @@ static uint32_t idx_of(struct dex_method_map *map, const char *want)
     fprintf(stderr, "method '%s' not in fixture\n", want); exit(2);
 }
 
+// idx_of but rebuilds a throwaway map from the raw dex (probe is freed by now).
+static uint32_t idx_of2(uint8_t *dex, size_t dexlen, const char *want)
+{
+    struct dex_method_map *p = dex_map_build(dex, dexlen);
+    if (!p) { fprintf(stderr, "rebuild failed\n"); exit(2); }
+    uint32_t r = idx_of(p, want);
+    dex_map_free(p);
+    return r;
+}
+
 // Layout offsets mirrored from art_nterp.c's version table.
 #define O_DECL 0x00
 #define O_MIDX 0x08
@@ -140,6 +150,44 @@ int main(int argc, char **argv)
       art_nterp_cache_reset();
       CHECK(art_method_resolve(memrd, &mb, AM, out, sizeof(out)) == 0,
             "absurd dex size -> miss"); }
+
+    // ---- nterp_pick: dex_pc corroboration picks the right method ----------------
+    // Second synthetic ArtMethod resolving a DIFFERENT method (add) — the stale
+    // pointer that must NOT win despite sitting closer to nterp_sp.
+    uint32_t add_i = idx_of2(dex, dexlen, "com.ares.Sample.add");
+    const uint64_t AM_ADD = 0x5000;
+    uint8_t am_add[16] = {0};
+    w32(am_add + O_DECL, (uint32_t)C);
+    w32(am_add + O_MIDX, add_i);
+    add_region(&m, AM_ADD, am_add, sizeof(am_add));
+
+    // Synthetic stack: stale add-ArtMethod* closer to nterp_sp (no dex_pc beside it);
+    // real greet-ArtMethod* farther up WITH a matching dex_pc just above it.
+    const uint64_t STK = 0x7000000000ULL, NSP = STK + 0x40;
+    uint8_t stack[0x400] = {0};
+    w64(stack + (size_t)((NSP + 0x10) - STK), AM_ADD);          // stale (add)
+    w64(stack + (size_t)((NSP + 0x80) - STK), AM);              // real (greet)
+    w64(stack + (size_t)((NSP + 0x88) - STK), BEGIN + 0x190);   // greet dex_pc
+
+    char pk[256];
+    art_nterp_cache_reset();
+    CHECK(nterp_pick(memrd, &m, stack, STK, sizeof(stack), NSP, pk, sizeof(pk)) == 1 &&
+          strcmp(pk, "com.ares.Sample.greet+0x6") == 0,
+          "nterp_pick corroborates greet (not stale add) + dexpc suffix");
+
+    // Fallback: only the stale add ArtMethod*, no dex_pc anywhere -> bare name.
+    uint8_t stack2[0x400] = {0};
+    w64(stack2 + (size_t)((NSP + 0x10) - STK), AM_ADD);
+    art_nterp_cache_reset();
+    CHECK(nterp_pick(memrd, &m, stack2, STK, sizeof(stack2), NSP, pk, sizeof(pk)) == 1 &&
+          strcmp(pk, "com.ares.Sample.add") == 0,
+          "nterp_pick falls back to bare name when uncorroborated");
+
+    // No candidate at all -> miss.
+    uint8_t stack3[0x400] = {0};
+    art_nterp_cache_reset();
+    CHECK(nterp_pick(memrd, &m, stack3, STK, sizeof(stack3), NSP, pk, sizeof(pk)) == 0,
+          "nterp_pick returns 0 with no ArtMethod candidate");
 
     art_nterp_cache_reset();
     free(dex);

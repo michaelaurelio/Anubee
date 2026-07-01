@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,8 +32,13 @@
 
 // How far above nterp_helper's SP to scan for the managed frame's ArtMethod*.
 // nterp's native helper frames vary in size, so the managed frame base can sit a
-// few KB up; a generous window costs only deduped per-stack work.
-#define NTERP_SCAN_WIN  4096
+// few KB up. Corroboration (below) filters false positives structurally, so this
+// window can be generous; cost is deduped per-stack. Tune on-device if terminals
+// still miss.
+#define NTERP_SCAN_WIN  8192
+// How far ABOVE a candidate ArtMethod* slot to search for its live dex_pc (the
+// nterp managed frame stores dex_pc above the frame base). Bounded and small.
+#define NTERP_CORROB_SPAN  512
 
 // Known ART apex versions whose offsets match the table above.
 static const long KNOWN_ART_APEX[] = { 370549100 };
@@ -208,6 +214,79 @@ static size_t pm_reader(void *ctx, uint64_t va, void *dst, size_t len)
     return proc_mem_read((int)(intptr_t)ctx, va, dst, len);
 }
 
+int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+               size_t stack_len, uint64_t nterp_sp, char *out, size_t outsz)
+{
+    if (!stack || !out || outsz == 0)
+        return 0;
+
+    int  have_fallback = 0;
+    char fallback[256];
+
+    // Scan candidate ArtMethod* slots upward from nterp_helper's SP; the managed
+    // frame base (ArtMethod* at offset 0) sits just above it. Accept the FIRST
+    // corroborated candidate (ascending => closest to nterp_sp); a stale spilled
+    // ArtMethod* has no matching dex_pc beside it and is skipped.
+    for (uint64_t off = 0; off <= NTERP_SCAN_WIN; off += 8) {
+        uint64_t addr = nterp_sp + off;
+        if (addr < stack_base)
+            continue;
+        size_t so = (size_t)(addr - stack_base);
+        if (so + 8 > stack_len)
+            break;
+        uint64_t cand;
+        memcpy(&cand, stack + so, 8);
+
+        uint32_t midx;
+        uint64_t begin;
+        struct dex_method_map *map;
+        if (!art_method_chase(rd, rc, cand, &midx, &begin, &map))
+            continue;
+
+        // Corroborate: search just above this slot for a stack value that is a live
+        // dex_pc pointing into THIS method's own bytecode (same method_idx).
+        int corrob = 0;
+        uint32_t dexpc = 0;
+        for (uint64_t c = 0; c <= NTERP_CORROB_SPAN; c += 8) {
+            uint64_t va = addr + c;
+            if (va < stack_base)
+                continue;
+            size_t cso = (size_t)(va - stack_base);
+            if (cso + 8 > stack_len)
+                break;
+            uint64_t v;
+            memcpy(&v, stack + cso, 8);
+            if (v < begin)
+                continue;
+            uint64_t rel = v - begin;
+            if (rel > 0xffffffffULL)
+                continue;
+            uint32_t rmidx, rinsns;
+            if (dex_lookup_range(map, (uint32_t)rel, &rmidx, &rinsns) && rmidx == midx) {
+                corrob = 1;
+                dexpc = ((uint32_t)rel - rinsns) / 2;
+                break;
+            }
+        }
+
+        if (corrob) {
+            char nm[256];
+            if (!dex_name_by_index(map, midx, nm, sizeof(nm)))
+                continue;
+            snprintf(out, outsz, "%s+0x%x", nm, dexpc);
+            return 1;
+        }
+        if (!have_fallback && dex_name_by_index(map, midx, fallback, sizeof(fallback)))
+            have_fallback = 1;
+    }
+
+    if (have_fallback) {
+        snprintf(out, outsz, "%s", fallback);
+        return 1;
+    }
+    return 0;
+}
+
 int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
                char *out, size_t outsz)
 {
@@ -219,28 +298,9 @@ int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_s
     int fd = proc_mem_open(pid);
     if (fd < 0)
         return 0;
-    void *rc = (void *)(intptr_t)fd;
-
-    int ret = 0;
-    // The ArtMethod* is at the managed nterp frame's base, just above nterp_helper's
-    // SP. Its exact offset isn't known (the terminal step failed, so its CFA is
-    // unset), so scan a bounded window upward and validate each candidate by whether
-    // the full ArtMethod->DexFile chase yields a real method name. Candidates are
-    // read from the frozen snapshot stack bytes (point-in-time correct).
-    for (uint64_t off = 0; off <= NTERP_SCAN_WIN; off += 8) {
-        uint64_t addr = nterp_sp + off;
-        if (addr < snap->sp)
-            continue;
-        size_t so = (size_t)(addr - snap->sp);
-        if (so + 8 > snap->snap_len)
-            break;
-        uint64_t cand;
-        memcpy(&cand, snap->snap + so, 8);
-        if (art_method_resolve(pm_reader, rc, cand, out, outsz)) {
-            ret = 1;
-            break;
-        }
-    }
+    int ret = nterp_pick(pm_reader, (void *)(intptr_t)fd,
+                         snap->snap, snap->sp, (size_t)snap->snap_len,
+                         nterp_sp, out, outsz);
     close(fd);
     return ret;
 }

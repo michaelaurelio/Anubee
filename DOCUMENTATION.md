@@ -309,7 +309,7 @@ pid's cached maps still predate the libraries the stack runs through); compute `
 - `"native"` — default; a C/C++ frame in any native `.so`.
 - `"jni-trampoline"` — symbol contains `art_jni_trampoline`; the ART bridge from native into managed code.
 - `"managed"` — symbol comes from a `.oat`, `.odex`, or `.vdex` file (ahead-of-time compiled Java).
-- `"interp"` — symbol is an ART interpreter entrypoint (see `is_interp_frame`); the managed method lives in a ShadowFrame and cannot be named by CFI.
+- `"interp"` — symbol is an ART interpreter entrypoint (see `is_interp_frame`); the managed method lives in a ShadowFrame and cannot be named by CFI alone. The snapshot-scan locator (`nterp_name`) corroborates an `ArtMethod*` candidate against a live dex_pc in the frame window (via `dex_lookup_range`), rejects stale spills, and names the method with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits; uncorroborated frames fall back to a bare best-effort name.
 
 **Firewall:** `cfi_step` reads stack bytes exclusively from the `snap->snap[]` window captured in-kernel at trap time. It never calls `proc_mem_read` or touches live target memory. No uprobe is added. The firewall is clean.
 
@@ -349,13 +349,13 @@ done 2026-06-29), **CFI-misstep** (module_base gapped walk-back, done 2026-06-30
 reached-managed-frame **21 → 74**. Full re-measure:
 `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
 
-The **remaining wall is nterp interpreter frames**: 120/201 stacks now terminate cleanly
-(`CFI_OK`) at `libart!nterp_helper` — the app's RASP methods run interpreted (nterp);
-0 the app's own frames resolve. Naming them requires an ART managed-stack (ShadowFrame)
-walk (ART-version-coupled — see
-`docs/superpowers/research/2026-06-24-art-managed-stack-walk.md`). **W5** (JIT `[anon]`
-code-cache mini-ELF CFI) is now technically reachable but ≈0 payoff on measured workloads
-(9/201 stacks); not the immediate priority.
+The **nterp interpreter-frame naming wall is resolved (2026-07-01)**: the snapshot-scan
+locator (`nterp_name`, `src/common/art_nterp.c`) corroborates each `ArtMethod*` candidate
+against a live dex_pc in the frame window (via `dex_lookup_range`), rejecting stale spills,
+and emits the method name with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits;
+uncorroborated candidates fall back to a bare best-effort name. See BACKLOG Resolved/Done
+2026-07-01 for full detail. **W5** (JIT `[anon]` code-cache mini-ELF CFI) is technically
+reachable but ≈0 payoff on measured workloads (9/201 stacks); not the immediate priority.
 
 **Diagnostic flag (`ARES_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
 `cfi_stack` frame with per-step CFI internals (`module_pc`, `load_base`, `elf_off`, `fde_found`,
@@ -366,7 +366,7 @@ located the module-base bug and stays available for future CFI diagnosis.
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
-- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"` but the managed method name is not recovered (no ART internal stack walk).
+- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"`. The snapshot-scan locator (`nterp_name`) corroborates an `ArtMethod*` candidate against a live dex_pc in the frame window (via `dex_lookup_range`), rejects stale spills, and names the method with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits; uncorroborated frames fall back to a bare best-effort name. Full precision for uncorroborated candidates still requires the ART `Thread→ManagedStack` walk (parked).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);

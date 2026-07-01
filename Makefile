@@ -86,7 +86,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
                $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
                $(SRC)/common/cfi_unwind.c $(SRC)/common/dwarf.c \
-               $(SRC)/common/dex.c $(SRC)/common/art_nterp.c
+               $(SRC)/common/dex.c $(SRC)/common/art_nterp.c \
+               $(SRC)/common/managed_frame.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -107,7 +108,10 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                seg_vaddr_to_off \
                sym_resolve sym_flush_pid cfi_unwind_snapshot \
                ares_parse_maps_line ares_module_base_idx ares_map_files_path \
-               ares_stack_snapshot_emit_json
+               ares_stack_snapshot_emit_json \
+               ares_managed_chain_build ares_jcache_put ares_jcache_get \
+               ares_jcache_reset ares_managed_chain ares_emit_cfi_stack_json \
+               ares_is_interp_frame
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -409,6 +413,8 @@ test:
 	$(BUILD)/test_art_nterp tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_snapshot_gate.c -o $(BUILD)/test_snapshot_gate
 	$(BUILD)/test_snapshot_gate
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_managed_frame.c src/common/managed_frame.c src/common/emit.c -o $(BUILD)/test_managed_frame -lpthread
+	$(BUILD)/test_managed_frame
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps
 	$(BUILD)/test_maps
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_args.c -o $(BUILD)/test_target_args

@@ -33,6 +33,8 @@
 #include "common/engine_args.h"
 #include "common/maps.h"
 #include "common/stack_snapshot.h"
+#include "common/managed_frame.h"
+#include "common/symbolize.h"
 
 // Argument parser module using argp.h
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
@@ -506,7 +508,7 @@ static void process_call_return(const void *data, size_t data_sz)
             if (g_sink.f) {
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
-                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target);
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, ares_jcache_get(e->stack_id));
                 ares_sink_emit(&g_sink);
                 pthread_mutex_unlock(&g_sink_lock);
             }
@@ -701,6 +703,19 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             if (sj.b && sj.len)
                 fwrite(sj.b, 1, sj.len, g_stacks);
             g_stack_count++;
+
+            const struct ares_stack_snapshot *s = (const void *)data;
+            uint64_t pcs[64], sps[64];
+            int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, NULL);
+            if (n > 0) {
+                struct jbuf cj = {0};
+                ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
+                if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
+                free(cj.b);
+                char frag[208];
+                if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
+                    ares_jcache_put(s->stack_id, frag);
+            }
         }
         return 0;
     }

@@ -296,11 +296,16 @@ test_funcs_structured() {
     [ -n "$pid" ] || { echo "  SKIP: could not get pid for $PKG (funcs --structured)"; return; }
     local out_file="/data/local/tmp/ares_funcs_structured_test.jsonl"
     adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
-    ares "funcs -p $pid -e 'libc.so!open' -J -o $out_file" >/dev/null 2>&1 || true
+    ares "funcs -p $pid -e 'libc.so!open' -J --snapshot -o $out_file" >/dev/null 2>&1 || true
     local content; content="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     grep -q '"type":"call"' <<<"$content" \
         || { echo "  out: $content" >&2; fail "funcs --structured: no {\"type\":\"call\"} record in $out_file"; }
-    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    local stacks_file="${out_file}.stacks"
+    local stacks_content; stacks_content="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    local cfi; cfi=$(grep -c '"type":"cfi_stack"' <<<"$stacks_content" 2>/dev/null || echo 0)
+    [ "$cfi" -gt 0 ] && echo "PASS: funcs sidecar has $cfi cfi_stack record(s)" \
+                      || echo "FAIL: funcs sidecar missing cfi_stack (parity regression)"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
     info "funcs --structured OK — structured call record found"
 }
 

@@ -71,6 +71,12 @@ int main(int argc, char **argv)
               "0x180 gap -> range miss");
         CHECK(dex_lookup_range(m, 0x300, &midx, &ioff) == 0,
               "0x300 past-last -> range miss");
+        /* header contract: miss must leave out-params untouched (set by the 0x190 hit above). */
+        CHECK(midx == greet_idx && ioff == 0x184,
+              "miss leaves out-params untouched (greet_idx, 0x184)");
+        /* NULL out-params must be accepted: exercises the if(method_idx)/if(insns_off) guards. */
+        CHECK(dex_lookup_range(m, 0x190, NULL, NULL) == 1,
+              "dex_lookup_range accepts NULL out-params on hit");
     }
 
     // dex_name_by_index: every method reachable by index resolves to its name.

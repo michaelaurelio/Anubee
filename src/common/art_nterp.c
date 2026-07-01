@@ -272,7 +272,7 @@ int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_bas
         if (corrob) {
             char nm[256];
             if (!dex_name_by_index(map, midx, nm, sizeof(nm)))
-                continue;
+                continue;  /* intentional: unnameable corroborated method cannot serve as fallback; a later slot may still name one */
             snprintf(out, outsz, "%s+0x%x", nm, dexpc);
             return 1;
         }

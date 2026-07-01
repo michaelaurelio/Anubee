@@ -189,6 +189,21 @@ int main(int argc, char **argv)
     CHECK(nterp_pick(memrd, &m, stack3, STK, sizeof(stack3), NSP, pk, sizeof(pk)) == 0,
           "nterp_pick returns 0 with no ArtMethod candidate");
 
+    // Nearest corroborated wins: add (nearer, corroborated) and greet (farther,
+    // corroborated) are both on the stack with a matching dex_pc beside each;
+    // assert the nearer-to-nterp_sp candidate (add) is returned.
+    // add [0x170,0x174): dex_pc 0x170 -> dexpc=(0x170-0x170)/2=0 -> "+0x0"
+    // greet [0x184,0x1ac): dex_pc 0x190 -> dexpc=(0x190-0x184)/2=6 -> "+0x6"
+    uint8_t stack4[0x400] = {0};
+    w64(stack4 + (size_t)((NSP + 0x10) - STK), AM_ADD);         /* add  (nearer, corroborated) */
+    w64(stack4 + (size_t)((NSP + 0x18) - STK), BEGIN + 0x170);  /* add  dex_pc -> +0x0 */
+    w64(stack4 + (size_t)((NSP + 0x80) - STK), AM);             /* greet (farther, corroborated) */
+    w64(stack4 + (size_t)((NSP + 0x88) - STK), BEGIN + 0x190);  /* greet dex_pc -> +0x6 */
+    art_nterp_cache_reset();
+    CHECK(nterp_pick(memrd, &m, stack4, STK, sizeof(stack4), NSP, pk, sizeof(pk)) == 1 &&
+          strcmp(pk, "com.ares.Sample.add+0x0") == 0,
+          "nterp_pick: nearest corroborated (add+0x0) wins over farther corroborated (greet+0x6)");
+
     art_nterp_cache_reset();
     free(dex);
     printf("%s: %d checks, %d failures\n", argv[0], checks, failures);

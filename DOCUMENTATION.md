@@ -366,7 +366,7 @@ located the module-base bug and stays available for future CFI diagnosis.
 
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
-- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"`. The snapshot-scan locator (`nterp_name`) corroborates an `ArtMethod*` candidate against a live dex_pc in the frame window (via `dex_lookup_range`), rejects stale spills, and names the method with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits; uncorroborated frames fall back to a bare best-effort name. Full precision for uncorroborated candidates still requires the ART `Thread→ManagedStack` walk (parked).
+- Interpreter frames (`ShadowFrame`) are detected by `is_interp_frame` and tagged `"kind":"interp"`. The snapshot-scan locator (`nterp_name`) corroborates an `ArtMethod*` candidate against a live dex_pc in the frame window (via `dex_lookup_range`), rejects stale spills, and names the method with a `+0x<dexpc>` bytecode-offset suffix on corroborated hits; uncorroborated frames fall back to a bare name but retain the pre-fix wrong-method risk (first-resolvable stale ArtMethod* may be named); full precision requires the ART `Thread→ManagedStack` walk (parked).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);

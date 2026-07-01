@@ -365,9 +365,10 @@ is in DOCUMENTATION.md and the referenced specs.
   deferred `+0x<dexpc>` suffix. With false positives filtered structurally, the scan
   window widened 4096→8192 for hit-rate. Reads-only; firewall intact. Host-covered
   by `test_dex` (range lookup) + `test_art_nterp` (stale-vs-real selection, suffix,
-  fallback). **Residual:** uncorroborated candidates fall back to today's best-effort
-  bare name (no regression); full precision on those still needs the ART
-  `Thread→ManagedStack` walk (parked). BuildID version-gating still deferred.
+  fallback). **Residual:** uncorroborated candidates fall back to a bare name, but retain
+  the pre-fix wrong-method risk (first-resolvable stale ArtMethod* may be named); full
+  precision still requires the ART `Thread→ManagedStack` walk (parked). BuildID
+  version-gating still deferred.
 
 ### 2026-06-30
 

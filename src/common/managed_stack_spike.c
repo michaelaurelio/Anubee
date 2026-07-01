@@ -81,15 +81,28 @@ void ares_mstack_spike(int pid, const struct ares_stack_snapshot *snap) {
 		rd64(rd, &pc, ms + MS_LINK_OFF, &link);   link = UNTAG(link);
 		rd64(rd, &pc, ms + MS_SHADOW_OFF, &shadow); shadow = UNTAG(shadow);
 
-		uint64_t sp = UNTAG(tagged) & ~MS_TAG_MASK, artm = 0;
-		char nm[256] = "";
-		int ok = 0;
-		if (sp) { rd64(rd, &pc, sp, &artm); artm = UNTAG(artm);
-			  if (artm) ok = art_method_resolve(rd, &pc, artm, nm, sizeof nm); }
-		fprintf(stderr, "[mstack] tid=%u seg%d ms=0x%llx sp=0x%llx artm=0x%llx %s%s\n",
-			snap->h.tid, seg, (unsigned long long)ms, (unsigned long long)sp,
-			(unsigned long long)artm, ok ? "=> " : "(unresolved)", ok ? nm : "");
-		printed = 1;
+		// Approach B: scan the authoritative segment window [sp, link) for
+		// resolvable ArtMethod* (each quick frame stores ArtMethod* at its base).
+		// link_ is the older (higher-address) ManagedStack node = segment bottom.
+		uint64_t sp = UNTAG(tagged) & ~MS_TAG_MASK;
+		if (sp) {
+			uint64_t bound = (link > sp && link - sp <= 0x8000) ? link : sp + 0x2000;
+			uint64_t last = 0;
+			int frames = 0;
+			for (uint64_t a = sp; a < bound && frames < 64; a += 8) {
+				uint64_t v = 0;
+				if (!rd64(rd, &pc, a, &v)) break;
+				v = UNTAG(v);
+				if (!v || v == last) continue;
+				char nm[256];
+				if (art_method_resolve(rd, &pc, v, nm, sizeof nm)) {
+					fprintf(stderr, "[mstack] tid=%u seg%d f%d @+0x%llx %s\n",
+						snap->h.tid, seg, frames,
+						(unsigned long long)(a - sp), nm);
+					last = v; frames++; printed = 1;
+				}
+			}
+		}
 
 		for (int d = 0; shadow && d < 64; d++) {
 			uint64_t a = 0, nx = 0; char sn[256];

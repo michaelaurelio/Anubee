@@ -124,7 +124,7 @@ JNI-originated stacks), each trapped syscall
 captures a frozen register file + up to 32 KB of user-stack bytes. These are written
 to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
 unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
-using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`).
+using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`). The syscall/call records themselves now carry an inline `java_stack` field — a managed/Java call chain (innermost-first, native frames elided) when a managed caller resolves, e.g. `["pkg.Inner.method","pkg.Outer.method"]` (best-effort; AOT frames reliable, nterp frames inherit documented precision limits).
 
 **Status: native unwinding works; the live `art_jni_trampoline` cross is not yet
 complete.** Under capture-all the engine now unwinds the full native chain on JNI-originated

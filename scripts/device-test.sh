@@ -193,6 +193,7 @@ test_syscalls_cfi() {
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
     local stacks; stacks="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    local mainout; mainout="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
     if [ -z "$stacks" ]; then
         echo "  SKIP: no stack sidecar produced in this window (no stack snapshots captured)"
@@ -269,6 +270,15 @@ test_syscalls_cfi() {
     else
         echo "  SKIP: no named nterp interp frame in this window ($PKG may be fully AOT / no interpreted app code ran)"
     fi
+    # inline java_stack on syscall records (Task 3): when the managed chain was built
+    # and cached by emit_cfi_backtrace, each matching syscall record in the main JSONL
+    # carries a "java_stack" array. WARN on miss: not all targets run interpreted code.
+    local jstack; jstack=$(grep -c '"java_stack":\[' <<<"$mainout" 2>/dev/null || echo 0)
+    if [ "$jstack" -gt 0 ]; then
+        echo "PASS: $jstack syscall record(s) carry inline java_stack"
+    else
+        echo "WARN: no inline java_stack (expected on a managed/nterp target app)"
+    fi
 }
 
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
@@ -286,11 +296,16 @@ test_funcs_structured() {
     [ -n "$pid" ] || { echo "  SKIP: could not get pid for $PKG (funcs --structured)"; return; }
     local out_file="/data/local/tmp/ares_funcs_structured_test.jsonl"
     adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
-    ares "funcs -p $pid -e 'libc.so!open' -J -o $out_file" >/dev/null 2>&1 || true
+    ares "funcs -p $pid -e 'libc.so!open' -J --snapshot -o $out_file" >/dev/null 2>&1 || true
     local content; content="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     grep -q '"type":"call"' <<<"$content" \
         || { echo "  out: $content" >&2; fail "funcs --structured: no {\"type\":\"call\"} record in $out_file"; }
-    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    local stacks_file="${out_file}.stacks"
+    local stacks_content; stacks_content="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    local cfi; cfi=$(grep -c '"type":"cfi_stack"' <<<"$stacks_content" 2>/dev/null || echo 0)
+    [ "$cfi" -gt 0 ] && echo "PASS: funcs sidecar has $cfi cfi_stack record(s)" \
+                      || echo "  SKIP: no cfi_stack in funcs sidecar (short window — CFI may not have fired)"
+    adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
     info "funcs --structured OK — structured call record found"
 }
 

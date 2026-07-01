@@ -56,6 +56,7 @@
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/engine_args.h"
+#include "common/managed_frame.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 
@@ -575,19 +576,6 @@ static void json_emit_stack(const struct ares_stack_snapshot *s)
 	emit_cfi_backtrace(s);
 }
 
-// A frame inside one of ART's interpreter entrypoints means a Java method is
-// being interpreted: there is no native frame for the managed method itself (it
-// lives as a ShadowFrame in ART's managed stack), so the backtrace can't name
-// it without an ART-internal stack walk. Flag it so the reader knows a Java
-// frame was elided here rather than mistaking the bridge for the whole story.
-static int is_interp_frame(const char *sym)
-{
-	return strstr(sym, "ToInterpreterBridge") ||      // art{Quick,Interpreter}ToInterpreterBridge
-	       strstr(sym, "nterp_helper")         ||      // nterp fast-interp native bridge
-	       strstr(sym, "ExecuteNterpImpl")     ||      // nterp fast interpreter loop
-	       strstr(sym, "ExecuteSwitchImpl")    ||      // switch interpreter
-	       strstr(sym, "artInterpreterToCompiledCodeBridge");
-}
 
 static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 {
@@ -600,61 +588,14 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	if (dbg) memset(diags, 0, sizeof(diags));
 	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, dbg ? diags : NULL);
 	if (n <= 0) return;
+
 	struct jbuf *j = &g_sink.jb; j->len = 0;
-	jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
-	jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
-	jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
-	jb_s(j, ",\"cfi_backtrace\":[");
-	char sym[320];
-	for (int i = 0; i < n; i++) {
-		if (i) jb_c(j, ',');
-		sym_resolve((int)s->h.pid, pcs[i], sym, sizeof(sym));
-		jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)i);
-		jb_s(j, ",\"addr\":\""); jb_hex(j, pcs[i]);
-		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
-		if (strstr(sym, "art_jni_trampoline")) jb_s(j, ",\"kind\":\"jni-trampoline\"");
-		else if (strstr(sym, ".oat!") || strstr(sym, ".odex!") || strstr(sym, ".vdex!"))
-			jb_s(j, ",\"kind\":\"managed\"");
-		else if (is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
-		else jb_s(j, ",\"kind\":\"native\"");
-		if (dbg) {
-			const struct cfi_step_diag *d = &diags[i];
-			jb_s(j, ",\"module_pc\":\""); jb_hex(j, d->module_pc);
-			jb_s(j, "\",\"load_base\":\""); jb_hex(j, d->load_base);
-			jb_s(j, "\",\"elf_off\":\""); jb_hex(j, d->elf_off);
-			jb_s(j, "\",\"fde_found\":"); jb_u64(j, (unsigned)d->fde_found);
-			jb_s(j, ",\"fde_pc_lo\":\""); jb_hex(j, d->fde_pc_lo);
-			jb_s(j, "\",\"fde_pc_hi\":\""); jb_hex(j, d->fde_pc_hi);
-			jb_s(j, "\",\"cfa_reg\":"); jb_u64(j, d->cfa_reg);
-			jb_s(j, ",\"cfa\":\""); jb_hex(j, d->cfa);
-			jb_s(j, "\",\"ra_kind\":"); jb_u64(j, d->ra_kind);
-			jb_s(j, ",\"ra_slot\":\""); jb_hex(j, d->ra_slot);
-			jb_s(j, "\",\"ra_value\":\""); jb_hex(j, d->ra_value);
-			jb_s(j, "\",\"stop_reason\":"); jb_u64(j, (unsigned)d->stop_reason);
-			jb_s(j, ",\"diag_path\":\""); jb_esc(j, d->path); jb_c(j, '"');
-		}
-		jb_c(j, '}');
-	}
-	// Cross the final native->managed gap: if the walk died in ART's *nterp* fast
-	// interpreter, name the interpreted Java method by reading its ArtMethod* from
-	// the managed frame just above the terminal SP and chasing ART structs
-	// out-of-process. `sym` still holds the terminal frame's symbol here. Gate on
-	// nterp specifically (not the broader is_interp_frame): only nterp places the
-	// ArtMethod* at the managed frame base, so the switch-interpreter /
-	// ToInterpreterBridge terminals would otherwise mis-attribute a nearby method.
-	// Anchor on "nterp_helper" — plain "nterp" is a substring of "Interpreter" and
-	// would (wrongly) match the *ToInterpreterBridge terminals this gate excludes.
-	if (strstr(sym, "nterp_helper")) {
-		char mname[256];
-		if (nterp_name((int)s->h.pid, s, sps[n - 1], mname, sizeof(mname))) {
-			jb_c(j, ',');
-			jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)n);
-			jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, mname);
-			jb_s(j, "\",\"kind\":\"interp\"}");
-		}
-	}
-	jb_s(j, "]}\n");
+	ares_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
+
+	char frag[208];
+	if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
+		ares_jcache_put(s->stack_id, frag);
 }
 
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,
@@ -725,8 +666,11 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		}
 	}
 
-	if (e->stack_id)
-		{ jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
+	if (e->stack_id) {
+		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
+		char js[208];
+		if (ares_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
+	}
 
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
@@ -740,7 +684,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_s(j, "{\"frame\":"); jb_u64(j, i);
 		jb_s(j, ",\"addr\":\""); jb_hex(j, e->stack[i]);
 		jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
-		if (is_interp_frame(sym))
+		if (ares_is_interp_frame(sym))
 			jb_s(j, ",\"java\":\"interpreted (managed frame elided)\"");
 		// The frame-pointer chain cannot cross the JNI trampoline: the managed
 		// caller above it does not keep an AAPCS [fp,lr] frame, so the next

@@ -13,7 +13,8 @@
 #include <stdlib.h>
 
 void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module,
-                     const char *symbol, const probe_target_t *target);
+                     const char *symbol, const probe_target_t *target,
+                     const char *java_stack);
 void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module,
                        const char *symbol, const probe_target_t *target);
 
@@ -39,7 +40,7 @@ int main(void)
     e.args[0] = 0x10; e.args[1] = 0x20;
 
     j.len = 0;
-    funcs_emit_call(&j, &e, "libc.so", "open", NULL);
+    funcs_emit_call(&j, &e, "libc.so", "open", NULL, NULL);
     CHECK_HAS(j, "\"type\":\"call\"", "call type");
     CHECK_HAS(j, "\"pid\":1234", "call pid");
     CHECK_HAS(j, "\"tid\":1240", "call tid");
@@ -51,7 +52,7 @@ int main(void)
     j.len = 0;
     e.call_stack[0] = 0xdead000ULL;
     e.stack_depth = 1;
-    funcs_emit_call(&j, &e, "libc.so", "open", NULL);
+    funcs_emit_call(&j, &e, "libc.so", "open", NULL, NULL);
     CHECK_HAS(j, "\"backtrace\":[", "call backtrace key");
     CHECK_HAS(j, "\"frame\":0",     "call backtrace frame 0");
     CHECK_HAS(j, "dead000",         "call backtrace addr");
@@ -60,7 +61,7 @@ int main(void)
     j.len = 0;
     e.call_stack[0] = 0; e.stack_depth = 0;
     e.stack_id = 0;
-    funcs_emit_call(&j, &e, "libc.so", "open", NULL);
+    funcs_emit_call(&j, &e, "libc.so", "open", NULL, NULL);
     { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
       checks++;
       if (strstr(tmp, "stack_id")) { failures++; printf("  FAIL: stack_id emitted when zero\n"); }
@@ -69,8 +70,27 @@ int main(void)
     // stack_id != 0 → "stack_id" field present
     j.len = 0;
     e.stack_id = 0xdeadbeef1ULL;
-    funcs_emit_call(&j, &e, "libc.so", "open", NULL);
+    funcs_emit_call(&j, &e, "libc.so", "open", NULL, NULL);
     CHECK_HAS(j, "\"stack_id\":", "stack_id emitted when nonzero");
+
+    // java_stack present: fragment spliced verbatim.
+    {
+        struct jbuf j2 = {0};
+        funcs_emit_call(&j2, &e, "libfoo.so", "sym", NULL, "[\"pkg.Class.method\"]");
+        CHECK_HAS(j2, "\"java_stack\":[\"pkg.Class.method\"]", "call carries java_stack");
+        free(j2.b);
+    }
+    // java_stack NULL: field omitted.
+    {
+        struct jbuf j2 = {0};
+        funcs_emit_call(&j2, &e, "libfoo.so", "sym", NULL, NULL);
+        { char tmp2[4096]; int n2 = (int)j2.len; if (n2 > 4095) n2 = 4095;
+          memcpy(tmp2, j2.b, n2); tmp2[n2] = 0;
+          checks++;
+          if (strstr(tmp2, "java_stack")) { failures++; printf("  FAIL: no java_stack when NULL\n"); }
+        }
+        free(j2.b);
+    }
 
     // ---- call with ARG_STR arg (string_args emitted) -----------------------
     struct event es = {0};
@@ -86,7 +106,7 @@ int main(void)
     tgt_str.ret_type = ARG_NONE;
 
     j.len = 0;
-    funcs_emit_call(&j, &es, "libc.so", "open", &tgt_str);
+    funcs_emit_call(&j, &es, "libc.so", "open", &tgt_str, NULL);
     CHECK_HAS(j, "\"string_args\"", "call string_args key");
     CHECK_HAS(j, "/data/local/tmp/x", "call string_args value");
 
@@ -102,7 +122,7 @@ int main(void)
     tgt_fd.ret_type = ARG_NONE;
 
     j.len = 0;
-    funcs_emit_call(&j, &ef, "libc.so", "read", &tgt_fd);
+    funcs_emit_call(&j, &ef, "libc.so", "read", &tgt_fd, NULL);
     CHECK_HAS(j, "\"fd_args\"", "call fd_args key");
     CHECK_HAS(j, "fd=5", "call fd_args value");
 

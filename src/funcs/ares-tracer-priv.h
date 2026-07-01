@@ -33,7 +33,7 @@ void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2)));
 struct jbuf;   // common/emit.h
 struct event;  // ares-tracer.h
 #include "common/probe_resolve.h"
-void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
+void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target, const char *java_stack);
 void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
 
 #endif /* __ARES_TRACER_PRIV_H */

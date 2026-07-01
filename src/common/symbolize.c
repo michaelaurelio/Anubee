@@ -19,6 +19,9 @@
 #include "common/maps.h"      // ares_parse_maps_line
 #include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
 #include "common/cfi_unwind.h"
+#include "common/emit.h"      // struct jbuf, jb_s / jb_u64 / jb_hex / jb_esc / jb_c
+#include "common/managed_frame.h" // ares_is_interp_frame, ares_managed_chain_build (impure bodies here)
+#include "common/art_nterp.h" // nterp_name
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
 #include "common/stack_snapshot.h"
 
@@ -1704,4 +1707,79 @@ void sym_flush_pid(int pid)
 			vdso_free(&g_vdso[i]);     // force rebuild on next resolve
 	sc_clear();                             // addresses may have moved
 	pthread_mutex_unlock(&g_lock);
+}
+
+// Resolve the managed method chain for an already-CFI-walked snapshot. Mirrors
+// the nterp-terminal logic in syscalls' emit_cfi_backtrace (single source now):
+// only an nterp_helper terminal places the ArtMethod* at the managed frame base,
+// so only then do we name the interpreted method.
+int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
+                       const uint64_t *pcs, const uint64_t *sps, int n,
+                       char *out, size_t cap)
+{
+    if (n <= 0) return 0;
+    static _Thread_local char store[64][320];
+    const char *syms[64];
+    int m = n < 64 ? n : 64;
+    for (int i = 0; i < m; i++) {
+        sym_resolve(pid, pcs[i], store[i], sizeof(store[i]));
+        syms[i] = store[i];
+    }
+    char mname[256];
+    const char *nterp = NULL;
+    if (strstr(syms[m - 1], "nterp_helper") &&
+        nterp_name(pid, s, sps[m - 1], mname, sizeof(mname)))
+        nterp = mname;
+    return ares_managed_chain_build(syms, m, nterp, out, cap);
+}
+
+void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
+                              const struct ares_stack_snapshot *s,
+                              const uint64_t *pcs, const uint64_t *sps, int n,
+                              const struct cfi_step_diag *diags)
+{
+    jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
+    jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
+    jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
+    jb_s(j, ",\"cfi_backtrace\":[");
+    char sym[320];
+    for (int i = 0; i < n; i++) {
+        if (i) jb_c(j, ',');
+        sym_resolve(pid, pcs[i], sym, sizeof(sym));
+        jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)i);
+        jb_s(j, ",\"addr\":\""); jb_hex(j, pcs[i]);
+        jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');
+        if (strstr(sym, "art_jni_trampoline")) jb_s(j, ",\"kind\":\"jni-trampoline\"");
+        else if (strstr(sym, ".oat!") || strstr(sym, ".odex!") || strstr(sym, ".vdex!"))
+            jb_s(j, ",\"kind\":\"managed\"");
+        else if (ares_is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
+        else jb_s(j, ",\"kind\":\"native\"");
+        if (diags) {
+            const struct cfi_step_diag *d = &diags[i];
+            jb_s(j, ",\"module_pc\":\""); jb_hex(j, d->module_pc);
+            jb_s(j, "\",\"load_base\":\""); jb_hex(j, d->load_base);
+            jb_s(j, "\",\"elf_off\":\""); jb_hex(j, d->elf_off);
+            jb_s(j, "\",\"fde_found\":"); jb_u64(j, (unsigned)d->fde_found);
+            jb_s(j, ",\"fde_pc_lo\":\""); jb_hex(j, d->fde_pc_lo);
+            jb_s(j, "\",\"fde_pc_hi\":\""); jb_hex(j, d->fde_pc_hi);
+            jb_s(j, "\",\"cfa_reg\":"); jb_u64(j, d->cfa_reg);
+            jb_s(j, ",\"cfa\":\""); jb_hex(j, d->cfa);
+            jb_s(j, "\",\"ra_kind\":"); jb_u64(j, d->ra_kind);
+            jb_s(j, ",\"ra_slot\":\""); jb_hex(j, d->ra_slot);
+            jb_s(j, "\",\"ra_value\":\""); jb_hex(j, d->ra_value);
+            jb_s(j, "\",\"stop_reason\":"); jb_u64(j, (unsigned)d->stop_reason);
+            jb_s(j, ",\"diag_path\":\""); jb_esc(j, d->path); jb_c(j, '"');
+        }
+        jb_c(j, '}');
+    }
+    if (n > 0 && strstr(sym, "nterp_helper")) {
+        char mname[256];
+        if (nterp_name(pid, s, sps[n - 1], mname, sizeof(mname))) {
+            jb_c(j, ',');
+            jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)n);
+            jb_s(j, ",\"addr\":\"0x0\",\"symbol\":\""); jb_esc(j, mname);
+            jb_s(j, "\",\"kind\":\"interp\"}");
+        }
+    }
+    jb_s(j, "]}\n");
 }

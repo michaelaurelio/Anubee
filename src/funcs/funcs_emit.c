@@ -16,7 +16,7 @@
 // target may be NULL (unresolved entry addr) — all resolved fields are omitted.
 void funcs_emit_call(struct jbuf *j, const struct event *e,
                      const char *module, const char *symbol,
-                     const probe_target_t *target)
+                     const probe_target_t *target, const char *java_stack)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_CALL)); jb_c(j, '"');
@@ -31,8 +31,10 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
         jb_c(j, '"'); jb_hex(j, e->args[i]); jb_c(j, '"');
     }
     jb_c(j, ']');
-    if (e->stack_id)
-        { jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id); }
+    if (e->stack_id) {
+        jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
+        if (java_stack) { jb_s(j, ",\"java_stack\":"); jb_s(j, java_stack); }
+    }
 
     // ponytail: addr-only (no sym_resolve) so this file stays libbpf/symbolizer-free
     // and host-testable. The caller (ares-tracer.c) already resolves symbols to the

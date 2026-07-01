@@ -160,11 +160,14 @@ LINK_FLAGS := -static -pthread
 .PHONY: all push device-test test clean regen-vmlinux
 all: $(BIN)
 
-# ---- vmlinux.h (committed; regenerate only on kernel change) ---------------
-vmlinux.h:
-	$(BPFTOOL) btf dump file vmlinux.btf format c > $@
+# ---- vmlinux.h (committed; regenerate manually only on kernel change) ------
+# vmlinux.h is checked in and is the build input; no auto-rule regenerates it.
+# Source BTF defaults to the host's live kernel. Override with a pulled device BTF:
+#   make regen-vmlinux ARES_VMLINUX_BTF=./vmlinux-device.btf
+# See DOCUMENTATION.md — "Regenerating vmlinux.h (kernel BTF)".
+ARES_VMLINUX_BTF ?= /sys/kernel/btf/vmlinux
 regen-vmlinux:
-	$(BPFTOOL) btf dump file vmlinux.btf format c > vmlinux.h
+	$(BPFTOOL) btf dump file $(ARES_VMLINUX_BTF) format c > vmlinux.h
 
 # ---- vendored libbpf, cross-built static ----------------------------------
 $(LIBBPF_A):

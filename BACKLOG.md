@@ -284,6 +284,16 @@ symbol path); vDSO frames are named (Phase 1).
   open.
 - **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
   decoding).
+- **Drop-telemetry parity — `mod` deferred (`correlate` DONE 2026-07-01).** Cross-engine
+  audit: only `funcs`/`syscalls` counted ring-buffer drops and called `ares_drops_report`,
+  despite `runtime.h`'s "silence never means didn't check" contract. `correlate` now shares
+  `bpf_drop.bpf.h` (bump on both reserve sites) and reports at teardown (qdrops=0, no worker
+  queue). `trace` already inherits its sub-engines' reports; `dump` streams no high-volume
+  ring events (single-shot dumper) so it's exempt. **`mod` still silent:** the analyzer vtable
+  (`analyzer.h`) exposes only `setup()`/`teardown()`, not the skeleton's `dropped` map fd.
+  Fix = add a `dropfd` (or map-fd accessor) to `ares_analyzer_t`, `#include bpf_drop.bpf.h` +
+  `bump_dropped()` in each of the 3 analyzer BPF objects (execve/proc_event/prop_read), and
+  call `ares_drops_report` from `mod.c` teardown. ~8 files; do as its own pass.
 - **U1/U2 — console style diverges.** `funcs` uses timestamped tagged lines
   (`[spawn] >`, `[uprobe] >`, …); other engines use prose banners. Masked under
   `trace -o`. Low value / high cosmetic churn across 5 files — **not recommended**.

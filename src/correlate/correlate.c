@@ -383,6 +383,8 @@ void correlate_teardown(void)
     }
     destroy_uprobe_links();
     if (g_skel) {
+        // No worker queue in correlate (ring drained inline) → qdrops = 0.
+        ares_drops_report(ares_drops_read(bpf_map__fd(g_skel->maps.dropped)), 0);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;
     }

@@ -25,6 +25,7 @@ struct {
 #include "common/uid_filter.bpf.h"   // target_uids map + uid_matches()
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
+#include "common/bpf_drop.bpf.h"     // dropped map + bump_dropped()
 
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"
@@ -59,8 +60,10 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
     }
 
     struct corr_func_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
     e->h.type = CORR_EV_FUNC;
     e->h.pid  = pid;
     e->h.tid  = tid;
@@ -92,8 +95,10 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
         return 0;
 
     struct corr_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
     e->h.type = CORR_EV_SYSCALL;
     e->h.pid  = pid;
     e->h.tid  = tid;

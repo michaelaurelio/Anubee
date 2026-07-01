@@ -45,7 +45,7 @@ so history stays traceable.
 **Minor:**
 - Phase 3d (deferred) — coordinator-wide `-p` in `trace` (see BACKLOG item below)
 - C9 — `funcs` sockaddr decode
-- `vmlinux.h` dedup; drop committed `vmlinux.btf`
+- `vmlinux.h` dedup (C8)
 - MCP richness follow-on; pending device verification (`trace` combined run, `correlate` R3/R4/X2)
 - U1/U2 console style unification (not recommended — high churn, low value)
 - `ares mod` audit closed 2026-06-28 (F2/F4 moot; F1 PID-attach shipped 2026-06-30)

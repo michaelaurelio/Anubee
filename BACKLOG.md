@@ -105,8 +105,13 @@ device-verified (see Resolved/Done). What remains is breadth, not a new wall:
   retired. Unknown build → clean dual no-op + a one-time notice. Device-verified on
   apex `370549100` (naming preserved; BuildID resolves). **Remaining breadth:**
   (B) an on-device row-confirm helper — human pins offsets from AOSP per build, the
-  helper confirms a candidate row reproduces one known chain; (C) formal precision
-  oracle closure (backlog #4) as the per-row acceptance gate. Adding rows per
+  helper confirms a candidate row reproduces one known chain — **still open**; (C) formal
+  precision oracle closure — **DONE #3-C (2026-07-02):** the Frida/ART oracle
+  (`scripts/nterp-oracle/`) now hooks `open64`/`__openat` (openat ground-truth 0→80) and
+  scores a 3-way trust split; the ShadowFrame authoritative path measured **~89.5% precision
+  vs ART StackVisitor** (near-100% modulo `(syscall,path)` join noise), the uncorroborated
+  nterp fallback fired 0× and is now flagged with a trailing `?`. See
+  `research/2026-07-02-nterp-precision-oracle-findings.md` Result 6. Adding rows per
   device/ART build is now one-row-per-device. Spec/plan:
   `docs/superpowers/specs/2026-07-02-buildid-unification-design.md`.
 - **Recall bound.** nterp chain recall is bounded by the frozen snapshot window;

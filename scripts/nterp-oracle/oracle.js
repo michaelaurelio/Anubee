@@ -8,8 +8,9 @@
 //   frida-compile oracle.js -o oracle.bundle.js
 //   python3 run_oracle.py <out.jsonl>     # spawns $PKG, loads the bundle, drives UI
 //
-// (openat is hooked but ART often opens via open64/__openat; faccessat/readlinkat via
-//  libcore Os.* reliably carry the app Java caller.)
+// (ART opens via open64/__openat, not the public openat export, so all three are hooked
+//  and normalized to syscall:"openat" to overlap ares' openat-named frames; faccessat/
+//  readlinkat via libcore Os.* reliably carry the app Java caller.)
 import Java from 'frida-java-bridge';
 
 function javaStack() {
@@ -30,20 +31,24 @@ function resolve(name) {
   return null;
 }
 
-function hook(name, pathArgIndex) {
+function hook(name, pathArgIndex, label) {
   const p = resolve(name);
   if (!p) return;
+  const syscall = label || name;   // emitted join-key label (may differ from the export)
   Interceptor.attach(p, {
     onEnter(args) {
       let path = '';
       try { path = args[pathArgIndex].readUtf8String(); } catch (e) {}
-      send(JSON.stringify({ tid: Process.getCurrentThreadId(), syscall: name,
+      send(JSON.stringify({ tid: Process.getCurrentThreadId(), syscall: syscall,
                             path: path, java_stack: javaStack() }));
     }
   });
 }
 
-// index matches compare.py _PATH_ARG (libc wrapper arg positions)
-hook('openat', 1);
+// pathArgIndex matches the libc wrapper arg positions; label normalizes the open family
+// to "openat" so the (syscall, path) join key overlaps ares' openat frames.
+hook('openat', 1);              // public export (ART bypasses it, but keep for completeness)
+hook('__openat', 1, 'openat');  // bionic's actual openat bottleneck: __openat(dirfd, path, …)
+hook('open64', 0, 'openat');    // open()/open64 family: open64(path, oflag, …)
 hook('faccessat', 1);
 hook('readlinkat', 1);

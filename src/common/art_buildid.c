@@ -70,22 +70,44 @@ static int read_build_id_hex(const char *path, char *out, size_t outsz)
 
 const struct art_offsets *art_buildid_offsets(int pid)
 {
+    static int   cache_pid = -2;               /* -2 = never resolved */
+    static const struct art_offsets *cache_off = NULL;
+    if (pid == cache_pid)
+        return cache_off;
+
+    const struct art_offsets *o = NULL;
+    char hex[64] = {0};
+
     char maps[64];
     snprintf(maps, sizeof maps, "/proc/%d/maps", pid);
     FILE *f = fopen(maps, "r");
-    if (!f) return NULL;
-    char line[512], libart[256] = {0};
-    while (fgets(line, sizeof line, f)) {
-        struct ares_map_line ml;
-        if (ares_parse_maps_line(line, &ml) && ml.path[0] &&
-            strstr(ml.path, "/libart.so")) {
-            snprintf(libart, sizeof libart, "%s", ml.path);
-            break;
+    if (f) {
+        char line[512], libart[256] = {0};
+        while (fgets(line, sizeof line, f)) {
+            struct ares_map_line ml;
+            if (ares_parse_maps_line(line, &ml) && ml.path[0] &&
+                strstr(ml.path, "/libart.so")) {
+                snprintf(libart, sizeof libart, "%s", ml.path);
+                break;
+            }
+        }
+        fclose(f);
+        if (libart[0] && read_build_id_hex(libart, hex, sizeof hex))
+            o = art_offsets_for_buildid(hex);
+    }
+
+    cache_pid = pid;
+    cache_off = o;
+
+    if (!o) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr,
+                "[ares] libart BuildID %s not in offset table; managed-frame "
+                "naming disabled (add a k_table row).\n",
+                hex[0] ? hex : "<unresolved>");
         }
     }
-    fclose(f);
-    if (!libart[0]) return NULL;
-    char hex[64];
-    if (!read_build_id_hex(libart, hex, sizeof hex)) return NULL;
-    return art_offsets_for_buildid(hex);
+    return o;
 }

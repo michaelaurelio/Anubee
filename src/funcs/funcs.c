@@ -21,9 +21,9 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-#include "ares-tracer.h"
-#include "ares-tracer.skel.h"
-#include "ares-tracer-priv.h"
+#include "funcs.h"
+#include "funcs.skel.h"
+#include "funcs-priv.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
@@ -200,7 +200,7 @@ static volatile sig_atomic_t exiting = 0;
 
 // Engine state shared across funcs_setup / funcs_run / funcs_teardown.
 static struct ring_buffer *g_events_rb;
-struct ares_tracer_bpf *skel = NULL;  // must precede funcs_drops_tick below
+struct funcs_bpf *skel = NULL;  // must precede funcs_drops_tick below
 // Resolution context: file-static so handle_event can safely dereference it
 // after funcs_setup returns (all fields point at file-scope globals).
 static struct probe_resolve_ctx g_rctx;
@@ -960,7 +960,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Open, configure, load, attach BPF skeleton.
     // set_max_entries and set_autoattach must happen after open, before load.
-    skel = ares_tracer_bpf__open();
+    skel = funcs_bpf__open();
     if (!skel) {
         err_print("   [bpf] > failed to open skeleton\n");
         err = 1;
@@ -976,9 +976,9 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
         skel->rodata->snapshot_enabled = (g_stacks != NULL) ? 1 : 0;
-        if (ares_tracer_bpf__load(skel)) {
+        if (funcs_bpf__load(skel)) {
             err_print("   [bpf] > failed to load skeleton\n");
-            ares_tracer_bpf__destroy(skel);
+            funcs_bpf__destroy(skel);
             skel = NULL;
             err = 1;
             goto cleanup;
@@ -986,7 +986,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         ts_print("  [bpf] > ring buffer: %zu MB\n", bufbytes >> 20);
     }
 
-    err = ares_tracer_bpf__attach(skel);
+    err = funcs_bpf__attach(skel);
     if (err) {
         err_print("   [bpf] > failed to attach (uprobe_mmap in kallsyms?)\n");
         goto cleanup;
@@ -1267,7 +1267,7 @@ void funcs_teardown(void)
 
     if (skel) {
         ares_drops_report(ares_drops_read(bpf_map__fd(skel->maps.dropped)), g_q.dropped);
-        ares_tracer_bpf__destroy(skel);
+        funcs_bpf__destroy(skel);
         skel = NULL;
     }
     ares_evq_destroy(&g_q);

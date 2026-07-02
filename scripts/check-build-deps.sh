@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 make >/dev/null                       # ensure the tree is up to date first
 HDR=src/common/stack_snapshot.h       # struct shared by BPF (.bpf.h) + userspace
 touch "$HDR"
-EXPECT=(build/ares-tracer.bpf.o build/syscalls.bpf.o \
+EXPECT=(build/funcs.bpf.o build/syscalls.bpf.o \
         build/common/symbolize.o build/common/stack_snapshot.o build/ares)
 fail=0
 for t in "${EXPECT[@]}"; do

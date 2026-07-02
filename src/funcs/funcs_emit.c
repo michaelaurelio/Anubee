@@ -7,7 +7,7 @@
 #include "common/trace_schema.h"
 #include "common/decode.h"
 #include "common/probe_resolve.h"
-#include "funcs/ares-tracer.h"
+#include "funcs/funcs.h"
 
 // Structured record builders (opt-in --structured mode). One self-describing
 // JSON object per event into j, on the shared schema/serializer so ares-mcp can
@@ -37,7 +37,7 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
     }
 
     // ponytail: addr-only (no sym_resolve) so this file stays libbpf/symbolizer-free
-    // and host-testable. The caller (ares-tracer.c) already resolves symbols to the
+    // and host-testable. The caller (funcs.c) already resolves symbols to the
     // console; promote symbol field here if MCP consumers need it.
     jb_s(j, ",\"backtrace\":[");
     for (int i = 0, first = 1; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {

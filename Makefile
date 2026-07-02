@@ -61,10 +61,8 @@ BIN         := $(BUILD)/ares
 # ---- BPF objects + skeletons ----------------------------------------------
 SYSC_BPF_OBJ := $(BUILD)/syscalls.bpf.o
 SYSC_SKEL    := $(BUILD)/syscalls.skel.h
-FUNC_BPF_OBJ := $(BUILD)/ares-tracer.bpf.o
-# funcs skeleton lives next to its source: ares-tracer.c and modules/*.c include
-# it via "ares-tracer.skel.h" / "../ares-tracer.skel.h".
-FUNC_SKEL    := $(SRC)/funcs/ares-tracer.skel.h
+FUNC_BPF_OBJ := $(BUILD)/funcs.bpf.o
+FUNC_SKEL    := $(BUILD)/funcs.skel.h
 LIB_BPF_OBJ  := $(BUILD)/lib.bpf.o
 LIB_SKEL     := $(BUILD)/lib.skel.h
 CORR_BPF_OBJ := $(BUILD)/correlate.bpf.o
@@ -83,7 +81,7 @@ BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) 
 
 # ---- userspace objects (compiled per engine, then localized) --------------
 SYSC_CSRC := $(SRC)/syscalls/syscalls.c
-FUNC_CSRC := $(SRC)/funcs/ares-tracer.c $(SRC)/funcs/funcs_emit.c
+FUNC_CSRC := $(SRC)/funcs/funcs.c $(SRC)/funcs/funcs_emit.c
 
 # shared library-load tracing module (src/common), linked once; exports only its
 # ares_libtrace_* API (everything else localized, like the engines).
@@ -153,7 +151,7 @@ MAIN_OBJ  := $(BUILD)/main.o
 
 # -I$(SRC) lets engines and the common module resolve "common/lib_trace.h".
 SYSC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/syscalls -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
-FUNC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/funcs -I$(LIBBPF_INC) $(DEPFLAGS)
+FUNC_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/funcs -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -194,12 +192,12 @@ $(SYSC_BPF_OBJ): $(SRC)/syscalls/syscalls.bpf.c vmlinux.h $(LIBBPF_A)
 $(SYSC_SKEL): $(SYSC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name syscalls > $@
 
-$(FUNC_BPF_OBJ): $(SRC)/funcs/ares-tracer.bpf.c vmlinux.h $(LIBBPF_A)
+$(FUNC_BPF_OBJ): $(SRC)/funcs/funcs.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/funcs -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(FUNC_SKEL): $(FUNC_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name ares_tracer_bpf > $@
+	$(BPFTOOL) gen skeleton $< name funcs_bpf > $@
 
 # lib engine BPF: minimal maps + uid gate, then #includes the shared probe.
 $(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c vmlinux.h $(LIBBPF_A)
@@ -436,7 +434,7 @@ test:
 	 fi
 
 clean:
-	rm -rf $(BUILD) $(FUNC_SKEL)
+	rm -rf $(BUILD)
 
 # ---- auto-generated header deps (-MMD -MP) --------------------------------
 # Absent on a clean build → -include (leading dash) keeps the first pass silent;

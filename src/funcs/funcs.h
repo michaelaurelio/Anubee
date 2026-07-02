@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef __ARES_TRACER_H
-#define __ARES_TRACER_H
+#ifndef __FUNCS_H
+#define __FUNCS_H
 
 #define TASK_COMM_LEN    32
 #define MAX_STR_LEN      128
@@ -91,4 +91,4 @@ struct prop_event {
 };
 
 
-#endif /* __ARES_TRACER_H */
+#endif /* __FUNCS_H */

@@ -6,7 +6,7 @@
 #include "common/emit.h"
 #include "common/trace_schema.h"
 #include "common/probe_resolve.h"
-#include "funcs/ares-tracer.h"
+#include "funcs/funcs.h"
 
 #include <stdio.h>
 #include <string.h>

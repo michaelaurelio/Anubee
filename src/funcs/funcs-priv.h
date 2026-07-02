@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef __ARES_TRACER_PRIV_H
-#define __ARES_TRACER_PRIV_H
+#ifndef __FUNCS_PRIV_H
+#define __FUNCS_PRIV_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -8,7 +8,7 @@
 #include <sys/types.h>
 #include <linux/types.h>
 
-// Globals defined in ares-tracer.c, shared with modules
+// Globals defined in funcs.c, shared with modules
 extern bool verbose;
 extern bool caller_only;
 extern bool resolve_syms;
@@ -22,18 +22,18 @@ int  funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc);
 int  funcs_run(volatile sig_atomic_t *stop);
 void funcs_teardown(void);
 
-// Functions defined in ares-tracer.c, shared with modules
+// Functions defined in funcs.c, shared with modules
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2)));
 #include "common/symbolize.h"   // sym_resolve / sym_flush_pid (shared call-stack resolver)
 
 // Structured-record builders defined in funcs_emit.c (pure, no libbpf deps).
-// Called from ares-tracer.c when --structured mode is active.
+// Called from funcs.c when --structured mode is active.
 struct jbuf;   // common/emit.h
-struct event;  // ares-tracer.h
+struct event;  // funcs.h
 #include "common/probe_resolve.h"
 void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target, const char *java_stack);
 void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
 
-#endif /* __ARES_TRACER_PRIV_H */
+#endif /* __FUNCS_PRIV_H */

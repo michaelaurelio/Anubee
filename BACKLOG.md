@@ -195,7 +195,7 @@ symbol path). The genuine method-index→name path is parked:
     convention); keep unless a dedicated verbosity split is wanted.
 
 - **N1 — `funcs` CFI/managed-chain runs inline on the drain thread.** In `funcs`
-  (`ares-tracer.c` STACK handler) the CFI walk (`cfi_unwind_snapshot`) and managed-chain
+  (`funcs.c` STACK handler) the CFI walk (`cfi_unwind_snapshot`) and managed-chain
   build (`ares_managed_chain`) run inline on the ring-buffer drain thread, whereas
   `syscalls` runs the equivalent work on the worker thread (off the drain path). On the
   loud engine this raises drain latency and can increase drop rate under load.

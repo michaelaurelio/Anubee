@@ -255,7 +255,7 @@ int nterp_pick(art_reader rd, void *rc, const struct art_offsets *o,
     }
 
     if (have_fallback) {
-        snprintf(out, outsz, "%s", fallback);
+        snprintf(out, outsz, "%s?", fallback);   /* uncorroborated: mark unverified */
         return 1;
     }
     return 0;

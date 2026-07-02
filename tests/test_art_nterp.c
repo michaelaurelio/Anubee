@@ -212,8 +212,8 @@ int main(int argc, char **argv)
     w64(stack2 + (size_t)((NSP + 0x10) - STK), AM_ADD);
     art_nterp_cache_reset();
     CHECK(nterp_pick(memrd, &m, &T_OFF, stack2, STK, sizeof(stack2), NSP, pk, sizeof(pk)) == 1 &&
-          strcmp(pk, "com.ares.Sample.add") == 0,
-          "nterp_pick falls back to bare name when uncorroborated");
+          strcmp(pk, "com.ares.Sample.add?") == 0,
+          "nterp_pick fallback name is marked unverified (trailing ?)");
 
     // No candidate at all -> miss.
     uint8_t stack3[0x400] = {0};

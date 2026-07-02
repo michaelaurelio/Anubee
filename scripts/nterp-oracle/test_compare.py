@@ -6,6 +6,8 @@ class TestFrameName(unittest.TestCase):
         self.assertEqual(compare.parse_frame_name("v5.t.<clinit>+0x4"), ("v5.t.<clinit>", True))
     def test_bare_name_uncorroborated(self):
         self.assertEqual(compare.parse_frame_name("n0.h$a.a"), ("n0.h$a.a", False))
+    def test_unverified_marker_stripped_uncorroborated(self):
+        self.assertEqual(compare.parse_frame_name("com.ares.Sample.add?"), ("com.ares.Sample.add", False))
     def test_non_dexpc_suffix_not_corroborated(self):
         # a native +0x offset is not a dex_pc corroboration marker on a 0x0-addr frame,
         # but parse_frame_name is only ever fed interp chain symbols; treat +0x<hex> as the marker.

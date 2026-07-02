@@ -9,10 +9,14 @@ _PATH_ARG = {"openat": "1", "openat2": "1", "open": "0", "faccessat": "1",
              "newfstatat": "1", "statx": "1", "readlinkat": "1"}
 
 def parse_frame_name(symbol):
-    """(fqn, corroborated): strip a trailing +0x<hex> dex_pc marker."""
+    """(fqn, corroborated): strip the +0x<hex> dex_pc marker (corroborated) or a
+    trailing '?' unverified marker (uncorroborated single-frame fallback), so the
+    base identity is scored either way."""
     m = _DEXPC.search(symbol)
     if m:
         return symbol[:m.start()], True
+    if symbol.endswith("?"):
+        return symbol[:-1], False
     return symbol, False
 
 def _iter_jsonl(path):

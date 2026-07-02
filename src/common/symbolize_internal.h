@@ -37,6 +37,8 @@ struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr);
 struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr);
 void module_base(struct procmaps *pm, struct ares_map_line *hit,
                  uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end);
+// Force a reread of pid's cached maps on next resolve. Used by sym_flush_pid.
+void pm_reset_pid(int pid);
 // Eviction hook: defined in symbolize.c, called by pm_get on LRU eviction.
 void pm_evict_pid(int pid);
 

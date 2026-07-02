@@ -11,7 +11,9 @@ static const struct { const char *id; struct art_offsets off; } k_table[] = {
     { "1f156fc62660d075a8d675db850b95d5",
       { .tls_thread_slot = 0x38, .managed_stack = 0xA8, .ms_link = 0x08,
         .ms_top_shadow = 0x10, .sf_link = 0x00, .sf_method = 0x08,
-        .sf_dex_pc_ptr = 0x18, .sf_dex_instr = 0x20 } },
+        .sf_dex_pc_ptr = 0x18,
+        .artm_declclass = 0x00, .artm_dexidx = 0x08, .class_dexcache = 0x10,
+        .dexcache_dexfile = 0x10, .dexfile_begin = 0x08, .dexfile_datasize = 0x20 } },
 };
 
 const struct art_offsets *art_offsets_for_buildid(const char *hexid)

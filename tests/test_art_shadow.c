@@ -101,7 +101,9 @@ int main(int argc,char**argv){
     add(&m, TLS, tls, sizeof tls);
 
     struct art_offsets o = { .tls_thread_slot=0x38, .managed_stack=0xA8, .ms_link=0x08,
-        .ms_top_shadow=0x10, .sf_link=0x00, .sf_method=0x08, .sf_dex_pc_ptr=0x18, .sf_dex_instr=0x20 };
+        .ms_top_shadow=0x10, .sf_link=0x00, .sf_method=0x08, .sf_dex_pc_ptr=0x18,
+        .artm_declclass=0x00, .artm_dexidx=0x08, .class_dexcache=0x10,
+        .dexcache_dexfile=0x10, .dexfile_begin=0x08, .dexfile_datasize=0x20 };
 
     char out[8][256];
     int n = shadow_frame_pick(memrd, &m, TLS, &o, out, 8);

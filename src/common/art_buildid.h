@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 struct art_offsets {
+    /* Thread / ManagedStack / ShadowFrame (switch-interp walk) */
     uint64_t tls_thread_slot;   // tls_base -> Thread*      (TLS_SLOT_ART_THREAD_SELF*8)
     uint64_t managed_stack;     // Thread  -> ManagedStack  (embedded)
     uint64_t ms_link;           // ManagedStack.link_
@@ -15,7 +16,13 @@ struct art_offsets {
     uint64_t sf_link;           // ShadowFrame.link_
     uint64_t sf_method;         // ShadowFrame.method_
     uint64_t sf_dex_pc_ptr;     // ShadowFrame.dex_pc_ptr_
-    uint64_t sf_dex_instr;      // ShadowFrame.dex_instructions_
+    /* ArtMethod / Class / DexCache / DexFile (nterp name chase) */
+    uint64_t artm_declclass;    // ArtMethod.declaring_class_ (compressed ref)
+    uint64_t artm_dexidx;       // ArtMethod.dex_method_index_ (u32)
+    uint64_t class_dexcache;    // mirror::Class.dex_cache_ (compressed ref)
+    uint64_t dexcache_dexfile;  // mirror::DexCache.dex_file_ (native DexFile*)
+    uint64_t dexfile_begin;     // DexFile.begin_ (const u8*)
+    uint64_t dexfile_datasize;  // DexFile.data_.size_ (size_t)
 };
 
 // Pure table lookup: offsets for a known libart BuildID (lowercase hex), else NULL.

@@ -6,6 +6,7 @@
 #define ARES_COMMON_ART_BUILDID_H
 
 #include <stdint.h>
+#include <stddef.h>   // size_t
 
 struct art_offsets {
     /* Thread / ManagedStack / ShadowFrame (switch-interp walk) */
@@ -30,5 +31,12 @@ const struct art_offsets *art_offsets_for_buildid(const char *hexid);
 
 // Read the running libart.so BuildID for `pid` and look it up. NULL on any failure.
 const struct art_offsets *art_buildid_offsets(int pid);
+
+// Parse a key=value override text (one pair per line; '#' comments, blank lines and
+// surrounding whitespace tolerated) into `out` + `buildid_out`. Returns 1 only if the
+// `buildid` line and all 13 offset keys are present and well-formed; 0 otherwise
+// (missing/unknown key or bad number). Fail-closed: on 0, *out is unspecified.
+int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
+                      struct art_offsets *out);
 
 #endif

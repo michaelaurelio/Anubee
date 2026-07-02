@@ -104,8 +104,10 @@ device-verified (see Resolved/Done). What remains is breadth, not a new wall:
   `struct art_offsets` (`art_buildid_offsets`); the `/apex` `KNOWN_ART_APEX` gate is
   retired. Unknown build → clean dual no-op + a one-time notice. Device-verified on
   apex `370549100` (naming preserved; BuildID resolves). **Remaining breadth:**
-  (B) an on-device row-confirm helper — human pins offsets from AOSP per build, the
-  helper confirms a candidate row reproduces one known chain — **still open**; (C) formal
+  (B) candidate-row iteration — **DONE #3-B (2026-07-02):** `ARES_ART_OFFSETS=<file>` loads a
+  `key=value` row (BuildID + 13 offsets) that overrides `k_table` for a matching BuildID
+  (fail-closed otherwise), so a new build's offsets iterate against the oracle without a
+  recompile, then bake into `k_table`; (C) formal
   precision oracle closure — **DONE #3-C (2026-07-02):** the Frida/ART oracle
   (`scripts/nterp-oracle/`) now hooks `open64`/`__openat` (openat ground-truth 0→80) and
   scores a 3-way trust split; the ShadowFrame authoritative path measured **~89.5% precision
@@ -241,6 +243,18 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-02
+
+- **#3-B — `ARES_ART_OFFSETS` runtime offset-override seam.** A `key=value` row file
+  (`buildid=` + the 13 unified offsets; `#` comments/whitespace tolerated) parsed by the pure
+  host-tested `art_offsets_parse`; `art_buildid_offsets` consults it once per process and
+  returns the override **only when its BuildID matches** the running libart (else fall through
+  to `k_table` — fail-closed on mismatch, malformed, or unreadable, each a one-time warn).
+  Lets a new device/ART build's hand-pinned offsets iterate against the `scripts/nterp-oracle/`
+  validator without recompiling, then bake into `k_table`. Reads-only (own-process file); no
+  target write. Host-tested (parse valid/missing/unknown/whitespace); device-verified on apex
+  `370549100` (override note fires, app interp methods named identically to the compiled row;
+  bad-path negative ignores + still names via `k_table`). Spec/plan:
+  `docs/superpowers/{specs/2026-07-02-art-offsets-override-design.md,plans/2026-07-02-art-offsets-override.md}`.
 
 - **#3-A — BuildID unification of managed-frame offset tables.** The nterp and
   ShadowFrame naming paths now resolve their version-coupled offsets through one

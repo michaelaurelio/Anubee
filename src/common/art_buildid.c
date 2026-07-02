@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>      // getenv, strtoull
 
 // Known ART builds. Offsets are spike-verified; see
 // docs/superpowers/research/2026-07-02-managed-stack-walk-spike-findings.md.
@@ -15,6 +16,64 @@ static const struct { const char *id; struct art_offsets off; } k_table[] = {
         .artm_declclass = 0x00, .artm_dexidx = 0x08, .class_dexcache = 0x10,
         .dexcache_dexfile = 0x10, .dexfile_begin = 0x08, .dexfile_datasize = 0x20 } },
 };
+
+// Trim leading/trailing spaces/tabs/CR of [s, e): returns first non-space; writes
+// '\0' after the last non-space.
+static char *trim(char *s, char *e)
+{
+    while (s < e && (*s == ' ' || *s == '\t')) s++;
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+    *e = '\0';
+    return s;
+}
+
+int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
+                      struct art_offsets *out)
+{
+    struct { const char *k; uint64_t *v; } F[] = {
+        {"tls_thread_slot", &out->tls_thread_slot}, {"managed_stack", &out->managed_stack},
+        {"ms_link", &out->ms_link}, {"ms_top_shadow", &out->ms_top_shadow},
+        {"sf_link", &out->sf_link}, {"sf_method", &out->sf_method},
+        {"sf_dex_pc_ptr", &out->sf_dex_pc_ptr}, {"artm_declclass", &out->artm_declclass},
+        {"artm_dexidx", &out->artm_dexidx}, {"class_dexcache", &out->class_dexcache},
+        {"dexcache_dexfile", &out->dexcache_dexfile}, {"dexfile_begin", &out->dexfile_begin},
+        {"dexfile_datasize", &out->dexfile_datasize},
+    };
+    const int NF = (int)(sizeof F / sizeof F[0]);   /* 13 */
+    unsigned seen = 0;
+    int have_bid = 0;
+
+    const char *p = text;
+    char line[256];
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len >= sizeof line) len = sizeof line - 1;
+        memcpy(line, p, len); line[len] = '\0';
+        p = nl ? nl + 1 : p + strlen(p);
+
+        char *ls = trim(line, line + strlen(line));
+        if (*ls == '\0' || *ls == '#') continue;         /* blank / comment */
+        char *eq = strchr(ls, '=');
+        if (!eq) return 0;                                /* malformed line */
+        char *key = trim(ls, eq);
+        char *val = trim(eq + 1, ls + strlen(ls));
+        if (strcmp(key, "buildid") == 0) {
+            snprintf(buildid_out, bidsz, "%s", val);
+            have_bid = 1;
+            continue;
+        }
+        int hit = -1;
+        for (int i = 0; i < NF; i++) if (strcmp(key, F[i].k) == 0) { hit = i; break; }
+        if (hit < 0) return 0;                            /* unknown key */
+        char *end = NULL;
+        unsigned long long v = strtoull(val, &end, 0);
+        if (end == val || (end && *end != '\0')) return 0; /* bad number */
+        *F[hit].v = (uint64_t)v;
+        seen |= 1u << hit;
+    }
+    return have_bid && seen == ((1u << NF) - 1);
+}
 
 const struct art_offsets *art_offsets_for_buildid(const char *hexid)
 {

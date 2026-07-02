@@ -99,10 +99,16 @@ PAC fixes), nterp terminal + **full interpreted chain** naming with dex_pc
 corroboration, and the switch-interpreter ShadowFrame walk (SW1) — all landed and
 device-verified (see Resolved/Done). What remains is breadth, not a new wall:
 
-- **Version-gate generalization.** The nterp/ShadowFrame offset tables gate on
-  `KNOWN_ART_APEX = { 370549100 }` (Android 15, one build). Any other `libart.so`
-  makes the walk a default-off no-op. BuildID is the stronger anchor — key the
-  offset table on `libart` BuildID and add rows per device/ART build.
+- **Version-gate generalization — foundation DONE (#3-A, 2026-07-02).** Both the
+  nterp and ShadowFrame paths now resolve offsets through one BuildID-keyed
+  `struct art_offsets` (`art_buildid_offsets`); the `/apex` `KNOWN_ART_APEX` gate is
+  retired. Unknown build → clean dual no-op + a one-time notice. Device-verified on
+  apex `370549100` (naming preserved; BuildID resolves). **Remaining breadth:**
+  (B) an on-device row-confirm helper — human pins offsets from AOSP per build, the
+  helper confirms a candidate row reproduces one known chain; (C) formal precision
+  oracle closure (backlog #4) as the per-row acceptance gate. Adding rows per
+  device/ART build is now one-row-per-device. Spec/plan:
+  `docs/superpowers/specs/2026-07-02-buildid-unification-design.md`.
 - **Recall bound.** nterp chain recall is bounded by the frozen snapshot window;
   frames spilled past the window aren't named. Precision is favored over recall
   (uncorroborated candidates are dropped).
@@ -230,6 +236,24 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-02
+
+- **#3-A — BuildID unification of managed-frame offset tables.** The nterp and
+  ShadowFrame naming paths now resolve their version-coupled offsets through one
+  BuildID-keyed `struct art_offsets` via `art_buildid_offsets(pid)`; the nterp
+  path's compile-time `#define` offsets became struct fields (threaded as
+  `const struct art_offsets *o` through `art_method_chase`/`art_method_resolve`/
+  `nterp_pick`/`nterp_chain_pick` + `shadow_frame_pick`), and the `/apex`
+  `KNOWN_ART_APEX` version gate + `art_version_ok()` were retired. Unknown build →
+  clean dual no-op + a one-time notice (suppressed on transient pids whose libart
+  BuildID can't be read). Unused `sf_dex_instr` dropped. Firewall unchanged
+  (reads-only). Host-tested (`test_art_buildid` both families, `test_art_nterp` via
+  a test offsets struct) and device-verified on apex `370549100` (naming preserved:
+  the neutral app's own interpreted methods named, BuildID gate resolves). Onboarding
+  a new device is now one `k_table` row. Remaining #3 breadth tracked under the CFI
+  "generalize beyond one ART build" item: (B) on-device row-confirm helper, (C) formal
+  precision oracle closure. Spec/plan:
+  `docs/superpowers/specs/2026-07-02-buildid-unification-design.md`,
+  `docs/superpowers/plans/2026-07-02-buildid-unification.md`.
 
 - **BLD1 — BPF→skeleton→binary dependency graph reconnected.** Replaced the
   hand-maintained plain-header prerequisite lists (which missed shared headers like

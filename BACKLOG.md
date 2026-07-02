@@ -260,22 +260,6 @@ symbol path); vDSO frames are named (Phase 1).
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
-- **BLD1 — BPF→skeleton→binary dependency chain is disconnected (stale-BPF trap).**
-  Touching a shared `*.bpf.h` (e.g. `src/common/stack_snapshot.bpf.h`) does **not** rebuild
-  the engine BPF object *and propagate to the binary* under an incremental `make`: the
-  engine `.bpf.o` prereq lists are hand-maintained (miss most shared `.bpf.h`), and even when
-  the `.bpf.o` does rebuild the `skel → userspace .o → .part.o → ares` chain fails to
-  re-trigger (the final link doesn't re-run). Result: a stale BPF object silently mismatches
-  the userspace struct layout — e.g. adding `tls_base` to the snapshot struct gave a binary
-  that wrote the old (smaller) BPF struct while userspace read the new one → **0 snapshots
-  emitted, no error** (cost hours during the ShadowFrame device-verify, 2026-07-02). A
-  `-MMD -MP` auto-dep attempt fixed the `.bpf.o` rebuild but not the downstream propagation
-  (reverted as an incomplete half-fix). **Mitigation today: `make clean && make` after any
-  shared-BPF-header change** (a clean build wires everything correctly — verified). Real fix:
-  reconnect the BPF→skel→userspace→partial-link→binary prereq graph (and add `-MMD -MP` for
-  header tracking) so incremental builds are correct. Related pre-existing note: "Makefile
-  common-header prereq is a flat list; `-MMD/-MP` is the real fix."
-
 - **SW1 — switch-interp ShadowFrame walk: follow-ups (non-blocking).** The switch-interpreter
   ShadowFrame walk shipped and is device-verified (`src/common/art_shadow.c` — names interpreted
   app Java methods at an `ExecuteSwitchImpl` `cfi_stack` terminal via ART's live
@@ -400,6 +384,17 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-02
+
+- **BLD1 — BPF→skeleton→binary dependency graph reconnected.** Replaced the
+  hand-maintained plain-header prerequisite lists (which missed shared headers like
+  `stack_snapshot.h`, silently shipping a stale BPF struct — 0 snapshots, no error)
+  with compiler-generated `-MMD -MP` dependencies on both the BPF and userspace
+  compile classes, `-include`d at the Makefile tail; generated skeletons/table +
+  `vmlinux.h` + `libbpf.a` stay explicit for first-build ordering. Guarded by
+  `scripts/check-build-deps.sh` (touches `stack_snapshot.h`, asserts the BPF object,
+  the userspace reader, and the final link all go out of date) wired into the CI
+  cross-build via `ARES_CHECK_DEPS=1`. `make clean && make` is no longer required
+  after a shared-header change.
 
 - **Full interpreted-chain naming (`nterp_chain`) + TBI-tagged DexFile fix.** The nterp
   resolver now names the *entire* interpreted call chain, not just the terminal frame.

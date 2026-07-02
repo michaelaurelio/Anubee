@@ -68,5 +68,11 @@ echo "=== compiling ares (static aarch64) ==="
 # Record the toolchain identity for the stale-artifact guard above.
 echo "$DOCKERFILE_HASH" > "$STAMP"
 
+if [ "${ARES_CHECK_DEPS:-0}" = 1 ]; then
+    echo "=== verifying build dependency graph (BLD1) ==="
+    "$RUNTIME" run --rm ${RUN_USER[@]+"${RUN_USER[@]}"} -v "$ROOT:/workspace" \
+        --entrypoint bash "$IMAGE" scripts/check-build-deps.sh
+fi
+
 echo "=== done ==="
 ls -lh "$ROOT/build/ares" 2>/dev/null || true

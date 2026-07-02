@@ -94,7 +94,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/dex.c $(SRC)/common/art_nterp.c \
                $(SRC)/common/managed_frame.c $(SRC)/common/art_buildid.c \
                $(SRC)/common/art_shadow.c \
-               $(SRC)/common/sym_apk.c
+               $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \

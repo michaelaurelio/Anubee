@@ -25,6 +25,7 @@
 #include "common/art_shadow.h"   // shadow_frame_chain — switch-interp ShadowFrame naming
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
 #include "common/stack_snapshot.h"
+#include "symbolize_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,19 +41,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 
-#define MAX_PATH_LEN 256
-#define REFRESH_MS   250
-
 // ---- /proc/<pid>/maps ----------------------------------------------------
-
-struct procmaps {
-	int pid;
-	struct ares_map_line *m;
-	size_t n, cap;
-	long long last_read_ms;
-	long long last_used_ms;   // LRU eviction clock
-	int gone;                 // 1 if last fopen got ENOENT (pid exited before maps read)
-};
 
 // ponytail: tune if traces need more concurrent pids; 128 covers typical app + zygote forks.
 #define PM_MAX_PIDS 128
@@ -60,14 +49,14 @@ struct procmaps {
 static struct procmaps *g_pm;
 static size_t g_npm;
 
-static long long now_ms(void)
+long long now_ms(void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void read_proc_maps(struct procmaps *pm)
+void read_proc_maps(struct procmaps *pm)
 {
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/maps", pm->pid);
@@ -103,9 +92,8 @@ static void read_proc_maps(struct procmaps *pm)
 // pm_get lives above the ART-JIT / vDSO / symbol-cache definitions but reaches
 // into them during LRU eviction. The eviction side-effects are extracted into
 // pm_evict_pid, defined below those subsystems where all types are complete.
-static void pm_evict_pid(int pid);
 
-static struct procmaps *pm_get(int pid)
+struct procmaps *pm_get(int pid)
 {
 	long long now = now_ms();
 
@@ -142,7 +130,7 @@ static struct procmaps *pm_get(int pid)
 }
 
 // /proc/<pid>/maps is address-sorted and non-overlapping, so binary search.
-static struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
+struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 {
 	size_t lo = 0, hi = pm->n;
 	while (lo < hi) {
@@ -164,7 +152,7 @@ static struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 // is common under capture-all where snapshots fire during early process launch.
 // Used by both the symbolizer (sym_resolve_uncached) and the CFI walk
 // (cfi_unwind_snapshot) so a stale cache can't dead-end the unwind at frame 0.
-static struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
+struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
 {
 	struct ares_map_line *hit = find_mapping(pm, addr);
 	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
@@ -177,7 +165,7 @@ static struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t 
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
 // Also returns the base mapping's [start,end), used to reach the file via
 // /proc/<pid>/map_files when its path is deleted/anonymous.
-static void module_base(struct procmaps *pm, struct ares_map_line *hit,
+void module_base(struct procmaps *pm, struct ares_map_line *hit,
 			uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
 {
 	size_t i = ares_module_base_idx(pm->m, (size_t)(hit - pm->m));
@@ -187,22 +175,6 @@ static void module_base(struct procmaps *pm, struct ares_map_line *hit,
 }
 
 // ---- symbols (.dynsym / .symtab / .gnu_debugdata) ------------------------
-
-struct sym {
-	uint64_t value, size;
-	uint32_t name_off;      // offset into dynsym.str (the name arena)
-};
-
-struct dynsym {
-	char path[MAX_PATH_LEN];
-	uint64_t elf_off;
-	char *str;              // name arena (NUL at offset 0; real names >= 1)
-	size_t strn;            // bytes used in the arena
-	size_t strcap;          // bytes allocated in the arena
-	struct sym *s;
-	size_t ns;
-	int ok;                 // 1 = parsed (maybe empty), 0 = failed/skip
-};
 
 static struct dynsym *g_ds;
 static size_t g_nds;
@@ -226,7 +198,7 @@ static int sym_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-static int pread_all(int fd, void *buf, size_t n, off_t off)
+int pread_all(int fd, void *buf, size_t n, off_t off)
 {
 	char *p = buf;
 	while (n) {
@@ -244,7 +216,7 @@ static int pread_all(int fd, void *buf, size_t n, off_t off)
 // library the target deleted from disk after mapping (a common anti-analysis
 // trick — the path shows as ".../lib.so (deleted)"), the on-disk open fails, so
 // we reach the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
-static int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
+int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
 {
 	char real[MAX_PATH_LEN];
 	snprintf(real, sizeof(real), "%s", path);
@@ -296,7 +268,7 @@ static uint32_t arena_add(struct dynsym *ds, const char *name)
 // Append every named, valued function/code symbol from one in-memory symbol
 // table (Elf64_Sym entries + its string table) to the module's sorted set.
 // Used for .dynsym, .symtab and the .gnu_debugdata-embedded .symtab alike.
-static void add_symbols(struct dynsym *ds, const void *symbuf, size_t symbytes,
+void add_symbols(struct dynsym *ds, const void *symbuf, size_t symbytes,
 			size_t entsize, const char *str, size_t strn)
 {
 	if (entsize == 0)
@@ -332,7 +304,7 @@ static void add_symbols(struct dynsym *ds, const void *symbuf, size_t symbytes,
 
 // Read a symtab section + its linked strtab from the on-disk ELF (at elf_off)
 // and fold them into the symbol set.
-static void ingest_fd_section(struct dynsym *ds, int fd, uint64_t elf_off,
+void ingest_fd_section(struct dynsym *ds, int fd, uint64_t elf_off,
 			      const Elf64_Shdr *symsec, const Elf64_Shdr *strsec)
 {
 	if (!symsec || !strsec || symsec->sh_size == 0)
@@ -415,7 +387,7 @@ static void ingest_embedded(struct dynsym *ds, const uint8_t *buf, size_t len)
 // (.dynsym, .symtab, .gnu_debugdata) can name the same address; the first after
 // the sort wins (typically the .dynsym name). Shared by parse_symbols (disk
 // modules) and vdso_build (the in-memory vDSO).
-static void dynsym_finalize(struct dynsym *ds)
+void dynsym_finalize(struct dynsym *ds)
 {
 	if (!ds->ns)
 		return;
@@ -503,7 +475,7 @@ done:
 	close(fd);
 }
 
-static struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
+struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
 				 int pid, uint64_t vstart, uint64_t vend)
 {
 	for (size_t i = 0; i < g_nds; i++)
@@ -525,7 +497,7 @@ static struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
 // Nearest symbol whose value <= vaddr. Returns name + delta, or NULL when the
 // address falls outside any symbol (so we show a bare offset instead of
 // mislabelling it with the previous exported symbol).
-static const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta)
+const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta)
 {
 	if (!ds || !ds->ok || ds->ns == 0)
 		return NULL;
@@ -630,7 +602,7 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
 /* Return the cached cfi_section for (path, elf_off), loading it on first sight.
  * Returns NULL if the module has no usable CFI or could not be read.
  * Mirrors dynsym_get: grow/append, ok=0 on failure so future calls short-circuit. */
-static struct cfi_section *
+struct cfi_section *
 cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 	int pid, uint64_t vstart, uint64_t vend)
 {
@@ -708,14 +680,14 @@ cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 
 // ---- public --------------------------------------------------------------
 
-static const char *basename_of(const char *p)
+const char *basename_of(const char *p)
 {
 	const char *b = strrchr(p, '/');
 	return b ? b + 1 : p;
 }
 
 // Display name: basename with a trailing " (deleted)" stripped.
-static void display_name(const char *path, char *buf, size_t n)
+void display_name(const char *path, char *buf, size_t n)
 {
 	snprintf(buf, n, "%s", basename_of(path));
 	char *del = strstr(buf, " (deleted)");
@@ -1106,7 +1078,7 @@ static void art_refresh(struct art_ctx *ac)
 // Resolve an anonymous-executable address to a JIT-compiled Java method, if any.
 // Locating/refresh is throttled like the procmaps reread, so the common case is
 // just a binary search. Returns 1 (and fills out) on a named hit, else 0.
-static int jit_resolve(int pid, uint64_t addr, char *out, size_t outsz)
+int jit_resolve(int pid, uint64_t addr, char *out, size_t outsz)
 {
 	struct art_ctx *ac = art_get(pid);
 	if (!ac)
@@ -1232,7 +1204,7 @@ out:
 // Resolve an address inside the [vdso] mapping to a kernel symbol. Builds the
 // per-pid symbol set on first sight (or rebuilds if the base moved, e.g. re-exec).
 // Returns 1 (and fills out) on a named hit, else 0.
-static int vdso_resolve(int pid, uint64_t addr, uint64_t base, uint64_t end,
+int vdso_resolve(int pid, uint64_t addr, uint64_t base, uint64_t end,
 			char *out, size_t outsz)
 {
 	struct vdso_ctx *vc = vdso_get(pid);
@@ -1379,7 +1351,7 @@ static struct apk_cache *apk_get(const char *path)
 
 // Return the inner .so basename for a stored .so mapped from an APK at elf_off,
 // or NULL if the path is not an APK or the offset doesn't match any entry.
-static const char *apk_so_name(const char *path, uint64_t elf_off)
+const char *apk_so_name(const char *path, uint64_t elf_off)
 {
 	size_t plen = strlen(path);
 	if (plen < 4 || strcmp(path + plen - 4, ".apk") != 0)
@@ -1430,7 +1402,7 @@ static void sc_clear(void)
 
 // Called by pm_get when it evicts the LRU procmaps slot. All types (art_ctx,
 // vdso_ctx) are complete by this point in the file.
-static void pm_evict_pid(int pid)
+void pm_evict_pid(int pid)
 {
 	for (size_t i = 0; i < g_nart; i++)
 		if (g_art[i].pid == pid)

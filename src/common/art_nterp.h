@@ -10,8 +10,9 @@
 // LIVE via /proc/<pid>/mem to (DexFile, dex_method_index) -> "pkg.Class.method".
 //
 // Firewall: reads only (snapshot bytes + /proc/<pid>/mem); writes nothing, attaches
-// nothing. ART-version-gated: an unrecognized ART build resolves nothing (the caller
-// keeps today's bare-offset terminal). Offsets are version-coupled — see
+// nothing. BuildID-gated: the version-coupled offsets are resolved from the target's
+// libart BuildID (art_buildid_offsets); an unrecognized build resolves nothing (the
+// caller keeps today's bare-offset terminal). See
 // docs/superpowers/research/2026-07-01-nterp-offsets-spike-findings.md.
 #ifndef ARES_COMMON_ART_NTERP_H
 #define ARES_COMMON_ART_NTERP_H

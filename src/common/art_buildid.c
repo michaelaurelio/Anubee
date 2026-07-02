@@ -99,14 +99,18 @@ const struct art_offsets *art_buildid_offsets(int pid)
     cache_pid = pid;
     cache_off = o;
 
-    if (!o) {
+    /* Warn once — only when a BuildID was actually read but is not in the table
+     * (a genuinely unrecognized ART build). A transient pid whose libart could
+     * not be read (hex empty) is an expected miss, not an unknown build, so it
+     * must not raise the "naming disabled" alarm. */
+    if (!o && hex[0]) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
             fprintf(stderr,
                 "[ares] libart BuildID %s not in offset table; managed-frame "
                 "naming disabled (add a k_table row).\n",
-                hex[0] ? hex : "<unresolved>");
+                hex);
         }
     }
     return o;

@@ -9,15 +9,18 @@ _PATH_ARG = {"openat": "1", "openat2": "1", "open": "0", "faccessat": "1",
              "newfstatat": "1", "statx": "1", "readlinkat": "1"}
 
 def parse_frame_name(symbol):
-    """(fqn, corroborated): strip the +0x<hex> dex_pc marker (corroborated) or a
-    trailing '?' unverified marker (uncorroborated single-frame fallback), so the
-    base identity is scored either way."""
+    """(fqn, cls): strip ares' trust marker and return the trust class. cls is
+    'corr'       — dex_pc-corroborated (trailing +0x<hex>),
+    'unverified' — uncorroborated nterp single-frame fallback (trailing '?'),
+    'auth'       — bare name: ShadowFrame authoritative method_ (or an unmarked
+                   single-frame nterp name) with no dex_pc corroboration.
+    The base identity is returned in every case so scoring compares like-for-like."""
     m = _DEXPC.search(symbol)
     if m:
-        return symbol[:m.start()], True
+        return symbol[:m.start()], "corr"
     if symbol.endswith("?"):
-        return symbol[:-1], False
-    return symbol, False
+        return symbol[:-1], "unverified"
+    return symbol, "auth"
 
 def _iter_jsonl(path):
     with open(path) as fh:
@@ -100,8 +103,11 @@ def join(ares_recs, frida_recs):
         matches.append((a, chosen))
     return matches
 
+_CLS_KEY = {"corr": "corr", "auth": "auth", "unverified": "unver"}
+
 def score(matches):
-    s = dict(corr_named=0, corr_correct=0, uncorr_named=0, uncorr_correct=0,
+    s = dict(corr_named=0, corr_correct=0, auth_named=0, auth_correct=0,
+             unver_named=0, unver_correct=0,
              truth_frames=0, recalled=0, exact_chains=0, matched=0, unmatched=0)
     for a, f in matches:
         if f is None:
@@ -112,8 +118,8 @@ def score(matches):
         s["truth_frames"] += len(truth)
         a_names = [n for n, _ in a["interp"]]
         s["recalled"] += len(truth & set(a_names))
-        for name, corro in a["interp"]:
-            key = "corr" if corro else "uncorr"
+        for name, cls in a["interp"]:
+            key = _CLS_KEY[cls]
             s[key + "_named"] += 1
             if name in truth:
                 s[key + "_correct"] += 1
@@ -128,10 +134,12 @@ def format_report(s):
     return "\n".join([
         "nterp precision oracle report",
         f"  matched syscalls   : {s['matched']}  (unmatched: {s['unmatched']})",
-        f"  corroborated frames: {s['corr_named']} named, "
+        f"  corroborated (nterp +dexpc) : {s['corr_named']} named, "
         f"{s['corr_correct']} correct -> precision {_pct(s['corr_correct'], s['corr_named'])}",
-        f"  uncorrob.  frames  : {s['uncorr_named']} named, "
-        f"{s['uncorr_correct']} correct -> precision {_pct(s['uncorr_correct'], s['uncorr_named'])}",
+        f"  authoritative (ShadowFrame) : {s['auth_named']} named, "
+        f"{s['auth_correct']} correct -> precision {_pct(s['auth_correct'], s['auth_named'])}",
+        f"  unverified (nterp fallback) : {s['unver_named']} named, "
+        f"{s['unver_correct']} correct -> precision {_pct(s['unver_correct'], s['unver_named'])}",
         f"  recall (frames)    : {s['recalled']}/{s['truth_frames']} "
         f"({_pct(s['recalled'], s['truth_frames'])})",
         f"  exact chains       : {s['exact_chains']}/{s['matched']}",

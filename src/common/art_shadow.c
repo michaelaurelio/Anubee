@@ -43,7 +43,7 @@ int shadow_frame_pick(art_reader rd, void *rc, uint64_t tls_base,
             if (rd64(rd, rc, sf + o->sf_method, &method)) {
                 method = ART_PTR_UNTAG(method);
                 uint32_t midx; uint64_t begin; struct dex_method_map *map;
-                int chased = art_method_chase(rd, rc, method, &midx, &begin, &map);
+                int chased = art_method_chase(rd, rc, o, method, &midx, &begin, &map);
                 SFD("  sf=0x%llx method=0x%llx chase=%d\n", (unsigned long long)sf, (unsigned long long)method, chased);
                 if (chased) {
                     /* ShadowFrame.method_ is ART's authoritative field: a successful

@@ -83,6 +83,12 @@ static uint32_t idx_of2(uint8_t *dex, size_t dexlen, const char *want)
 #define O_DF_BEGIN 0x08
 #define O_DF_SIZE 0x20
 
+#include "common/art_buildid.h"   /* struct art_offsets */
+static const struct art_offsets T_OFF = {
+    .artm_declclass = O_DECL, .artm_dexidx = O_MIDX, .class_dexcache = O_CLASS_DC,
+    .dexcache_dexfile = O_DC_DF, .dexfile_begin = O_DF_BEGIN, .dexfile_datasize = O_DF_SIZE,
+};
+
 // Method names used in the nterp_chain_pick test.
 // Indices from sample.dex: 0=<init> 1=add 2=greet 5=StringBuilder.append
 #define METHOD0_NAME "com.ares.Sample.add"
@@ -120,7 +126,7 @@ int main(int argc, char **argv)
 
     // Happy path: full chase resolves the method name.
     art_nterp_cache_reset();
-    CHECK(art_method_resolve(memrd, &m, AM, out, sizeof(out)) == 1 &&
+    CHECK(art_method_resolve(memrd, &m, &T_OFF, AM, out, sizeof(out)) == 1 &&
           strcmp(out, "com.ares.Sample.greet") == 0,
           "ArtMethod chase resolves greet");
 
@@ -137,30 +143,30 @@ int main(int argc, char **argv)
         mt.r[2].data = dc_t;
         mt.r[3].data = df_t;
         art_nterp_cache_reset();
-        CHECK(art_method_resolve(memrd, &mt, AM, out, sizeof(out)) == 1 &&
+        CHECK(art_method_resolve(memrd, &mt, &T_OFF, AM, out, sizeof(out)) == 1 &&
               strcmp(out, "com.ares.Sample.greet") == 0,
               "TBI-tagged DexFile/begin pointers untagged -> chase resolves");
     }
     art_nterp_cache_reset();
 
     // Misaligned / tiny pointer -> rejected before any read.
-    CHECK(art_method_resolve(memrd, &m, AM + 1, out, sizeof(out)) == 0,
+    CHECK(art_method_resolve(memrd, &m, &T_OFF, AM + 1, out, sizeof(out)) == 0,
           "misaligned ArtMethod -> miss");
-    CHECK(art_method_resolve(memrd, &m, 0x10, out, sizeof(out)) == 0,
+    CHECK(art_method_resolve(memrd, &m, &T_OFF, 0x10, out, sizeof(out)) == 0,
           "implausible low ArtMethod -> miss");
 
     // declaring_class_ == 0 -> miss (no class to chase).
     { uint8_t am0[16] = {0}; w32(am0 + O_MIDX, greet_idx);
       struct mem m2 = m; m2.r[0].data = am0;
-      CHECK(art_method_resolve(memrd, &m2, AM, out, sizeof(out)) == 0,
+      CHECK(art_method_resolve(memrd, &m2, &T_OFF, AM, out, sizeof(out)) == 0,
             "null declaring_class -> miss"); }
 
     // Candidate that points into unmapped memory -> short read -> miss, no crash.
-    CHECK(art_method_resolve(memrd, &m, 0x900000, out, sizeof(out)) == 0,
+    CHECK(art_method_resolve(memrd, &m, &T_OFF, 0x900000, out, sizeof(out)) == 0,
           "unmapped ArtMethod -> miss");
 
     // Cached second lookup still resolves (exercises the DexFile image cache).
-    CHECK(art_method_resolve(memrd, &m, AM, out, sizeof(out)) == 1 &&
+    CHECK(art_method_resolve(memrd, &m, &T_OFF, AM, out, sizeof(out)) == 1 &&
           strcmp(out, "com.ares.Sample.greet") == 0,
           "second lookup hits dex cache, still resolves");
 
@@ -169,12 +175,12 @@ int main(int argc, char **argv)
     { uint8_t df0[48]; memcpy(df0, df, sizeof(df0)); w64(df0 + O_DF_SIZE, 0);
       struct mem mz = m; mz.r[3].data = df0;
       art_nterp_cache_reset();
-      CHECK(art_method_resolve(memrd, &mz, AM, out, sizeof(out)) == 0,
+      CHECK(art_method_resolve(memrd, &mz, &T_OFF, AM, out, sizeof(out)) == 0,
             "zero dex size -> miss"); }
     { uint8_t dfb[48]; memcpy(dfb, df, sizeof(dfb)); w64(dfb + O_DF_SIZE, 1ull << 30);
       struct mem mb = m; mb.r[3].data = dfb;
       art_nterp_cache_reset();
-      CHECK(art_method_resolve(memrd, &mb, AM, out, sizeof(out)) == 0,
+      CHECK(art_method_resolve(memrd, &mb, &T_OFF, AM, out, sizeof(out)) == 0,
             "absurd dex size -> miss"); }
 
     // ---- nterp_pick: dex_pc corroboration picks the right method ----------------
@@ -197,7 +203,7 @@ int main(int argc, char **argv)
 
     char pk[256];
     art_nterp_cache_reset();
-    CHECK(nterp_pick(memrd, &m, stack, STK, sizeof(stack), NSP, pk, sizeof(pk)) == 1 &&
+    CHECK(nterp_pick(memrd, &m, &T_OFF, stack, STK, sizeof(stack), NSP, pk, sizeof(pk)) == 1 &&
           strcmp(pk, "com.ares.Sample.greet+0x6") == 0,
           "nterp_pick corroborates greet (not stale add) + dexpc suffix");
 
@@ -205,14 +211,14 @@ int main(int argc, char **argv)
     uint8_t stack2[0x400] = {0};
     w64(stack2 + (size_t)((NSP + 0x10) - STK), AM_ADD);
     art_nterp_cache_reset();
-    CHECK(nterp_pick(memrd, &m, stack2, STK, sizeof(stack2), NSP, pk, sizeof(pk)) == 1 &&
+    CHECK(nterp_pick(memrd, &m, &T_OFF, stack2, STK, sizeof(stack2), NSP, pk, sizeof(pk)) == 1 &&
           strcmp(pk, "com.ares.Sample.add") == 0,
           "nterp_pick falls back to bare name when uncorroborated");
 
     // No candidate at all -> miss.
     uint8_t stack3[0x400] = {0};
     art_nterp_cache_reset();
-    CHECK(nterp_pick(memrd, &m, stack3, STK, sizeof(stack3), NSP, pk, sizeof(pk)) == 0,
+    CHECK(nterp_pick(memrd, &m, &T_OFF, stack3, STK, sizeof(stack3), NSP, pk, sizeof(pk)) == 0,
           "nterp_pick returns 0 with no ArtMethod candidate");
 
     // Nearest corroborated wins: add (nearer, corroborated) and greet (farther,
@@ -226,7 +232,7 @@ int main(int argc, char **argv)
     w64(stack4 + (size_t)((NSP + 0x80) - STK), AM);             /* greet (farther, corroborated) */
     w64(stack4 + (size_t)((NSP + 0x88) - STK), BEGIN + 0x190);  /* greet dex_pc -> +0x6 */
     art_nterp_cache_reset();
-    CHECK(nterp_pick(memrd, &m, stack4, STK, sizeof(stack4), NSP, pk, sizeof(pk)) == 1 &&
+    CHECK(nterp_pick(memrd, &m, &T_OFF, stack4, STK, sizeof(stack4), NSP, pk, sizeof(pk)) == 1 &&
           strcmp(pk, "com.ares.Sample.add+0x0") == 0,
           "nterp_pick: nearest corroborated (add+0x0) wins over farther corroborated (greet+0x6)");
 
@@ -264,7 +270,7 @@ int main(int argc, char **argv)
 
     char chain[8][256];
     art_nterp_cache_reset();
-    int nc = nterp_chain_pick(memrd, &m, stack_chain, STK, sizeof(stack_chain), NSP,
+    int nc = nterp_chain_pick(memrd, &m, &T_OFF, stack_chain, STK, sizeof(stack_chain), NSP,
                               chain, 8);
     CHECK(nc == 3, "three corroborated frames");
     CHECK(nc > 0 && strstr(chain[0], METHOD0_NAME) && strstr(chain[0], "+0x"),

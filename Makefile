@@ -411,7 +411,7 @@ test:
 	$(BUILD)/test_cfi_load tests/fixtures/eh_frame_sample.so tests/fixtures/debug_frame_sample.elf
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dex.c src/common/dex.c -o $(BUILD)/test_dex
 	$(BUILD)/test_dex tests/fixtures/sample.dex
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_art_nterp.c src/common/art_nterp.c src/common/dex.c src/common/proc_mem.c -o $(BUILD)/test_art_nterp -lpthread
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_art_nterp.c src/common/art_nterp.c src/common/art_buildid.c src/common/dex.c src/common/proc_mem.c src/common/maps.c -o $(BUILD)/test_art_nterp -lpthread
 	$(BUILD)/test_art_nterp tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_art_buildid.c src/common/art_buildid.c src/common/maps.c -o $(BUILD)/test_art_buildid
 	$(BUILD)/test_art_buildid

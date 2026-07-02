@@ -6,6 +6,7 @@
 // android15-release; see the spike findings doc. References are 32-bit compressed:
 // decompress = zero-extend (no heap base; poisoning is off on release builds).
 #include "common/art_nterp.h"
+#include "common/art_buildid.h"
 #include "common/dex.h"
 #include "common/proc_mem.h"
 
@@ -18,17 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <dirent.h>
 #include <pthread.h>
-
-// ---- version-coupled offsets ---------------------------------------------------
-#define ARTM_DECLCLASS_OFF    0x00  // ArtMethod.declaring_class_ (compressed ref)
-#define ARTM_DEXIDX_OFF       0x08  // ArtMethod.dex_method_index_ (u32)
-#define CLASS_DEXCACHE_OFF    0x10  // mirror::Class.dex_cache_ (compressed ref)
-#define DEXCACHE_DEXFILE_OFF  0x10  // mirror::DexCache.dex_file_ (native DexFile*)
-#define DEXFILE_BEGIN_OFF     0x08  // DexFile.begin_ (const u8*)
-#define DEXFILE_DATASIZE_OFF  0x20  // DexFile.data_.size_ (size_t) — NOT +0x10:
-                                    // size_ was renamed unused_size_=0 on A15.
 
 // Strip the Android top-byte pointer tag (TBI / MTE) from a native pointer before
 // dereferencing via /proc/<pid>/mem, which rejects tagged addresses. Compressed
@@ -44,9 +35,6 @@
 // How far ABOVE a candidate ArtMethod* slot to search for its live dex_pc (the
 // nterp managed frame stores dex_pc above the frame base). Bounded and small.
 #define NTERP_CORROB_SPAN  512
-
-// Known ART apex versions whose offsets match the table above.
-static const long KNOWN_ART_APEX[] = { 370549100 };
 
 // ---- fixed-width readers over the injected reader ------------------------------
 static int rd_u32(art_reader rd, void *rc, uint64_t va, uint32_t *out)
@@ -134,39 +122,41 @@ static struct dex_method_map *dexmap_get(art_reader rd, void *rc,
 // Chase one candidate ArtMethod* to its {method_idx, DexFile begin_, dexmap} via rd.
 // Returns 1 on success. Split out of art_method_resolve so nterp_pick can corroborate
 // the candidate (dex_lookup_range needs begin_ + map) before committing to the name.
-int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
-                     uint32_t *midx_out, uint64_t *begin_out,
+int art_method_chase(art_reader rd, void *rc, const struct art_offsets *o,
+                     uint64_t artmethod, uint32_t *midx_out, uint64_t *begin_out,
                      struct dex_method_map **map_out)
 {
     // Implausible / misaligned pointer — not an ArtMethod.
     if (artmethod < 0x1000 || (artmethod & 7))
         return 0;
+    if (!o)
+        return 0;
 
     uint32_t decl;
-    if (!rd_u32(rd, rc, artmethod + ARTM_DECLCLASS_OFF, &decl) || decl == 0)
+    if (!rd_u32(rd, rc, artmethod + o->artm_declclass, &decl) || decl == 0)
         return 0;
     uint64_t cls = decl;                         // zero-extend compressed ref
 
     uint32_t midx;
-    if (!rd_u32(rd, rc, artmethod + ARTM_DEXIDX_OFF, &midx))
+    if (!rd_u32(rd, rc, artmethod + o->artm_dexidx, &midx))
         return 0;
 
     uint32_t dcref;
-    if (!rd_u32(rd, rc, cls + CLASS_DEXCACHE_OFF, &dcref) || dcref == 0)
+    if (!rd_u32(rd, rc, cls + o->class_dexcache, &dcref) || dcref == 0)
         return 0;
     uint64_t dexcache = dcref;                    // zero-extend compressed ref
 
     uint64_t dexfile;
-    if (!rd_u64(rd, rc, dexcache + DEXCACHE_DEXFILE_OFF, &dexfile) || dexfile == 0)
+    if (!rd_u64(rd, rc, dexcache + o->dexcache_dexfile, &dexfile) || dexfile == 0)
         return 0;
     dexfile = ART_PTR_UNTAG(dexfile);   // DexCache.dex_file_ is a full native ptr;
                                         // Android top-byte tags it (TBI) on some targets.
 
     uint64_t begin, dsize;
-    if (!rd_u64(rd, rc, dexfile + DEXFILE_BEGIN_OFF, &begin) || begin == 0)
+    if (!rd_u64(rd, rc, dexfile + o->dexfile_begin, &begin) || begin == 0)
         return 0;
     begin = ART_PTR_UNTAG(begin);       // DexFile.begin_ likewise; used for image reads.
-    if (!rd_u64(rd, rc, dexfile + DEXFILE_DATASIZE_OFF, &dsize))
+    if (!rd_u64(rd, rc, dexfile + o->dexfile_datasize, &dsize))
         return 0;
     if (dsize < 0x70 || dsize > (64u << 20))      // sane DEX image bounds
         return 0;
@@ -181,39 +171,14 @@ int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
     return 1;
 }
 
-int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
-                       char *out, size_t outsz)
+int art_method_resolve(art_reader rd, void *rc, const struct art_offsets *o,
+                       uint64_t artmethod, char *out, size_t outsz)
 {
     uint32_t midx;
     struct dex_method_map *map;
-    if (!art_method_chase(rd, rc, artmethod, &midx, NULL, &map))
+    if (!art_method_chase(rd, rc, o, artmethod, &midx, NULL, &map))
         return 0;
     return dex_name_by_index(map, midx, out, outsz);
-}
-
-// ---- ART version gate ----------------------------------------------------------
-static int art_version_ok(void)
-{
-    static int cached = -1;          // -1 unknown, 0 no, 1 yes
-    if (cached >= 0)
-        return cached;
-    cached = 0;
-    DIR *d = opendir("/apex");
-    if (!d)
-        return 0;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        const char *p = strstr(e->d_name, "com.android.art@");
-        if (p != e->d_name)
-            continue;
-        long v = strtol(e->d_name + strlen("com.android.art@"), NULL, 10);
-        for (size_t i = 0; i < sizeof(KNOWN_ART_APEX) / sizeof(KNOWN_ART_APEX[0]); i++)
-            if (v == KNOWN_ART_APEX[i]) { cached = 1; break; }
-        if (cached)
-            break;
-    }
-    closedir(d);
-    return cached;
 }
 
 // ---- production reader: /proc/<pid>/mem ----------------------------------------
@@ -222,7 +187,8 @@ static size_t pm_reader(void *ctx, uint64_t va, void *dst, size_t len)
     return proc_mem_read((int)(intptr_t)ctx, va, dst, len);
 }
 
-int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+int nterp_pick(art_reader rd, void *rc, const struct art_offsets *o,
+               const uint8_t *stack, uint64_t stack_base,
                size_t stack_len, uint64_t nterp_sp, char *out, size_t outsz)
 {
     if (!stack || !out || outsz == 0)
@@ -248,7 +214,7 @@ int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_bas
         uint32_t midx;
         uint64_t begin;
         struct dex_method_map *map;
-        if (!art_method_chase(rd, rc, cand, &midx, &begin, &map))
+        if (!art_method_chase(rd, rc, o, cand, &midx, &begin, &map))
             continue;
 
         // Corroborate: search just above this slot for a stack value that is a live
@@ -300,13 +266,14 @@ int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_s
 {
     if (!snap || !out || outsz == 0)
         return 0;
-    if (!art_version_ok())
+    const struct art_offsets *o = art_buildid_offsets(pid);
+    if (!o)
         return 0;
 
     int fd = proc_mem_open(pid);
     if (fd < 0)
         return 0;
-    int ret = nterp_pick(pm_reader, (void *)(intptr_t)fd,
+    int ret = nterp_pick(pm_reader, (void *)(intptr_t)fd, o,
                          snap->snap, snap->sp, (size_t)snap->snap_len,
                          nterp_sp, out, outsz);
     close(fd);
@@ -317,7 +284,8 @@ int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_s
 // Same corroboration loop as nterp_pick but continues past the first hit: emits
 // every dex_pc-corroborated frame innermost-first, deduping consecutive identical
 // ArtMethod* pointers. Uncorroborated candidates are dropped (precision over recall).
-int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+int nterp_chain_pick(art_reader rd, void *rc, const struct art_offsets *o,
+                     const uint8_t *stack, uint64_t stack_base,
                      size_t stack_len, uint64_t nterp_sp, char out[][256], int max_frames)
 {
     if (!stack || !out || max_frames <= 0)
@@ -337,7 +305,7 @@ int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t sta
             continue;
 
         uint32_t midx; uint64_t begin; struct dex_method_map *map;
-        if (!art_method_chase(rd, rc, cand, &midx, &begin, &map))
+        if (!art_method_chase(rd, rc, o, cand, &midx, &begin, &map))
             continue;
 
         /* Corroborate: a stack value above this slot that is a live dex_pc into
@@ -383,12 +351,13 @@ int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_
 {
     if (!snap || !out || max_frames <= 0)
         return 0;
-    if (!art_version_ok())
+    const struct art_offsets *o = art_buildid_offsets(pid);
+    if (!o)
         return 0;
     int fd = proc_mem_open(pid);
     if (fd < 0)
         return 0;
-    int nc = nterp_chain_pick(pm_reader, (void *)(intptr_t)fd,
+    int nc = nterp_chain_pick(pm_reader, (void *)(intptr_t)fd, o,
                               snap->snap, snap->sp, (size_t)snap->snap_len,
                               nterp_sp, out, max_frames);
     close(fd);

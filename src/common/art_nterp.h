@@ -20,6 +20,7 @@
 #include <stddef.h>
 
 struct ares_stack_snapshot;   // full definition in common/stack_snapshot.h
+struct art_offsets;           // full definition in common/art_buildid.h
 
 // Resolve the nterp-interpreted Java method whose managed frame sits at/above
 // `nterp_sp` (the recovered SP of the libart nterp_helper terminal frame). Writes
@@ -36,15 +37,15 @@ typedef size_t (*art_reader)(void *ctx, uint64_t va, void *dst, size_t len);
 
 // Chase one candidate ArtMethod* to a method name using `rd`. Returns 1 on success.
 // Exposed for host testing (test_art_nterp.c); production goes through nterp_name.
-int art_method_resolve(art_reader rd, void *rc, uint64_t artmethod,
-                       char *out, size_t outsz);
+int art_method_resolve(art_reader rd, void *rc, const struct art_offsets *o,
+                       uint64_t artmethod, char *out, size_t outsz);
 
 // Chase one ArtMethod* to its DEX (method_idx, image begin_, code_item map) WITHOUT
 // naming it. Exposed so the ShadowFrame walk can corroborate a live dex_pc against the
 // method's own bytecode. Returns 1 on a fully-valid chain. `begin_out`/`map_out` may be NULL.
 struct dex_method_map;   // opaque (full def in dex.h)
-int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
-                     uint32_t *midx_out, uint64_t *begin_out,
+int art_method_chase(art_reader rd, void *rc, const struct art_offsets *o,
+                     uint64_t artmethod, uint32_t *midx_out, uint64_t *begin_out,
                      struct dex_method_map **map_out);
 
 // Core locator, exposed for host testing. Scans stack slots upward from nterp_sp
@@ -53,7 +54,8 @@ int art_method_chase(art_reader rd, void *rc, uint64_t artmethod,
 // same method. Writes "pkg.Class.method+0x<dexpc>" (corroborated) or bare
 // "pkg.Class.method" (uncorroborated fallback) and returns 1; returns 0 on no
 // resolvable candidate. Chases ArtMethod structs via rd; reads dex_pc from `stack`.
-int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+int nterp_pick(art_reader rd, void *rc, const struct art_offsets *o,
+               const uint8_t *stack, uint64_t stack_base,
                size_t stack_len, uint64_t nterp_sp, char *out, size_t outsz);
 
 // Name the FULL interpreted call chain above the nterp terminal at `nterp_sp`.
@@ -62,7 +64,8 @@ int nterp_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_bas
 // count. Superset of nterp_name; uncorroborated frames are dropped.
 int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
                 char out[][256], int max_frames);
-int nterp_chain_pick(art_reader rd, void *rc, const uint8_t *stack, uint64_t stack_base,
+int nterp_chain_pick(art_reader rd, void *rc, const struct art_offsets *o,
+                     const uint8_t *stack, uint64_t stack_base,
                      size_t stack_len, uint64_t nterp_sp, char out[][256], int max_frames);
 
 // Drop the cached DexFile image maps (host tests reset state between cases).

@@ -549,7 +549,15 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   the dump engine's rebuild pipeline and the syscalls engine's stack symbolizer
   (which walks ART's in-process JIT debug descriptor).
 
-### 2.1 Stack symbolizer — shared (`common/symbolize.c`)
+### 2.1 Stack symbolizer — shared (`common/symbolize.c` + `sym_*.c`)
+
+The symbolizer is split across cohesive files behind the private
+`common/symbolize_internal.h` contract: `symbolize.c` (orchestrator + addr→sym
+cache + `cfi_unwind_snapshot`), `sym_procmaps.c` (`/proc/<pid>/maps` cache),
+`sym_elf.c` (`.dynsym`/`.symtab`/`.gnu_debugdata` + per-module CFI cache + ELF
+file I/O), `sym_jit.c` (ART GDB-JIT walk), `sym_vdso.c` (`[vdso]`), and
+`sym_apk.c` (APK-embedded `.so` names). Only the 5 `COMMON_API` symbols are
+exported; everything else is localized at link.
 
 Both `syscalls` and `funcs` resolve backtrace addresses using the shared
 `sym_resolve` call. For each frame address the symbolizer:

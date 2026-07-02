@@ -409,6 +409,18 @@ located the module-base bug and stays available for future CFI diagnosis.
 **Limits:**
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
 - Interpreter frames are detected by `is_interp_frame` and tagged `"kind":"interp"`. `nterp_chain` names the full interpreted chain from the terminal (each frame dex_pc-corroborated via `dex_lookup_range`, `+0x<dexpc>` suffix, innermost-first); uncorroborated frames are dropped (precision over recall). `nterp_name` is the single-frame fallback. Recall is bounded by the snapshot window (a chain deeper than the captured window truncates), and adjacent frames of the *same* `ArtMethod*` are deduped — so a directly-recursive `A→A` collapses to one entry (`A→B→A` is unaffected). The ART `Thread→ManagedStack` heap walk (spiked, parked) remains the authoritative-but-version-coupled alternative for deeper/off-stack (switch-interpreter ShadowFrame) frames.
+- **Onboarding a new ART build (managed-frame naming).** The version-coupled offsets are
+  keyed on the target's `libart.so` BuildID: `art_buildid_offsets` (`src/common/art_buildid.c`)
+  reads the target BuildID and returns the matching `k_table` row (both the ShadowFrame and
+  nterp offset families in one `struct art_offsets`); an unrecognized build is a clean
+  default-off no-op. To add a device/ART build without recompiling per iteration, set
+  `ARES_ART_OFFSETS=<file>` to a `key=value` row (`buildid=` + the 13 offsets, `#` comments and
+  whitespace tolerated); it overrides `k_table` **only when its BuildID matches** the running
+  libart (else it is ignored and `k_table` is used — fail-closed). Workflow: pin the offsets
+  from AOSP `platform/art` + `platform/bionic` at the matching release → write the row →
+  run ares with `ARES_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
+  iterate the offsets until the oracle confirms the names → bake the confirmed row into
+  `k_table`. Reads-only (own-process file); no target write.
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);

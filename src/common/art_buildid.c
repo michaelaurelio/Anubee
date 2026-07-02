@@ -127,6 +127,44 @@ static int read_build_id_hex(const char *path, char *out, size_t outsz)
     return ok;
 }
 
+// Lazily (once per process) parse the ARES_ART_OFFSETS file, if set. Return its offsets
+// iff the parsed BuildID matches `target_hex`; else NULL (caller falls back to k_table).
+static const struct art_offsets *override_lookup(const char *target_hex)
+{
+    static int inited = 0, valid = 0;
+    static char ov_bid[64];
+    static struct art_offsets ov;
+    if (!inited) {
+        inited = 1;
+        const char *path = getenv("ARES_ART_OFFSETS");
+        if (path) {
+            FILE *f = fopen(path, "rb");
+            if (!f) {
+                fprintf(stderr, "[ares] ARES_ART_OFFSETS open failed (%s); ignoring\n", path);
+            } else {
+                char buf[4096];
+                size_t n = fread(buf, 1, sizeof buf - 1, f);
+                buf[n] = '\0';
+                fclose(f);
+                if (art_offsets_parse(buf, ov_bid, sizeof ov_bid, &ov))
+                    valid = 1;
+                else
+                    fprintf(stderr, "[ares] ARES_ART_OFFSETS parse failed; ignoring\n");
+            }
+        }
+    }
+    if (valid && target_hex && strcmp(ov_bid, target_hex) == 0) {
+        static int noted = 0;
+        if (!noted) {
+            noted = 1;
+            fprintf(stderr, "[ares] using ARES_ART_OFFSETS override for libart BuildID %s\n",
+                    target_hex);
+        }
+        return &ov;
+    }
+    return NULL;
+}
+
 const struct art_offsets *art_buildid_offsets(int pid)
 {
     static int   cache_pid = -2;               /* -2 = never resolved */
@@ -151,8 +189,11 @@ const struct art_offsets *art_buildid_offsets(int pid)
             }
         }
         fclose(f);
-        if (libart[0] && read_build_id_hex(libart, hex, sizeof hex))
-            o = art_offsets_for_buildid(hex);
+        if (libart[0] && read_build_id_hex(libart, hex, sizeof hex)) {
+            o = override_lookup(hex);          /* candidate row wins for a matching BuildID */
+            if (!o)
+                o = art_offsets_for_buildid(hex);
+        }
     }
 
     cache_pid = pid;

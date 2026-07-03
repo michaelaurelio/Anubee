@@ -15,14 +15,15 @@ Open work is bucketed by **influence on future work**:
 - [Resolved / Done](#resolved--done) — condensed changelog of shipped work.
 
 Each item keeps its original tracking id (`R#`, `C#`, `A#`, `X#`, `U#`, `W#`,
-`GA#`, `Phase #`) so history stays traceable. Full technical detail for resolved
+`GA#`, `CR#`, `Phase #`) so history stays traceable. Full technical detail for resolved
 items lives in DOCUMENTATION.md and the referenced specs.
 
 ---
 
 ## Open work — at a glance
 
-**Urgent:** none.
+**Urgent:**
+- CR1 — detectability firewall is unenforced (source convention, not a build gate).
 
 **Major:**
 - `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
@@ -32,6 +33,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
   on apex `370549100` only (BuildID is the stronger anchor); nterp recall is bounded
   by the snapshot window.
 - Managed-frame **OAT/ODEX native-PC → Java method** — parked pending real ART OAT parsing.
+- CR2 — `syscalls` attribution is "presence on stack," not "issued by" (+ FP-omit /
+  vDSO / 32-bit-compat / pre-arm-window gaps).
+- CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
+- CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
+- CR5 — per-run coverage-health record (silent partial output is unsafe for forensics).
 
 **Minor:**
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
@@ -51,8 +57,33 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ## Urgent — architectural / correctness-critical
 
-None open. (B1 — prop-read empty-summary-under-`-o` — resolved 2026-06-28; see
-Resolved/Done.)
+### CR1 — detectability firewall is unenforced (convention, not a build gate)
+
+Source: 2026-07-03 architecture critique. The project's one named invariant — quiet
+capabilities (`syscalls`/`lib`/`dump`) never load a uprobe — is guaranteed only at the
+object-isolation layer (each engine is its own BPF unit + skeleton, `src/main.c`
+dispatches one `cmd_*`, so loud programs are absent from quiet objects' ELF). The
+**"quiet object carries no uprobe"** half rests on source convention: nothing checks
+that a quiet `.bpf.c` has no `SEC("uprobe"|"uretprobe")` and that a quiet `.c` never
+calls `bpf_program__attach_uprobe`. A refactor that `#include`s a uprobe-bearing shared
+`.bpf.h` into `lib.bpf.c` (or adds an attach call) **compiles, loads, and writes a BRK
+into the target — silently breaking stealth. No test trips.**
+
+`src/common/capabilities.c` is the one machine-checkable artifact and it is
+production-dead: `ares_quiet_config_ok()` has zero callers outside
+`tests/test_capabilities.c`; `ares_object_writes_target()` only prints a banner
+(`src/modules/mod.c:154`). The loudness table (`capabilities.c:12-23`) can drift from
+actual object contents with nothing to catch it. Grep-audit trap:
+`src/common/lib_trace.bpf.h:37,91` uses `SEC("kprobe/uprobe_mmap")` — a kprobe on a
+kernel function *named* `uprobe_mmap`, genuinely quiet, but a `grep uprobe` firewall
+check false-positives here (and could false-negative real cases elsewhere).
+
+Fix = mechanize as a CI/Makefile gate: `llvm-objdump` each quiet `.bpf.o` and assert
+zero `uprobe`/`uretprobe` program sections; assert the quiet engines' final link pulls
+in no `bpf_program__attach_uprobe`; drive the assertion off `capabilities.c` so the
+table can't diverge from reality. Turns the invariant the whole tool is named for into
+a red CI light instead of a code-review hope. (B1 — prop-read empty-summary-under-`-o`
+— resolved 2026-06-28; see Resolved/Done.)
 
 ---
 
@@ -138,6 +169,93 @@ symbol path). The genuine method-index→name path is parked:
   a vdex DEX-image locator (2c) would feed the resolver garbage and the symbolize
   wiring (2d) has nothing valid to name. Evidence:
   `docs/superpowers/research/2026-06-24-vdex-dex-frame-spike-findings.md`.
+
+### CR2 — `syscalls` library attribution is "presence on stack," not "issued by"
+
+Source: 2026-07-03 architecture critique. `stack_hits` (`src/syscalls/syscalls.bpf.c:145`)
+keeps a syscall if **any** captured frame IP lands in the target library's range — i.e.
+the lib is *somewhere on the call chain*, not that it issued the syscall. Over-attributes:
+`targetlib → malloc → mmap` is tagged as a target-lib syscall. Compounding silent gaps,
+several concentrated on the flagship RASP clean-vs-rooted diffing use case:
+
+- **Frame-pointer walk** (`bpf_get_stack`, `BPF_F_USER_STACK`): RASP/anti-tamper `.so` —
+  the stated target — are routinely `-fomit-frame-pointer`/hand-asm, so the walk yields
+  garbage or nothing → false neg/pos. Attribution is least reliable exactly where the
+  tool's headline job lives.
+- **vDSO calls invisible** (never execute `svc`, so `do_el0_svc` never fires);
+  **32-bit compat path unhooked** (only `do_el0_svc`, not `el0_svc_compat`).
+- **Pre-arm window (bug).** `push_lib_range` (`src/syscalls/syscalls.c:191`) arms ranges
+  from userspace reacting to an async mmap ringbuf event; syscalls issued between the
+  kernel mmap completing and the range being armed hit `count==0` → dropped. The
+  `.bpf.c` "no filter gap" comment is wrong for this window.
+- Depth cap on the `stack_hits` scan silently drops deep-chain attribution.
+
+Actionable: approximate "issued by" via the return address immediately above the libc
+syscall stub (who called the wrapper) instead of any-frame-in-range — kills the
+malloc→mmap over-attribution class (won't fix FP-omitted libs; fundamental). Fix the
+pre-arm window (arm before first schedulable target code, or gate on a kernel-side mmap
+hook). **Disclose the FP dependency + vDSO/compat blind spots in README/DOCUMENTATION**
+— currently undersold.
+
+### CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks
+
+Source: 2026-07-03 architecture critique. The quiet span close infers "function
+returned" from stack-pointer movement at the next instrumented event
+(`span_stack_reconcile`, `src/common/span_stack.bpf.h:80`), no uretprobe. The
+LIFO-monotonic-SP assumption breaks on:
+
+- **Coroutines / fibers / stack switching** — Kotlin coroutines are pervasive on Android;
+  a scheduler swapping `cur_sp` to another stack makes reconcile spuriously pop live
+  frames (higher addr) or never pop returned ones (lower addr). Silent attribution
+  corruption on the platform's most common concurrency model.
+- Cross-thread offload (already documented), tail calls (over-attribute to caller),
+  recursion at the same SP (stale frame lingers; `MAX_SPAN_DEPTH=32` overflow
+  mis-attributes — the code comment admits it), longjmp/exception windows, signal
+  handlers on an altstack.
+
+Actionable: document coroutine/stack-switch hostility explicitly (not an edge case for
+Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
+(uretprobe, planned) as the accuracy path — the two are currently framed as
+near-equivalent.
+
+### CR4 — managed-frame naming: version treadmill + guess-path is primary
+
+Source: 2026-07-03 architecture critique. Extends the "generalize beyond one ART build"
+item above with a strategic critique.
+
+- **Version treadmill.** One `k_table` row (`src/common/art_buildid.c:12`) gates *all*
+  Java naming, keyed on the exact libart BuildID. ART is an apex (mainline) module
+  updated ~monthly; every ART update / vendor rebuild / new release → BuildID miss →
+  managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
+  vanish). The `ARES_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
+  it is still one row of manual labor per device per ART build.
+- **Guess-path is primary for nterp.** `art_nterp.c:204` guesses `ArtMethod*` from raw
+  stack slots and corroborates via a dex_pc in a 512-byte window — which proves *method
+  identity, not frame identity*, so two live/stale activations of the same method are
+  indistinguishable (right name, wrong dex_pc / wrong activation), and the uncorroborated
+  fallback can emit a wholly wrong `name?`. The **authoritative** path already exists
+  (`src/common/art_shadow.c` reads ART's real `ShadowFrame.method_`, no guessing); it
+  should be primary and the guess-path the fallback (tracked as "Path Y").
+
+Strategic: this is the largest, most fragile surface in the repo, for best-effort output
+on a tool whose real edge is stealthy syscalls. Consider labeling managed naming clearly
+experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
+authoritative-path migration before sinking more into offset tables.
+
+### CR5 — per-run coverage-health record (silent degradation unsafe for forensics)
+
+Source: 2026-07-03 architecture critique. Consistent pattern: missing FDE
+(`CFI_NO_FDE`), 32 KB snapshot cap (`truncated`), unknown ART build, stack-depth cap,
+the CR2 pre-arm window, hand-table syscall miss (6 raw args, no decode) — all degrade to
+shorter/partial output with **no user-visible signal**. An analyst can't tell "app made
+no such call" from "tracer missed it"; absence-of-evidence reads as
+evidence-of-absence.
+
+Fix = emit a per-run coverage/health record extending the existing drops contract
+(`ares_drops_report`, `runtime.h`'s "silence never means didn't check"): snapshots
+truncated N/M, unknown-build notices, attribution / stack-walk misses, FDE-stop counts,
+per-engine drops. One structured record at teardown (and/or an MCP field) so partial
+coverage is explicit rather than inferred.
 
 ---
 

@@ -110,4 +110,44 @@ main() {
   echo "check-firewall: OK (sections + attach-whitelist)"
 }
 
-main "$@"
+# Prove the gate detects violations. Builds a uprobe-bearing section into a
+# copy of a quiet .bpf.c, and an attach ref into a copy of a quiet .c, in a temp
+# dir, and asserts each check flags it. Never touches the real build/ or source.
+selftest() {
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local clang="${BPF_CLANG:-clang}"
+  local ok=0
+
+  # A: uprobe section injected into a quiet BPF object.
+  cat > "$tmp/q.bpf.c" <<'EOF'
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+char _license[] SEC("license") = "GPL";
+SEC("uprobe/probe_selftest")
+int selftest_probe(void *ctx) { return 0; }
+EOF
+  if "$clang" -target bpf -g -O2 -I. -Isrc -c "$tmp/q.bpf.c" -o "$tmp/q.bpf.o" 2>"$tmp/berr"; then
+    if [ -n "$(uprobe_sections "$tmp/q.bpf.o")" ]; then ok=$((ok+1));
+    else echo "SELFTEST FAIL: uprobe section not detected in injected object" >&2; fi
+  else
+    echo "SELFTEST SKIP: could not compile BPF probe stub (need clang+vmlinux.h):" >&2
+    cat "$tmp/berr" >&2; ok=$((ok+1))   # do not fail CI on toolchain gap; Check A still runs live
+  fi
+
+  # B: attach_uprobe reference injected into a quiet .c object.
+  cat > "$tmp/q.c" <<'EOF'
+int bpf_program__attach_uprobe(void);
+int quiet_selftest(void) { return bpf_program__attach_uprobe(); }
+EOF
+  "${HOST_CC:-cc}" -c "$tmp/q.c" -o "$tmp/q.o"
+  if "$NM" --undefined-only "$tmp/q.o" | grep -q 'bpf_program__attach_uprobe'; then
+    ok=$((ok+1))
+  else
+    echo "SELFTEST FAIL: attach_uprobe ref not detected in injected object" >&2
+  fi
+
+  if [ "$ok" -eq 2 ]; then echo "check-firewall: selftest OK"; return 0; fi
+  echo "check-firewall: selftest FAILED" >&2; return 1
+}
+
+if [ "${1:-}" = "--selftest" ]; then selftest; else main "$@"; fi

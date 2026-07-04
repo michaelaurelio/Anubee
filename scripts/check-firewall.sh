@@ -126,7 +126,7 @@ char _license[] SEC("license") = "GPL";
 SEC("uprobe/probe_selftest")
 int selftest_probe(void *ctx) { return 0; }
 EOF
-  if "$clang" -target bpf -g -O2 -I. -Isrc -c "$tmp/q.bpf.c" -o "$tmp/q.bpf.o" 2>"$tmp/berr"; then
+  if "$clang" -target bpf -g -O2 -I"$BUILD/libbpf/include" -I. -Isrc -c "$tmp/q.bpf.c" -o "$tmp/q.bpf.o" 2>"$tmp/berr"; then
     if [ -n "$(uprobe_sections "$tmp/q.bpf.o")" ]; then ok=$((ok+1));
     else echo "SELFTEST FAIL: uprobe section not detected in injected object" >&2; fi
   else

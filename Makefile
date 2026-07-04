@@ -165,7 +165,7 @@ COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC) $(DEPFLAGS)
 LINK_LIBS := $(LIBBPF_A) -lelf -lz -lzstd -llzma
 LINK_FLAGS := -static -pthread
 
-.PHONY: all push device-test test clean regen-vmlinux
+.PHONY: all push device-test test clean regen-vmlinux check-firewall capdump
 all: $(BIN)
 
 # ---- vmlinux.h (committed; regenerate manually only on kernel change) ------
@@ -362,9 +362,18 @@ push: $(BIN)
 device-test: $(BIN)
 	scripts/device-test.sh $(CAP)
 
+check-firewall: $(BIN) $(BUILD)/capdump
+	scripts/check-firewall.sh
+	scripts/check-firewall.sh --selftest
+
 # Host unit tests: pure-logic checks compiled with the HOST cc (no device, no
 # cross-toolchain). Self-contained — depends only on the C sources under test.
 HOST_CC ?= cc
+capdump: $(BUILD)/capdump
+$(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilities.h
+	@mkdir -p $(BUILD)
+	$(HOST_CC) -Wall -Wextra -Isrc tools/capdump.c src/common/capabilities.c -o $@
+
 test:
 	@mkdir -p $(BUILD)
 	@if $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null </dev/null; then \

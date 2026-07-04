@@ -32,3 +32,5 @@ jobs:
           ARES_CHECK_DEPS: "1"
       - name: Verify binary produced
         run: test -f build/ares && file build/ares
+      - name: Detectability firewall gate (CR1)
+        run: ./scripts/build.sh check-firewall

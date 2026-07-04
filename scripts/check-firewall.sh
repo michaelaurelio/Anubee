@@ -29,10 +29,13 @@ map_bpf_obj() {
   esac
 }
 
-# Program-section names in an object, prefix-anchored to real uprobe sections.
-# Excludes kprobe/uprobe_mmap (starts "kprobe") and .reluprobe reloc (starts ".").
+# Program-section names in an object, prefix-anchored to real uprobe/usdt
+# sections. Excludes kprobe/uprobe_mmap (starts "kprobe") and .reluprobe reloc
+# (starts "."). usdt is included because a USDT probe is uprobe-backed and
+# writes into target userspace memory (loud), even though its section is
+# named "usdt/..." rather than "uprobe...".
 uprobe_sections() {
-  "$OBJDUMP" -h "$1" | awk '$2 ~ /^uprobe/ || $2 ~ /^uretprobe/ { print $2 }'
+  "$OBJDUMP" -h "$1" | awk '$2 ~ /^uprobe/ || $2 ~ /^uretprobe/ || $2 ~ /^usdt/ { print $2 }'
 }
 
 check_sections() {  # args: <name> <loud 0|1>
@@ -90,10 +93,10 @@ check_attach_whitelist() {
   # Enumerate ARES-owned objects only (exclude vendored libbpf, BPF objs, and
   # .part.o aggregates which duplicate their members' refs).
   while IFS= read -r o; do
-    "$NM" --undefined-only "$o" 2>/dev/null | grep -q 'bpf_program__attach_uprobe' || continue
+    "$NM" --undefined-only "$o" 2>/dev/null | grep -qE 'bpf_program__attach_(uprobe|usdt)' || continue
     owner="$(owner_of "$o")"
     if [ "$owner" = shared ] || ! is_loud "$owner"; then
-      breach "quiet/shared object $o references bpf_program__attach_uprobe (owner: $owner)"
+      breach "quiet/shared object $o references bpf_program__attach_uprobe/usdt (owner: $owner)"
     fi
   done < <(find "$BUILD" -name '*.o' \
              ! -name '*.bpf.o' ! -name '*.part.o' ! -path "$BUILD/libbpf/*")
@@ -117,6 +120,7 @@ selftest() {
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local clang="${BPF_CLANG:-clang}"
   local ok=0
+  local arm_a_skipped=0
 
   # A: uprobe section injected into a quiet BPF object.
   cat > "$tmp/q.bpf.c" <<'EOF'
@@ -131,7 +135,7 @@ EOF
     else echo "SELFTEST FAIL: uprobe section not detected in injected object" >&2; fi
   else
     echo "SELFTEST SKIP: could not compile BPF probe stub (need clang+vmlinux.h):" >&2
-    cat "$tmp/berr" >&2; ok=$((ok+1))   # do not fail CI on toolchain gap; Check A still runs live
+    cat "$tmp/berr" >&2; ok=$((ok+1)); arm_a_skipped=1   # do not fail CI on toolchain gap; Check A still runs live
   fi
 
   # B: attach_uprobe reference injected into a quiet .c object.
@@ -146,7 +150,14 @@ EOF
     echo "SELFTEST FAIL: attach_uprobe ref not detected in injected object" >&2
   fi
 
-  if [ "$ok" -eq 2 ]; then echo "check-firewall: selftest OK"; return 0; fi
+  if [ "$ok" -eq 2 ]; then
+    if [ "$arm_a_skipped" -eq 1 ]; then
+      echo "check-firewall: selftest OK (arm A SKIPPED - BPF toolchain absent, only attach-ref arm exercised)"
+    else
+      echo "check-firewall: selftest OK"
+    fi
+    return 0
+  fi
   echo "check-firewall: selftest FAILED" >&2; return 1
 }
 

@@ -22,9 +22,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ## Open work — at a glance
 
-**Urgent:**
-- CR1 — detectability firewall is unenforced (source convention, not a build gate).
-
 **Major:**
 - `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
   regex `-I/-i`; `-P` attach timing.
@@ -52,38 +49,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
-
----
-
-## Urgent — architectural / correctness-critical
-
-### CR1 — detectability firewall is unenforced (convention, not a build gate)
-
-Source: 2026-07-03 architecture critique. The project's one named invariant — quiet
-capabilities (`syscalls`/`lib`/`dump`) never load a uprobe — is guaranteed only at the
-object-isolation layer (each engine is its own BPF unit + skeleton, `src/main.c`
-dispatches one `cmd_*`, so loud programs are absent from quiet objects' ELF). The
-**"quiet object carries no uprobe"** half rests on source convention: nothing checks
-that a quiet `.bpf.c` has no `SEC("uprobe"|"uretprobe")` and that a quiet `.c` never
-calls `bpf_program__attach_uprobe`. A refactor that `#include`s a uprobe-bearing shared
-`.bpf.h` into `lib.bpf.c` (or adds an attach call) **compiles, loads, and writes a BRK
-into the target — silently breaking stealth. No test trips.**
-
-`src/common/capabilities.c` is the one machine-checkable artifact and it is
-production-dead: `ares_quiet_config_ok()` has zero callers outside
-`tests/test_capabilities.c`; `ares_object_writes_target()` only prints a banner
-(`src/modules/mod.c:154`). The loudness table (`capabilities.c:12-23`) can drift from
-actual object contents with nothing to catch it. Grep-audit trap:
-`src/common/lib_trace.bpf.h:37,91` uses `SEC("kprobe/uprobe_mmap")` — a kprobe on a
-kernel function *named* `uprobe_mmap`, genuinely quiet, but a `grep uprobe` firewall
-check false-positives here (and could false-negative real cases elsewhere).
-
-Fix = mechanize as a CI/Makefile gate: `llvm-objdump` each quiet `.bpf.o` and assert
-zero `uprobe`/`uretprobe` program sections; assert the quiet engines' final link pulls
-in no `bpf_program__attach_uprobe`; drive the assertion off `capabilities.c` so the
-table can't diverge from reality. Turns the invariant the whole tool is named for into
-a red CI light instead of a code-review hope. (B1 — prop-read empty-summary-under-`-o`
-— resolved 2026-06-28; see Resolved/Done.)
 
 ---
 
@@ -359,6 +324,23 @@ coverage is explicit rather than inferred.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-05
+
+- **CR1 - detectability firewall mechanized as a build gate.** The firewall's
+  unchecked half ("a quiet object carries no uprobe") is now enforced.
+  `tools/capdump.c` compiles the `capabilities.c` loudness table to `name\t0|1`
+  rows; `scripts/check-firewall.sh` asserts, off those rows, that each quiet
+  `.bpf.o` has zero prefix-anchored `uprobe`/`uretprobe` sections and each loud
+  one does (Check A, bidirectional), and that `bpf_program__attach_uprobe` is
+  referenced only in loud-owned engine objects (Check B, whitelist over
+  `llvm-nm`, excluding vendored libbpf + `.part.o`). A row with no `.bpf.o` map
+  fails (drift guard). `--selftest` injects a uprobe section and an attach ref
+  into throwaway copies and asserts the gate flags both, so it can't rot to a
+  vacuous pass. `make check-firewall` + a CI step (after the cross-build) run
+  it every PR. Section match is prefix-anchored to avoid the `kprobe/uprobe_mmap`
+  grep-trap CR1 called out. Spec/plan:
+  `docs/superpowers/{specs/2026-07-05-firewall-gate-design.md,plans/2026-07-05-firewall-gate.md}`.
 
 ### 2026-07-02
 

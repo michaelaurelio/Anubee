@@ -149,10 +149,14 @@ flowchart TD
   `writes_target_memory = true`: `funcs`, `correlate`, and `mod:prop-read` (libc
   uprobes); all kprobe/tracepoint capabilities (`syscalls`, `lib`, `dump`,
   `mod:proc-event`, `mod:execve`) are `false`.
-  Advisory by design: each subcommand loads exactly one object of known, documented
-  loudness, so there is no implicit composition layer for a loud object to leak
-  through. The registry is the single audit point + regression guard. Enforcement
-  would only add value under a future intent-based preset/composition layer. See §9.
+  Each subcommand loads exactly one object of known, documented loudness, so there
+  is no implicit composition layer for a loud object to leak through. The registry
+  is the single audit point + regression guard, and it is now build-enforced: the
+  `capdump` tool (`tools/capdump.c`) compiles this table to `name<TAB>0|1` rows, and
+  `scripts/check-firewall.sh` (`make check-firewall`, run in CI) checks each quiet
+  `.bpf.o` for uprobe/uretprobe sections and each engine object for
+  `bpf_program__attach_uprobe` refs against it, so the table can no longer drift
+  from the objects it describes. See §9.
 
 ### Why partial-link + symbol localization
 
@@ -858,6 +862,18 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
 - Secondary tells: both engines need eBPF load privileges (often SELinux
   permissive); a single binary has a distinct on-disk fingerprint/size/process
   name (trivially mitigated by renaming).
+- **The "quiet object carries no uprobe" half of the firewall is enforced at build
+  time**, not just held by convention. `scripts/check-firewall.sh` (`make
+  check-firewall`, run in CI after the cross-build) reads the loudness table
+  compiled by `tools/capdump.c` from `src/common/capabilities.c` and runs two
+  checks: Check A disassembles each `.bpf.o` with `llvm-objdump` and asserts quiet
+  objects have zero prefix-anchored `uprobe`/`uretprobe` program sections while
+  loud objects have at least one (bidirectional; prefix-anchoring avoids
+  false-positiving the genuinely-quiet `SEC("kprobe/uprobe_mmap")` section); Check B
+  scans engine object files with `llvm-nm` and asserts `bpf_program__attach_uprobe`
+  is referenced only by loud-owned objects. `scripts/check-firewall.sh --selftest`
+  injects a uprobe section and an attach reference into throwaway copies and
+  confirms the gate flags both, proving it isn't a vacuous pass.
 
 ---
 

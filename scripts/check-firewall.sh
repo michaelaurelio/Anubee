@@ -58,15 +58,56 @@ run_check_a() {
   done < <("$BUILD/capdump")
 }
 
+# Map a built object path to its owning capability name (matching capdump rows),
+# or "shared" for src/common + the mod dispatcher (must never attach a uprobe).
+owner_of() {
+  case "$1" in
+    $BUILD/common/*)            echo shared ;;
+    $BUILD/funcs/*)             echo funcs ;;
+    $BUILD/syscalls/*)          echo syscalls ;;
+    $BUILD/lib/*)               echo lib ;;
+    $BUILD/dump/*)              echo dump ;;
+    $BUILD/correlate/*)         echo correlate ;;
+    $BUILD/trace/*)             echo trace ;;
+    $BUILD/modules/execve.o)    echo mod:execve ;;
+    $BUILD/modules/prop_read.o) echo mod:prop-read ;;
+    $BUILD/modules/proc_event.o) echo mod:proc-event ;;
+    $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
+    $BUILD/main.o)              echo shared ;;
+    *)                          echo shared ;;
+  esac
+}
+
+# True (0) if the capability name is loud per capdump.
+# capdump is an executable that emits the rows (see run_check_a); it must be
+# run, not read as a data file.
+is_loud() {
+  awk -F'\t' -v n="$1" '$1==n {print $2}' <("$BUILD/capdump") | grep -q '^1$'
+}
+
+check_attach_whitelist() {
+  local o owner
+  # Enumerate ARES-owned objects only (exclude vendored libbpf, BPF objs, and
+  # .part.o aggregates which duplicate their members' refs).
+  while IFS= read -r o; do
+    "$NM" --undefined-only "$o" 2>/dev/null | grep -q 'bpf_program__attach_uprobe' || continue
+    owner="$(owner_of "$o")"
+    if [ "$owner" = shared ] || ! is_loud "$owner"; then
+      breach "quiet/shared object $o references bpf_program__attach_uprobe (owner: $owner)"
+    fi
+  done < <(find "$BUILD" -name '*.o' \
+             ! -name '*.bpf.o' ! -name '*.part.o' ! -path "$BUILD/libbpf/*")
+}
+
 main() {
   make >/dev/null
   make capdump >/dev/null
   run_check_a
-  # Check B added in Task 3: run_check_b
+  check_attach_whitelist
   if [ "$fail" -ne 0 ]; then
     echo "check-firewall: FAILED" >&2; exit 1
   fi
-  echo "check-firewall: OK (sections)"
+  echo "check-firewall: OK (sections + attach-whitelist)"
 }
 
 main "$@"

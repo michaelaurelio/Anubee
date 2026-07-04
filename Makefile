@@ -365,6 +365,11 @@ device-test: $(BIN)
 # Host unit tests: pure-logic checks compiled with the HOST cc (no device, no
 # cross-toolchain). Self-contained — depends only on the C sources under test.
 HOST_CC ?= cc
+capdump: $(BUILD)/capdump
+$(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilities.h
+	@mkdir -p $(BUILD)
+	$(HOST_CC) -Wall -Wextra -Isrc tools/capdump.c src/common/capabilities.c -o $@
+
 test:
 	@mkdir -p $(BUILD)
 	@if $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null </dev/null; then \

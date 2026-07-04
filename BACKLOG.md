@@ -52,6 +52,12 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ---
 
+## Urgent — architectural / correctness-critical
+
+None currently open.
+
+---
+
 ## Major — features / substantial work
 
 ### `correlate` engine — remaining capability

@@ -232,6 +232,15 @@ coverage is explicit rather than inferred.
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+- **CR1 firewall-gate `--selftest` exercises the detectors, not the gate routing.**
+  `scripts/check-firewall.sh --selftest` proves `uprobe_sections` and the `nm` attach
+  match fire on an injected violation, but it calls those primitives directly - it does
+  not drive `check_sections` / `check_attach_whitelist` (with `owner_of` / `is_loud` /
+  the coverage guard) end-to-end. A stronger selftest would drop a temp uprobe-bearing
+  object into a quiet slot and assert a `main`-path breach. Low priority (the routing is
+  simple and every real gate run covers it). Also: on a toolchain-less host arm A is
+  SKIPped (now surfaced in the summary line) so only the attach-ref arm runs there.
+
 - **W5 — JIT code-cache frames have no file-backed CFI (deferred, ≈0 payoff).**
   JIT-compiled Java frames (`[anon]` / `[anon_shmem:dalvik-jit-code-cache]`) between
   a framework lib and `art_jni_trampoline` have no file-backed FDE; `cfi_get` skips

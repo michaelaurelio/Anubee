@@ -30,6 +30,7 @@
 #include "common/runtime.h"
 #include "common/maps.h"
 #include "common/syscall_index.h"
+#include "common/coverage.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
@@ -385,8 +386,17 @@ void correlate_teardown(void)
     }
     destroy_uprobe_links();
     if (g_skel) {
-        // No worker queue in correlate (ring drained inline) → qdrops = 0.
-        ares_drops_report(ares_drops_read(bpf_map__fd(g_skel->maps.dropped)), 0);
+        // Always report the final tally, so "no message" never means "didn't
+        // check". Subsumes the old ares_drops_report: ring/queue drops are
+        // coverage fields here. No worker queue in correlate (ring drained
+        // inline) -> queue_drops = 0.
+        struct ares_coverage cov = { .engine = "correlate" };
+        int covfd = bpf_map__fd(g_skel->maps.coverage_stats);
+        cov.depth_capped   = ares_coverage_read(covfd, COV_DEPTH_CAP);
+        cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
+        cov.queue_drops    = 0;
+        cov.decode_partial = 1;   // raw syscall args, no decode
+        ares_coverage_report(&g_sink, &cov);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;
     }

@@ -121,7 +121,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_managed_chain_build ares_jcache_put ares_jcache_get \
                ares_jcache_reset ares_managed_chain ares_emit_cfi_stack_json \
                ares_is_interp_frame \
-               ares_coverage_report ares_cfi_stop_name
+               ares_coverage_report ares_cfi_stop_name \
+               ares_art_naming_disabled
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))

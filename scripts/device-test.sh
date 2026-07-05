@@ -305,6 +305,23 @@ test_syscalls_cfi() {
     else
         echo "INFO: no +0x<dexpc> suffix this run (corroboration did not fire)"
     fi
+    # CR5 coverage-health record (Task 7): teardown must emit exactly one
+    # {"type":"coverage"} record into the main sink JSONL (not the .stacks
+    # sidecar), tagged to this engine. Hard-fail on miss - unlike the
+    # timing-dependent frame checks above, this fires on every run regardless
+    # of what the target app did.
+    grep -q '"type":"coverage"' <<<"$mainout" \
+        || { echo "  out: $mainout" >&2; fail "syscalls-cfi: no {\"type\":\"coverage\"} record in sink output"; }
+    grep -q '"engine":"syscalls"' <<<"$mainout" \
+        || fail "syscalls-cfi: coverage record not tagged engine=syscalls"
+    echo "PASS: coverage record emitted and tagged to syscalls"
+    # On the known apex build, art_buildid.c's table has a row, so Java naming
+    # stays ON - managed_naming_off must be ABSENT (grep-negation idiom, no
+    # assert_json_absent helper exists in this script).
+    if grep -q '"managed_naming_off":true' <<<"$mainout"; then
+        fail "syscalls-cfi: managed_naming_off:true on known apex build (naming table stale?)"
+    fi
+    echo "PASS: Java naming on (known build) - managed_naming_off absent"
 }
 
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least

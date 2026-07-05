@@ -39,4 +39,7 @@ const struct art_offsets *art_buildid_offsets(int pid);
 int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
                       struct art_offsets *out);
 
+// 1 if an unknown libart BuildID disabled managed (Java) naming this run.
+int ares_art_naming_disabled(void);
+
 #endif

@@ -58,6 +58,8 @@
 #include "common/engine_args.h"
 #include "common/managed_frame.h"
 #include "common/syscall_index.h"
+#include "common/coverage.h"
+#include "common/art_buildid.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 
@@ -145,6 +147,12 @@ static int g_jsonl;                             // 1 = JSON Lines (one record/li
 static struct ares_sink g_sink;                 // output file sink (inactive when g_sink.f == NULL)
 static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
 static unsigned long long g_stack_count;        // snapshots written so far
+
+// Coverage-health record (CR5). Mutated only from process_event() / the CFI
+// walk it drives, which run exclusively on the worker thread (see the comment
+// on process_event); read at teardown only after pthread_join(g_worker, ...)
+// has returned, so the worker is no longer running - no lock needed.
+static struct ares_coverage g_cov = { .engine = "syscalls" };
 
 // ---- engine state shared across setup / run / teardown -------------------
 // Promoted from cmd_syscalls locals so the engine can be driven in three phases
@@ -587,9 +595,23 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	static int dbg = -1;
 	if (dbg < 0) dbg = getenv("ARES_CFI_DEBUG") ? 1 : 0;
 	struct cfi_step_diag diags[64];
-	if (dbg) memset(diags, 0, sizeof(diags));
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, dbg ? diags : NULL);
+	memset(diags, 0, sizeof(diags));
+	// diags is always passed now (not just under ARES_CFI_DEBUG): the
+	// coverage-health record (CR5) needs the terminal stop_reason of every
+	// walk, regardless of debug mode. The memset must run unconditionally:
+	// cfi_unwind_snapshot's own early-exit break paths (frame cap, maps
+	// miss) do not always write out_diags[n-1].stop_reason, so a gated
+	// memset left the terminal slot as uninitialized stack garbage that
+	// could alias a valid enum value and silently corrupt g_cov.cfi_stop[].
+	// Zero-init means an unwritten terminal reads as CFI_OK (0).
+	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
 	if (n <= 0) return;
+
+	g_cov.snaps_total++;
+	g_cov.cfi_walks++;
+	int stop_reason = diags[n - 1].stop_reason;
+	if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
+		g_cov.cfi_stop[stop_reason]++;
 
 	struct jbuf *j = &g_sink.jb; j->len = 0;
 	ares_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, dbg ? diags : NULL);
@@ -1292,7 +1314,15 @@ void syscalls_teardown(void)
 		g_worker_started = 0;
 
 		// Always report the final tally, so "no message" never means "didn't check".
-		ares_drops_report(ares_drops_read(g_dropfd), g_q.dropped);
+		// Subsumes the old ares_drops_report: ring/queue drops are coverage fields.
+		int covfd = bpf_map__fd(g_skel->maps.coverage_stats);
+		g_cov.snaps_truncated = ares_coverage_read(covfd, COV_TRUNC);
+		g_cov.depth_capped    = ares_coverage_read(covfd, COV_DEPTH_CAP);
+		g_cov.prearm_drops    = ares_coverage_read(covfd, COV_PREARM);
+		g_cov.ring_drops      = ares_drops_read(g_dropfd);
+		g_cov.queue_drops     = g_q.dropped;
+		g_cov.managed_naming_off = ares_art_naming_disabled();
+		ares_coverage_report(&g_sink, &g_cov);
 		ares_evq_destroy(&g_q);
 	}
 

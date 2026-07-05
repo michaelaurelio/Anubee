@@ -308,6 +308,11 @@ loading privileges (often SELinux permissive), itself a RASP tell.
 - `ares funcs` emits log-line JSONL by default; pass `-J` to also emit structured
   CALL/RETURN records. MAP/UNMAP/SPAWN/PROC_EXIT/EXECVE/PROP structured records and
   unified MCP ingest are planned (see `DOCUMENTATION.md`).
+- Coverage gaps (the 32 KB snapshot cap, an unknown ART build, a blind CFI stop,
+  the pre-arm window) used to fail silently. `syscalls`, `funcs`, and
+  `correlate` now surface them explicitly in a per-run coverage-health record
+  (stderr banner + `{"type":"coverage"}` in the `-o` sink) instead of leaving
+  them to be inferred from missing output (see `DOCUMENTATION.md`).
 
 ---
 

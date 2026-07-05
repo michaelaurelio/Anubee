@@ -34,9 +34,10 @@ items lives in DOCUMENTATION.md and the referenced specs.
   vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
 - CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
-- CR5 — per-run coverage-health record (silent partial output is unsafe for forensics).
 
 **Minor:**
+- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
+  (rides `mod` drop-telemetry parity).
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
@@ -213,24 +214,32 @@ on a tool whose real edge is stealthy syscalls. Consider labeling managed naming
 experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
 authoritative-path migration before sinking more into offset tables.
 
-### CR5 — per-run coverage-health record (silent degradation unsafe for forensics)
-
-Source: 2026-07-03 architecture critique. Consistent pattern: missing FDE
-(`CFI_NO_FDE`), 32 KB snapshot cap (`truncated`), unknown ART build, stack-depth cap,
-the CR2 pre-arm window, hand-table syscall miss (6 raw args, no decode) — all degrade to
-shorter/partial output with **no user-visible signal**. An analyst can't tell "app made
-no such call" from "tracer missed it"; absence-of-evidence reads as
-evidence-of-absence.
-
-Fix = emit a per-run coverage/health record extending the existing drops contract
-(`ares_drops_report`, `runtime.h`'s "silence never means didn't check"): snapshots
-truncated N/M, unknown-build notices, attribution / stack-walk misses, FDE-stop counts,
-per-engine drops. One structured record at teardown (and/or an MCP field) so partial
-coverage is explicit rather than inferred.
-
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
+
+- **CR5 follow-on: MCP-side `coverage` ingest handler.** `ares_coverage_report`
+  writes `{"type":"coverage","engine":...}` to the `-o` sink, but
+  `tools/ares-mcp/trace_store.py`'s `load_structured` has no branch for it (only
+  `type:"syscall"` rows load into DuckDB today) and `server.py` has no tool
+  surfacing it. Add a `coverage` branch that stores the record(s) alongside the
+  trace and a small MCP tool (or a field on `overview`) that surfaces per-engine
+  coverage so an MCP client can check "was this trace clean" without grepping
+  the raw JSONL.
+
+- **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
+  (no drop map, single-shot read). `dump`'s live-memory read
+  (`src/dump/rebuild.c`) can still hit partial `/proc/<pid>/mem` reads or an ELF
+  rebuild gap (missing section, truncated segment); a minimal `ares_coverage`
+  record for `dump` (no snapshot/CFI/managed fields, just a "the rebuilt ELF is
+  incomplete" signal) would close that exemption without inventing new schema.
+
+- **CR5 follow-on: `mod` coverage.** Rides the existing `mod` drop-telemetry
+  parity item (`mod.c` owns arg-parse/uid/sink/launch/poll/teardown per
+  analyzer) - once each analyzer exposes a drop count the same way
+  `syscalls`/`funcs` do, wiring a per-analyzer `ares_coverage_report` at
+  `mod.c` teardown is the same mechanical swap Tasks 4-6 did for the other
+  engines.
 
 - **CR1 firewall-gate `--selftest` exercises the detectors, not the gate routing.**
   `scripts/check-firewall.sh --selftest` proves `uprobe_sections` and the `nm` attach
@@ -329,6 +338,21 @@ coverage is explicit rather than inferred.
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
+- **`funcs` uprobe fails to load on the current test device (pre-existing, not CR5).**
+  On the test device (A15 kernel) `ares funcs -e libc.so!open -J --snapshot -P <pkg>`
+  fails the BPF load: `uprobe_open` is rejected with `reg type unsupported for arg#0
+  function uprobe_open#N` (-EACCES). Isolated to a pre-existing issue by building the
+  pre-CR5 base and reproducing the identical failure (only the subprog index shifts,
+  #79 base vs #83 post-CR5) - so CR5 did not cause it. Likely a verifier/kernel
+  interaction with the large `uprobe_open` program (java_stack + CFI + span push) on
+  this kernel (an outlined `.cold` subprogram carrying `ctx`, or a global-func arg-type
+  check). Consequence for CR5: the `funcs` coverage-record wiring is code-reviewed and
+  compiles, but its BPF-side additions (COV_TRUNC/COV_DEPTH_CAP bumps via the shared
+  headers) are **unverified on any kernel where `funcs` actually loads** - `syscalls`
+  (kprobe) and `correlate` are device-verified. Investigate separately: try a kernel
+  where `funcs` loads, or reduce `uprobe_open` size / disable hot-cold-split for the BPF
+  compile.
+
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.
@@ -356,6 +380,20 @@ is in DOCUMENTATION.md and the referenced specs.
   it every PR. Section match is prefix-anchored to avoid the `kprobe/uprobe_mmap`
   grep-trap CR1 called out. Spec/plan:
   `docs/superpowers/{specs/2026-07-05-firewall-gate-design.md,plans/2026-07-05-firewall-gate.md}`.
+
+- **CR5 - per-run coverage-health record.** Every degradation site (truncated
+  32 KB snapshot, blind CFI stop, ring/queue drop, unknown ART build, stack-
+  depth cap, the CR2 pre-arm window, undecoded/raw syscall args) used to fail
+  silently. `struct ares_coverage` (`src/common/coverage.h`/`.c`) plus
+  `ares_coverage_report` now emit exactly one record per engine at teardown on
+  two channels: a `[coverage] <engine>: ...` stderr banner (human) and a
+  `{"type":"coverage","engine":...}` JSON line into the `-o` sink
+  (machine/MCP), collapsing to `{"clean":true}` on a clean run. Wired into
+  `syscalls`, `funcs`, and `correlate` (each with its own field subset - see
+  DOCUMENTATION.md §7.5); subsumes the old `ares_drops_report` (drops are now
+  coverage fields). `lib`/`dump`/`mod` are exempt in v1 (follow-on rows below).
+  Generalizes the "silence never means didn't check" contract from a
+  drops-only guarantee to the whole tracer.
 
 ### 2026-07-02
 

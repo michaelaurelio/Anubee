@@ -814,6 +814,52 @@ thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialize
 `g_sink_lock`. SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
 ingest remain; see [BACKLOG.md](BACKLOG.md).
 
+### 7.5 Coverage-health record (CR5)
+
+Every degradation site in the tracer - a truncated stack snapshot, a blind CFI
+stop, a ring/queue drop, an unknown ART build (Java naming off), a stack-depth
+cap, the CR2 pre-arm window, a raw (undecoded) syscall - used to fail *silently*:
+shorter or partial output with no signal that anything was missed. An analyst
+reading a trace afterward can't tell "the app made no such call" from "the
+tracer missed it"; absence of evidence quietly reads as evidence of absence.
+
+`ares_coverage_report` (`src/common/coverage.h` / `coverage.c`) closes that gap:
+at teardown, `syscalls`, `funcs`, and `correlate` each emit exactly **one**
+coverage-health record on **two channels**:
+
+- **stderr banner** (human): `[coverage] <engine>: ...` - a one-line summary of
+  every degradation signal, or `full coverage - no truncation, drops, or blind
+  spots` on a clean run.
+- **sink JSON line** (machine/MCP): a `{"type":"coverage","engine":...}` record
+  written to the `-o` file alongside the trace's other structured records (only
+  emitted when `-o` is active). This is the machine channel the MCP server is
+  expected to ingest (see §8) - a consumer can check this record instead of
+  inferring coverage from absence.
+
+A run with no degradation collapses to `{"type":"coverage","engine":"<engine>",
+"clean":true}`. A degraded run reports only the fields that fired (zero/false
+fields are omitted):
+
+| field | meaning | syscalls | funcs | correlate |
+|---|---|---|---|---|
+| `snaps.total` / `snaps.truncated` | `--snapshot` stacks captured / truncated at the 32 KB capture window | yes | yes | no (no snapshot) |
+| `cfi.walks` / `cfi.stops.<reason>` | CFI-unwind attempts / histogram of blind stop reasons (`no_fde`, `run_fail`, ...) | yes | yes | no |
+| `drops.ring` / `drops.queue` | ring-buffer / worker-queue drops (subsumes the old `ares_drops_report`) | yes | yes | ring only (no worker queue) |
+| `managed_naming_off` | unknown ART build (no `art_buildid.c` table row) - Java naming disabled | yes | yes | no |
+| `prearm_drops` | syscalls dropped in the CR2 pre-arm window before uprobes attach | yes | no | no |
+| `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
+| `decode_partial` | raw syscall args only, no decode table match | no | no | yes |
+
+`lib`, `dump`, and `mod` are **exempt in v1**: `lib` has no drop map or snapshot
+path, `dump` is a single-shot read (no run-long coverage to accumulate), and
+`mod` is blocked on the existing mod drop-telemetry item (see
+[BACKLOG.md](BACKLOG.md)).
+
+The rationale generalizes the older `ares_drops_report` contract: **silence
+never means "didn't check"** - every run states its own coverage explicitly,
+whether clean or degraded, so a partial trace is never mistaken for a complete
+one.
+
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)
 
 - `trace_store.py` — loads a trace (JSON array or JSONL) into in-memory **DuckDB**

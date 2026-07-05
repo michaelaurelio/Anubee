@@ -9,8 +9,14 @@
 // The includer must, before #include, provide:
 //   - vmlinux.h and <bpf/bpf_helpers.h>  (types __u32/__u64, bpf_map_* helpers)
 //   - NUM_ARGS                            (entry-arg slots saved per frame)
+//
+// Also pulls in common/coverage.bpf.h (CR5) for cov_bump()/coverage_stats,
+// used below to count span-depth-cap rejects. Include-guarded, so it's safe
+// even if the including engine TU also includes it directly.
 #ifndef __ARES_SPAN_STACK_BPF_H
 #define __ARES_SPAN_STACK_BPF_H
+
+#include "common/coverage.bpf.h"
 
 #define MAX_SPAN_DEPTH 32   // bounded per-thread instrumented-call nesting
 
@@ -107,8 +113,10 @@ static __always_inline __u64 span_stack_push(__u32 tid, __u64 entry_addr,
     // Depth cap: beyond MAX_SPAN_DEPTH nested instrumented frames we stop
     // tracking. Those frames' returns may mis-attribute until the stack unwinds
     // back under the cap — only deep recursion of a probed function hits this.
-    if (d >= MAX_SPAN_DEPTH)
+    if (d >= MAX_SPAN_DEPTH) {
+        cov_bump(COV_DEPTH_CAP);
         return 0;
+    }
     // parent_span = innermost currently-open frame (top before this push).
     __u64 parent = 0;
     if (d > 0) {

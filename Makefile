@@ -95,7 +95,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/managed_frame.c $(SRC)/common/art_buildid.c \
                $(SRC)/common/art_shadow.c \
                $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c $(SRC)/common/sym_jit.c \
-               $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c
+               $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
+               $(SRC)/common/coverage.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -119,7 +120,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_stack_snapshot_emit_json \
                ares_managed_chain_build ares_jcache_put ares_jcache_get \
                ares_jcache_reset ares_managed_chain ares_emit_cfi_stack_json \
-               ares_is_interp_frame
+               ares_is_interp_frame \
+               ares_coverage_report ares_cfi_stop_name
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -438,6 +440,8 @@ test:
 	$(BUILD)/test_mod_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
+	$(BUILD)/test_coverage
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

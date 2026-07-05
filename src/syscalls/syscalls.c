@@ -595,11 +595,15 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	static int dbg = -1;
 	if (dbg < 0) dbg = getenv("ARES_CFI_DEBUG") ? 1 : 0;
 	struct cfi_step_diag diags[64];
-	if (dbg) memset(diags, 0, sizeof(diags));
+	memset(diags, 0, sizeof(diags));
 	// diags is always passed now (not just under ARES_CFI_DEBUG): the
 	// coverage-health record (CR5) needs the terminal stop_reason of every
-	// walk, regardless of debug mode; cfi_step self-inits the fields it
-	// touches so this is safe without the memset above.
+	// walk, regardless of debug mode. The memset must run unconditionally:
+	// cfi_unwind_snapshot's own early-exit break paths (frame cap, maps
+	// miss) do not always write out_diags[n-1].stop_reason, so a gated
+	// memset left the terminal slot as uninitialized stack garbage that
+	// could alias a valid enum value and silently corrupt g_cov.cfi_stop[].
+	// Zero-init means an unwritten terminal reads as CFI_OK (0).
 	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
 	if (n <= 0) return;
 

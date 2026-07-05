@@ -284,13 +284,20 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 	for (int iter = 0; iter < max && iter < 256; iter++) {
 		if (out_sps) out_sps[n] = sp;   /* SP of the frame whose PC we record */
 		out_pcs[n++] = pc;
+		/* 64-frame unwind cap: no matching cfi_stop_reason enum value.
+		 * v1 limitation: this terminal frame is not separately surfaced
+		 * in the stop histogram; it reads as whatever stop_reason the
+		 * last stepped frame wrote (or CFI_OK if none did). */
 		if (n >= max) break;
 		if (pc == 0) {
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_PC_ZERO;
 			break;
 		}
 		struct procmaps *pm = pm_get(pid);
-		if (!pm) break;
+		if (!pm) {
+			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
+			break;
+		}
 		struct ares_map_line *hit = find_mapping_refresh(pm, pc);
 		if (!hit && !forced_reread) {
 			forced_reread = 1;

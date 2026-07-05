@@ -148,10 +148,10 @@ static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *sta
 	__u32 count = lr->count;
 	if (count > MAX_RANGES)
 		count = MAX_RANGES;
-	if (n > MAX_STACK_DEPTH) {
+	if (n > MAX_STACK_DEPTH)
 		n = MAX_STACK_DEPTH;
+	if (n >= MAX_STACK_DEPTH) /* buffer saturated: real stack may be deeper */
 		cov_bump(COV_DEPTH_CAP);
-	}
 
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < MAX_STACK_DEPTH; i++) {

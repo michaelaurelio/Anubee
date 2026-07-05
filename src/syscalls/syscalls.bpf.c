@@ -35,6 +35,7 @@
 #include "syscalls.h"
 #include "common/lib_trace.h"
 #include "common/bpf_drop.bpf.h"
+#include "common/coverage.bpf.h"
 
 #define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
 #define MAX_RANGES      SYSC_MAX_RANGES
@@ -147,8 +148,10 @@ static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *sta
 	__u32 count = lr->count;
 	if (count > MAX_RANGES)
 		count = MAX_RANGES;
-	if (n > MAX_STACK_DEPTH)
+	if (n > MAX_STACK_DEPTH) {
 		n = MAX_STACK_DEPTH;
+		cov_bump(COV_DEPTH_CAP);
+	}
 
 	#pragma clang loop unroll(full)
 	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
@@ -188,8 +191,10 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// the library isn't mapped, so nothing can have originated from it — skip
 	// before paying for a stack walk. Capture-all mode keeps every syscall.
 	struct syscalls_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
-	if (!capture_all && (!lr || lr->count == 0))
+	if (!capture_all && (!lr || lr->count == 0)) {
+		cov_bump(COV_PREARM);
 		return 0;
+	}
 
 	__u64 stack[MAX_STACK_DEPTH];
 	long sz = bpf_get_stack(ctx, stack, sizeof(stack), BPF_F_USER_STACK);

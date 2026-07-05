@@ -12,11 +12,16 @@
  *
  * Requires: vmlinux.h, bpf_helpers.h, bpf_tracing.h, bpf_core_read.h,
  *           common/stack_snapshot.h (included below), common/bpf_drop.bpf.h.
+ *
+ * Also pulls in common/coverage.bpf.h (CR5) for cov_bump()/coverage_stats,
+ * used below to count truncated snapshots. Include-guarded, so it's safe even
+ * if the including engine TU also includes it directly.
  */
 #ifndef ARES_STACK_SNAPSHOT_BPF_H
 #define ARES_STACK_SNAPSHOT_BPF_H
 
 #include "common/stack_snapshot.h"
+#include "common/coverage.bpf.h"
 
 /* Maximum stack depth the hash function iterates over. Both engines fit:
  * syscalls uses SYSC_MAX_STACK_DEPTH=32, funcs uses STACK_DEPTH=16. */
@@ -92,6 +97,8 @@ static __always_inline void ares_emit_stack_snapshot(struct pt_regs *user_regs,
 	 * incomplete). A fault stop gives snap_len < MAX = reached stack_base =
 	 * captured all mapped stack = complete (truncated 0). */
 	s->truncated = (s->snap_len == ARES_SNAP_MAX);
+	if (s->truncated)
+		cov_bump(COV_TRUNC);
 	bpf_ringbuf_submit(s, 0);
 }
 

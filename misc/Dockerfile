@@ -33,6 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         gcc \
  && ln -sf /usr/bin/llvm-strip-${LLVM_VERSION} /usr/local/bin/llvm-strip \
+ && ln -sf /usr/bin/llvm-objdump-${LLVM_VERSION} /usr/local/bin/llvm-objdump \
+ && ln -sf /usr/bin/llvm-nm-${LLVM_VERSION} /usr/local/bin/llvm-nm \
  && ln -sf /usr/bin/gcc /usr/local/bin/cc \
  && rm -rf /var/lib/apt/lists/*
 
@@ -40,6 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # with HOST_CC ?= cc - e.g. tools/capdump (the firewall gate's loudness-table
 # dumper), which must run on the x86 build host. The cross gcc-aarch64-linux-gnu
 # above emits aarch64 and cannot run here, so it can't serve as `cc`.
+# The llvm-objdump / llvm-nm symlinks give the firewall gate (check-firewall.sh)
+# the unversioned tool names it invokes; the LLVM apt packages ship only the
+# version-suffixed binaries (llvm-objdump-19, ...).
 
 # Make the Makefile pick up the modern clang for the BPF objects (BPF_CLANG ?= clang).
 ENV BPF_CLANG=clang-${LLVM_VERSION}

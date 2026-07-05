@@ -34,6 +34,8 @@
 #include "common/maps.h"
 #include "common/stack_snapshot.h"
 #include "common/managed_frame.h"
+#include "common/coverage.h"
+#include "common/art_buildid.h"
 
 // Argument parser module using argp.h
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
@@ -210,6 +212,13 @@ static int  g_funcs_uid;               // resolved UID for the launch banner
 
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
+
+// Coverage-health record (CR5). Mutated only on the drain thread (STACK handler
+// runs inline in handle_event, called from the ring-buffer poll loop in
+// funcs_run) - CALL/RETURN records are written by the worker thread instead, so
+// there's no cross-thread race today. If the N1 refactor moves this CFI walk to
+// the worker thread, guard g_cov under g_sink_lock.
+static struct ares_coverage g_cov = { .engine = "funcs" };
 
 // Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
 static FILE               *g_stacks;
@@ -707,8 +716,22 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
             const struct ares_stack_snapshot *s = (const void *)data;
             uint64_t pcs[64], sps[64];
-            int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, NULL);
+            struct cfi_step_diag diags[64];
+            // Unconditional zero-init: cfi_unwind_snapshot's early-exit break
+            // paths (frame cap, maps miss) don't always write out_diags[n-1],
+            // so an un-memset buffer would leave the terminal stop_reason as
+            // uninitialized stack garbage aliasing a valid enum value and
+            // silently corrupting g_cov.cfi_stop[]. Zero means an unwritten
+            // terminal reads as CFI_OK (0).
+            memset(diags, 0, sizeof(diags));
+            int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
             if (n > 0) {
+                g_cov.snaps_total++;
+                g_cov.cfi_walks++;
+                int stop_reason = diags[n - 1].stop_reason;
+                if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
+                    g_cov.cfi_stop[stop_reason]++;
+
                 struct jbuf cj = {0};
                 ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
                 if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
@@ -1266,7 +1289,18 @@ void funcs_teardown(void)
     for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
     if (skel) {
-        ares_drops_report(ares_drops_read(bpf_map__fd(skel->maps.dropped)), g_q.dropped);
+        // Always report the final tally, so "no message" never means "didn't
+        // check". Subsumes the old ares_drops_report: ring/queue drops are
+        // coverage fields here. Safe to read g_cov here: the drain loop
+        // (funcs_run's ring-buffer poll, the only writer) has already
+        // returned and the worker thread has been joined above.
+        int covfd = bpf_map__fd(skel->maps.coverage_stats);
+        g_cov.snaps_truncated = ares_coverage_read(covfd, COV_TRUNC);
+        g_cov.depth_capped    = ares_coverage_read(covfd, COV_DEPTH_CAP);
+        g_cov.ring_drops      = ares_drops_read(bpf_map__fd(skel->maps.dropped));
+        g_cov.queue_drops     = g_q.dropped;
+        g_cov.managed_naming_off = ares_art_naming_disabled();
+        ares_coverage_report(&g_sink, &g_cov);
         funcs_bpf__destroy(skel);
         skel = NULL;
     }

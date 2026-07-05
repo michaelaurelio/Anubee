@@ -338,6 +338,21 @@ authoritative-path migration before sinking more into offset tables.
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
+- **`funcs` uprobe fails to load on the current test device (pre-existing, not CR5).**
+  On the test device (A15 kernel) `ares funcs -e libc.so!open -J --snapshot -P <pkg>`
+  fails the BPF load: `uprobe_open` is rejected with `reg type unsupported for arg#0
+  function uprobe_open#N` (-EACCES). Isolated to a pre-existing issue by building the
+  pre-CR5 base and reproducing the identical failure (only the subprog index shifts,
+  #79 base vs #83 post-CR5) - so CR5 did not cause it. Likely a verifier/kernel
+  interaction with the large `uprobe_open` program (java_stack + CFI + span push) on
+  this kernel (an outlined `.cold` subprogram carrying `ctx`, or a global-func arg-type
+  check). Consequence for CR5: the `funcs` coverage-record wiring is code-reviewed and
+  compiles, but its BPF-side additions (COV_TRUNC/COV_DEPTH_CAP bumps via the shared
+  headers) are **unverified on any kernel where `funcs` actually loads** - `syscalls`
+  (kprobe) and `correlate` are device-verified. Investigate separately: try a kernel
+  where `funcs` loads, or reduce `uprobe_open` size / disable hot-cold-split for the BPF
+  compile.
+
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.

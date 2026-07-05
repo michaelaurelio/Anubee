@@ -36,7 +36,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
 
 **Minor:**
-- CR5 follow-ons — MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
+- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
   (rides `mod` drop-telemetry parity).
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
@@ -366,7 +366,7 @@ is in DOCUMENTATION.md and the referenced specs.
   grep-trap CR1 called out. Spec/plan:
   `docs/superpowers/{specs/2026-07-05-firewall-gate-design.md,plans/2026-07-05-firewall-gate.md}`.
 
-- **CR5 — per-run coverage-health record.** Every degradation site (truncated
+- **CR5 - per-run coverage-health record.** Every degradation site (truncated
   32 KB snapshot, blind CFI stop, ring/queue drop, unknown ART build, stack-
   depth cap, the CR2 pre-arm window, undecoded/raw syscall args) used to fail
   silently. `struct ares_coverage` (`src/common/coverage.h`/`.c`) plus

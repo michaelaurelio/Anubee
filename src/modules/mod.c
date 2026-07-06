@@ -127,6 +127,13 @@ int cmd_mod(int argc, char **argv)
         }
     }
 
+    const char *pkg_for_ctx = ma.pkg;
+    char resolved_pkg[256];
+    if (!pkg_for_ctx && ma.tgt.n > 0) {
+        if (ares_resolve_pkg_from_pid(ma.tgt.pids[0], resolved_pkg, sizeof(resolved_pkg)) == 0)
+            pkg_for_ctx = resolved_pkg;
+    }
+
     if (ma.c.output_file && ares_sink_open(&g_sink, ma.c.output_file, "event", 1) != 0) {
         fprintf(stderr, "mod: cannot open '%s': %s\n", ma.c.output_file, strerror(errno));
         return 1;
@@ -138,6 +145,7 @@ int cmd_mod(int argc, char **argv)
         .quiet   = quiet,
         .verbose = ma.c.verbose,
         .tgt     = &ma.tgt,
+        .pkg     = pkg_for_ctx,
     };
 
     libbpf_set_print(ares_libbpf_quiet);

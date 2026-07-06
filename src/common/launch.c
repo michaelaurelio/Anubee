@@ -88,6 +88,21 @@ int ares_get_pid_uid(pid_t pid)
 	return uid;
 }
 
+int ares_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
+{
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+	FILE *f = fopen(path, "r");
+	if (!f) return -1;
+	size_t n = fread(buf, 1, bufsz - 1, f);
+	fclose(f);
+	if (n == 0) return -1;
+	buf[n] = '\0';
+	char *colon = strchr(buf, ':');
+	if (colon) *colon = '\0';
+	return buf[0] ? 0 : -1;
+}
+
 int ares_resolve_component(const char *pkg, char *out, size_t outsz)
 {
 	char cmd[512], buf[1024];

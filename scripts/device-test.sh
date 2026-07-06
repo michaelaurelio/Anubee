@@ -335,6 +335,25 @@ test_funcs_structured() {
     info "funcs --structured OK — structured call record found"
 }
 
+# mod file-access: kprobe-only analyzer. deskclock's own /data/data opens at
+# startup are enough to prove attach + emission; we don't rely on it touching
+# external storage or another app's dir (timing/app-dependent).
+test_mod_file_access() {
+    echo "=== mod file-access (stealthy openat/openat2 kprobes) ==="
+    forcestop
+    local out; out="$(ares "mod file-access -P $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "mod-file-access: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    grep -q 'stealthy: file-access uses kernel-only probes' <<<"$out" \
+        || { tail -5 <<<"$out" >&2; fail "mod-file-access: no stealthy-attach banner"; }
+    if grep -q '^\[file\]' <<<"$out"; then
+        info "mod-file-access OK — $(grep -c '^\[file\]' <<<"$out") [file] line(s)"
+    else
+        echo "  SKIP: no [file] events in this window (app's own data-dir opens are timing-dependent)"
+    fi
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     syscalls)          test_syscalls ;;
@@ -343,8 +362,9 @@ case "$WHAT" in
     syscalls-regs)     test_syscalls_regs ;;
     syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | all)" ;;
+    mod-file-access)   test_mod_file_access ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | all)" ;;
 esac
 
 forcestop

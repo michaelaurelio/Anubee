@@ -114,3 +114,50 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
+
+// Function return (LOUD, --returns only): authoritatively close the innermost
+// span, emitting its return value + exact elapsed time. SP-reconcile
+// (span_stack_reconcile) stays as the backstop for genuinely missed returns.
+SEC("uretprobe")
+int BPF_KRETPROBE(corr_uretprobe_ret)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __u64 id  = bpf_get_current_pid_tgid();
+    __u32 pid = (__u32)(id >> 32);
+    __u32 tid = (__u32)id;
+    __u64 now = bpf_ktime_get_ns();
+
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    if (!dp || *dp == 0)
+        return 0;
+    __u32 top = *dp - 1;
+    struct frame_key fk = { .tid = tid, .slot = top };
+    struct span_frame *saved = bpf_map_lookup_elem(&span_frames, &fk);
+    if (!saved) {
+        span_depth_set(tid, top);      // depth/frame desync: shrink and bail
+        return 0;
+    }
+
+    struct corr_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_map_delete_elem(&span_frames, &fk);
+        span_depth_set(tid, top);
+        bump_dropped();
+        return 0;
+    }
+    e->h.type     = CORR_EV_RETURN;
+    e->h.pid      = pid;
+    e->h.tid      = tid;
+    e->h._pad     = 0;
+    e->span       = saved->span_id;
+    e->entry_addr = saved->entry_addr;
+    e->retval     = (__u64)PT_REGS_RC(ctx);
+    e->elapsed_ns = now - saved->timestamp;
+    bpf_ringbuf_submit(e, 0);
+
+    bpf_map_delete_elem(&span_frames, &fk);
+    span_depth_set(tid, top);          // authoritative pop
+    return 0;
+}

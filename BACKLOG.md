@@ -23,7 +23,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
 ## Open work — at a glance
 
 **Major:**
-- `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
+- `correlate` remaining capability - syscall/sockaddr/fd/string decode;
   regex `-I/-i`; `-P` attach timing.
 - GA2 deferred wiring — `correlate`→`trace`, `dump`→`trace`.
 - CFI / managed-frame naming — **generalize beyond one ART build**: version gate keys
@@ -63,8 +63,6 @@ None currently open.
 
 ### `correlate` engine — remaining capability
 
-- **`--returns`** — opt-in uretprobe for return values + exact exit timing. LOUD:
-  adds a stack trampoline (a second detection surface beyond the entry `BRK`).
 - **Syscall arg / sockaddr / fd / string decoding** — PARTIAL: userspace flag-decode
   done (`flags_decode_arg` via `corr_emit_syscall`; hex args + parallel `decoded[]`).
   fd-path rendering, sockaddr blob capture, and string capture still need BPF
@@ -187,8 +185,18 @@ LIFO-monotonic-SP assumption breaks on:
 
 Actionable: document coroutine/stack-switch hostility explicitly (not an edge case for
 Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
-(uretprobe, planned) as the accuracy path — the two are currently framed as
+(uretprobe, shipped 2026-07-06) as the accuracy path — the two are currently framed as
 near-equivalent.
+
+- **`--returns` return records inherit the mis-attribution (known drawback).** With
+  `--returns` the uretprobe pops the innermost *tracked* frame, so the same defects
+  emit *visibly wrong data* rather than a silent mis-gate: beyond `MAX_SPAN_DEPTH=32`
+  nested probed calls the 33rd call is never pushed (`span_stack_push` returns 0) yet
+  its return still fires and pops a live frame -> a spurious `{"type":"return"}` with
+  the wrong span/entry_addr/elapsed_ns, cascading until the stack unwinds under the
+  cap. Non-LIFO stacks (coroutines) corrupt the pop target the same way. The
+  uretprobe/reconcile interaction itself is benign (delete-by-key + depth--; a later
+  reconcile finds the frame already gone). Fix rides the CR3 accuracy work.
 
 ### CR4 — managed-frame naming: version treadmill + guess-path is primary
 
@@ -217,6 +225,14 @@ authoritative-path migration before sinking more into offset tables.
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
+
+- **`correlate` missed-return counter as a CR5 coverage field.** `--returns`'
+  uretprobe is the authoritative span-close path, but a span whose uretprobe
+  never fires (thread exit mid-call, etc.) falls back to the SP-reconcile
+  backstop with no return record - currently invisible. Add a coverage field
+  (uretprobe fired vs spans opened, `--returns` runs only) to `correlate`'s
+  CR5 record (`src/common/coverage.c`) so a caller can tell "how many return
+  values did I actually get" without diffing span/return counts by hand.
 
 - **CR5 follow-on: MCP-side `coverage` ingest handler.** `ares_coverage_report`
   writes `{"type":"coverage","engine":...}` to the `-o` sink, but
@@ -363,6 +379,24 @@ authoritative-path migration before sinking more into offset tables.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-06
+
+- **`correlate --returns` - opt-in uretprobe for return value + exact exit
+  timing.** New `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`), emitted as
+  `{"type":"return",...}` (`src/correlate/corr_emit.c`, reuses `TRACE_RETURN`).
+  BPF side adds `corr_uretprobe_ret` (`SEC("uretprobe")` in
+  `src/correlate/correlate.bpf.c`), attached alongside each entry uprobe only
+  when `--returns` is passed; on a real return it authoritatively pops the top
+  span frame and reports raw `retval` (x0) + `elapsed_ns` (return ktime minus
+  entry ktime) - the pre-existing SP-based `span_stack_reconcile` stays wired
+  in as the backstop for a span whose uretprobe never fires. LOUD: this is a
+  second detection surface (uretprobe trampoline on the target stack) beyond
+  correlate's existing entry `BRK`; disclosed via a one-line stderr notice when
+  active. Firewall gate unaffected (`correlate` was already loud;
+  `capabilities.c` unchanged). Retval is raw only - no fd/string/errno decode
+  (stays parked, see Major). Device verification pending.
 
 ### 2026-07-05
 

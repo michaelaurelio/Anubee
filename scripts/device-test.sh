@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|syscalls|all]      # default: all
+#   scripts/device-test.sh [lib|syscalls|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -352,6 +352,35 @@ test_funcs_structured() {
     info "funcs --structured OK — structured call record found"
 }
 
+
+# correlate --returns: uretprobe return-value + span timing (LOUD - adds a
+# stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
+# entry uprobe attaches before the target opens any files. Spec mirrors
+# funcs --structured's stable target (libc.so!open) so a return is guaranteed
+# to fire during a normal app-start window. Hard-fail (not SKIP): unlike the
+# timing/app-dependent CFI checks above, --returns must always produce at
+# least one return record with real elapsed_ns on a plain app launch.
+test_correlate_returns() {
+    echo "=== correlate --returns (uretprobe + elapsed_ns timing) ==="
+    forcestop
+    local out_file="/data/local/tmp/ares_correlate_returns_test.jsonl"
+    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    local out; out="$(ares "correlate -P $PKG -e 'libc.so!open' --returns -o $out_file")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "correlate-returns: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    local content; content="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
+    grep -q '"type":"return"' <<<"$content" \
+        || { echo "  out: $content" >&2; fail "correlate-returns: no {\"type\":\"return\"} record in $out_file"; }
+    if grep -q '"type":"return"' <<<"$content" && ! grep -q '"elapsed_ns":0[,}]' <<<"$content"; then
+        info "correlate-returns OK - return record(s) present, elapsed_ns > 0"
+    else
+        echo "  out: $content" >&2
+        fail "correlate-returns: return record present but elapsed_ns not > 0"
+    fi
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     syscalls)          test_syscalls ;;
@@ -360,8 +389,9 @@ case "$WHAT" in
     syscalls-regs)     test_syscalls_regs ;;
     syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | all)" ;;
+    correlate-returns) test_correlate_returns ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | correlate-returns | all)" ;;
 esac
 
 forcestop

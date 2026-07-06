@@ -125,8 +125,8 @@ static void cov_banner(const struct ares_coverage *c, int degraded)
 	if (c->depth_capped) { SEP(); fprintf(stderr, "%llu stack depth-capped", c->depth_capped); }
 	if (c->decode_partial) { SEP(); fprintf(stderr, "syscall args not decoded (raw)"); }
 	if (c->returns_mode && c->returns_captured < c->spans_opened) { SEP();
-		fprintf(stderr, "%llu/%llu function returns captured (%llu missed, "
-			"SP-reconcile backstop)", c->returns_captured, c->spans_opened,
+		fprintf(stderr, "%llu/%llu function returns captured (%llu missed; "
+			"SP-reconcile backstop or ring drop)", c->returns_captured, c->spans_opened,
 			c->spans_opened - c->returns_captured); }
 	#undef SEP
 	fprintf(stderr, "\n");

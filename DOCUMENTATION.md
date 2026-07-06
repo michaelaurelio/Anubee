@@ -689,11 +689,47 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by
   inlining and VM/virtualization.
 - **v1 scope**: custom specs (`-e`/`-F`) + `-p` (full) / `-P` (best-effort
-  post-launch); SP-based close (no return values). Syscall args: hex + parallel
-  flag-decoded `decoded[]` array (fd/sockaddr/string capture requires BPF event-struct
-  changes — deferred).
-  `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
+  post-launch); SP-based close by default, or authoritative close via `--returns`
+  (below). Syscall args: hex + parallel flag-decoded `decoded[]` array
+  (fd/sockaddr/string capture requires BPF event-struct changes - deferred).
+  arg/sockaddr decoding and regex (`-I/-i`) targeting are planned
   (see [BACKLOG.md](BACKLOG.md)).
+
+### 6.1 `--returns`: return value + exact span timing (opt-in, LOUD)
+
+Off by default; SP-based reconcile (above) is the only span-close mechanism
+unless `--returns` is passed. When passed, the loader attaches a *second* BPF
+program at each spec'd function's offset: a uretprobe (`corr_uretprobe_ret`,
+`SEC("uretprobe")` in `src/correlate/correlate.bpf.c`), alongside the existing
+entry uprobe.
+
+- **Record**: `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`). JSON (`corr_emit_return`,
+  `src/correlate/corr_emit.c`), reusing the shared `"return"` type name
+  (`TRACE_RETURN`):
+  `{"type":"return","span":N,"pid":...,"tid":...,"entry_addr":"0x...","retval":"0x...","elapsed_ns":N}`.
+- **Semantics - authoritative pop, SP-reconcile as backstop**: on a real
+  return, `corr_uretprobe_ret` reads the top span frame, emits `retval` (raw
+  `PT_REGS_RC` / x0) and `elapsed_ns` (return `bpf_ktime_get_ns()` minus the
+  saved entry timestamp), then deletes the frame and pops the depth counter
+  itself - this is the exact close, not an estimate. The pre-existing
+  `span_stack_reconcile` SP check (used unconditionally without `--returns`)
+  stays wired in as a backstop for a span whose uretprobe never fires (e.g. the
+  thread exits mid-call); it still runs even with `--returns` on.
+- **Scope**: `retval` is the raw return register only - no fd/string/errno
+  decode. That interpretation stays parked with the other decode work above.
+- **Loudness - second detection surface**: `correlate` is already loud (entry
+  `BRK`). `--returns` adds a uretprobe trampoline pushed onto the *target's own
+  stack* to catch the return - a second, independent thing an anti-tampering
+  check on the target process could notice, beyond the entry `BRK`. Passing
+  `--returns` prints a one-line stderr notice disclosing this at attach time;
+  the firewall gate (`make check-firewall`, §CR1) is unaffected because
+  `correlate` was already classified loud - no `capabilities.c` change.
+- **Attach**: one uretprobe per resolved `(path,offset)`, attached right after
+  its paired entry uprobe in `attach_uprobes_for_pid`; a failed uretprobe attach
+  logs `RET FAILED` and does not fail the run (the entry uprobe for that offset
+  stays attached, span-open/syscall correlation for it still works - only that
+  offset's return record is missing).
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 

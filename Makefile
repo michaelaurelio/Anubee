@@ -76,6 +76,8 @@ EXECVE_BPF_OBJ     := $(BUILD)/execve.bpf.o
 EXECVE_SKEL        := $(BUILD)/execve.skel.h
 PROP_READ_BPF_OBJ  := $(BUILD)/prop_read.bpf.o
 PROP_READ_SKEL     := $(BUILD)/prop_read.skel.h
+FILE_ACCESS_BPF_OBJ := $(BUILD)/file_access.bpf.o
+FILE_ACCESS_SKEL    := $(BUILD)/file_access.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I. $(DEPFLAGS)
 
@@ -142,7 +144,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -248,6 +250,13 @@ $(PROP_READ_BPF_OBJ): $(SRC)/modules/prop_read.bpf.c vmlinux.h $(LIBBPF_A)
 $(PROP_READ_SKEL): $(PROP_READ_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name prop_read_bpf > $@
 
+$(FILE_ACCESS_BPF_OBJ): $(SRC)/modules/file_access.bpf.c vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(FILE_ACCESS_SKEL): $(FILE_ACCESS_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name file_access_bpf > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -289,7 +298,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
@@ -459,5 +468,6 @@ clean:
 ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
                 $(DUMP_OBJ) $(TRACE_OBJ) $(MOD_OBJ) $(MAIN_OBJ)
 ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
-                $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ)
+                $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ) \
+                $(FILE_ACCESS_BPF_OBJ)
 -include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

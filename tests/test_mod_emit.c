@@ -13,6 +13,9 @@ void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
 void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms);
 void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
+#include "modules/file_access_classify.h"
+void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
+                           unsigned categories, const char *const *flag_strs, int n_flags);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -164,6 +167,50 @@ int main(void)
       checks++;
       if (strstr(tmp, "\"found\""))  { failures++; printf("  FAIL: found emitted for SCAN\n    in: %s\n", tmp); }
     }
+
+    // ---- file_access: external storage + media subdir ------------------------
+    struct file_access_event fa = {0};
+    fa.h.type = MOD_EV_FILE_ACCESS;
+    fa.h.pid  = 8000;
+    fa.h.tid  = 8000;
+    strncpy(fa.comm, "app", TASK_COMM_LEN - 1);
+    strncpy(fa.path, "/storage/emulated/0/DCIM/Camera/img.jpg", sizeof(fa.path) - 1);
+    fa.flags = 0; // O_RDONLY
+
+    const char *flags1[1] = { "O_RDONLY" };
+    j.len = 0;
+    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE | FA_MEDIA_SUBDIR, flags1, 1);
+    CHECK_HAS(j, "\"type\":\"file_access\"",      "file_access type");
+    CHECK_HAS(j, "\"pid\":8000",                  "file_access pid");
+    CHECK_HAS(j, "\"path\":\"/storage/emulated/0/DCIM/Camera/img.jpg\"", "file_access path");
+    CHECK_HAS(j, "\"flags\":[\"O_RDONLY\"]",      "file_access flags array");
+    CHECK_HAS(j, "\"external_storage\"",          "file_access external_storage category");
+    CHECK_HAS(j, "\"media_subdir\"",               "file_access media_subdir category");
+
+    // ---- file_access: foreign app dir + write flags ---------------------------
+    struct file_access_event fa2 = {0};
+    fa2.h.type = MOD_EV_FILE_ACCESS;
+    fa2.h.pid  = 8001;
+    fa2.h.tid  = 8001;
+    strncpy(fa2.comm, "app", TASK_COMM_LEN - 1);
+    strncpy(fa2.path, "/data/data/com.other.app/databases/x.db", sizeof(fa2.path) - 1);
+
+    const char *flags2[2] = { "O_WRONLY", "O_CREAT" };
+    j.len = 0;
+    mod_emit_file_access(&j, &fa2, FA_FOREIGN_APP_DIR, flags2, 2);
+    CHECK_HAS(j, "\"foreign_app_dir\"",           "file_access foreign_app_dir category");
+    CHECK_HAS(j, "\"flags\":[\"O_WRONLY\",\"O_CREAT\"]", "file_access multi-flag array");
+
+    // ---- file_access: no categories -> empty categories array ------------------
+    struct file_access_event fa3 = {0};
+    fa3.h.type = MOD_EV_FILE_ACCESS;
+    fa3.h.pid  = 8002;
+    strncpy(fa3.comm, "app", TASK_COMM_LEN - 1);
+    strncpy(fa3.path, "/data/data/com.example.app/files/x", sizeof(fa3.path) - 1);
+
+    j.len = 0;
+    mod_emit_file_access(&j, &fa3, 0, flags1, 1);
+    CHECK_HAS(j, "\"categories\":[]", "file_access empty categories array when uncategorized");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

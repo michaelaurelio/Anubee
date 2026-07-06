@@ -17,6 +17,7 @@
 #define STACK_DEPTH      16
 #define PROP_NAME_LEN   128
 #define PROP_VALUE_LEN   96
+#define FILE_PATH_LEN   256
 
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
@@ -27,6 +28,7 @@ enum {
     MOD_EV_PROP_FIND  = 5,
     MOD_EV_PROP_SCAN  = 6,
     MOD_EV_PROP_READ  = 7,
+    MOD_EV_FILE_ACCESS = 8,
 };
 
 struct spawn_event {
@@ -59,6 +61,14 @@ struct prop_event {
     __u8 is_ret;
     __u8 found;
     __u8 _pad[2];
+};
+
+struct file_access_event {
+    struct trace_event_header h;
+    char  comm[TASK_COMM_LEN];
+    char  path[FILE_PATH_LEN];
+    __u32 flags;
+    __u8  _pad[4];
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

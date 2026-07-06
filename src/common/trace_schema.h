@@ -32,6 +32,7 @@ enum trace_event_type {
     TRACE_PROP,       // system-property API hook
     TRACE_STACK,      // stack snapshot sidecar
     TRACE_FUNC,       // correlate span-open (probed function entered)
+    TRACE_FILE_ACCESS, // sensitive file open (mod file-access)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

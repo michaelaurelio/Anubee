@@ -5,6 +5,7 @@
 #include "common/emit.h"
 #include "common/trace_schema.h"
 #include "modules/mod_events.h"
+#include "modules/file_access_classify.h"
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e)
 {
@@ -90,5 +91,42 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e)
         jb_s(j, ",\"is_ret\":");   jb_u64(j, e->is_ret);
         jb_s(j, ",\"found\":");    jb_u64(j, e->found);
     }
+    jb_c(j, '}');
+}
+
+void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
+                           unsigned categories, const char *const *flag_strs, int n_flags)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_FILE_ACCESS)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
+    jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
+    jb_s(j, ",\"comm\":\"");     jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"path\":\"");     jb_esc(j, e->path); jb_c(j, '"');
+
+    jb_s(j, ",\"flags\":[");
+    for (int i = 0; i < n_flags; i++) {
+        if (i) jb_c(j, ',');
+        jb_c(j, '"'); jb_s(j, flag_strs[i]); jb_c(j, '"');
+    }
+    jb_c(j, ']');
+
+    jb_s(j, ",\"categories\":[");
+    int first = 1;
+    struct { unsigned bit; const char *name; } tags[] = {
+        { FA_EXTERNAL_STORAGE,   "external_storage"   },
+        { FA_MEDIA_SUBDIR,       "media_subdir"       },
+        { FA_CREDENTIAL_PATTERN, "credential_pattern" },
+        { FA_FOREIGN_APP_DIR,    "foreign_app_dir"    },
+        { FA_UNKNOWN_SELF,       "unknown_self"       },
+    };
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+        if (!(categories & tags[i].bit)) continue;
+        if (!first) jb_c(j, ',');
+        first = 0;
+        jb_c(j, '"'); jb_s(j, tags[i].name); jb_c(j, '"');
+    }
+    jb_c(j, ']');
+
     jb_c(j, '}');
 }

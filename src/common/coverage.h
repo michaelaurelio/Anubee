@@ -27,6 +27,10 @@ struct ares_coverage {
 	unsigned long long prearm_drops;
 	unsigned long long depth_capped;
 	int decode_partial;                 // raw-arg fallback active (bool)
+	// correlate --returns capture rate (returns_mode gates rendering).
+	unsigned long long spans_opened;    // spans pushed (uretprobe-poppable)
+	unsigned long long returns_captured;// return records emitted
+	int returns_mode;                   // --returns active (bool)
 };
 
 // Emit BOTH channels from one call: stderr banner (human) + a

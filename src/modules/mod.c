@@ -26,6 +26,7 @@ static const ares_analyzer_t *const registry[] = {
     &analyzer_proc_event,
     &analyzer_execve,
     &analyzer_prop_read,
+    &analyzer_file_access,
     NULL,
 };
 

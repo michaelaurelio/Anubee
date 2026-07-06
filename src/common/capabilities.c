@@ -20,6 +20,7 @@ static const struct ares_bpf_object g_objects[] = {
     { "mod:proc-event", false },  // tracepoints only; zero uprobes
     { "mod:execve",     false },  // kprobes/tracepoint; zero uprobes
     { "mod:prop-read",  true  },  // uprobes on libc; writes target memory
+    { "mod:file-access", false }, // kprobes on openat/openat2; zero uprobes
 };
 
 const struct ares_bpf_object *ares_bpf_objects(int *count)

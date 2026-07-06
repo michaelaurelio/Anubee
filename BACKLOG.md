@@ -380,7 +380,8 @@ is in DOCUMENTATION.md and the referenced specs.
   return-record emit; read at teardown). Surfaces how many return values were
   captured vs. spans traced without hand-diffing; a gap (`captured < spans` =
   SP-reconcile-backstop closes) flips the record to degraded. Firewall unchanged
-  (data-map bumps only). Host-tested (`test_coverage`); device verification pending.
+  (data-map bumps only). Host-tested (`test_coverage`); device-verified 2026-07-06
+  (clean path 15/15 captured; forced gap 723/722, banner + JSON `returns` block correct).
 
 - **`correlate --returns` - opt-in uretprobe for return value + exact exit
   timing.** New `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
@@ -396,7 +397,8 @@ is in DOCUMENTATION.md and the referenced specs.
   correlate's existing entry `BRK`; disclosed via a one-line stderr notice when
   active. Firewall gate unaffected (`correlate` was already loud;
   `capabilities.c` unchanged). Retval is raw only - no fd/string/errno decode
-  (stays parked, see Major). Device verification pending.
+  (stays parked, see Major). Device-verified 2026-07-06 (well-formed `{"type":"return"}`
+  records with raw retval + `elapsed_ns`; authoritative pop + SP-reconcile backstop both exercised).
 
 ### 2026-07-05
 

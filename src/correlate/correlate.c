@@ -373,8 +373,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
     if (total == 0)
         fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
-    if (ca.returns)
-        fprintf(stderr, "correlate: --returns active — uretprobe trampoline on the "
+    if (ca.returns && total > 0)
+        fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
                         "target stack is a 2nd detection surface (beyond the entry BRK)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);

@@ -185,8 +185,18 @@ LIFO-monotonic-SP assumption breaks on:
 
 Actionable: document coroutine/stack-switch hostility explicitly (not an edge case for
 Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
-(uretprobe, planned) as the accuracy path — the two are currently framed as
+(uretprobe, shipped 2026-07-06) as the accuracy path — the two are currently framed as
 near-equivalent.
+
+- **`--returns` return records inherit the mis-attribution (known drawback).** With
+  `--returns` the uretprobe pops the innermost *tracked* frame, so the same defects
+  emit *visibly wrong data* rather than a silent mis-gate: beyond `MAX_SPAN_DEPTH=32`
+  nested probed calls the 33rd call is never pushed (`span_stack_push` returns 0) yet
+  its return still fires and pops a live frame -> a spurious `{"type":"return"}` with
+  the wrong span/entry_addr/elapsed_ns, cascading until the stack unwinds under the
+  cap. Non-LIFO stacks (coroutines) corrupt the pop target the same way. The
+  uretprobe/reconcile interaction itself is benign (delete-by-key + depth--; a later
+  reconcile finds the frame already gone). Fix rides the CR3 accuracy work.
 
 ### CR4 — managed-frame naming: version treadmill + guess-path is primary
 

@@ -27,8 +27,8 @@ unsigned classify_path(const char *path, const char *self_pkg);
 
 // Decode raw open()/openat() flags into an array of up to `max` static
 // flag-name strings (access-mode flag first, then O_CREAT/O_TRUNC/O_APPEND if
-// set). Returns the count written (always >= 1 for any valid flags value,
-// since the access mode is always emitted).
+// set). Returns the count written (>= 1 when max >= 1, since the access-mode
+// flag is always emitted; 0 if max <= 0).
 int file_access_decode_flags(unsigned flags, const char *out[], int max);
 
 #endif /* __ARES_FILE_ACCESS_CLASSIFY_H */

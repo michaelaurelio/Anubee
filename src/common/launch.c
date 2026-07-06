@@ -90,6 +90,7 @@ int ares_get_pid_uid(pid_t pid)
 
 int ares_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
 {
+	if (bufsz == 0) return -1;
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
 	FILE *f = fopen(path, "r");

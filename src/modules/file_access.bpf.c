@@ -27,14 +27,14 @@ struct {
 // length; `plen` only controls how much of that fixed window we compare.
 static __always_inline int path_has_prefix(const char *path, const char *prefix, int plen)
 {
-	#pragma unroll
-	for (int i = 0; i < 32; i++) {
-		if (i >= plen)
-			break;
-		if (path[i] != prefix[i])
-			return 0;
-	}
-	return 1;
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        if (i >= plen)
+            break;
+        if (path[i] != prefix[i])
+            return 0;
+    }
+    return 1;
 }
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
@@ -43,43 +43,44 @@ static __always_inline int path_has_prefix(const char *path, const char *prefix,
 // reaches the ring buffer.
 static __always_inline int path_is_interesting(const char *path)
 {
-	if (path_has_prefix(path, "/storage/emulated/", 18)) return 1;
-	if (path_has_prefix(path, "/sdcard/", 8))            return 1;
-	if (path_has_prefix(path, "/data/data/", 11))        return 1;
-	if (path_has_prefix(path, "/data/user/", 11))        return 1;
-	return 0;
+    if (path_has_prefix(path, "/storage/emulated/", 18)) return 1;
+    if (path_has_prefix(path, "/sdcard/", 8))            return 1;
+    if (path_has_prefix(path, "/data/data/", 11))        return 1;
+    if (path_has_prefix(path, "/data/user/", 11))        return 1;
+    return 0;
 }
 
 // openat(dirfd, pathname, flags, mode): regs[1]=pathname, regs[2]=flags.
 SEC("kprobe/__arm64_sys_openat")
 int BPF_KPROBE(on_openat, const struct pt_regs *regs)
 {
-	if (!uid_matches() && !pid_matches())
-		return 0;
+    if (!uid_matches() && !pid_matches())
+        return 0;
 
-	struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
+    struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+    if (!e)
+        return 0;
 
-	// Strip ARM64 MTE tag: bpf_probe_read_user's access_ok() rejects tagged ptrs.
-	unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    // Strip ARM64 MTE tag: bpf_probe_read_user's access_ok() rejects tagged ptrs.
+    unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
 
-	long n = bpf_probe_read_user_str(e->path, sizeof(e->path), (void *)path_ptr);
-	if (n <= 0 || !path_is_interesting(e->path)) {
-		bpf_ringbuf_discard(e, 0);
-		return 0;
-	}
+    long n = bpf_probe_read_user_str(e->path, sizeof(e->path), (void *)path_ptr);
+    if (n <= 0 || !path_is_interesting(e->path)) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
 
-	__u64 id  = bpf_get_current_pid_tgid();
-	e->h.type = MOD_EV_FILE_ACCESS;
-	e->h.pid  = (__u32)(id >> 32);
-	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
-	e->flags  = (__u32)BPF_CORE_READ(regs, regs[2]);
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    __u64 id  = bpf_get_current_pid_tgid();
+    e->h.type = MOD_EV_FILE_ACCESS;
+    e->h.pid  = (__u32)(id >> 32);
+    e->h.tid  = (__u32)id;
+    e->h._pad = 0;
+    e->_pad[0] = e->_pad[1] = e->_pad[2] = e->_pad[3] = 0;
+    e->flags  = (__u32)BPF_CORE_READ(regs, regs[2]);
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+    bpf_ringbuf_submit(e, 0);
+    return 0;
 }
 
 // openat2(dirfd, pathname, struct open_how *how, size_t usize):
@@ -89,33 +90,34 @@ int BPF_KPROBE(on_openat, const struct pt_regs *regs)
 SEC("kprobe/__arm64_sys_openat2")
 int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
 {
-	if (!uid_matches() && !pid_matches())
-		return 0;
+    if (!uid_matches() && !pid_matches())
+        return 0;
 
-	struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
+    struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+    if (!e)
+        return 0;
 
-	unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
-	unsigned long how_ptr  = BPF_CORE_READ(regs, regs[2]) & 0x00FFFFFFFFFFFFFFul;
+    unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    unsigned long how_ptr  = BPF_CORE_READ(regs, regs[2]) & 0x00FFFFFFFFFFFFFFul;
 
-	long n = bpf_probe_read_user_str(e->path, sizeof(e->path), (void *)path_ptr);
-	if (n <= 0 || !path_is_interesting(e->path)) {
-		bpf_ringbuf_discard(e, 0);
-		return 0;
-	}
+    long n = bpf_probe_read_user_str(e->path, sizeof(e->path), (void *)path_ptr);
+    if (n <= 0 || !path_is_interesting(e->path)) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
+    }
 
-	__u64 flags64 = 0;
-	bpf_probe_read_user(&flags64, sizeof(flags64), (void *)how_ptr);
+    __u64 flags64 = 0;
+    bpf_probe_read_user(&flags64, sizeof(flags64), (void *)how_ptr);
 
-	__u64 id  = bpf_get_current_pid_tgid();
-	e->h.type = MOD_EV_FILE_ACCESS;
-	e->h.pid  = (__u32)(id >> 32);
-	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
-	e->flags  = (__u32)flags64;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    __u64 id  = bpf_get_current_pid_tgid();
+    e->h.type = MOD_EV_FILE_ACCESS;
+    e->h.pid  = (__u32)(id >> 32);
+    e->h.tid  = (__u32)id;
+    e->h._pad = 0;
+    e->_pad[0] = e->_pad[1] = e->_pad[2] = e->_pad[3] = 0;
+    e->flags  = (__u32)flags64;
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+    bpf_ringbuf_submit(e, 0);
+    return 0;
 }

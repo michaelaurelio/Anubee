@@ -25,7 +25,7 @@ map_bpf_obj() {
     mod:proc-event) echo proc_event.bpf.o ;;
     mod:execve)     echo execve.bpf.o ;;
     mod:prop-read)  echo prop_read.bpf.o ;;
-    mod:file-access) echo file_access.bpf.o ;;
+    mod:file-access)echo file_access.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
 }

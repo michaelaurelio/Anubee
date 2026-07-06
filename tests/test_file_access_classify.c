@@ -63,6 +63,22 @@ int main(void)
     c = classify_path(NULL, "com.example.app");
     CHECK(c == 0, "NULL path classifies as no categories");
 
+    // ---- anchoring: substring inside a different component must not match -----
+    c = classify_path("/storage/emulated/0/MyDownloader/app.apk", "com.example.app");
+    CHECK(!(c & FA_MEDIA_SUBDIR),
+          "MyDownloader dir does not falsely match Download subdir substring");
+
+    c = classify_path("/data/data/com.example.app/reseeded/data.db", "com.example.app");
+    CHECK(!(c & FA_CREDENTIAL_PATTERN),
+          "reseeded dir component does not falsely match seed credential pattern");
+
+    // ---- anchoring: real component/basename matches must still fire -----------
+    c = classify_path("/storage/emulated/0/DCIM", "com.example.app");
+    CHECK(c & FA_MEDIA_SUBDIR, "path ending exactly at DCIM (no trailing slash) still matches");
+
+    c = classify_path("/storage/emulated/0/wallet.dat", "com.example.app");
+    CHECK(c & FA_CREDENTIAL_PATTERN, "basename wallet.dat still matches credential pattern");
+
     // ---- flag decoding ----------------------------------------------------------
     const char *out[8];
     int n = file_access_decode_flags(O_RDONLY, out, 8);

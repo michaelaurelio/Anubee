@@ -2,6 +2,7 @@
 #include "modules/file_access_classify.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 
 static int extract_component(const char *s, char *out, size_t outsz)
@@ -12,6 +13,26 @@ static int extract_component(const char *s, char *out, size_t outsz)
         return -1;
     memcpy(out, s, len);
     out[len] = '\0';
+    return 0;
+}
+
+static const char *basename_of(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static int path_has_component(const char *path, const char *comp)
+{
+    char needle[64];
+    int n = snprintf(needle, sizeof(needle), "/%s/", comp);
+    if (n > 0 && (size_t)n < sizeof(needle) && strstr(path, needle))
+        return 1;
+    size_t plen = strlen(path), clen = strlen(comp);
+    if (plen > clen + 1 &&
+        path[plen - clen - 1] == '/' &&
+        strcmp(path + plen - clen, comp) == 0)
+        return 1;
     return 0;
 }
 
@@ -29,7 +50,7 @@ unsigned classify_path(const char *path, const char *self_pkg)
             "DCIM", "Download", "Documents", "WhatsApp", "Telegram", "Pictures", NULL,
         };
         for (int i = 0; subdirs[i]; i++) {
-            if (strstr(path, subdirs[i])) {
+            if (path_has_component(path, subdirs[i])) {
                 cat |= FA_MEDIA_SUBDIR;
                 break;
             }
@@ -39,8 +60,9 @@ unsigned classify_path(const char *path, const char *self_pkg)
     static const char *const cred_patterns[] = {
         ".keystore", "wallet", "id_rsa", ".pem", "cookies", "seed", NULL,
     };
+    const char *base = basename_of(path);
     for (int i = 0; cred_patterns[i]; i++) {
-        if (strstr(path, cred_patterns[i])) {
+        if (strstr(base, cred_patterns[i])) {
             cat |= FA_CREDENTIAL_PATTERN;
             break;
         }

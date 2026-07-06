@@ -436,6 +436,8 @@ test:
 	$(BUILD)/test_target_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
 	$(BUILD)/test_mod_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
+	$(BUILD)/test_file_access_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \

@@ -742,14 +742,24 @@ object — no shared skeleton with `funcs`. Available analyzers:
   child-process correlation.
 - **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
   `BRK` into the target's libc pages).
+- **`file-access`** — `openat`/`openat2` kprobes (stealthy: zero uprobes), gated
+  in-kernel to 4 fixed path prefixes (external storage, `/data/data`,
+  `/data/user`) to keep ring-buffer volume sane. Userspace classifies each hit
+  into external-storage / known-media-subdir / credential-shaped-filename /
+  foreign-app-private-dir categories (`src/modules/file_access_classify.c`),
+  using the launched package name (or a best-effort `/proc/<pid>/cmdline`
+  resolve in `-p` PID-attach mode) to tell "own sandbox" from "foreign app
+  probe." Known limitation: dirfd-relative opens with a relative pathname
+  aren't resolved to an absolute path and are silently dropped (see
+  BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
 other engines (see §7).
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event` and `execve` are kprobe/tracepoint — stealthy;
-`prop-read` is a libc uprobe — loud.
+key (see §9). `proc-event`, `execve`, and `file-access` are kprobe/tracepoint —
+stealthy; `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;

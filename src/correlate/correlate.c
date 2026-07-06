@@ -306,6 +306,7 @@ static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
 static struct ring_buffer     *g_rb;
 static int                     g_total;
+static int                     g_returns;   // --returns active; gates the CR5 capture-rate field
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
@@ -384,6 +385,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_kp    = kp;
     g_rb    = rb;
     g_total = total;
+    g_returns = ca.returns;
     return 0;
 
 err_skel:
@@ -427,6 +429,11 @@ void correlate_teardown(void)
         cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
         cov.queue_drops    = 0;
         cov.decode_partial = 1;   // raw syscall args, no decode
+        if (g_returns) {
+            cov.returns_mode      = 1;
+            cov.spans_opened      = ares_coverage_read(covfd, COV_SPAN_OPEN);
+            cov.returns_captured  = ares_coverage_read(covfd, COV_URET_FIRED);
+        }
         ares_coverage_report(&g_sink, &cov);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;

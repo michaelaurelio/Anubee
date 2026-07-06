@@ -886,6 +886,13 @@ fields are omitted):
 | `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
 | `decode_partial` | raw syscall args only, no decode table match | no | no | yes |
 
+On `--returns` runs the record also carries `"returns":{"spans":N,"captured":M}` -
+`spans` = tracked function frames pushed (uretprobe-poppable), `captured` = return
+records the uretprobe emitted. A gap (`captured < spans`) means that many spans
+closed via the SP-reconcile backstop with no return record (thread exit mid-call,
+missed return) and flips the record to degraded; equal counts stay clean. Omitted
+on non-`--returns` runs.
+
 `lib`, `dump`, and `mod` are **exempt in v1**: `lib` has no drop map or snapshot
 path, `dump` is a single-shot read (no run-long coverage to accumulate), and
 `mod` is blocked on the existing mod drop-telemetry item (see

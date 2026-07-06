@@ -137,6 +137,7 @@ static __always_inline __u64 span_stack_push(__u32 tid, __u64 entry_addr,
     bpf_map_update_elem(&span_frames, &k, &f, BPF_ANY);
     __u32 nd = d + 1;
     bpf_map_update_elem(&span_depth, &tid, &nd, BPF_ANY);
+    cov_bump(COV_SPAN_OPEN);   // tracked frame: a uretprobe can pop it
     return f.span_id;
 }
 

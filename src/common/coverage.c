@@ -37,6 +37,8 @@ static int cov_degraded(const struct ares_coverage *c)
 	    c->managed_naming_off || c->prearm_drops || c->depth_capped ||
 	    c->decode_partial)
 		return 1;
+	if (c->returns_mode && c->returns_captured < c->spans_opened)
+		return 1;
 	for (int i = 0; i < ARES_CFI_STOP_N; i++)
 		if (c->cfi_stop[i] && ares_cfi_stop_is_blind(i))
 			return 1;
@@ -50,7 +52,12 @@ static void cov_build_json(struct jbuf *j, const struct ares_coverage *c, int de
 	jb_esc(j, c->engine ? c->engine : "?");
 	jb_c(j, '"');
 	if (!degraded) {
-		jb_s(j, ",\"clean\":true}\n");
+		jb_s(j, ",\"clean\":true");
+		if (c->returns_mode) {
+			jb_s(j, ",\"returns\":{\"spans\":"); jb_u64(j, c->spans_opened);
+			jb_s(j, ",\"captured\":"); jb_u64(j, c->returns_captured); jb_c(j, '}');
+		}
+		jb_s(j, "}\n");
 		return;
 	}
 	if (c->snaps_total || c->snaps_truncated) {
@@ -78,6 +85,10 @@ static void cov_build_json(struct jbuf *j, const struct ares_coverage *c, int de
 	if (c->prearm_drops) { jb_s(j, ",\"prearm_drops\":"); jb_u64(j, c->prearm_drops); }
 	if (c->depth_capped) { jb_s(j, ",\"depth_capped\":"); jb_u64(j, c->depth_capped); }
 	if (c->decode_partial) jb_s(j, ",\"decode_partial\":true");
+	if (c->returns_mode) {
+		jb_s(j, ",\"returns\":{\"spans\":"); jb_u64(j, c->spans_opened);
+		jb_s(j, ",\"captured\":"); jb_u64(j, c->returns_captured); jb_c(j, '}');
+	}
 	jb_s(j, "}\n");
 }
 
@@ -113,6 +124,10 @@ static void cov_banner(const struct ares_coverage *c, int degraded)
 	if (c->prearm_drops) { SEP(); fprintf(stderr, "%llu syscalls dropped (pre-arm window)", c->prearm_drops); }
 	if (c->depth_capped) { SEP(); fprintf(stderr, "%llu stack depth-capped", c->depth_capped); }
 	if (c->decode_partial) { SEP(); fprintf(stderr, "syscall args not decoded (raw)"); }
+	if (c->returns_mode && c->returns_captured < c->spans_opened) { SEP();
+		fprintf(stderr, "%llu/%llu function returns captured (%llu missed; "
+			"SP-reconcile backstop or ring drop)", c->returns_captured, c->spans_opened,
+			c->spans_opened - c->returns_captured); }
 	#undef SEP
 	fprintf(stderr, "\n");
 }

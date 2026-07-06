@@ -156,6 +156,7 @@ int BPF_KRETPROBE(corr_uretprobe_ret)
     e->retval     = (__u64)PT_REGS_RC(ctx);
     e->elapsed_ns = now - saved->timestamp;
     bpf_ringbuf_submit(e, 0);
+    cov_bump(COV_URET_FIRED);   // a return value was captured
 
     bpf_map_delete_elem(&span_frames, &fk);
     span_depth_set(tid, top);          // authoritative pop

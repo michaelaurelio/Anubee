@@ -226,14 +226,6 @@ authoritative-path migration before sinking more into offset tables.
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
-- **`correlate` missed-return counter as a CR5 coverage field.** `--returns`'
-  uretprobe is the authoritative span-close path, but a span whose uretprobe
-  never fires (thread exit mid-call, etc.) falls back to the SP-reconcile
-  backstop with no return record - currently invisible. Add a coverage field
-  (uretprobe fired vs spans opened, `--returns` runs only) to `correlate`'s
-  CR5 record (`src/common/coverage.c`) so a caller can tell "how many return
-  values did I actually get" without diffing span/return counts by hand.
-
 - **CR5 follow-on: MCP-side `coverage` ingest handler.** `ares_coverage_report`
   writes `{"type":"coverage","engine":...}` to the `-o` sink, but
   `tools/ares-mcp/trace_store.py`'s `load_structured` has no branch for it (only
@@ -382,6 +374,15 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-06
 
+- **`correlate --returns` capture-rate coverage field.** CR5's `correlate` record
+  now carries `"returns":{"spans":N,"captured":M}` on `--returns` runs (BPF percpu
+  counters `COV_SPAN_OPEN` bumped on `span_stack_push` success, `COV_URET_FIRED` on
+  return-record emit; read at teardown). Surfaces how many return values were
+  captured vs. spans traced without hand-diffing; a gap (`captured < spans` =
+  SP-reconcile-backstop closes) flips the record to degraded. Firewall unchanged
+  (data-map bumps only). Host-tested (`test_coverage`); device-verified 2026-07-06
+  (clean path 15/15 captured; forced gap 723/722, banner + JSON `returns` block correct).
+
 - **`correlate --returns` - opt-in uretprobe for return value + exact exit
   timing.** New `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
   retval, elapsed_ns}` (`src/correlate/correlate.h`), emitted as
@@ -396,7 +397,8 @@ is in DOCUMENTATION.md and the referenced specs.
   correlate's existing entry `BRK`; disclosed via a one-line stderr notice when
   active. Firewall gate unaffected (`correlate` was already loud;
   `capabilities.c` unchanged). Retval is raw only - no fd/string/errno decode
-  (stays parked, see Major). Device verification pending.
+  (stays parked, see Major). Device-verified 2026-07-06 (well-formed `{"type":"return"}`
+  records with raw retval + `elapsed_ns`; authoritative pop + SP-reconcile backstop both exercised).
 
 ### 2026-07-05
 

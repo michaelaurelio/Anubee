@@ -21,6 +21,7 @@ static const struct ares_bpf_object g_objects[] = {
     { "mod:execve",     false },  // kprobes/tracepoint; zero uprobes
     { "mod:prop-read",  true  },  // uprobes on libc; writes target memory
     { "mod:file-access", false }, // kprobes on openat/openat2; zero uprobes
+    { "mod:ransomware-burst", false }, // kprobes on renameat/renameat2/unlinkat; zero uprobes
 };
 
 const struct ares_bpf_object *ares_bpf_objects(int *count)

@@ -37,6 +37,7 @@ map_bpf_obj() {
     mod:execve)     echo execve.bpf.o ;;
     mod:prop-read)  echo prop_read.bpf.o ;;
     mod:file-access)echo file_access.bpf.o ;;
+    mod:ransomware-burst) echo ransomware_burst.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
 }
@@ -88,6 +89,7 @@ owner_of() {
     $BUILD/modules/prop_read.o) echo mod:prop-read ;;
     $BUILD/modules/proc_event.o) echo mod:proc-event ;;
     $BUILD/modules/file_access.o) echo mod:file-access ;;
+    $BUILD/modules/ransomware_burst.o) echo mod:ransomware-burst ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;
     *)                          echo shared ;;

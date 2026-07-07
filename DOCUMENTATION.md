@@ -850,10 +850,11 @@ fields are omitted):
 | `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
 | `decode_partial` | raw syscall args only, no decode table match | no | no | yes |
 
-`lib`, `dump`, and `mod` are **exempt in v1**: `lib` has no drop map or snapshot
-path, `dump` is a single-shot read (no run-long coverage to accumulate), and
-`mod` is blocked on the existing mod drop-telemetry item (see
-[BACKLOG.md](BACKLOG.md)).
+`lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
+`dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a
+minimal variant: each analyzer (`proc-event`/`execve`/`prop-read`) reports its own
+`drops.ring` count the same way, but has no snapshot/CFI/managed-naming/decode
+surface to report — every other field always reads clean.
 
 The rationale generalizes the older `ares_drops_report` contract: **silence
 never means "didn't check"** - every run states its own coverage explicitly,

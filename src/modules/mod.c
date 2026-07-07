@@ -12,6 +12,7 @@
 #include <bpf/libbpf.h>
 #include "common/analyzer.h"
 #include "common/capabilities.h"
+#include "common/coverage.h"
 #include "common/emit.h"
 #include "common/launch.h"
 #include "common/runtime.h"
@@ -182,13 +183,16 @@ int cmd_mod(int argc, char **argv)
     printf("tracing uid %d (%s) ... Ctrl-C to stop\n", uid, ma.name);
     ares_rb_poll_until(rb, &exiting);
 
-    // mod drop-telemetry parity: read the drop-map fd BEFORE teardown() destroys
-    // the skeleton (fd goes with it). Task #10 upgrades this to ares_coverage_report.
+    // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE
+    // teardown() destroys the skeleton (fd goes with it).
     unsigned long long drops = an->drops ? an->drops() : 0;
 
     an->teardown();
     if (an->print_summary) an->print_summary();
-    ares_drops_report(drops, 0);
+
+    struct ares_coverage cov = { .engine = ma.name };
+    cov.ring_drops = drops;
+    ares_coverage_report(&g_sink, &cov);
 
     if (ma.c.output_file) {
         ares_sink_close(&g_sink);

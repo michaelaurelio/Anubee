@@ -38,9 +38,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
   (inline prototypes in `trace.c` vs. the Makefile's `--keep-global-symbol` lists).
 
 **Minor:**
-- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
-  (drop-telemetry prerequisite done — `mod.c` reports via legacy `ares_drops_report`,
-  swap to `ares_coverage_report` next).
+- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
@@ -264,17 +262,6 @@ lists can't diverge silently.
   record for `dump` (no snapshot/CFI/managed fields, just a "the rebuilt ELF is
   incomplete" signal) would close that exemption without inventing new schema.
 
-- **CR5 follow-on: `mod` coverage.** The prerequisite has landed (mod
-  drop-telemetry parity, below in Resolved/Done) — each analyzer now exposes a
-  drop count via `ares_analyzer_t.drops()`, and `mod.c` reports it at teardown
-  via the legacy `ares_drops_report`. Remaining: swap that call for
-  `ares_coverage_report` with a minimal `struct ares_coverage { .engine =
-  <analyzer name>, .ring_drops = <count> }` — the same mechanical swap
-  Tasks 4-6 did for the other engines under CR5. No new BPF-side map needed
-  (`coverage_stats` stays exclusive to engines with CFI/snapshot/decode
-  fields); the `dropped` map added for drop-telemetry parity is the only
-  source `mod` needs.
-
 - **W5 — JIT code-cache frames have no file-backed CFI (deferred, ≈0 payoff).**
   JIT-compiled Java frames (`[anon]` / `[anon_shmem:dalvik-jit-code-cache]`) between
   a framework lib and `art_jni_trampoline` have no file-backed FDE; `cfi_get` skips
@@ -439,6 +426,22 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-07
+
+- **CR5 follow-on: `mod` coverage (fixed) — closes Tier 2.** `mod.c` now builds a
+  minimal `struct ares_coverage { .engine = <analyzer name>, .ring_drops = <count> }`
+  at teardown and reports it via `ares_coverage_report(&g_sink, &cov)`, replacing the
+  legacy `ares_drops_report` call the drop-telemetry-parity fix added — `mod` now
+  emits the same `{"type":"coverage",...}` JSON line (when `-o` is set) and
+  `[coverage] <analyzer>: ...` stderr banner syscalls/funcs/correlate already do.
+  `ares_coverage_report`'s own `if (sink && sink->f)` guard makes passing `&g_sink`
+  safe even when `-o` was never given (banner only, no JSON). `DOCUMENTATION.md` §7.5
+  updated: `mod` moved out of the "exempt in v1" list into its own minimal-variant
+  note (no snapshot/CFI/managed-naming/decode surface, only `drops.ring`).
+  Host-verified: `make test` unchanged; `mod.c` syntax-checked clean directly
+  (`cc -fsyntax-only`, 0 errors — this file, unlike the 3 analyzer `.c` files touched
+  by drop-telemetry parity, doesn't depend on the stale committed skeleton headers).
+  This closes out Tier 2 (tasks #6–#10) of the 2026-07-07 graph-informed audit
+  entirely.
 
 - **`mod` drop-telemetry parity (fixed).** `ares_analyzer_t` (`src/common/analyzer.h`)
   gains a `drops()` accessor; all 3 analyzer BPF objects (`proc_event.bpf.c`,

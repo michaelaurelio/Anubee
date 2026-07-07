@@ -30,6 +30,7 @@
 #include "common/runtime.h"
 #include "common/maps.h"
 #include "common/syscall_index.h"
+#include "common/coverage.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
@@ -117,13 +118,25 @@ static int handle_event(void *ctx, void *data, size_t sz)
             corr_emit_syscall(&g_sink.jb, e, name);
             ares_sink_emit(&g_sink);
         }
+    } else if (h->type == CORR_EV_RETURN) {
+        if (sz < sizeof(struct corr_return_event)) return 0;
+        const struct corr_return_event *e = data;
+        if (!g_quiet)
+            printf("[return]  > span=%llu retval=0x%llx elapsed=%lluns @ 0x%llx\n",
+                   (unsigned long long)e->span, (unsigned long long)e->retval,
+                   (unsigned long long)e->elapsed_ns, (unsigned long long)e->entry_addr);
+        if (g_sink.f) {
+            corr_emit_return(&g_sink.jb, e);
+            ares_sink_emit(&g_sink);
+        }
     }
     return 0;
 }
 
 // Scan /proc/<pid>/maps and attach the entry uprobe at every spec'd function.
 static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
-                                  const custom_probe_spec_t *specs, int nspec)
+                                  const custom_probe_spec_t *specs, int nspec,
+                                  int returns)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
@@ -173,6 +186,15 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 printf("[spec] > %s!%s @ 0x%lx\n", bname,
                        tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
                 attached++;
+                if (returns) {
+                    struct bpf_link *rl = bpf_program__attach_uprobe(
+                        skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
+                    if (rl)
+                        track_uprobe_link(rl);
+                    else
+                        fprintf(stderr, "[spec] > RET FAILED: %s!%s @ 0x%lx\n", bname,
+                                tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+                }
             } else {
                 fprintf(stderr, "[spec] > FAILED: %s!%s @ 0x%lx\n", bname,
                         tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
@@ -199,6 +221,8 @@ static const char corr_doc[] =
     "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
 static const char corr_args_doc[] = "";
 
+#define ARES_KEY_RETURNS 0x200   // correlate-local long-only key (--returns)
+
 struct corr_args {
     const char        *pkg;
     const char        *out_path;
@@ -206,6 +230,7 @@ struct corr_args {
     struct target_args tgt;
     custom_probe_spec_t specs[64];
     int                nspec;
+    int                returns;
 };
 
 // Only the flags actually wired. -J/-b/-Q have nothing to attach here.
@@ -216,6 +241,9 @@ static const struct argp_option corr_options[] = {
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
     { "output",  'o', "FILE",      0, "Write structured JSONL (implies -q)", 0 },
     { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
+    { "returns", ARES_KEY_RETURNS, NULL, 0,
+      "Also attach uretprobes: return value + exact span timing (LOUD: adds a "
+      "stack trampoline, a 2nd detection surface beyond the entry BRK)", 0 },
     { 0 }
 };
 
@@ -226,6 +254,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg; break;
     case 'o': a->out_path = arg; break;
     case 'q': a->quiet    = 1;   break;
+    case ARES_KEY_RETURNS: a->returns = 1; break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case 'e':
@@ -277,6 +306,7 @@ static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
 static struct ring_buffer     *g_rb;
 static int                     g_total;
+static int                     g_returns;   // --returns active; gates the CR5 capture-rate field
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
@@ -339,11 +369,14 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     int total = 0;
     for (int i = 0; i < ca.tgt.n; i++) {
-        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec);
+        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec, ca.returns);
         if (n > 0) total += n;
     }
     if (total == 0)
         fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
+    if (ca.returns && total > 0)
+        fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
+                        "target stack is a 2nd detection surface (beyond the entry BRK)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); destroy_uprobe_links(); goto err_skel; }
@@ -352,6 +385,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_kp    = kp;
     g_rb    = rb;
     g_total = total;
+    g_returns = ca.returns;
     return 0;
 
 err_skel:
@@ -385,8 +419,22 @@ void correlate_teardown(void)
     }
     destroy_uprobe_links();
     if (g_skel) {
-        // No worker queue in correlate (ring drained inline) → qdrops = 0.
-        ares_drops_report(ares_drops_read(bpf_map__fd(g_skel->maps.dropped)), 0);
+        // Always report the final tally, so "no message" never means "didn't
+        // check". Subsumes the old ares_drops_report: ring/queue drops are
+        // coverage fields here. No worker queue in correlate (ring drained
+        // inline) -> queue_drops = 0.
+        struct ares_coverage cov = { .engine = "correlate" };
+        int covfd = bpf_map__fd(g_skel->maps.coverage_stats);
+        cov.depth_capped   = ares_coverage_read(covfd, COV_DEPTH_CAP);
+        cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
+        cov.queue_drops    = 0;
+        cov.decode_partial = 1;   // raw syscall args, no decode
+        if (g_returns) {
+            cov.returns_mode      = 1;
+            cov.spans_opened      = ares_coverage_read(covfd, COV_SPAN_OPEN);
+            cov.returns_captured  = ares_coverage_read(covfd, COV_URET_FIRED);
+        }
+        ares_coverage_report(&g_sink, &cov);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;
     }

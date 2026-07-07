@@ -689,11 +689,47 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by
   inlining and VM/virtualization.
 - **v1 scope**: custom specs (`-e`/`-F`) + `-p` (full) / `-P` (best-effort
-  post-launch); SP-based close (no return values). Syscall args: hex + parallel
-  flag-decoded `decoded[]` array (fd/sockaddr/string capture requires BPF event-struct
-  changes — deferred).
-  `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
+  post-launch); SP-based close by default, or authoritative close via `--returns`
+  (below). Syscall args: hex + parallel flag-decoded `decoded[]` array
+  (fd/sockaddr/string capture requires BPF event-struct changes - deferred).
+  arg/sockaddr decoding and regex (`-I/-i`) targeting are planned
   (see [BACKLOG.md](BACKLOG.md)).
+
+### 6.1 `--returns`: return value + exact span timing (opt-in, LOUD)
+
+Off by default; SP-based reconcile (above) is the only span-close mechanism
+unless `--returns` is passed. When passed, the loader attaches a *second* BPF
+program at each spec'd function's offset: a uretprobe (`corr_uretprobe_ret`,
+`SEC("uretprobe")` in `src/correlate/correlate.bpf.c`), alongside the existing
+entry uprobe.
+
+- **Record**: `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`). JSON (`corr_emit_return`,
+  `src/correlate/corr_emit.c`), reusing the shared `"return"` type name
+  (`TRACE_RETURN`):
+  `{"type":"return","span":N,"pid":...,"tid":...,"entry_addr":"0x...","retval":"0x...","elapsed_ns":N}`.
+- **Semantics - authoritative pop, SP-reconcile as backstop**: on a real
+  return, `corr_uretprobe_ret` reads the top span frame, emits `retval` (raw
+  `PT_REGS_RC` / x0) and `elapsed_ns` (return `bpf_ktime_get_ns()` minus the
+  saved entry timestamp), then deletes the frame and pops the depth counter
+  itself - this is the exact close, not an estimate. The pre-existing
+  `span_stack_reconcile` SP check (used unconditionally without `--returns`)
+  stays wired in as a backstop for a span whose uretprobe never fires (e.g. the
+  thread exits mid-call); it still runs even with `--returns` on.
+- **Scope**: `retval` is the raw return register only - no fd/string/errno
+  decode. That interpretation stays parked with the other decode work above.
+- **Loudness - second detection surface**: `correlate` is already loud (entry
+  `BRK`). `--returns` adds a uretprobe trampoline pushed onto the *target's own
+  stack* to catch the return - a second, independent thing an anti-tampering
+  check on the target process could notice, beyond the entry `BRK`. Passing
+  `--returns` prints a one-line stderr notice disclosing this at attach time;
+  the firewall gate (`make check-firewall`, §CR1) is unaffected because
+  `correlate` was already classified loud - no `capabilities.c` change.
+- **Attach**: one uretprobe per resolved `(path,offset)`, attached right after
+  its paired entry uprobe in `attach_uprobes_for_pid`; a failed uretprobe attach
+  logs `RET FAILED` and does not fail the run (the entry uprobe for that offset
+  stays attached, span-open/syscall correlation for it still works - only that
+  offset's return record is missing).
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 
@@ -823,6 +859,59 @@ teardown if set (GA3).
 thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialized by
 `g_sink_lock`. SPAWN/PROC_EXIT/EXECVE/PROP structured records and unified MCP
 ingest remain; see [BACKLOG.md](BACKLOG.md).
+
+### 7.5 Coverage-health record (CR5)
+
+Every degradation site in the tracer - a truncated stack snapshot, a blind CFI
+stop, a ring/queue drop, an unknown ART build (Java naming off), a stack-depth
+cap, the CR2 pre-arm window, a raw (undecoded) syscall - used to fail *silently*:
+shorter or partial output with no signal that anything was missed. An analyst
+reading a trace afterward can't tell "the app made no such call" from "the
+tracer missed it"; absence of evidence quietly reads as evidence of absence.
+
+`ares_coverage_report` (`src/common/coverage.h` / `coverage.c`) closes that gap:
+at teardown, `syscalls`, `funcs`, and `correlate` each emit exactly **one**
+coverage-health record on **two channels**:
+
+- **stderr banner** (human): `[coverage] <engine>: ...` - a one-line summary of
+  every degradation signal, or `full coverage - no truncation, drops, or blind
+  spots` on a clean run.
+- **sink JSON line** (machine/MCP): a `{"type":"coverage","engine":...}` record
+  written to the `-o` file alongside the trace's other structured records (only
+  emitted when `-o` is active). This is the machine channel the MCP server is
+  expected to ingest (see §8) - a consumer can check this record instead of
+  inferring coverage from absence.
+
+A run with no degradation collapses to `{"type":"coverage","engine":"<engine>",
+"clean":true}`. A degraded run reports only the fields that fired (zero/false
+fields are omitted):
+
+| field | meaning | syscalls | funcs | correlate |
+|---|---|---|---|---|
+| `snaps.total` / `snaps.truncated` | `--snapshot` stacks captured / truncated at the 32 KB capture window | yes | yes | no (no snapshot) |
+| `cfi.walks` / `cfi.stops.<reason>` | CFI-unwind attempts / histogram of blind stop reasons (`no_fde`, `run_fail`, ...) | yes | yes | no |
+| `drops.ring` / `drops.queue` | ring-buffer / worker-queue drops (subsumes the old `ares_drops_report`) | yes | yes | ring only (no worker queue) |
+| `managed_naming_off` | unknown ART build (no `art_buildid.c` table row) - Java naming disabled | yes | yes | no |
+| `prearm_drops` | syscalls dropped in the CR2 pre-arm window before uprobes attach | yes | no | no |
+| `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
+| `decode_partial` | raw syscall args only, no decode table match | no | no | yes |
+
+On `--returns` runs the record also carries `"returns":{"spans":N,"captured":M}` -
+`spans` = tracked function frames pushed (uretprobe-poppable), `captured` = return
+records the uretprobe emitted. A gap (`captured < spans`) means that many spans
+closed via the SP-reconcile backstop with no return record (thread exit mid-call,
+missed return) and flips the record to degraded; equal counts stay clean. Omitted
+on non-`--returns` runs.
+
+`lib`, `dump`, and `mod` are **exempt in v1**: `lib` has no drop map or snapshot
+path, `dump` is a single-shot read (no run-long coverage to accumulate), and
+`mod` is blocked on the existing mod drop-telemetry item (see
+[BACKLOG.md](BACKLOG.md)).
+
+The rationale generalizes the older `ares_drops_report` contract: **silence
+never means "didn't check"** - every run states its own coverage explicitly,
+whether clean or degraded, so a partial trace is never mistaken for a complete
+one.
 
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)
 

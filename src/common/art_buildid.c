@@ -27,6 +27,10 @@ static char *trim(char *s, char *e)
     return s;
 }
 
+/* Set once when an unknown libart BuildID disables managed naming this run.
+ * Read by ares_art_naming_disabled() for the CR5 coverage record. */
+static int g_naming_disabled = 0;
+
 int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
                       struct art_offsets *out)
 {
@@ -204,9 +208,8 @@ const struct art_offsets *art_buildid_offsets(int pid)
      * not be read (hex empty) is an expected miss, not an unknown build, so it
      * must not raise the "naming disabled" alarm. */
     if (!o && hex[0]) {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
+        if (!g_naming_disabled) {
+            g_naming_disabled = 1;
             fprintf(stderr,
                 "[ares] libart BuildID %s not in offset table; managed-frame "
                 "naming disabled (add a k_table row).\n",
@@ -214,4 +217,9 @@ const struct art_offsets *art_buildid_offsets(int pid)
         }
     }
     return o;
+}
+
+int ares_art_naming_disabled(void)
+{
+    return g_naming_disabled;
 }

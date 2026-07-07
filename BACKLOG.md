@@ -23,7 +23,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
 ## Open work — at a glance
 
 **Major:**
-- `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
+- `correlate` remaining capability - syscall/sockaddr/fd/string decode;
   regex `-I/-i`; `-P` attach timing.
 - GA2 deferred wiring — `correlate`→`trace`, `dump`→`trace`.
 - CFI / managed-frame naming — **generalize beyond one ART build**: version gate keys
@@ -34,9 +34,10 @@ items lives in DOCUMENTATION.md and the referenced specs.
   vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
 - CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
-- CR5 — per-run coverage-health record (silent partial output is unsafe for forensics).
 
 **Minor:**
+- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
+  (rides `mod` drop-telemetry parity).
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
@@ -66,8 +67,6 @@ None currently open.
 
 ### `correlate` engine — remaining capability
 
-- **`--returns`** — opt-in uretprobe for return values + exact exit timing. LOUD:
-  adds a stack trampoline (a second detection surface beyond the entry `BRK`).
 - **Syscall arg / sockaddr / fd / string decoding** — PARTIAL: userspace flag-decode
   done (`flags_decode_arg` via `corr_emit_syscall`; hex args + parallel `decoded[]`).
   fd-path rendering, sockaddr blob capture, and string capture still need BPF
@@ -190,8 +189,18 @@ LIFO-monotonic-SP assumption breaks on:
 
 Actionable: document coroutine/stack-switch hostility explicitly (not an edge case for
 Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
-(uretprobe, planned) as the accuracy path — the two are currently framed as
+(uretprobe, shipped 2026-07-06) as the accuracy path — the two are currently framed as
 near-equivalent.
+
+- **`--returns` return records inherit the mis-attribution (known drawback).** With
+  `--returns` the uretprobe pops the innermost *tracked* frame, so the same defects
+  emit *visibly wrong data* rather than a silent mis-gate: beyond `MAX_SPAN_DEPTH=32`
+  nested probed calls the 33rd call is never pushed (`span_stack_push` returns 0) yet
+  its return still fires and pops a live frame -> a spurious `{"type":"return"}` with
+  the wrong span/entry_addr/elapsed_ns, cascading until the stack unwinds under the
+  cap. Non-LIFO stacks (coroutines) corrupt the pop target the same way. The
+  uretprobe/reconcile interaction itself is benign (delete-by-key + depth--; a later
+  reconcile finds the frame already gone). Fix rides the CR3 accuracy work.
 
 ### CR4 — managed-frame naming: version treadmill + guess-path is primary
 
@@ -217,24 +226,32 @@ on a tool whose real edge is stealthy syscalls. Consider labeling managed naming
 experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
 authoritative-path migration before sinking more into offset tables.
 
-### CR5 — per-run coverage-health record (silent degradation unsafe for forensics)
-
-Source: 2026-07-03 architecture critique. Consistent pattern: missing FDE
-(`CFI_NO_FDE`), 32 KB snapshot cap (`truncated`), unknown ART build, stack-depth cap,
-the CR2 pre-arm window, hand-table syscall miss (6 raw args, no decode) — all degrade to
-shorter/partial output with **no user-visible signal**. An analyst can't tell "app made
-no such call" from "tracer missed it"; absence-of-evidence reads as
-evidence-of-absence.
-
-Fix = emit a per-run coverage/health record extending the existing drops contract
-(`ares_drops_report`, `runtime.h`'s "silence never means didn't check"): snapshots
-truncated N/M, unknown-build notices, attribution / stack-walk misses, FDE-stop counts,
-per-engine drops. One structured record at teardown (and/or an MCP field) so partial
-coverage is explicit rather than inferred.
-
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
+
+- **CR5 follow-on: MCP-side `coverage` ingest handler.** `ares_coverage_report`
+  writes `{"type":"coverage","engine":...}` to the `-o` sink, but
+  `tools/ares-mcp/trace_store.py`'s `load_structured` has no branch for it (only
+  `type:"syscall"` rows load into DuckDB today) and `server.py` has no tool
+  surfacing it. Add a `coverage` branch that stores the record(s) alongside the
+  trace and a small MCP tool (or a field on `overview`) that surfaces per-engine
+  coverage so an MCP client can check "was this trace clean" without grepping
+  the raw JSONL.
+
+- **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
+  (no drop map, single-shot read). `dump`'s live-memory read
+  (`src/dump/rebuild.c`) can still hit partial `/proc/<pid>/mem` reads or an ELF
+  rebuild gap (missing section, truncated segment); a minimal `ares_coverage`
+  record for `dump` (no snapshot/CFI/managed fields, just a "the rebuilt ELF is
+  incomplete" signal) would close that exemption without inventing new schema.
+
+- **CR5 follow-on: `mod` coverage.** Rides the existing `mod` drop-telemetry
+  parity item (`mod.c` owns arg-parse/uid/sink/launch/poll/teardown per
+  analyzer) - once each analyzer exposes a drop count the same way
+  `syscalls`/`funcs` do, wiring a per-analyzer `ares_coverage_report` at
+  `mod.c` teardown is the same mechanical swap Tasks 4-6 did for the other
+  engines.
 
 - **CR1 firewall-gate `--selftest` exercises the detectors, not the gate routing.**
   `scripts/check-firewall.sh --selftest` proves `uprobe_sections` and the `nm` attach
@@ -351,6 +368,21 @@ coverage is explicit rather than inferred.
 - **Pending on-device verification:** combined `trace` run; `correlate` hardening
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
+- **`funcs` uprobe fails to load on the current test device (pre-existing, not CR5).**
+  On the test device (A15 kernel) `ares funcs -e libc.so!open -J --snapshot -P <pkg>`
+  fails the BPF load: `uprobe_open` is rejected with `reg type unsupported for arg#0
+  function uprobe_open#N` (-EACCES). Isolated to a pre-existing issue by building the
+  pre-CR5 base and reproducing the identical failure (only the subprog index shifts,
+  #79 base vs #83 post-CR5) - so CR5 did not cause it. Likely a verifier/kernel
+  interaction with the large `uprobe_open` program (java_stack + CFI + span push) on
+  this kernel (an outlined `.cold` subprogram carrying `ctx`, or a global-func arg-type
+  check). Consequence for CR5: the `funcs` coverage-record wiring is code-reviewed and
+  compiles, but its BPF-side additions (COV_TRUNC/COV_DEPTH_CAP bumps via the shared
+  headers) are **unverified on any kernel where `funcs` actually loads** - `syscalls`
+  (kprobe) and `correlate` are device-verified. Investigate separately: try a kernel
+  where `funcs` loads, or reduce `uprobe_open` size / disable hot-cold-split for the BPF
+  compile.
+
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.
@@ -361,6 +393,34 @@ coverage is explicit rather than inferred.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-06
+
+- **`correlate --returns` capture-rate coverage field.** CR5's `correlate` record
+  now carries `"returns":{"spans":N,"captured":M}` on `--returns` runs (BPF percpu
+  counters `COV_SPAN_OPEN` bumped on `span_stack_push` success, `COV_URET_FIRED` on
+  return-record emit; read at teardown). Surfaces how many return values were
+  captured vs. spans traced without hand-diffing; a gap (`captured < spans` =
+  SP-reconcile-backstop closes) flips the record to degraded. Firewall unchanged
+  (data-map bumps only). Host-tested (`test_coverage`); device-verified 2026-07-06
+  (clean path 15/15 captured; forced gap 723/722, banner + JSON `returns` block correct).
+
+- **`correlate --returns` - opt-in uretprobe for return value + exact exit
+  timing.** New `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`), emitted as
+  `{"type":"return",...}` (`src/correlate/corr_emit.c`, reuses `TRACE_RETURN`).
+  BPF side adds `corr_uretprobe_ret` (`SEC("uretprobe")` in
+  `src/correlate/correlate.bpf.c`), attached alongside each entry uprobe only
+  when `--returns` is passed; on a real return it authoritatively pops the top
+  span frame and reports raw `retval` (x0) + `elapsed_ns` (return ktime minus
+  entry ktime) - the pre-existing SP-based `span_stack_reconcile` stays wired
+  in as the backstop for a span whose uretprobe never fires. LOUD: this is a
+  second detection surface (uretprobe trampoline on the target stack) beyond
+  correlate's existing entry `BRK`; disclosed via a one-line stderr notice when
+  active. Firewall gate unaffected (`correlate` was already loud;
+  `capabilities.c` unchanged). Retval is raw only - no fd/string/errno decode
+  (stays parked, see Major). Device-verified 2026-07-06 (well-formed `{"type":"return"}`
+  records with raw retval + `elapsed_ns`; authoritative pop + SP-reconcile backstop both exercised).
 
 ### 2026-07-05
 
@@ -378,6 +438,20 @@ is in DOCUMENTATION.md and the referenced specs.
   it every PR. Section match is prefix-anchored to avoid the `kprobe/uprobe_mmap`
   grep-trap CR1 called out. Spec/plan:
   `docs/superpowers/{specs/2026-07-05-firewall-gate-design.md,plans/2026-07-05-firewall-gate.md}`.
+
+- **CR5 - per-run coverage-health record.** Every degradation site (truncated
+  32 KB snapshot, blind CFI stop, ring/queue drop, unknown ART build, stack-
+  depth cap, the CR2 pre-arm window, undecoded/raw syscall args) used to fail
+  silently. `struct ares_coverage` (`src/common/coverage.h`/`.c`) plus
+  `ares_coverage_report` now emit exactly one record per engine at teardown on
+  two channels: a `[coverage] <engine>: ...` stderr banner (human) and a
+  `{"type":"coverage","engine":...}` JSON line into the `-o` sink
+  (machine/MCP), collapsing to `{"clean":true}` on a clean run. Wired into
+  `syscalls`, `funcs`, and `correlate` (each with its own field subset - see
+  DOCUMENTATION.md §7.5); subsumes the old `ares_drops_report` (drops are now
+  coverage fields). `lib`/`dump`/`mod` are exempt in v1 (follow-on rows below).
+  Generalizes the "silence never means didn't check" contract from a
+  drops-only guarantee to the whole tracer.
 
 ### 2026-07-02
 

@@ -9,6 +9,17 @@ cd "$(dirname "$0")/.."
 
 OBJDUMP="${LLVM_OBJDUMP:-llvm-objdump}"
 NM="${LLVM_NM:-llvm-nm}"
+# Fail loudly if the LLVM tools are missing. A not-found objdump/nm otherwise
+# emits empty output that masquerades as a breach (a loud object reported as
+# having "no uprobe section") - a misleading verdict is worse than a clear
+# tooling error. Set LLVM_OBJDUMP / LLVM_NM to override the tool names.
+for _t in "$OBJDUMP" "$NM"; do
+  command -v "$_t" >/dev/null 2>&1 || {
+    echo "check-firewall: required tool '$_t' not found on PATH" \
+         "(install LLVM or set LLVM_OBJDUMP / LLVM_NM)" >&2
+    exit 2
+  }
+done
 BUILD=build
 fail=0
 breach() { echo "FIREWALL BREACH: $*" >&2; fail=1; }

@@ -11,6 +11,7 @@
 enum corr_event_type {
     CORR_EV_FUNC    = 1,     // a probed function was entered (span opened)
     CORR_EV_SYSCALL = 2,     // a syscall issued while inside a probed function
+    CORR_EV_RETURN  = 3,     // a probed function returned (span closed)
 };
 
 #include "common/trace_schema.h"
@@ -33,9 +34,22 @@ struct corr_syscall_event {
     __u64 args[CORR_SYS_ARGS];
 };
 
+// A probed-function return. `span` is the closing frame's id, so a consumer joins
+// it to the CORR_EV_FUNC that opened the span and every CORR_EV_SYSCALL tagged with
+// it. `retval` is the raw x0 at return (no decode); `elapsed_ns` is the exact span
+// duration (return ktime - entry ktime).
+struct corr_return_event {
+    struct trace_event_header h;
+    __u64 span;
+    __u64 entry_addr;
+    __u64 retval;
+    __u64 elapsed_ns;
+};
+
 struct jbuf;  /* common/emit.h */
 void corr_emit_func(struct jbuf *j, const struct corr_func_event *e);
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
                        const char *syscall_name);
+void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
 
 #endif /* __ARES_CORRELATE_H */

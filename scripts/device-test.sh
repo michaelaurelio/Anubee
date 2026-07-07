@@ -371,6 +371,51 @@ test_mod_file_access() {
     fi
 }
 
+# mod ransomware-burst: deterministic trigger via a throwaway shell loop
+# doing 25 create+rename+delete cycles under /sdcard, attached by PID
+# (-p gates on target_pids regardless of the loop's UID, so this doesn't
+# need the loop to run as the traced app). Hard-fail, not SKIP: we control
+# the trigger, unlike file-access's timing-dependent natural app behavior.
+test_ransomware_burst() {
+    echo "=== mod ransomware-burst (rename/unlink burst on external storage) ==="
+    forcestop
+    local gen="/data/local/tmp/ares_burst_gen.sh"
+    adb shell "cat > $gen" <<'GENEOF'
+#!/system/bin/sh
+d=/sdcard/.ares_burst_test
+mkdir -p "$d"
+sleep 2
+i=1
+while [ "$i" -le 25 ]; do
+    f="$d/f$i.txt"
+    echo x > "$f"
+    mv "$f" "$f.locked"
+    rm -f "$f.locked"
+    i=$((i + 1))
+done
+rm -rf "$d"
+GENEOF
+    adb shell "chmod 755 $gen"
+    local loop_pid
+    loop_pid="$(adb shell "su -c 'sh $gen > /dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
+        fail "ransomware-burst: could not start burst-generator (no pid captured)"
+    fi
+
+    local out; out="$(ares "mod ransomware-burst -p $loop_pid")"
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_burst_test'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "ransomware-burst: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    if grep -q '^\[burst\]' <<<"$out"; then
+        info "ransomware-burst OK — $(grep -c '^\[burst\]' <<<"$out") [burst] line(s)"
+    else
+        tail -10 <<<"$out" >&2
+        fail "ransomware-burst: no [burst] line from a 25-touch generator loop (threshold/window mistuned, or timing missed the attach window)"
+    fi
+}
+
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
 # stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
 # entry uprobe attaches before the target opens any files. Spec mirrors
@@ -408,9 +453,10 @@ case "$WHAT" in
     syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
+    ransomware-burst)  test_ransomware_burst ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | correlate-returns | all)" ;;
+    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
 esac
 
 forcestop

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the pure ransomware-burst distinct-count and
 // classification logic.
+#include <linux/types.h>
 #include <stdio.h>
 #include "modules/ransomware_burst_classify.h"
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <linux/types.h>
 #include "modules/ransomware_burst_classify.h"
 
 int burst_distinct_count(const unsigned long long *hashes, int n)

@@ -7,7 +7,6 @@
 #ifndef __ARES_RANSOMWARE_BURST_CLASSIFY_H
 #define __ARES_RANSOMWARE_BURST_CLASSIFY_H
 
-#include <linux/types.h>
 #include "modules/mod_events.h"   // BURST_THRESHOLD
 
 // crossed the touch threshold AND enough of those touches were distinct files

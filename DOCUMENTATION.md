@@ -788,14 +788,26 @@ object — no shared skeleton with `funcs`. Available analyzers:
   probe." Known limitation: dirfd-relative opens with a relative pathname
   aren't resolved to an absolute path and are silently dropped (see
   BACKLOG.md).
+- **`ransomware-burst`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
+  zero uprobes), gated in-kernel to external storage only. Tracks a per-process
+  sliding-window touch counter + bounded path-hash ring; when 20 touches land
+  within 10 seconds, userspace estimates how many were distinct files
+  (`src/modules/ransomware_burst_classify.c`) and only alerts when most of
+  them are genuinely different files (not one file touched repeatedly).
+  Also checks and surfaces whether the traced app holds
+  `MANAGE_EXTERNAL_STORAGE` ("All files access"), since scoped storage
+  (Android 11+) otherwise blocks this signal outright. Known limitations:
+  doesn't detect screen-lock/overlay-style extortion, evadable by throttling
+  below the threshold, no exact same-file pairing across a rename and a
+  later unlink (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
 other engines (see §7).
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, and `file-access` are kprobe/tracepoint —
-stealthy; `prop-read` is a libc uprobe — loud.
+key (see §9). `proc-event`, `execve`, `file-access`, and `ransomware-burst` are
+kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;

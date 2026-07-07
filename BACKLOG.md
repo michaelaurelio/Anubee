@@ -52,8 +52,9 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
   `bpf_d_path` canonicalization to close (see Minor section below).
-- Ransomware-style mass-file-touch/burst analyzer — candidate `mod` addition,
-  separate mechanism from `file-access` (see Minor section below).
+- `mod ransomware-burst` coverage is conditional on scoped-storage bypass
+  (`MANAGE_EXTERNAL_STORAGE` or legacy targetSdk) and doesn't cover
+  lock-overlay-style extortion (see Minor section below).
 
 ---
 
@@ -308,12 +309,25 @@ authoritative-path migration before sinking more into offset tables.
   matters when an app deliberately holds a cached dir fd for a sensitive/foreign
   path — narrow compared to the common case (absolute paths). Spec:
   `docs/superpowers/specs/2026-07-07-mod-file-access-design.md`.
-- Ransomware-style mass-file-touch/burst analyzer. `file-access` deliberately
-  scoped out mass-encryption/deletion detection — that needs a different
-  mechanism (stateful time-window tracking across many distinct paths) and has
-  different false-positive tuning concerns (legitimate bursty I/O from
-  camera/gallery/backup apps) from `file-access`'s single-touch category
-  matching. Candidate future `mod` analyzer, not a variant of `file-access`.
+- `mod ransomware-burst` known v1 limitations (shipped 2026-07-08): coverage
+  depends on the traced app holding `MANAGE_EXTERNAL_STORAGE` or targeting a
+  legacy API level — scoped storage (Android 11+) otherwise blocks raw
+  `renameat`/`unlinkat` on shared-storage files outright (surfaced via a
+  startup permission-check banner, not silently assumed). Doesn't detect
+  screen-lock/overlay-style extortion (DroidLock/HOOK-style) — different
+  attack surface entirely, not file-syscall-observable. Fixed threshold (20
+  touches/10s) is evadable by a sample that throttles itself. No exact
+  same-file pairing across a rename and a later unlink (volume/mix is the
+  signal, not proven per-file identity — see design doc). MediaStore-mediated
+  bulk delete/rename is invisible (same structural blind spot as
+  `file-access`'s `openat` detection). Spec:
+  `docs/superpowers/specs/2026-07-08-mod-ransomware-burst-design.md`.
+- Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
+  future work per the ransomware-burst design's research: current Android
+  "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock
+  overlays + data-destruction threats rather than actual file encryption.
+  Different mechanism entirely (likely Window Manager /
+  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse), not file syscalls.
 
 - **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
   decoding).

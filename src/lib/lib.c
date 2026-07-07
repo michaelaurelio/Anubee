@@ -224,7 +224,10 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 err_skel:
     ares_lib__destroy(skel);
 err_file:
-    if (g_sink.f) ares_sink_close(&g_sink);
+    if (g_sink.f) {
+        ares_sink_close(&g_sink);
+        ares_sink_report(&g_sink);
+    }
     return 1;
 }
 

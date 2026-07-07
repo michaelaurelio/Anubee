@@ -324,7 +324,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
             if (ca.tgt.siblings) {
                 int uid = ares_get_pid_uid(ca.tgt.pids[i]);
-                if (install_uid(skel, uid) != 0)
+                if (uid > 0 && install_uid(skel, uid) != 0)
                     fprintf(stderr, "correlate: install UID for PID %d failed\n", ca.tgt.pids[i]);
             }
         }
@@ -347,7 +347,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
-    if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); destroy_uprobe_links(); goto err_skel; }
+    if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); goto err_skel; }
 
     g_skel  = skel;
     g_kp    = kp;
@@ -356,10 +356,19 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     return 0;
 
 err_skel:
+    // AA11 fix: g_ff (attached earlier in setup, if reached) isn't touched by
+    // destroy_uprobe_links() — destroy it explicitly, same as funcs' teardown-reuse.
+    if (g_ff) {
+        bpf_link__destroy(g_ff);
+        g_ff = NULL;
+    }
     destroy_uprobe_links();
     ares_correlate__destroy(skel);
 err_file:
-    if (g_sink.f) ares_sink_close(&g_sink);
+    if (g_sink.f) {
+        ares_sink_close(&g_sink);
+        ares_sink_report(&g_sink);
+    }
     return 1;
 }
 

@@ -1256,9 +1256,15 @@ out_rb:
 	ring_buffer__free(rb);
 out:
 	// Setup failed: clean up the partial state and report failure. teardown is
-	// NOT called for this path (globals were never published).
+	// NOT called for this path (globals were never published), so g_ff (attached
+	// just above, if reached) must be destroyed here explicitly — AA11 fix.
+	if (g_ff) {
+		bpf_link__destroy(g_ff);
+		g_ff = NULL;
+	}
 	pend_flush_all();
 	ares_sink_close(&g_sink);
+	ares_sink_report(&g_sink);
 	if (g_stacks) {
 		fclose(g_stacks);
 		g_stacks = NULL;

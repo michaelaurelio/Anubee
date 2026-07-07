@@ -58,9 +58,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - AA7 — `syscalls` `json_emit` per-event attribute table scans.
 - AA8 — MCP `wx_scan` O(m²·log m) writable-range re-sort.
 - AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.
-- AA10 — `--siblings` uid≤0 handling diverges across engines.
-- AA11 — follow-fork `bpf_link` leak on setup-failure (syscalls, correlate).
-- AA12 — failure-path sink-report / cleanup cosmetics (funcs, mod, correlate).
 
 ---
 
@@ -440,41 +437,6 @@ lists can't diverge silently.
   small stack buffer sized to `cap` instead of a heap `jbuf`; resolve frame symbols once
   per snapshot and hand the resolved array to both call sites.
 
-- **AA10 — `--siblings` uid≤0 handling diverges across engines.** Source: 2026-07-07
-  graph-informed audit. The same step (arm `target_uids` from a `-p` PID's UID) reacts
-  three different ways when the UID is unresolvable/`<=0`: syscalls/lib/dump guard
-  `if (uid > 0)` and silently skip (`syscalls.c:1184-1190`, `lib.c:182-188`,
-  `dump.c:252-258`); funcs warns only on `uid < 0`, silent on `== 0`
-  (`funcs.c:1068-1076`); correlate's `install_uid()` returns `-1` for `uid <= 0` and
-  prints `"install UID for PID N failed"` (`correlate.c:326-329`) — an active false
-  error for a deliberate skip. Fix: align correlate (and funcs' `==0` gap) to the
-  silent-skip majority; a legitimately-skipped PID should never read as "failed."
-
-- **AA11 — follow-fork `bpf_link` leak on setup-failure (syscalls, correlate).** Source:
-  2026-07-07 graph-informed audit. syscalls attaches `g_ff` at `syscalls.c:1212`; its
-  setup-failure `out:` path (`:1257-1269`) tears down the skeleton but never
-  `bpf_link__destroy(g_ff)` (teardown does, at `:1345-1348`, but is explicitly not
-  called on setup failure per the comment at `:1258`). correlate has the identical gap:
-  `g_ff` attached at `:332`, `err_skel`/`err_file` (`:358-363`) never destroy it. funcs
-  gets this right — its setup failure reuses `funcs_teardown()` (`:1248-1250`), which
-  destroys `g_follow_fork_link` (`:1286`). Low impact (reaped at process exit) but an
-  inconsistent cleanup contract. Fix: align syscalls/correlate to funcs' teardown-reuse
-  pattern (or explicitly destroy `g_ff` on the error path).
-
-- **AA12 — failure-path sink-report / cleanup cosmetics.** Source: 2026-07-07
-  graph-informed audit. Three small inconsistencies, all cosmetic/idempotent: (a) funcs'
-  setup-failure path reuses `funcs_teardown()`, which always calls `ares_sink_report()`
-  and so prints a confusing `"wrote 0 events to X"` even though setup failed
-  (`funcs.c:1248-1250,1308-1309`); syscalls/lib/correlate close the sink without a
-  report on the same failure class (`syscalls.c:1261`, `lib.c:227`, `correlate.c:362`).
-  (b) `mod` is internally inconsistent between its own paths — no report on setup-fail
-  (`mod.c:148`) or launch-fail (`:166`), but reports on success (`:178-179`). (c)
-  correlate double-calls `destroy_uprobe_links()` on the ring-buffer-fail path
-  (`correlate.c:350` then again via `goto err_skel` at `:359`) — harmless (idempotent
-  reset to NULL/0) but dead/confusing; drop the inline call at `:350`. Fix (a)/(b) by
-  deciding whether "wrote 0" on failure is desired and applying it uniformly; fix (c) by
-  deleting the redundant call.
-
 ---
 
 ## Resolved / Done
@@ -483,6 +445,29 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-07
+
+- **AA10/AA11/AA12 — engine setup/teardown parity batch (fixed).** Three small
+  cross-engine inconsistencies closed together (Tier 2 of the graph-informed audit):
+  **AA10** — `funcs.c`'s `--siblings` loop (`:1068-1076`) no longer installs UID 0
+  when `ares_get_pid_uid` returns `0`; `correlate.c`'s equivalent loop (`:325-329`)
+  now guards `install_uid` with `uid > 0` so a deliberate skip no longer prints
+  `"install UID for PID N failed"` — both aligned to the silent-skip pattern
+  syscalls/lib/dump already used. `install_uid()`'s body is untouched, preserving its
+  second, genuinely-fatal caller on the `-P`/`-p` primary path (`correlate.c:311`).
+  **AA11** — `syscalls.c`'s `out:` setup-failure block and `correlate.c`'s
+  `err_skel:` block now `bpf_link__destroy(g_ff)` before falling through (previously
+  only normal teardown did, which isn't reached on setup failure). **AA12** — (a)
+  `syscalls.c`, `lib.c`, and `correlate.c`'s setup-failure paths now call
+  `ares_sink_report()` after `ares_sink_close()`, matching `funcs`' existing behavior,
+  so `"wrote 0 events to X"` now prints uniformly on a genuine setup failure instead
+  of only for `funcs`; (b) `mod.c`'s own setup-fail and launch-fail paths do the same
+  close+report pairing its success path already did; (c) `correlate.c`'s redundant
+  inline `destroy_uprobe_links()` call on the ring-buffer-fail line (`:350`) removed —
+  `err_skel:` already calls it. Host-verified (`make test` unchanged, all suites
+  pass); full engine-binary compilation needs `libelf-dev` + the aarch64 cross-
+  toolchain, neither present in this environment (same gap as the AA1/AA2 fixes) — the
+  diffs were verified by exact-anchor `Edit` application against freshly-read source
+  plus manual brace-balance review of the composed regions, not a full build.
 
 - **AA2 — detectability-firewall runtime classifier fails open + dead enforcement fn
   (fixed).** `ares_object_writes_target` (`src/common/capabilities.c`) now returns

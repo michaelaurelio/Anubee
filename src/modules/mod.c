@@ -158,7 +158,10 @@ int cmd_mod(int argc, char **argv)
     struct ring_buffer *rb = an->setup(uid, &mc);
     if (!rb) {
         fprintf(stderr, "mod: analyzer '%s' setup failed\n", ma.name);
-        if (ma.c.output_file) ares_sink_close(&g_sink);
+        if (ma.c.output_file) {
+            ares_sink_close(&g_sink);
+            ares_sink_report(&g_sink);
+        }
         return 1;
     }
 
@@ -168,7 +171,10 @@ int cmd_mod(int argc, char **argv)
         if (ares_launch_app(ma.pkg, ma.activity, NULL) != 0) {
             fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
             an->teardown();
-            if (ma.c.output_file) ares_sink_close(&g_sink);
+            if (ma.c.output_file) {
+                ares_sink_close(&g_sink);
+                ares_sink_report(&g_sink);
+            }
             return 1;
         }
     }

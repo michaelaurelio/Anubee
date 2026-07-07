@@ -1067,9 +1067,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
             if (args.tgt.siblings) {
                 int pid_uid = ares_get_pid_uid(args.tgt.pids[i]);
-                if (pid_uid < 0) {
-                    fprintf(stderr, "funcs: could not resolve UID for PID %d\n", args.tgt.pids[i]);
-                } else {
+                if (pid_uid > 0) {
                     __u32 vuid = (__u32)pid_uid;
                     bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
                 }

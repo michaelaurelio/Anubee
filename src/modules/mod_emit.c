@@ -130,3 +130,22 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 
     jb_c(j, '}');
 }
+
+void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+                                int distinct_estimate, int manage_ext_storage)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_RANSOMWARE_BURST)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"touch_count\":");   jb_u64(j, e->touch_count);
+    jb_s(j, ",\"distinct_estimate\":"); jb_u64(j, (unsigned long long)distinct_estimate);
+    jb_s(j, ",\"window_ms\":");     jb_u64(j, e->window_ms);
+    jb_s(j, ",\"sample_path\":\""); jb_esc(j, e->sample_path); jb_c(j, '"');
+    jb_s(j, ",\"manage_external_storage\":");
+    if (manage_ext_storage < 0)
+        jb_s(j, "null");
+    else
+        jb_s(j, manage_ext_storage ? "true" : "false");
+    jb_c(j, '}');
+}

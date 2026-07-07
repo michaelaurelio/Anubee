@@ -18,6 +18,12 @@
 #define PROP_NAME_LEN   128
 #define PROP_VALUE_LEN   96
 #define FILE_PATH_LEN   256
+// RING_LEN > THRESHOLD is load-bearing (see ransomware_burst.bpf.c): the
+// per-pid hash ring never wraps before a window resets, so at emit time the
+// first `touch_count` ring slots are always exactly this window's hashes --
+// no stale cross-window data, no wraparound bookkeeping needed.
+#define RANSOMWARE_BURST_RING_LEN 24
+#define BURST_THRESHOLD           20
 
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
@@ -29,6 +35,7 @@ enum {
     MOD_EV_PROP_SCAN  = 6,
     MOD_EV_PROP_READ  = 7,
     MOD_EV_FILE_ACCESS = 8,
+    MOD_EV_RANSOMWARE_BURST = 9,
 };
 
 struct spawn_event {
@@ -69,6 +76,15 @@ struct file_access_event {
     char  path[FILE_PATH_LEN];
     __u32 flags;
     __u8  _pad[4];
+};
+
+struct ransomware_burst_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u32  touch_count;
+    __u32  window_ms;
+    __u64  path_hashes[RANSOMWARE_BURST_RING_LEN];
+    char   sample_path[FILE_PATH_LEN];
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

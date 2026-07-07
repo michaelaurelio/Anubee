@@ -12,6 +12,7 @@ struct proc_exit_event;  // modules/mod_events.h
 struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
+struct ransomware_burst_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -41,5 +42,15 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 // free of the flags bit-layout).
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
+
+// {"type":"ransomware_burst","pid":N,"comm":"..","touch_count":N,
+//  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
+//  "manage_external_storage":true|false|null}
+// distinct_estimate: caller-computed via burst_distinct_count (keeps this
+// builder free of that logic). manage_ext_storage is tri-state: 1 = granted
+// -> true, 0 = checked and not granted -> false, negative = unknown
+// (package unresolved, never checked) -> null.
+void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+                                int distinct_estimate, int manage_ext_storage);
 
 #endif /* __ARES_MOD_EMIT_H */

@@ -451,6 +451,8 @@ test:
 	$(BUILD)/test_mod_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
 	$(BUILD)/test_file_access_classify
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_ransomware_burst_classify.c src/modules/ransomware_burst_classify.c -o $(BUILD)/test_ransomware_burst_classify
+	$(BUILD)/test_ransomware_burst_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage

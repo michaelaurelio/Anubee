@@ -34,8 +34,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
   vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
 - CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
-- AA2 — detectability-firewall runtime classifier fails **open** on unregistered
-  capabilities; its one runtime-enforcement helper is dead code.
 - AA3 — `trace`↔engine driver ABI held by two hand-maintained, uncross-checked lists
   (inline prototypes in `trace.c` vs. the Makefile's `--keep-global-symbol` lists).
 
@@ -227,34 +225,6 @@ on a tool whose real edge is stealthy syscalls. Consider labeling managed naming
 experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
 authoritative-path migration before sinking more into offset tables.
 
-### AA2 — detectability-firewall runtime classifier fails open + dead enforcement fn
-
-Source: 2026-07-07 graph-informed audit. `ares_object_writes_target` returns `false`
-for **any unregistered** capability name (`src/common/capabilities.c:32-40`) — unknown
-defaults to "quiet." `mod.c` classifies and prints an engine's loudness *after*
-`an->setup()` has already loaded and attached its BPF object (`mod.c:145` setup →
-`:154` classify → `:156` print), so for `prop-read` the libc `BRK` is already written
-into the target before the "LOUD" line prints. Worse: `ares_quiet_config_ok`
-(`capabilities.c:42-48`) — the only function that would runtime-verify a loaded
-configuration is quiet — has **zero call sites** in the tree (confirmed by grep); it's
-dead code, so there is no runtime gate at all, only the build-time `check-firewall.sh`
-convention plus the `capabilities.c` table itself.
-
-Blast radius: registering a new `ares mod` analyzer requires three independent,
-unenforced edits (the `mod.c` registry, the `capabilities.c` row, and
-`check-firewall.sh`'s `map_bpf_obj`/`owner_of` cases). If a new **loud** analyzer's
-`mod:<name>` row is forgotten, `ares_object_writes_target` returns `false` and the
-operator is told "stealthy: uses kernel-only probes" while it writes a `BRK` into the
-target — precisely the misclassification CR1's firewall exists to prevent. Build-time
-Check B in `check-firewall.sh` is a real backstop for new uprobe-bearing `.o`s mapped
-to a `shared`-owned object, but it doesn't correct the runtime label the operator sees.
-
-Actionable: default the classifier to **loud/unknown** (fail closed) so an unregistered
-capability reads as detectable until proven otherwise; move the loudness print before
-`setup()` attaches; and either wire `ares_quiet_config_ok` in as a real runtime assertion
-(e.g. at `trace`/`mod` startup, given the list of objects about to load) or delete it so
-the firewall doesn't overstate its enforcement surface.
-
 ### AA3 — `trace`↔engine driver ABI held by two hand-maintained lists, no compile check
 
 Source: 2026-07-07 graph-informed audit. `trace.c:23-31` hand-declares the nine engine
@@ -303,15 +273,6 @@ lists can't diverge silently.
   `syscalls`/`funcs` do, wiring a per-analyzer `ares_coverage_report` at
   `mod.c` teardown is the same mechanical swap Tasks 4-6 did for the other
   engines.
-
-- **CR1 firewall-gate `--selftest` exercises the detectors, not the gate routing.**
-  `scripts/check-firewall.sh --selftest` proves `uprobe_sections` and the `nm` attach
-  match fire on an injected violation, but it calls those primitives directly - it does
-  not drive `check_sections` / `check_attach_whitelist` (with `owner_of` / `is_loud` /
-  the coverage guard) end-to-end. A stronger selftest would drop a temp uprobe-bearing
-  object into a quiet slot and assert a `main`-path breach. Low priority (the routing is
-  simple and every real gate run covers it). Also: on a toolchain-less host arm A is
-  SKIPped (now surfaced in the summary line) so only the attach-ref arm runs there.
 
 - **W5 — JIT code-cache frames have no file-backed CFI (deferred, ≈0 payoff).**
   JIT-compiled Java frames (`[anon]` / `[anon_shmem:dalvik-jit-code-cache]`) between
@@ -522,6 +483,32 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-07
+
+- **AA2 — detectability-firewall runtime classifier fails open + dead enforcement fn
+  (fixed).** `ares_object_writes_target` (`src/common/capabilities.c`) now returns
+  `true` (loud) for a `NULL` or unregistered capability name instead of `false`
+  (quiet) — fail closed. `src/modules/mod.c`'s loudness classify+print now happens
+  right after `find_analyzer()` succeeds, before `an->setup()` can load or attach
+  any BPF object (previously classified only after setup). The classify call itself
+  now goes through `ares_quiet_config_ok(&mod_key, 1)` instead of the direct
+  `ares_object_writes_target` call, giving the previously-dead runtime-assertion
+  helper a real caller. `tests/test_capabilities.c`'s `unknown -> false` assertion
+  updated to `unknown -> true (fail closed)` — the one behavior change the fix makes;
+  every other registered capability's classification is unchanged.
+  Also closed alongside: **CR1's `--selftest` gap** — `scripts/check-firewall.sh
+  --selftest` previously only proved the `uprobe_sections`/`nm` primitives work; a
+  new arm C drives the real gate routing (`check_sections`/`check_attach_whitelist`,
+  via `map_bpf_obj`/`owner_of`/`is_loud`) against a throwaway build tree (`BUILD`
+  overridden only inside a subshell — never touches the real `build/` or source),
+  asserting a `FIREWALL BREACH` fires on an injected quiet-capability violation.
+  Verified by deliberately neutering `check_attach_whitelist`'s `breach()` call and
+  confirming the new arm caught it (selftest FAILED), then reverting. Host-verified
+  (`make test` — updated `test_capabilities` passes 14/14; `--selftest` passes with
+  `LLVM_NM=nm LLVM_OBJDUMP=objdump` overrides on a host without `llvm-nm`/`clang`).
+  `make check-firewall` itself needs the aarch64 cross-toolchain, not present in this
+  environment — the edits don't change any currently-registered capability's Check
+  A/B verdict (only the unknown-name fallback and print timing), so this is a
+  low-risk gap, not a skipped verification of the actual change.
 
 - **AA1 — `trace` combined-run symbolizer data race (fixed).** `cfi_unwind_snapshot`
   (`src/common/symbolize.c`) mutated the shared symbolizer caches (`pm_get`/

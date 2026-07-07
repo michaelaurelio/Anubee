@@ -26,8 +26,9 @@ int main(void)
     CHECK(ares_object_writes_target("funcs"),      "funcs loud");
     CHECK(ares_object_writes_target("correlate"),  "correlate loud");
     CHECK(ares_object_writes_target("trace"),      "trace loud");
-    // Unknown name is treated as non-writing (safe default for lookup).
-    CHECK(!ares_object_writes_target("nonexistent"), "unknown -> false");
+    // AA2 fix: unknown name fails closed — treated as writing (loud), not
+    // silently reported as stealthy for something unaudited.
+    CHECK(ares_object_writes_target("nonexistent"), "unknown -> true (fail closed)");
     // Analyzers — stealthy ones are quiet, loud ones are not.
     CHECK(!ares_object_writes_target("mod:proc-event"), "mod:proc-event quiet");
     CHECK(!ares_object_writes_target("mod:execve"),    "mod:execve quiet");

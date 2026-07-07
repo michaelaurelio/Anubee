@@ -115,6 +115,19 @@ int cmd_mod(int argc, char **argv)
         return 1;
     }
 
+    // AA2 fix: classify + print loudness here, before anything below can load or
+    // attach a BPF object — so a LOUD analyzer's uprobe is never live before the
+    // operator sees the warning. ares_quiet_config_ok (not the direct
+    // ares_object_writes_target call) so the one runtime-assertion helper in
+    // capabilities.h has a real caller.
+    char mod_key[64];
+    snprintf(mod_key, sizeof(mod_key), "mod:%s", ma.name);
+    const char *loaded[1] = { mod_key };
+    if (!ares_quiet_config_ok(loaded, 1))
+        printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ma.name);
+    else
+        printf("[mod]   > stealthy: %s uses kernel-only probes\n", ma.name);
+
     int uid;
     if (ma.tgt.n > 0) {
         // ponytail: siblings → grab UID from first PID; precise → uid=0 (BPF gate uses TGID)
@@ -148,14 +161,6 @@ int cmd_mod(int argc, char **argv)
         if (ma.c.output_file) ares_sink_close(&g_sink);
         return 1;
     }
-
-    char mod_key[64];
-    snprintf(mod_key, sizeof(mod_key), "mod:%s", ma.name);
-    int loud = ares_object_writes_target(mod_key);
-    if (loud)
-        printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ma.name);
-    else
-        printf("[mod]   > stealthy: %s uses kernel-only probes\n", ma.name);
 
     ares_install_stop_handler(&exiting);
     if (ma.pkg) {

@@ -161,9 +161,49 @@ EOF
     echo "SELFTEST FAIL: attach_uprobe ref not detected in injected object" >&2
   fi
 
-  if [ "$ok" -eq 2 ]; then
-    if [ "$arm_a_skipped" -eq 1 ]; then
-      echo "check-firewall: selftest OK (arm A SKIPPED - BPF toolchain absent, only attach-ref arm exercised)"
+  # C: CR1 gap - A/B only prove the section/symbol primitives work
+  # (uprobe_sections, an nm grep). Drive the actual gate routing main() uses
+  # (check_sections / check_attach_whitelist, via map_bpf_obj / owner_of /
+  # is_loud) against a throwaway build tree: BUILD is overridden only inside a
+  # subshell, so this never touches the real build/ or source, and any
+  # breach() call's fail=1 dies with the subshell instead of leaking out.
+  local arm_c_skipped=0
+  mkdir -p "$tmp/fakebuild/syscalls"
+
+  # C1: check_sections should flag a quiet capability (syscalls, loud=0)
+  # whose object carries a uprobe section. Reuses arm A's compiled object;
+  # skip (not fail) under the same toolchain-absence condition as arm A.
+  if [ "$arm_a_skipped" -eq 0 ]; then
+    cp "$tmp/q.bpf.o" "$tmp/fakebuild/syscalls.bpf.o"
+    if ( BUILD="$tmp/fakebuild"; check_sections syscalls 0 ) 2>&1 | grep -q 'FIREWALL BREACH'; then
+      ok=$((ok+1))
+    else
+      echo "SELFTEST FAIL: check_sections routing missed the injected uprobe section" >&2
+    fi
+  else
+    ok=$((ok+1)); arm_c_skipped=1
+  fi
+
+  # C2: check_attach_whitelist should flag a quiet-owned object referencing
+  # bpf_program__attach_uprobe. Only needs cc (arm B's q.o) plus the real,
+  # already-built capdump symlinked in - the loudness table itself isn't
+  # faked, only the injected artifact's location.
+  if [ -x "$BUILD/capdump" ]; then
+    cp "$tmp/q.o" "$tmp/fakebuild/syscalls/fake.o"
+    ln -sf "$(cd "$BUILD" && pwd)/capdump" "$tmp/fakebuild/capdump"
+    if ( BUILD="$tmp/fakebuild"; check_attach_whitelist ) 2>&1 | grep -q 'FIREWALL BREACH'; then
+      ok=$((ok+1))
+    else
+      echo "SELFTEST FAIL: check_attach_whitelist routing missed the injected attach ref" >&2
+    fi
+  else
+    echo "SELFTEST SKIP: build/capdump not built (run 'make capdump' first) - C2 skipped" >&2
+    ok=$((ok+1))
+  fi
+
+  if [ "$ok" -eq 4 ]; then
+    if [ "$arm_a_skipped" -eq 1 ] || [ "$arm_c_skipped" -eq 1 ]; then
+      echo "check-firewall: selftest OK (BPF-toolchain-dependent arms SKIPPED - only symbol/routing arms exercised)"
     else
       echo "check-firewall: selftest OK"
     fi

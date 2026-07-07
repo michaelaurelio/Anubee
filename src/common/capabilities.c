@@ -31,12 +31,15 @@ const struct ares_bpf_object *ares_bpf_objects(int *count)
 
 bool ares_object_writes_target(const char *name)
 {
+    // AA2 fix: fail closed. No name, or a name not in the table, means we don't
+    // know this capability is quiet — assume loud until it's registered, rather
+    // than silently telling the operator "stealthy" for something unaudited.
     if (!name)
-        return false;
+        return true;
     for (size_t i = 0; i < sizeof(g_objects) / sizeof(g_objects[0]); i++)
         if (strcmp(g_objects[i].name, name) == 0)
             return g_objects[i].writes_target_memory;
-    return false;
+    return true;
 }
 
 bool ares_quiet_config_ok(const char *const *loaded, int n)

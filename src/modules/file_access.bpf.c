@@ -20,22 +20,8 @@ struct {
 #include "common/uid_filter.bpf.h"
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
+#include "common/path_gate.bpf.h"
 #include "modules/mod_events.h"
-
-// Bounded prefix compare: path is a fixed-size local/ringbuf buffer (always
-// >= 32 bytes), so indexing up to 31 is always safe regardless of prefix
-// length; `plen` only controls how much of that fixed window we compare.
-static __always_inline int path_has_prefix(const char *path, const char *prefix, int plen)
-{
-    #pragma unroll
-    for (int i = 0; i < 32; i++) {
-        if (i >= plen)
-            break;
-        if (path[i] != prefix[i])
-            return 0;
-    }
-    return 1;
-}
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
 // enormous (every .so/.apk/.oat/cache file at startup). Only forward opens

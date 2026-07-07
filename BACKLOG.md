@@ -22,6 +22,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ## Open work — at a glance
 
+**Urgent:**
+- AA1 — `trace` combined run has an unlocked shared-symbolizer data race
+  (`cfi_unwind_snapshot` bypasses `g_lock`); the coordinator's own comment claiming
+  per-engine "symbol-localized globals" is wrong.
+
 **Major:**
 - `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
   regex `-I/-i`; `-P` attach timing.
@@ -34,6 +39,10 @@ items lives in DOCUMENTATION.md and the referenced specs.
   vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
 - CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
+- AA2 — detectability-firewall runtime classifier fails **open** on unregistered
+  capabilities; its one runtime-enforcement helper is dead code.
+- AA3 — `trace`↔engine driver ABI held by two hand-maintained, uncross-checked lists
+  (inline prototypes in `trace.c` vs. the Makefile's `--keep-global-symbol` lists).
 
 **Minor:**
 - CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
@@ -50,12 +59,51 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
+- AA4 — `funcs` per-event O(N) probe-target scan.
+- AA5 — `cfi_unwind_snapshot` per-frame invariant rescans (pid/module lookups).
+- AA6 — MCP `load_structured` per-row DuckDB insert loop.
+- AA7 — `syscalls` `json_emit` per-event attribute table scans.
+- AA8 — MCP `wx_scan` O(m²·log m) writable-range re-sort.
+- AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.
+- AA10 — `--siblings` uid≤0 handling diverges across engines.
+- AA11 — follow-fork `bpf_link` leak on setup-failure (syscalls, correlate).
+- AA12 — failure-path sink-report / cleanup cosmetics (funcs, mod, correlate).
 
 ---
 
 ## Urgent — architectural / correctness-critical
 
-None currently open.
+### AA1 — `trace` combined run: unlocked shared-symbolizer data race
+
+Source: 2026-07-07 graph-informed audit. `src/common/symbolize.c` and its satellites
+(`sym_procmaps.c`, `sym_elf.c`, `sym_jit.c`) are shared, single-copy `COMMON_API` code —
+**not** symbol-localized per engine. Their mutable caches (`g_pm`, `g_cfi`, `g_ds`,
+`g_art`, `g_sc`) are guarded by `g_lock` in `sym_resolve` (`symbolize.c:155-162`) and
+`sym_flush_pid` (`:347-352`), but **`cfi_unwind_snapshot` (`symbolize.c:261-343`) takes
+no lock** while calling `pm_get`/`read_proc_maps` (reallocs `pm->m`, LRU-evicts another
+pid's cached ELF/JIT state — `sym_procmaps.c:50,79-97`) and `cfi_get`/`dynsym_get`
+(reallocs `g_cfi`/`g_ds` — `sym_elf.c:456-460`).
+
+`trace` spawns `syscalls_run` and `funcs_run` on two concurrent pthreads
+(`trace.c:170-171`); both call `cfi_unwind_snapshot` + `sym_resolve` from their own
+thread (syscalls on its worker thread, funcs on its drain thread per N1) against the
+*same* process-global caches. `trace.c:161-163`'s comment — *"Each engine uses its own
+(symbol-localized) globals … so the threads do not contend"* — is incorrect; that
+false assumption is presumably why the race hasn't been caught. Failure mode: Thread F
+inside `cfi_unwind_snapshot` reallocs/evicts a cache entry while Thread S is mid-lookup
+on the same buffer (holding `g_lock`, which doesn't exclude the unlocked accessor) →
+torn read, use-after-free, or double-eviction — a non-deterministic crash or silently
+corrupted symbolization in the flagship combined run. Latent today only because every
+*single*-engine invocation is single-threaded through the symbolizer; `trace`'s combined
+run is still on the "pending on-device verification" list, which likely explains why
+this hasn't surfaced yet.
+
+Actionable: take `g_lock` around the cache-mutating calls inside `cfi_unwind_snapshot`
+(the `cfi_step` work over the frozen snapshot needs no lock) — or give `trace` per-engine
+symbolizer instances. Either way, make "hold `g_lock` before touching the shared caches"
+true at every public entry point, not just `sym_resolve`/`sym_flush_pid`. Do together with
+AA5 (same function, same audit pass — the `pm_get` hoist and the lock fix touch the same
+lines).
 
 ---
 
@@ -214,6 +262,56 @@ on a tool whose real edge is stealthy syscalls. Consider labeling managed naming
 experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
 authoritative-path migration before sinking more into offset tables.
 
+### AA2 — detectability-firewall runtime classifier fails open + dead enforcement fn
+
+Source: 2026-07-07 graph-informed audit. `ares_object_writes_target` returns `false`
+for **any unregistered** capability name (`src/common/capabilities.c:32-40`) — unknown
+defaults to "quiet." `mod.c` classifies and prints an engine's loudness *after*
+`an->setup()` has already loaded and attached its BPF object (`mod.c:145` setup →
+`:154` classify → `:156` print), so for `prop-read` the libc `BRK` is already written
+into the target before the "LOUD" line prints. Worse: `ares_quiet_config_ok`
+(`capabilities.c:42-48`) — the only function that would runtime-verify a loaded
+configuration is quiet — has **zero call sites** in the tree (confirmed by grep); it's
+dead code, so there is no runtime gate at all, only the build-time `check-firewall.sh`
+convention plus the `capabilities.c` table itself.
+
+Blast radius: registering a new `ares mod` analyzer requires three independent,
+unenforced edits (the `mod.c` registry, the `capabilities.c` row, and
+`check-firewall.sh`'s `map_bpf_obj`/`owner_of` cases). If a new **loud** analyzer's
+`mod:<name>` row is forgotten, `ares_object_writes_target` returns `false` and the
+operator is told "stealthy: uses kernel-only probes" while it writes a `BRK` into the
+target — precisely the misclassification CR1's firewall exists to prevent. Build-time
+Check B in `check-firewall.sh` is a real backstop for new uprobe-bearing `.o`s mapped
+to a `shared`-owned object, but it doesn't correct the runtime label the operator sees.
+
+Actionable: default the classifier to **loud/unknown** (fail closed) so an unregistered
+capability reads as detectable until proven otherwise; move the loudness print before
+`setup()` attaches; and either wire `ares_quiet_config_ok` in as a real runtime assertion
+(e.g. at `trace`/`mod` startup, given the list of objects about to load) or delete it so
+the firewall doesn't overstate its enforcement surface.
+
+### AA3 — `trace`↔engine driver ABI held by two hand-maintained lists, no compile check
+
+Source: 2026-07-07 graph-informed audit. `trace.c:23-31` hand-declares the nine engine
+entry-point prototypes (`syscalls_setup/_run/_teardown`, `funcs_*`, `lib_*`) inline,
+noting it does so "to avoid pulling in each engine's header." The Makefile
+independently keeps those same symbols global per engine via `--keep-global-symbol`
+lists (`Makefile:307-342`) — for all five engines, though `trace` only wires three.
+
+A signature change to any engine's `*_setup`/`*_run`/`*_teardown` produces **no compile
+error** in `trace.c` — the linker resolves the localized-but-kept symbol against a stale
+hand-written prototype, i.e. a silent ABI mismatch / UB at the coordinator boundary. The
+Makefile keep-list and the `trace.c` prototype list also have no mechanism keeping them
+in sync; drift in either is invisible until runtime. This is the same class of
+convention-over-enforcement fragility as the tracked `cmd_*` partial-link/localization
+hack, but on the coordinator-driver contract specifically, which the thin-presets
+refactor note doesn't obviously cover.
+
+Actionable: introduce one shared header (e.g. `common/engine_driver.h`) declaring the
+`{ setup; run; teardown; }` driver contract per engine, include it from both the engines
+and `trace.c`, and derive/generate the `--keep-global-symbol` list from it so the two
+lists can't diverge silently.
+
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
@@ -356,6 +454,100 @@ authoritative-path migration before sinking more into offset tables.
 - _Checked, not a bug (2026-06-26 audit):_ `correlate`'s `-p`/`-e`/`-F` parsing was
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.
+
+- **AA4 — `funcs` per-event O(N) probe-target scan.** Source: 2026-07-07 graph-informed
+  audit. `find_target_by_entry_addr` linear-scans `probe_targets[]` (up to
+  `probe_target_count`, cap 4096) per CALL (`funcs.c:508`) and per RETURN (`funcs.c:607`)
+  — even the fast path (`funcs.c:336-339`) is O(N); the `/proc/maps`-miss fallback
+  (`:356-390`) adds a `strcmp` per row on top. Under a broad `-I/-i` regex resolving
+  thousands of symbols this is the dominant per-event cost on the worker thread. Fix:
+  add an `runtime_entry_addr → probe_target_t*` hash (mirrors the existing `sc_ent`/
+  `fdc_ent` tables), populated where `runtime_entry_addr` is first assigned
+  (`funcs.c:359,392`); fall back to the scan only on a hash miss.
+
+- **AA5 — `cfi_unwind_snapshot` per-frame invariant rescans.** Source: 2026-07-07
+  graph-informed audit. `pm_get(pid)` is called *inside* the per-frame unwind loop
+  (`symbolize.c:296`) though `pid` never changes across a stack's frames; `cfi_get`/
+  `dynsym_get` are linear scans with `strcmp` over every cached module
+  (`sym_elf.c:450-453,321-323`). A 64-frame unwind does 64 redundant pid-table scans
+  plus 64 module-table `strcmp` walks over every ELF the process has ever cached
+  (dozens–hundreds on a real app). Fix: hoist `pm_get(pid)` out of the loop in
+  `cfi_unwind_snapshot`; hash the `cfi_get`/`dynsym_get` caches on `(elf_off, path)` or
+  intern the path pointer for identity compares instead of `strcmp`. Do together with
+  AA1 (same function — add the lock and hoist `pm_get` in one pass).
+
+- **AA6 — MCP `load_structured` per-row DuckDB insert loop.** Source: 2026-07-07
+  graph-informed audit. `tools/ares-mcp/trace_store.py:171-186` issues one
+  `con.execute("INSERT ... VALUES", ...)` per record across four Python loops for
+  funcs/correlate records — O(rows) Python↔DuckDB round-trips, unlike the syscall
+  loader's bulk `read_json(...)` path (`trace_store.py:65-69`). Visibly slow on large
+  funcs/correlate traces for no structural reason. Fix: load via `read_json(path,
+  format='newline_delimited', ...)` filtered by `type` in SQL (as `load()` does), or at
+  minimum `executemany`/the DuckDB Appender.
+
+- **AA7 — `syscalls` `json_emit` per-event attribute table scans.** Source: 2026-07-07
+  graph-informed audit. Unlike `syscall_name()` (R9: nr-indexed O(1)), the sibling
+  attribute tables are still linear scans per event: `arg_count` over `g_argc`
+  (`syscalls.c:89-95`), `arg_fd_mask` over `g_fd_args` (`:489-495`), `arg_sock_index`
+  over `g_sock_args` (`:513-519`); `json_emit` also recomputes `arg_fd_mask(e->nr)` once
+  per *argument* inside its decode loop (`:662` then again `:675`), not once per event.
+  Fix: build `by_nr[512]` indexes for each attribute at setup (same pattern as
+  `ares_sysindex`), and hoist the per-record `arg_fd_mask`/`arg_count` calls in
+  `json_emit` out of the per-argument loop.
+
+- **AA8 — MCP `wx_scan` O(m²·log m) writable-range re-sort.** Source: 2026-07-07
+  graph-informed audit. `add_ivl` appends then re-sorts and re-merges the *entire*
+  accumulated `ever_w` list on every writable mapping (`trace_store.py:535-544`, called
+  per W mapping at `:583-584`) — O(m²·log m) over *m* writable mmap/mprotect events,
+  worst on exactly the packer/JIT-heavy RASP workloads `wx_scan` targets. Fix:
+  `bisect.insort` + merge only the neighbors of the inserted interval (O(m) amortized),
+  or collect all W intervals and sort+merge once.
+
+- **AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.**
+  Source: 2026-07-07 graph-informed audit. `ares_managed_chain` heap-allocates a `jbuf`
+  whose first `jb_need` floors at 8192 bytes (`managed_frame.c:43`; `emit.c:16`), freed
+  at `managed_frame.c:62-66`, once per distinct CFI stack — for an output fragment
+  capped at `JC_FRAG=208` bytes. Separately, `emit_cfi_backtrace` symbolizes every frame
+  twice per snapshot: `ares_emit_cfi_stack_json` resolves each frame (`symbolize.c:395`)
+  and `ares_managed_chain` resolves the same frames again (`symbolize.c:368`), each
+  under `g_lock` with its own `snprintf`. Fix: format `ares_managed_chain_build` into a
+  small stack buffer sized to `cap` instead of a heap `jbuf`; resolve frame symbols once
+  per snapshot and hand the resolved array to both call sites.
+
+- **AA10 — `--siblings` uid≤0 handling diverges across engines.** Source: 2026-07-07
+  graph-informed audit. The same step (arm `target_uids` from a `-p` PID's UID) reacts
+  three different ways when the UID is unresolvable/`<=0`: syscalls/lib/dump guard
+  `if (uid > 0)` and silently skip (`syscalls.c:1184-1190`, `lib.c:182-188`,
+  `dump.c:252-258`); funcs warns only on `uid < 0`, silent on `== 0`
+  (`funcs.c:1068-1076`); correlate's `install_uid()` returns `-1` for `uid <= 0` and
+  prints `"install UID for PID N failed"` (`correlate.c:326-329`) — an active false
+  error for a deliberate skip. Fix: align correlate (and funcs' `==0` gap) to the
+  silent-skip majority; a legitimately-skipped PID should never read as "failed."
+
+- **AA11 — follow-fork `bpf_link` leak on setup-failure (syscalls, correlate).** Source:
+  2026-07-07 graph-informed audit. syscalls attaches `g_ff` at `syscalls.c:1212`; its
+  setup-failure `out:` path (`:1257-1269`) tears down the skeleton but never
+  `bpf_link__destroy(g_ff)` (teardown does, at `:1345-1348`, but is explicitly not
+  called on setup failure per the comment at `:1258`). correlate has the identical gap:
+  `g_ff` attached at `:332`, `err_skel`/`err_file` (`:358-363`) never destroy it. funcs
+  gets this right — its setup failure reuses `funcs_teardown()` (`:1248-1250`), which
+  destroys `g_follow_fork_link` (`:1286`). Low impact (reaped at process exit) but an
+  inconsistent cleanup contract. Fix: align syscalls/correlate to funcs' teardown-reuse
+  pattern (or explicitly destroy `g_ff` on the error path).
+
+- **AA12 — failure-path sink-report / cleanup cosmetics.** Source: 2026-07-07
+  graph-informed audit. Three small inconsistencies, all cosmetic/idempotent: (a) funcs'
+  setup-failure path reuses `funcs_teardown()`, which always calls `ares_sink_report()`
+  and so prints a confusing `"wrote 0 events to X"` even though setup failed
+  (`funcs.c:1248-1250,1308-1309`); syscalls/lib/correlate close the sink without a
+  report on the same failure class (`syscalls.c:1261`, `lib.c:227`, `correlate.c:362`).
+  (b) `mod` is internally inconsistent between its own paths — no report on setup-fail
+  (`mod.c:148`) or launch-fail (`:166`), but reports on success (`:178-179`). (c)
+  correlate double-calls `destroy_uprobe_links()` on the ring-buffer-fail path
+  (`correlate.c:350` then again via `goto err_skel` at `:359`) — harmless (idempotent
+  reset to NULL/0) but dead/confusing; drop the inline call at `:350`. Fix (a)/(b) by
+  deciding whether "wrote 0" on failure is desired and applying it uniformly; fix (c) by
+  deleting the redundant call.
 
 ---
 

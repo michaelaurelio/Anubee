@@ -22,11 +22,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ## Open work — at a glance
 
-**Urgent:**
-- AA1 — `trace` combined run has an unlocked shared-symbolizer data race
-  (`cfi_unwind_snapshot` bypasses `g_lock`); the coordinator's own comment claiming
-  per-engine "symbol-localized globals" is wrong.
-
 **Major:**
 - `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
   regex `-I/-i`; `-P` attach timing.
@@ -73,37 +68,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 ## Urgent — architectural / correctness-critical
 
-### AA1 — `trace` combined run: unlocked shared-symbolizer data race
-
-Source: 2026-07-07 graph-informed audit. `src/common/symbolize.c` and its satellites
-(`sym_procmaps.c`, `sym_elf.c`, `sym_jit.c`) are shared, single-copy `COMMON_API` code —
-**not** symbol-localized per engine. Their mutable caches (`g_pm`, `g_cfi`, `g_ds`,
-`g_art`, `g_sc`) are guarded by `g_lock` in `sym_resolve` (`symbolize.c:155-162`) and
-`sym_flush_pid` (`:347-352`), but **`cfi_unwind_snapshot` (`symbolize.c:261-343`) takes
-no lock** while calling `pm_get`/`read_proc_maps` (reallocs `pm->m`, LRU-evicts another
-pid's cached ELF/JIT state — `sym_procmaps.c:50,79-97`) and `cfi_get`/`dynsym_get`
-(reallocs `g_cfi`/`g_ds` — `sym_elf.c:456-460`).
-
-`trace` spawns `syscalls_run` and `funcs_run` on two concurrent pthreads
-(`trace.c:170-171`); both call `cfi_unwind_snapshot` + `sym_resolve` from their own
-thread (syscalls on its worker thread, funcs on its drain thread per N1) against the
-*same* process-global caches. `trace.c:161-163`'s comment — *"Each engine uses its own
-(symbol-localized) globals … so the threads do not contend"* — is incorrect; that
-false assumption is presumably why the race hasn't been caught. Failure mode: Thread F
-inside `cfi_unwind_snapshot` reallocs/evicts a cache entry while Thread S is mid-lookup
-on the same buffer (holding `g_lock`, which doesn't exclude the unlocked accessor) →
-torn read, use-after-free, or double-eviction — a non-deterministic crash or silently
-corrupted symbolization in the flagship combined run. Latent today only because every
-*single*-engine invocation is single-threaded through the symbolizer; `trace`'s combined
-run is still on the "pending on-device verification" list, which likely explains why
-this hasn't surfaced yet.
-
-Actionable: take `g_lock` around the cache-mutating calls inside `cfi_unwind_snapshot`
-(the `cfi_step` work over the frozen snapshot needs no lock) — or give `trace` per-engine
-symbolizer instances. Either way, make "hold `g_lock` before touching the shared caches"
-true at every public entry point, not just `sym_resolve`/`sym_flush_pid`. Do together with
-AA5 (same function, same audit pass — the `pm_get` hoist and the lock fix touch the same
-lines).
+None currently open.
 
 ---
 
@@ -555,6 +520,25 @@ lists can't diverge silently.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-07
+
+- **AA1 — `trace` combined-run symbolizer data race (fixed).** `cfi_unwind_snapshot`
+  (`src/common/symbolize.c`) mutated the shared symbolizer caches (`pm_get`/
+  `read_proc_maps` realloc `g_pm`'s array and LRU-evict other pids' cached state;
+  `cfi_get` reallocs its own cache in `sym_elf.c`) without taking `g_lock`, unlike
+  `sym_resolve`/`sym_flush_pid` which already serialize on it. `trace` runs
+  `syscalls_run` + `funcs_run` concurrently (`trace.c:170-171`), both calling
+  `cfi_unwind_snapshot` — a real cross-thread race (torn read / use-after-realloc /
+  double-evict) in the combined run; `trace.c`'s own comment claiming per-engine
+  "symbol-localized globals" was the wrong assumption that let it go unnoticed. Fix:
+  hold `g_lock` for the whole per-frame walk and hoist the loop-invariant
+  `pm_get(pid)` call to once per walk instead of once per frame (folds in AA5's
+  `pm_get` finding, same function). Corrected the stale `trace.c` comment.
+  Host-verified only (`make test` unchanged, no behavioral diff for single-threaded
+  callers); real confirmation is the already-tracked "pending on-device verification:
+  combined `trace` run" (Minor) — this fix rides that same verification pass rather
+  than a new item.
 
 ### 2026-07-05
 

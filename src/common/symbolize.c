@@ -281,6 +281,18 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 	// without touching the throttled FP-backtrace path.
 	int forced_reread = 0;
 	int n = 0;
+
+	// AA1 fix (2026-07-07 audit): pm_get/read_proc_maps/cfi_get all realloc or
+	// LRU-evict process-global caches (sym_procmaps.c/sym_elf.c) that sym_resolve
+	// and sym_flush_pid already serialize on g_lock — this function didn't. `trace`
+	// runs syscalls_run + funcs_run concurrently and both call this, so the two
+	// threads raced on those caches (torn read / use-after-realloc / double-evict).
+	// Holding g_lock for the whole walk also lets pm_get(pid) run once instead of
+	// once per frame (AA5): with the lock held, g_pm's backing array can't move
+	// under this pointer for the rest of the call.
+	pthread_mutex_lock(&g_lock);
+	struct procmaps *pm = pm_get(pid);
+
 	for (int iter = 0; iter < max && iter < 256; iter++) {
 		if (out_sps) out_sps[n] = sp;   /* SP of the frame whose PC we record */
 		out_pcs[n++] = pc;
@@ -293,7 +305,6 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_PC_ZERO;
 			break;
 		}
-		struct procmaps *pm = pm_get(pid);
 		if (!pm) {
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
 			break;
@@ -339,6 +350,8 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 				  dp);
 		if (rc != 1) break;
 	}
+
+	pthread_mutex_unlock(&g_lock);
 	return n;
 }
 

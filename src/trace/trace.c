@@ -158,9 +158,12 @@ int cmd_trace(int argc, char **argv)
 		return 1;
 	}
 
-	// Drain all ring buffers concurrently until Ctrl-C. Each engine uses its own
-	// (symbol-localized) globals and its own ring buffer, so the threads do not
-	// contend; the only shared state is g_stop.
+	// Drain all ring buffers concurrently until Ctrl-C. Each engine has its own
+	// ring buffer, but src/common/symbolize.c's caches are shared (single linked
+	// copy, not symbol-localized) — sym_resolve/sym_flush_pid/cfi_unwind_snapshot
+	// all serialize on symbolize.c's internal g_lock (AA1 fix, 2026-07-07), so the
+	// two threads don't race on those globals despite calling into them concurrently.
+	// The only state owned directly by this file is g_stop.
 	pthread_t sys_th, func_th, lib_th;
 	struct run_arg sa = { .run = syscalls_run };
 	struct run_arg fa = { .run = funcs_run };

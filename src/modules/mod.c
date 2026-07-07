@@ -182,8 +182,13 @@ int cmd_mod(int argc, char **argv)
     printf("tracing uid %d (%s) ... Ctrl-C to stop\n", uid, ma.name);
     ares_rb_poll_until(rb, &exiting);
 
+    // mod drop-telemetry parity: read the drop-map fd BEFORE teardown() destroys
+    // the skeleton (fd goes with it). Task #10 upgrades this to ares_coverage_report.
+    unsigned long long drops = an->drops ? an->drops() : 0;
+
     an->teardown();
     if (an->print_summary) an->print_summary();
+    ares_drops_report(drops, 0);
 
     if (ma.c.output_file) {
         ares_sink_close(&g_sink);

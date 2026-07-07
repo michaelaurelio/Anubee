@@ -16,6 +16,7 @@ struct {
 #include "common/uid_filter.bpf.h"
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
+#include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
 SEC("tp/sched/sched_process_fork")
@@ -25,8 +26,10 @@ int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 		return 0;
 
 	struct spawn_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	__u64 id     = bpf_get_current_pid_tgid();
 	e->h.type    = MOD_EV_SPAWN;
@@ -61,8 +64,10 @@ int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
 	int raw_exit = BPF_CORE_READ(task, exit_code);
 
 	struct proc_exit_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		bump_dropped();
 		return 0;
+	}
 
 	e->h.type    = MOD_EV_PROC_EXIT;
 	e->h.pid     = pid;

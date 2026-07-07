@@ -33,6 +33,10 @@ typedef struct {
     void (*teardown)(void);
     // Print tally / RASP table to stdout at session end. May be NULL.
     void (*print_summary)(void);
+    // Sum this analyzer's own `dropped` BPF map (mod drop-telemetry parity). Read
+    // the fd BEFORE teardown() destroys the skeleton — call this first. May be
+    // NULL only for an analyzer that genuinely can't drop events (none today).
+    unsigned long long (*drops)(void);
 } ares_analyzer_t;
 
 // Defined in each analyzer's .c; the dispatcher references them by pointer in

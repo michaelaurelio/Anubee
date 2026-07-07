@@ -16,6 +16,7 @@ struct {
 #include "common/uid_filter.bpf.h"
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
+#include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
 // prop_read.bpf.c — BPF programs for all Android system property APIs.
@@ -58,8 +59,10 @@ static __always_inline void read_prop_info(
 static __always_inline struct prop_event *reserve_prop_event(__u32 type)
 {
     struct prop_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return NULL;
+    }
     __u64 id  = bpf_get_current_pid_tgid();
     e->h.type = type;
     e->h.pid  = (__u32)(id >> 32);

@@ -10,6 +10,7 @@
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
+#include "common/runtime.h"
 #include "common/symbolize.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
@@ -144,6 +145,11 @@ static void pe_teardown(void)
     if (g_skel) { proc_event_bpf__destroy(g_skel);     g_skel = NULL; }
 }
 
+static unsigned long long pe_drops(void)
+{
+    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_proc_event = {
@@ -152,4 +158,5 @@ const ares_analyzer_t analyzer_proc_event = {
     .setup         = pe_setup,
     .teardown      = pe_teardown,
     .print_summary = pe_print_summary,
+    .drops         = pe_drops,
 };

@@ -17,6 +17,7 @@
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
+#include "common/runtime.h"
 #include "common/probe_resolve.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
@@ -395,6 +396,11 @@ static void pr_teardown(void)
     if (g_skel) { prop_read_bpf__destroy(g_skel);       g_skel = NULL; }
 }
 
+static unsigned long long pr_drops(void)
+{
+    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+}
+
 // ── analyzer registration ─────────────────────────────────────────────────────
 
 const ares_analyzer_t analyzer_prop_read = {
@@ -403,4 +409,5 @@ const ares_analyzer_t analyzer_prop_read = {
     .setup         = pr_setup,
     .teardown      = pr_teardown,
     .print_summary = pr_print_summary,
+    .drops         = pr_drops,
 };

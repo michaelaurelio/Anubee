@@ -13,6 +13,7 @@
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
+#include "common/runtime.h"
 #include "common/symbolize.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
@@ -267,6 +268,11 @@ static void ex_print_summary(void)
            flagged);
 }
 
+static unsigned long long ex_drops(void)
+{
+    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_execve = {
@@ -275,4 +281,5 @@ const ares_analyzer_t analyzer_execve = {
     .setup         = ex_setup,
     .teardown      = ex_teardown,
     .print_summary = ex_print_summary,
+    .drops         = ex_drops,
 };

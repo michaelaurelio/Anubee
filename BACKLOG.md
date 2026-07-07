@@ -39,11 +39,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
 
 **Minor:**
 - CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field; `mod` coverage
-  (rides `mod` drop-telemetry parity).
+  (drop-telemetry prerequisite done — `mod.c` reports via legacy `ares_drops_report`,
+  swap to `ares_coverage_report` next).
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
-- `mod` drop-telemetry parity (analyzer vtable exposes no drop-map fd).
 - C9 — `funcs` sockaddr decode.
 - R9 residual — syscall table data compiled twice (two `syscalls_gen.h` copies).
 - SW1 — switch-interp ShadowFrame walk follow-ups (hardening, BuildID rows).
@@ -264,12 +264,16 @@ lists can't diverge silently.
   record for `dump` (no snapshot/CFI/managed fields, just a "the rebuilt ELF is
   incomplete" signal) would close that exemption without inventing new schema.
 
-- **CR5 follow-on: `mod` coverage.** Rides the existing `mod` drop-telemetry
-  parity item (`mod.c` owns arg-parse/uid/sink/launch/poll/teardown per
-  analyzer) - once each analyzer exposes a drop count the same way
-  `syscalls`/`funcs` do, wiring a per-analyzer `ares_coverage_report` at
-  `mod.c` teardown is the same mechanical swap Tasks 4-6 did for the other
-  engines.
+- **CR5 follow-on: `mod` coverage.** The prerequisite has landed (mod
+  drop-telemetry parity, below in Resolved/Done) — each analyzer now exposes a
+  drop count via `ares_analyzer_t.drops()`, and `mod.c` reports it at teardown
+  via the legacy `ares_drops_report`. Remaining: swap that call for
+  `ares_coverage_report` with a minimal `struct ares_coverage { .engine =
+  <analyzer name>, .ring_drops = <count> }` — the same mechanical swap
+  Tasks 4-6 did for the other engines under CR5. No new BPF-side map needed
+  (`coverage_stats` stays exclusive to engines with CFI/snapshot/decode
+  fields); the `dropped` map added for drop-telemetry parity is the only
+  source `mod` needs.
 
 - **W5 — JIT code-cache frames have no file-backed CFI (deferred, ≈0 payoff).**
   JIT-compiled Java frames (`[anon]` / `[anon_shmem:dalvik-jit-code-cache]`) between
@@ -295,16 +299,6 @@ lists can't diverge silently.
   Extending it needs a PID set in `struct ares_run_ctx` (`launch.h`), `-p` wired into
   `trace_args.h`'s bespoke splitter, and each engine's setup reading `rc->pids`.
   Revisit only if a single PID across the whole `trace` run is wanted.
-
-- **`mod` drop-telemetry parity (deferred).** `funcs`/`syscalls`/`correlate` count
-  ring-buffer drops and call `ares_drops_report` per `runtime.h`'s "silence never
-  means didn't check" contract; `trace` inherits its sub-engines'; `dump` streams no
-  high-volume ring events (exempt). **`mod` is still silent:** the analyzer vtable
-  (`src/common/analyzer.h`) exposes only `setup()`/`teardown()`, not the skeleton's
-  `dropped` map fd. Fix = add a `dropfd` (or map-fd accessor) to `ares_analyzer_t`,
-  `#include bpf_drop.bpf.h` + `bump_dropped()` in each of the 3 analyzer BPF objects
-  (execve/proc_event/prop_read), and call `ares_drops_report` from `mod.c` teardown.
-  ~8 files; do as its own pass.
 
 - **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
   decoding).
@@ -445,6 +439,29 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-07
+
+- **`mod` drop-telemetry parity (fixed).** `ares_analyzer_t` (`src/common/analyzer.h`)
+  gains a `drops()` accessor; all 3 analyzer BPF objects (`proc_event.bpf.c`,
+  `execve.bpf.c`, `prop_read.bpf.c`) now `#include "common/bpf_drop.bpf.h"` and call
+  `bump_dropped()` at every `bpf_ringbuf_reserve` failure (mirroring
+  syscalls/funcs/correlate's existing pattern; `prop_read` needed only one call site
+  since every event path already funnels through its shared `reserve_prop_event()`
+  helper). Each analyzer's `.c` gets a matching `*_drops()` accessor
+  (`ares_drops_read(bpf_map__fd(g_skel->maps.dropped))`) wired into its registration
+  struct. `mod.c` reads the drop count via `an->drops()` **before** `an->teardown()`
+  destroys the skeleton (the fd goes with it), then reports via the still-live
+  `ares_drops_report` — `mod` previously had no drop signal at all. CR5 follow-on
+  (swap that report call for `ares_coverage_report`) is the natural next step, tracked
+  separately in Major. Host-verified (`make test` unchanged); `mod.c` syntax-checked
+  clean directly. `proc_event.c`/`execve.c` couldn't be syntax-checked against the
+  committed `build/*.skel.h` skeletons — those predate the entire PID-attach feature
+  (dated 2026-06-28 vs. source's 2026-07-07; missing `target_pids`/`ares_follow_fork`
+  entirely, not just the new `dropped` map), a pre-existing build-artifact staleness
+  unrelated to this change, confirmed by the same "missing member" errors appearing on
+  untouched pre-existing lines. `prop_read.c` blocked by missing `libelf-dev`. All are
+  environment gaps (no aarch64 cross-toolchain / `clang -target bpf` / `libelf-dev` in
+  this sandbox) rather than a code issue — every edit was applied via exact-anchor
+  `Edit` against freshly-read source and manually reviewed for brace balance.
 
 - **AA10/AA11/AA12 — engine setup/teardown parity batch (fixed).** Three small
   cross-engine inconsistencies closed together (Tier 2 of the graph-informed audit):

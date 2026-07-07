@@ -16,6 +16,7 @@ struct {
 #include "common/uid_filter.bpf.h"
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
+#include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
 // Full execve tracing via kprobe on __arm64_sys_execve.
@@ -28,8 +29,10 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
 
     __u64 id  = bpf_get_current_pid_tgid();
     e->h.type = MOD_EV_EXECVE;
@@ -80,8 +83,10 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
 
     __u64 id  = bpf_get_current_pid_tgid();
     e->h.type = MOD_EV_EXECVE;
@@ -129,8 +134,10 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
         return 0;
 
     struct execve_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
 
     __u64 id  = bpf_get_current_pid_tgid();
     e->h.type = MOD_EV_EXECVE;

@@ -425,6 +425,15 @@ located the module-base bug and stays available for future CFI diagnosis.
   run ares with `ARES_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
   iterate the offsets until the oracle confirms the names → bake the confirmed row into
   `k_table`. Reads-only (own-process file); no target write.
+  - **Known builds / source-bound offsets.** `k_table` carries two rows for the same
+    POCO C85 (Android 15) device: `1f156fc6...` and `cecb684d...`, the latter an OTA libart
+    rebuild (same Android 15, new binary, new BuildID). Their 13 offsets are **identical**,
+    empirical evidence the offset layout is bound to the AOSP source release
+    (`android15-release`), not the compiled binary. So an OTA that only rebuilds libart within
+    the same release needs a fresh row keyed on the new BuildID but **reuses** the offsets; a
+    genuine ART version bump is what shifts them. The `cecb684d...` row was Frida-oracle-verified
+    on 2026-07-08 (95.6% of emitted interp names were real app methods the ART-native oracle
+    also observed).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);

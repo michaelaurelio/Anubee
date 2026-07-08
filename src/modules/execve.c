@@ -39,8 +39,7 @@ static void exec_stat_add(const char *path)
         }
     }
     if (exec_stat_count >= EXEC_STAT_MAX) return;
-    strncpy(exec_stats[exec_stat_count].path, path, sizeof(exec_stats[0].path) - 1);
-    exec_stats[exec_stat_count].path[sizeof(exec_stats[0].path) - 1] = '\0';
+    snprintf(exec_stats[exec_stat_count].path, sizeof(exec_stats[0].path), "%s", path);
     exec_stats[exec_stat_count].count = 1;
     exec_stat_count++;
 }

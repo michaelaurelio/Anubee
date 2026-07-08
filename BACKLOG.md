@@ -208,7 +208,12 @@ item above with a strategic critique.
   updated ~monthly; every ART update / vendor rebuild / new release → BuildID miss →
   managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
   vanish). The `ARES_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
-  it is still one row of manual labor per device per ART build.
+  it is still one row of manual labor per device per ART build. **Data point (2026-07-08):**
+  the POCO C85 (A15) took an OTA that rebuilt libart (`1f156fc6...` to `cecb684d...`); a new
+  `k_table` row was needed for the new BuildID, but the 13 offsets were **identical**,
+  Frida-oracle-verified. So within one AOSP source release a rebuild-only OTA is a
+  BuildID-key add with reused offsets, not a re-derivation; only a genuine ART version bump
+  shifts the layout. Softens the treadmill (key churn is not offset churn) but does not remove it.
 - **Guess-path is primary for nterp.** `art_nterp.c:204` guesses `ArtMethod*` from raw
   stack slots and corroborates via a dex_pc in a 512-byte window — which proves *method
   identity, not frame identity*, so two live/stale activations of the same method are

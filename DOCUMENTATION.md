@@ -659,47 +659,62 @@ Function→syscall correlation on a live run. One BPF object
 kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
 
 - **Entry uprobe** (attached by the loader at each spec'd function offset via the
-  shared `src/common/probe_resolve` resolver): pushes a frame onto the per-tid span
-  stack, assigns a monotonic `span_id`, records `parent_span` (the enclosing open
-  frame), and emits a `func` event.
-- **SP-based span close** (no uretprobe in v1): on each later event the stack is
-  reconciled by user stack pointer (`current_sp > entry_sp` ⇒ the frame returned).
-  No stack tampering — as quiet as a bare entry uprobe.
+  shared `src/common/probe_resolve` resolver, and — as of Tier 5 — each `-I`/`-i`
+  regex-resolved offset too): pushes a frame onto the per-tid span stack, assigns a
+  monotonic `span_id`, records `parent_span` (the enclosing open frame), and emits a
+  `func` event.
+- **Span close — two paths.** Default (quiet): SP-based reconciliation, inferring
+  "returned" from user stack-pointer movement (`current_sp > entry_sp`) at the next
+  instrumented event — no stack tampering, but wrong on coroutines/fibers/
+  stack-switching, cross-thread offload, tail calls, and same-SP recursion (CR3,
+  see [BACKLOG.md](BACKLOG.md)). Opt-in accuracy path: `-R`/`--returns` attaches a
+  second uretprobe (`corr_uretprobe_ret`, mirrors `funcs`' `uretprobe_open`) per
+  target that fires at the real return instruction and authoritatively pops the
+  span — immune to all of the above, at the cost of a second uprobe trampoline
+  (bigger LOUD surface). Emits a `return` event (`span`, `entry_addr`, `retval`,
+  `elapsed_ns`).
 - **Span-gated `kprobe/do_el0_svc`**: reads the innermost open `span_id` for the
   tid (`span_stack_top_id`); drops the syscall if none, else emits it tagged with
-  that span (number + raw `args[0..5]`, name resolved host-side from the arm64
-  syscall table).
+  that span (number + raw `args[0..5]` + captured string/sockaddr bytes, name
+  resolved host-side from the arm64 syscall table).
 - **Loader** (`src/correlate/correlate.c`): reuses `src/common/launch` and
   `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
-  per resolved `(path,offset)` plus the one shared kprobe, then drains the ring.
-  Uses GNU argp (`--help`/`--usage`/`--version` — prints `ares correlate`); flags:
-  `-p PID[,…]` (precise, follow-fork by default; `--siblings` to widen to same-UID),
-  `-P PACKAGE`, `--siblings`, `--no-follow-fork`, `-e SPEC`, `-F FILE`, `-o FILE`, `-q`.
-  See [Attach modes](#attach-modes-launch--p-vs-pid--p).
+  (+ return uretprobe under `-R`) per resolved `(path,offset)` plus the one shared
+  kprobe, then drains the ring. Uses GNU argp (`--help`/`--usage`/`--version` —
+  prints `ares correlate`); flags: `-p PID[,…]` (precise, follow-fork by default;
+  `--siblings` to widen to same-UID), `-P PACKAGE`, `--siblings`, `--no-follow-fork`,
+  `-e SPEC`, `-F FILE`, `-I MODULE` (regex), `-i FUNCTION` (regex), `-R`/`--returns`,
+  `-o FILE`, `-q`. See [Attach modes](#attach-modes-launch--p-vs-pid--p). `-P`
+  attach timing: `wait_for_target_mapped()` polls `/proc/<pid>/maps` (10 ms interval,
+  2 s cap) for a spec'd/regex-matched library instead of a blind `sleep(1)`, attaching
+  as soon as the target appears (falls through to today's behavior on timeout).
 - **Output**: flat, type-discriminated JSONL via the shared serializer
   (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`). `-o FILE` opens the shared
   `ares_sink` (8 MB buffered, periodic flush, `wrote N event(s)` report at teardown),
   matching `syscalls`/`funcs` — no per-event `fflush`. `func` records:
   `{"type":"func","span":N,"parent_span":M,"pid":...,"tid":...,"entry_addr":"0x...","args":["0x...",...]}`
-  — args as hex strings. `syscall` records additionally carry a parallel
-  `"decoded"` array: each element is the human-readable flag expansion (from
-  `flags_decode_arg`) where a decoder applied, or `""` otherwise. One row per
-  event, joinable on `span`; syscalls are never nested inside a func record.
-- **Robustness**: each entry-uprobe `bpf_link` is tracked and `bpf_link__destroy`'d
-  on teardown (not leaked to process exit). The fixed input caps — `-p` (64 PIDs),
-  `-e`/`-F` (64 specs), per-pid attach dedup (256) — now emit a warning when hit
-  instead of silently truncating, so a wide package or large `-F` file is not quietly
-  under-instrumented.
+  — args as hex strings. `return` records (only with `-R`):
+  `{"type":"return","span":N,"pid":...,"tid":...,"entry_addr":"0x...","retval":"0x...","elapsed_ns":...}`.
+  `syscall` records additionally carry a parallel `"decoded"` array: each element is
+  string (captured path/etc.) → fd path (`render_fd`) → sockaddr (`ip:port`) →
+  flag/enum expansion (`flags_decode_arg`), first that applies, `""` otherwise — same
+  precedence as `syscalls`' `render_arg`. One row per event, joinable on `span`;
+  syscalls are never nested inside a func record.
+- **Robustness**: each uprobe `bpf_link` (entry and return) is tracked and
+  `bpf_link__destroy`'d on teardown (not leaked to process exit). The fixed input
+  caps — `-p` (64 PIDs), `-e`/`-F` (64 specs), `-I`/`-i` (32 patterns each), per-pid
+  attach dedup (256) — now emit a warning when hit instead of silently truncating, so
+  a wide package or large `-F` file is not quietly under-instrumented.
 - **Detectability**: this object carries the uprobe, so it is the **loud** path; the
-  quiet engines never load it (see §9). Correlation is per-tid & synchronous
+  quiet engines never load it (see §9). `--returns` adds a second uprobe trampoline
+  per target (bigger surface than entry-only). Correlation is per-tid & synchronous
   (cross-thread offloaded syscalls aren't attributed); CFF-resistant; defeated by
   inlining and VM/virtualization.
-- **v1 scope**: custom specs (`-e`/`-F`) + `-p` (full) / `-P` (best-effort
-  post-launch); SP-based close (no return values). Syscall args: hex + parallel
-  flag-decoded `decoded[]` array (fd/sockaddr/string capture requires BPF event-struct
-  changes — deferred).
-  `--returns`, arg/sockaddr decoding, and regex (`-I/-i`) targeting are planned
-  (see [BACKLOG.md](BACKLOG.md)).
+- **Scope**: custom specs (`-e`/`-F`) and/or regex (`-I`/`-i`) targeting, `-p` (full)
+  or `-P` (poll-timed post-launch), SP-based close by default with `-R`/`--returns`
+  as the opt-in accuracy path, full syscall-arg decode (string/fd/sockaddr/flags).
+  Return-only regex (`-r`, funcs' save-only pattern) deferred — see
+  [BACKLOG.md](BACKLOG.md).
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 
@@ -854,7 +869,7 @@ fields are omitted):
 | `managed_naming_off` | unknown ART build (no `art_buildid.c` table row) - Java naming disabled | yes | yes | no |
 | `prearm_drops` | syscalls dropped in the CR2 pre-arm window before uprobes attach | yes | no | no |
 | `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
-| `decode_partial` | raw syscall args only, no decode table match | no | no | yes |
+| `decode_partial` | raw syscall args only, no decode table match | no | no | no (Tier 5: full decode wired) |
 
 `lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
 `dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a

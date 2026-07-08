@@ -23,8 +23,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 ## Open work — at a glance
 
 **Major:**
-- `correlate` remaining capability — `--returns`; syscall/sockaddr/fd/string decode;
-  regex `-I/-i`; `-P` attach timing.
 - GA2 deferred wiring — `correlate`→`trace`, `dump`→`trace`.
 - CFI / managed-frame naming — **generalize beyond one ART build**: version gate keys
   on apex `370549100` only (BuildID is the stronger anchor); nterp recall is bounded
@@ -32,7 +30,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - Managed-frame **OAT/ODEX native-PC → Java method** — parked pending real ART OAT parsing.
 - CR2 — `syscalls` attribution is "presence on stack," not "issued by" (+ FP-omit /
   vDSO / 32-bit-compat / pre-arm-window gaps).
-- CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
 - CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
   still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
@@ -49,7 +46,8 @@ items lives in DOCUMENTATION.md and the referenced specs.
   liveness tightening; ELF-note hardening done — see Resolved/Done).
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
-- Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2; CR4 parity fix).
+- Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2; CR4 parity fix;
+  Tier 5 `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing).
 - AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 
@@ -62,18 +60,6 @@ None currently open.
 ---
 
 ## Major — features / substantial work
-
-### `correlate` engine — remaining capability
-
-- **`--returns`** — opt-in uretprobe for return values + exact exit timing. LOUD:
-  adds a stack trampoline (a second detection surface beyond the entry `BRK`).
-- **Syscall arg / sockaddr / fd / string decoding** — PARTIAL: userspace flag-decode
-  done (`flags_decode_arg` via `corr_emit_syscall`; hex args + parallel `decoded[]`).
-  fd-path rendering, sockaddr blob capture, and string capture still need BPF
-  event-struct changes to carry the raw bytes.
-- **Regex (`-I/-i`) targeting** — currently custom specs (`-e`/`-F`) only.
-- **`-P` attach timing** — `-P` uprobe attach is best-effort (post-launch
-  `/proc/maps` scan); tighten launch→attach timing so early calls aren't missed.
 
 ### GA2 — deferred engine→`trace` wiring
 
@@ -172,6 +158,12 @@ hook). **Disclose the FP dependency + vDSO/compat blind spots in README/DOCUMENT
 — currently undersold.
 
 ### CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks
+
+**Fixed 2026-07-08 via `--returns` — see Resolved/Done (Tier 5).** SP-pop remains the
+default *quiet* best-effort close (unchanged, still hostile to the cases below);
+`--returns` opts a target into an authoritative uretprobe pop, immune to all of them.
+Kept open here as the historical description of the underlying SP-pop weakness, which
+is by design, not eliminated, for targets that don't opt in.
 
 Source: 2026-07-03 architecture critique. The quiet span close infers "function
 returned" from stack-pointer movement at the next instrumented event
@@ -425,6 +417,50 @@ is in DOCUMENTATION.md and the referenced specs.
     on-device verification** (added to the on-device list above): confirm ShadowFrame
     names now surface in the compact `managed[]` fragment at an `ExecuteSwitchImpl`
     terminal, and that `nterp_helper` terminals are unchanged.
+
+- **Tier 5 — `correlate` accuracy batch (CR3/`--returns`, decode completion, regex
+  targeting, `-P` timing — landed).** Four items from the 2026-07-07 audit, all on the
+  `correlate` engine, reusing `funcs`'/`syscalls`' existing mechanisms rather than
+  inventing new ones:
+  - **CR3 / `--returns`.** New `CORR_EV_FUNC_RETURN` event + `corr_uretprobe_ret`
+    (`correlate.bpf.c`), mirroring `funcs.bpf.c`'s `uretprobe_open` line-for-line: fires
+    at the real return instruction and authoritatively pops the span
+    (`bpf_map_delete_elem`+`span_depth_set`), independent of SP behavior. Opt-in via new
+    `-R`/`--returns`; entry-only targets keep the SP-pop best-effort default unchanged
+    (see CR3 above for why SP-pop itself isn't touched). `corr_emit_func_return` emits
+    `{"type":"return",...}` with `span`/`entry_addr`/`retval`/`elapsed_ns`.
+  - **Decode completion.** `corr_syscall_event` gained `str_present`/`str[]`/`sock_len`/
+    `sock[]` (sizes matched to `syscalls.h`); `corr_on_svc` gained the string- and
+    sockaddr-capture blocks copied verbatim from `syscalls.bpf.c`. Userspace gained
+    `g_fd_args`/`g_str_args`/`g_sock_args` tables + `install_arg_types`/`install_sock_args`
+    (copied from `syscalls.c`); `corr_emit_syscall`'s `decoded[]` array now follows the
+    same string → fd → sockaddr → flags/enum precedence as `syscalls`' `render_arg`.
+    `decode_partial` flipped from 1 to 0 in the coverage report.
+  - **Regex (`-I`/`-i`) targeting.** New flags compile into `regex_t mod_re[32]`/
+    `func_re[32]` (mirrors `funcs.c`); `attach_uprobes_for_pid` calls the shared
+    `resolve_targets_for_file()` per executable mapping alongside the existing
+    custom-spec loop, attaching entry (+ `--returns` uretprobe when requested) at each
+    resolved offset. Regex-matched functions emit the same unconditional hex args as
+    custom specs — no new arg-decode path needed for FUNC events. Return-only regex
+    (`-r`) deferred, noted as a follow-up (would open an invisible span with no value
+    given `--returns` already covers regex targets).
+  - **`-P` attach timing.** Blind `sleep(1)` replaced with `wait_for_target_mapped()`
+    — polls `/proc/<pid>/maps` every 10 ms up to a 2 s cap for a spec'd or regex-matched
+    library mapped executable, attaching the moment it appears; falls through to
+    today's behavior on timeout.
+  - Host-verified: `make test` all green, including `test_corr_emit` extended with
+    content assertions (decoded path string, `ip:port` sockaddr, rendered fd, decoded
+    flags, plus the new return-event shape) — no longer just key-presence checks.
+    `correlate.c` syntax-checked clean (`cc -fsyntax-only`) against a scratch copy of
+    the stale generated skeleton patched with the new prog/map fields (real skeleton
+    regen needs `clang`+`bpftool`, unavailable in this WSL dev env — same pre-existing
+    gap noted in prior tiers). `correlate.bpf.c`'s new BPF program and capture blocks
+    are copied verbatim from already-BPF-verified sibling code (`funcs.bpf.c`,
+    `syscalls.bpf.c`) but could not themselves be verifier-checked here.
+  - **Pending on-device verification** (added to the on-device list above): `--returns`
+    span-close correctness across a coroutine/async workload vs. entry-only mode;
+    `openat`/`connect` decode rendering; `-I`/`-i` resolve+attach with and without
+    `-R`; `-P` timing catching an early post-launch call the old `sleep(1)` missed.
 
 ### 2026-07-07
 

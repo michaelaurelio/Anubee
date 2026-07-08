@@ -8,13 +8,16 @@
 // the span stack lives in the BPF object (src/common/span_stack.bpf.h).
 //
 // v1 scope: custom specs (-e/-F) + -p (full) / -P (best-effort post-launch);
-// SP-based span close (no uretprobe/return values); raw syscall args (no decode).
+// SP-based span close by default, --returns opts a target into an authoritative
+// uretprobe pop; syscall args get string/fd/sockaddr/flags decode (see corr_emit.c).
 #include <errno.h>
+#include <regex.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -45,10 +48,316 @@ static const char *syscall_name(long nr)
     return n ? n : "?";
 }
 
+// ---- syscall-arg decode tables (mirrors syscalls.c; correlate's per-event
+// volume doesn't need that engine's dense by-nr cache, so these are a plain
+// linear scan over a small table) ------------------------------------------
+
+#define A0 (1u << 0)
+#define A1 (1u << 1)
+#define A2 (1u << 2)
+#define A3 (1u << 3)
+#define A4 (1u << 4)
+
+// Which of args[0..3] are a const char* (path/string), per syscall. Copied
+// verbatim from syscalls.c's g_str_args[].
+static const struct { long nr; unsigned char mask; } g_str_args[] = {
+#ifdef __NR_openat
+    { __NR_openat, A1 },
+#endif
+#ifdef __NR_openat2
+    { __NR_openat2, A1 },
+#endif
+#ifdef __NR_name_to_handle_at
+    { __NR_name_to_handle_at, A1 },
+#endif
+#ifdef __NR_readlinkat
+    { __NR_readlinkat, A1 },
+#endif
+#ifdef __NR_newfstatat
+    { __NR_newfstatat, A1 },
+#endif
+#ifdef __NR_statx
+    { __NR_statx, A1 },
+#endif
+#ifdef __NR_faccessat
+    { __NR_faccessat, A1 },
+#endif
+#ifdef __NR_faccessat2
+    { __NR_faccessat2, A1 },
+#endif
+#ifdef __NR_fchmodat
+    { __NR_fchmodat, A1 },
+#endif
+#ifdef __NR_fchownat
+    { __NR_fchownat, A1 },
+#endif
+#ifdef __NR_unlinkat
+    { __NR_unlinkat, A1 },
+#endif
+#ifdef __NR_mkdirat
+    { __NR_mkdirat, A1 },
+#endif
+#ifdef __NR_mknodat
+    { __NR_mknodat, A1 },
+#endif
+#ifdef __NR_utimensat
+    { __NR_utimensat, A1 },
+#endif
+#ifdef __NR_renameat
+    { __NR_renameat, A1 | A3 },
+#endif
+#ifdef __NR_renameat2
+    { __NR_renameat2, A1 | A3 },
+#endif
+#ifdef __NR_linkat
+    { __NR_linkat, A1 | A3 },
+#endif
+#ifdef __NR_symlinkat
+    { __NR_symlinkat, A0 | A2 },
+#endif
+#ifdef __NR_execve
+    { __NR_execve, A0 },
+#endif
+#ifdef __NR_execveat
+    { __NR_execveat, A1 },
+#endif
+#ifdef __NR_chdir
+    { __NR_chdir, A0 },
+#endif
+#ifdef __NR_chroot
+    { __NR_chroot, A0 },
+#endif
+#ifdef __NR_truncate
+    { __NR_truncate, A0 },
+#endif
+#ifdef __NR_statfs
+    { __NR_statfs, A0 },
+#endif
+#ifdef __NR_getxattr
+    { __NR_getxattr, A0 | A1 },
+#endif
+#ifdef __NR_lgetxattr
+    { __NR_lgetxattr, A0 | A1 },
+#endif
+#ifdef __NR_setxattr
+    { __NR_setxattr, A0 | A1 },
+#endif
+#ifdef __NR_mount
+    { __NR_mount, A0 | A1 | A2 },
+#endif
+#ifdef __NR_umount2
+    { __NR_umount2, A0 },
+#endif
+#ifdef __NR_pivot_root
+    { __NR_pivot_root, A0 | A1 },
+#endif
+};
+
+static void install_arg_types(int fd)
+{
+    for (size_t i = 0; i < sizeof(g_str_args) / sizeof(g_str_args[0]); i++) {
+        __u32 k = (__u32)g_str_args[i].nr;
+        __u8 v = g_str_args[i].mask;
+        if (k < 512)
+            bpf_map_update_elem(fd, &k, &v, BPF_ANY);
+    }
+}
+
+// Which arg holds a sockaddr* (the addrlen is the next arg); connect/bind at
+// arg1, sendto at arg4. Copied verbatim from syscalls.c's g_sock_args[].
+static const struct { long nr; int arg; } g_sock_args[] = {
+#ifdef __NR_connect
+    { __NR_connect, 1 },
+#endif
+#ifdef __NR_bind
+    { __NR_bind, 1 },
+#endif
+#ifdef __NR_sendto
+    { __NR_sendto, 4 },
+#endif
+};
+
+static void install_sock_args(int fd)
+{
+    for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++) {
+        __u32 k = (__u32)g_sock_args[i].nr;
+        __u8 v = (__u8)(g_sock_args[i].arg + 1);
+        if (k < 512)
+            bpf_map_update_elem(fd, &k, &v, BPF_ANY);
+    }
+}
+
+static int arg_sock_index(unsigned long long nr)
+{
+    for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++)
+        if ((unsigned long long)g_sock_args[i].nr == nr)
+            return g_sock_args[i].arg;
+    return -1;
+}
+
+static const struct { long nr; unsigned char mask; } g_fd_args[] = {
+#ifdef __NR_read
+    { __NR_read, A0 },
+#endif
+#ifdef __NR_write
+    { __NR_write, A0 },
+#endif
+#ifdef __NR_pread64
+    { __NR_pread64, A0 },
+#endif
+#ifdef __NR_pwrite64
+    { __NR_pwrite64, A0 },
+#endif
+#ifdef __NR_readv
+    { __NR_readv, A0 },
+#endif
+#ifdef __NR_writev
+    { __NR_writev, A0 },
+#endif
+#ifdef __NR_close
+    { __NR_close, A0 },
+#endif
+#ifdef __NR_fstat
+    { __NR_fstat, A0 },
+#endif
+#ifdef __NR_fstatfs
+    { __NR_fstatfs, A0 },
+#endif
+#ifdef __NR_lseek
+    { __NR_lseek, A0 },
+#endif
+#ifdef __NR_fsync
+    { __NR_fsync, A0 },
+#endif
+#ifdef __NR_fdatasync
+    { __NR_fdatasync, A0 },
+#endif
+#ifdef __NR_ftruncate
+    { __NR_ftruncate, A0 },
+#endif
+#ifdef __NR_fcntl
+    { __NR_fcntl, A0 },
+#endif
+#ifdef __NR_ioctl
+    { __NR_ioctl, A0 },
+#endif
+#ifdef __NR_getdents64
+    { __NR_getdents64, A0 },
+#endif
+#ifdef __NR_flock
+    { __NR_flock, A0 },
+#endif
+#ifdef __NR_fchdir
+    { __NR_fchdir, A0 },
+#endif
+#ifdef __NR_fchmod
+    { __NR_fchmod, A0 },
+#endif
+#ifdef __NR_fchown
+    { __NR_fchown, A0 },
+#endif
+#ifdef __NR_dup
+    { __NR_dup, A0 },
+#endif
+#ifdef __NR_dup3
+    { __NR_dup3, A0 },
+#endif
+#ifdef __NR_sendto
+    { __NR_sendto, A0 },
+#endif
+#ifdef __NR_recvfrom
+    { __NR_recvfrom, A0 },
+#endif
+#ifdef __NR_sendmsg
+    { __NR_sendmsg, A0 },
+#endif
+#ifdef __NR_recvmsg
+    { __NR_recvmsg, A0 },
+#endif
+#ifdef __NR_connect
+    { __NR_connect, A0 },
+#endif
+#ifdef __NR_getsockopt
+    { __NR_getsockopt, A0 },
+#endif
+#ifdef __NR_setsockopt
+    { __NR_setsockopt, A0 },
+#endif
+#ifdef __NR_epoll_ctl
+    { __NR_epoll_ctl, A0 | A4 },
+#endif
+#ifdef __NR_mmap
+    { __NR_mmap, A4 },
+#endif
+    // *at family: arg0 is the dirfd.
+#ifdef __NR_openat
+    { __NR_openat, A0 },
+#endif
+#ifdef __NR_openat2
+    { __NR_openat2, A0 },
+#endif
+#ifdef __NR_newfstatat
+    { __NR_newfstatat, A0 },
+#endif
+#ifdef __NR_readlinkat
+    { __NR_readlinkat, A0 },
+#endif
+#ifdef __NR_faccessat
+    { __NR_faccessat, A0 },
+#endif
+#ifdef __NR_faccessat2
+    { __NR_faccessat2, A0 },
+#endif
+#ifdef __NR_fchmodat
+    { __NR_fchmodat, A0 },
+#endif
+#ifdef __NR_fchownat
+    { __NR_fchownat, A0 },
+#endif
+#ifdef __NR_unlinkat
+    { __NR_unlinkat, A0 },
+#endif
+#ifdef __NR_mkdirat
+    { __NR_mkdirat, A0 },
+#endif
+#ifdef __NR_utimensat
+    { __NR_utimensat, A0 },
+#endif
+#ifdef __NR_statx
+    { __NR_statx, A0 },
+#endif
+#ifdef __NR_name_to_handle_at
+    { __NR_name_to_handle_at, A0 },
+#endif
+#ifdef __NR_execveat
+    { __NR_execveat, A0 },
+#endif
+};
+
+static unsigned arg_fd_mask(unsigned long long nr)
+{
+    for (size_t i = 0; i < sizeof(g_fd_args) / sizeof(g_fd_args[0]); i++)
+        if ((unsigned long long)g_fd_args[i].nr == nr)
+            return g_fd_args[i].mask;
+    return 0;
+}
+
 static volatile sig_atomic_t exiting = 0;
 
 static struct ares_sink g_sink;
 static int              g_quiet = 0;
+static int              g_returns = 0;  // --returns: attach a uretprobe per target too
+
+// -I/-i regex targeting (mirrors funcs.c). Resolved targets accumulate here
+// across attach_uprobes_for_pid calls so resolve_targets_for_file's dedup
+// (ctx->targets/target_count) sees everything attached so far.
+static regex_t        g_mod_re[32];
+static bool            g_mod_has_slash[32];
+static int             g_mod_re_count = 0;
+static regex_t         g_func_re[32];
+static int             g_func_re_count = 0;
+static probe_target_t  g_regex_targets[1024];
+static int             g_regex_target_count = 0;
 
 // Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
 // kprobe is tracked separately via g_kp). Grown on demand; on OOM we drop
@@ -114,7 +423,21 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
         if (g_sink.f) {
-            corr_emit_syscall(&g_sink.jb, e, name);
+            unsigned fdmask = arg_fd_mask(e->nr);
+            int sockidx = arg_sock_index(e->nr);
+            corr_emit_syscall(&g_sink.jb, e, name, fdmask, sockidx);
+            ares_sink_emit(&g_sink);
+        }
+    } else if (h->type == CORR_EV_FUNC_RETURN) {
+        if (sz < sizeof(struct corr_func_return_event)) return 0;
+        const struct corr_func_return_event *e = data;
+        if (!g_quiet)
+            printf("[return]  > span=%llu pid=%u tid=%u @ 0x%llx retval=0x%llx elapsed=%lluns\n",
+                   (unsigned long long)e->span, e->h.pid, e->h.tid,
+                   (unsigned long long)e->entry_addr, (unsigned long long)e->retval,
+                   (unsigned long long)e->elapsed_ns);
+        if (g_sink.f) {
+            corr_emit_func_return(&g_sink.jb, e);
             ares_sink_emit(&g_sink);
         }
     }
@@ -177,6 +500,70 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 fprintf(stderr, "[spec] > FAILED: %s!%s @ 0x%lx\n", bname,
                         tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
             }
+
+            if (link && g_returns) {
+                struct bpf_link *rlink = bpf_program__attach_uprobe(
+                    skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
+                if (rlink)
+                    track_uprobe_link(rlink);
+                else
+                    fprintf(stderr, "[spec] > FAILED ret: %s!%s @ 0x%lx\n", bname,
+                            tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+            }
+        }
+
+        // -I/-i regex targeting: resolve symbols in this mapping, attach each
+        // (mirrors funcs.c's mmap-triggered resolve_targets_for_file path).
+        if ((g_mod_re_count > 0 || g_func_re_count > 0) &&
+            mod_matches(path, g_mod_re, g_mod_has_slash, g_mod_re_count)) {
+            struct probe_resolve_ctx rctx = {
+                .mod_re = g_mod_re, .mod_has_slash = g_mod_has_slash, .mod_re_count = g_mod_re_count,
+                .func_re = g_func_re, .func_re_count = g_func_re_count,
+                .func_ret_re = NULL, .func_ret_re_count = 0,
+                .targets = g_regex_targets, .target_count = &g_regex_target_count,
+                .targets_cap = (int)(sizeof(g_regex_targets) / sizeof(g_regex_targets[0])),
+                .custom_specs = NULL, .custom_spec_count = 0,
+                .verbose = 0, .log = log_stderr,
+            };
+            int max = (int)(sizeof(g_regex_targets) / sizeof(g_regex_targets[0])) - g_regex_target_count;
+            int resolved = (max > 0) ? resolve_targets_for_file(&rctx, pid, path,
+                                (unsigned long)ml.start, (unsigned long)ml.end,
+                                g_regex_targets + g_regex_target_count, max) : 0;
+
+            for (int i = g_regex_target_count; i < g_regex_target_count + (resolved > 0 ? resolved : 0); i++) {
+                probe_target_t *tgt = &g_regex_targets[i];
+                int dup = 0;
+                for (int d = 0; d < ndone; d++)
+                    if (done[d].off == tgt->offset && strcmp(done[d].path, path) == 0) { dup = 1; break; }
+                if (dup) continue;
+                if (ndone < 256) {
+                    snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
+                    done[ndone].off = tgt->offset;
+                    ndone++;
+                }
+
+                const char *bname = strrchr(path, '/');
+                bname = bname ? bname + 1 : path;
+                struct bpf_link *link = bpf_program__attach_uprobe(
+                    skel->progs.corr_uprobe_entry, false, pid, path, tgt->offset);
+                if (link) {
+                    track_uprobe_link(link);
+                    printf("[regex] > %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
+                    attached++;
+                } else {
+                    fprintf(stderr, "[regex] > FAILED: %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
+                }
+
+                if (link && g_returns) {
+                    struct bpf_link *rlink = bpf_program__attach_uprobe(
+                        skel->progs.corr_uretprobe_ret, true, pid, path, tgt->offset);
+                    if (rlink)
+                        track_uprobe_link(rlink);
+                    else
+                        fprintf(stderr, "[regex] > FAILED ret: %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
+                }
+            }
+            if (resolved > 0) g_regex_target_count += resolved;
         }
     }
     fclose(f);
@@ -190,12 +577,44 @@ static int install_uid(struct ares_correlate *skel, int uid)
     return bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
 }
 
+// -P timing: block briefly after launch until a spec'd/regex-matched library
+// shows up mapped-executable in /proc/<pid>/maps, instead of a blind sleep(1)
+// (which misses calls in the first second and over-waits once the lib is
+// already up). Falls through on timeout — same worst case as the old sleep.
+static void wait_for_target_mapped(pid_t pid, const custom_probe_spec_t *specs, int nspec)
+{
+    const int poll_ms = 10, timeout_ms = 2000;
+    for (int waited = 0; waited < timeout_ms; waited += poll_ms) {
+        char maps_path[64];
+        snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+        FILE *f = fopen(maps_path, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof(line), f)) {
+                struct ares_map_line ml;
+                if (!ares_parse_maps_line(line, &ml)) continue;
+                if (ml.path[0] != '/' || !ml.exec) continue;
+                for (int s = 0; s < nspec; s++)
+                    if (custom_spec_matches_path(&specs[s], ml.path)) { fclose(f); return; }
+                if ((g_mod_re_count > 0 || g_func_re_count > 0) &&
+                    mod_matches(ml.path, g_mod_re, g_mod_has_slash, g_mod_re_count)) {
+                    fclose(f);
+                    return;
+                }
+            }
+            fclose(f);
+        }
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = (long)poll_ms * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+}
+
 // ---- argp parser ----------------------------------------------------------
 
 static const char corr_doc[] =
     "Attach entry uprobes to spec'd functions + a span-gated syscall kprobe;\n"
     "emit each in-span syscall tagged with the enclosing function's span.\v"
-    "Exactly one of -p or -P must be given. At least one -e or -F is required.\n"
+    "Exactly one of -p or -P must be given. At least one of -e/-F or -I/-i is required.\n"
     "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
 static const char corr_args_doc[] = "";
 
@@ -203,9 +622,14 @@ struct corr_args {
     const char        *pkg;
     const char        *out_path;
     int                quiet;
+    int                returns;
     struct target_args tgt;
     custom_probe_spec_t specs[64];
     int                nspec;
+    char               mod_patterns[32][256];
+    int                mod_pattern_count;
+    char               func_patterns[32][256];
+    int                func_pattern_count;
 };
 
 // Only the flags actually wired. -J/-b/-Q have nothing to attach here.
@@ -214,8 +638,11 @@ static const struct argp_option corr_options[] = {
     { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
     { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable)", 0 },
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
+    { "include-module", 'I', "MODULE", 0, "Target module to trace (regex, repeatable)", 0 },
+    { "include", 'i', "FUNCTION",  0, "Target function to trace (regex, repeatable)", 0 },
     { "output",  'o', "FILE",      0, "Write structured JSONL (implies -q)", 0 },
     { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
+    { "returns", 'R', NULL,        0, "Attach a uretprobe per target for accurate span close + retval (CR3 fix)", 0 },
     { 0 }
 };
 
@@ -226,6 +653,19 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg; break;
     case 'o': a->out_path = arg; break;
     case 'q': a->quiet    = 1;   break;
+    case 'R': a->returns  = 1;   break;
+    case 'I':
+        if (a->mod_pattern_count < 32)
+            snprintf(a->mod_patterns[a->mod_pattern_count++], 256, "%s", arg);
+        else
+            fprintf(stderr, "correlate: warning — module pattern cap (32) reached; '%s' ignored\n", arg);
+        break;
+    case 'i':
+        if (a->func_pattern_count < 32)
+            snprintf(a->func_patterns[a->func_pattern_count++], 256, "%s", arg);
+        else
+            fprintf(stderr, "correlate: warning — function pattern cap (32) reached; '%s' ignored\n", arg);
+        break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case 'e':
@@ -252,8 +692,8 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case ARGP_KEY_END:
         if ((a->tgt.n == 0 && !a->pkg) || (a->tgt.n > 0 && a->pkg))
             argp_error(state, "specify exactly one of -p or -P");
-        if (a->nspec == 0)
-            argp_error(state, "no probe specs given (-e SPEC or -F FILE)");
+        if (a->nspec == 0 && a->mod_pattern_count == 0 && a->func_pattern_count == 0)
+            argp_error(state, "no probe targets given (-e SPEC, -F FILE, or -I/-i regex)");
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -287,7 +727,24 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
         return 1;
 
-    g_quiet = ca.quiet || (ca.out_path != NULL);
+    g_quiet   = ca.quiet || (ca.out_path != NULL);
+    g_returns = ca.returns;
+
+    for (int i = 0; i < ca.mod_pattern_count; i++) {
+        g_mod_has_slash[i] = strchr(ca.mod_patterns[i], '/') != NULL;
+        if (regcomp(&g_mod_re[i], ca.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "correlate: invalid -I regex: %s\n", ca.mod_patterns[i]);
+            return 1;
+        }
+        g_mod_re_count++;
+    }
+    for (int i = 0; i < ca.func_pattern_count; i++) {
+        if (regcomp(&g_func_re[i], ca.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "correlate: invalid -i regex: %s\n", ca.func_patterns[i]);
+            return 1;
+        }
+        g_func_re_count++;
+    }
     if (ca.out_path && ares_sink_open(&g_sink, ca.out_path, "event", 1) != 0) {
         fprintf(stderr, "correlate: cannot open %s: %s\n", ca.out_path, strerror(errno));
         return 1;
@@ -297,10 +754,13 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     struct ares_correlate *skel = ares_correlate__open();
     if (!skel) { fprintf(stderr, "correlate: open skeleton failed\n"); goto err_file; }
+    bpf_program__set_autoattach(skel->progs.corr_uretprobe_ret, false);
     if (ares_correlate__load(skel)) {
         fprintf(stderr, "correlate: BPF load failed (eBPF privileges / SELinux permissive?)\n");
         goto err_skel;
     }
+    install_arg_types(bpf_map__fd(skel->maps.arg_types));
+    install_sock_args(bpf_map__fd(skel->maps.sock_args));
 
     // -P: install UID before launch so the kprobe gates from the start.
     if (ca.pkg) {
@@ -312,7 +772,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (ares_launch_app(ca.pkg, NULL, &p) != 0) {
             fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
         }
-        sleep(1);  // let the process map its libs before uprobe attach
+        wait_for_target_mapped(p, ca.specs, ca.nspec);
         ca.tgt.pids[ca.tgt.n++] = p;
     } else {
         // -p: arm target_pids for each PID; arm target_uids only if --siblings.
@@ -402,7 +862,7 @@ void correlate_teardown(void)
         cov.depth_capped   = ares_coverage_read(covfd, COV_DEPTH_CAP);
         cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
         cov.queue_drops    = 0;
-        cov.decode_partial = 1;   // raw syscall args, no decode
+        cov.decode_partial = 0;   // string/fd/sockaddr/flags decode wired (see corr_emit.c)
         ares_coverage_report(&g_sink, &cov);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;

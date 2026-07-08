@@ -30,6 +30,23 @@ struct {
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"
 
+// Per-syscall string-arg mask / sockaddr-arg index, mirrored from syscalls.bpf.c
+// (same shape, same install-time source tables in correlate.c).
+#define ARG_TYPES_MAX 512
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, ARG_TYPES_MAX);
+    __type(key, __u32);
+    __type(value, __u8);
+} arg_types SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, ARG_TYPES_MAX);
+    __type(key, __u32);
+    __type(value, __u8);
+} sock_args SEC(".maps");
+
 // Function entry: open a span, emit FUNC.
 SEC("uprobe")
 int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
@@ -78,6 +95,51 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
     return 0;
 }
 
+// Function return (only attached when --returns is given): authoritatively pop
+// the span the instant its function returns, independent of SP behavior.
+// Mirrors funcs.bpf.c's uretprobe_open (same span_frames/span_depth shapes).
+SEC("uretprobe")
+int BPF_KRETPROBE(corr_uretprobe_ret)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __u64 id  = bpf_get_current_pid_tgid();
+    __u32 pid = (__u32)(id >> 32);
+    __u32 tid = (__u32)id;
+    __u64 now = bpf_ktime_get_ns();
+
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    if (!dp || *dp == 0)
+        return 0;
+    __u32 top = *dp - 1;
+    struct frame_key fk = { .tid = tid, .slot = top };
+    struct span_frame *saved = bpf_map_lookup_elem(&span_frames, &fk);
+    if (!saved) {
+        span_depth_set(tid, top);  // depth/frame desync: shrink and bail
+        return 0;
+    }
+
+    struct corr_func_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bump_dropped();
+    } else {
+        e->h.type = CORR_EV_FUNC_RETURN;
+        e->h.pid  = pid;
+        e->h.tid  = tid;
+        e->h._pad = 0;
+        e->span       = saved->span_id;
+        e->entry_addr = saved->entry_addr;
+        e->retval     = (__u64)PT_REGS_RC(ctx);
+        e->elapsed_ns = now - saved->timestamp;
+        bpf_ringbuf_submit(e, 0);
+    }
+
+    bpf_map_delete_elem(&span_frames, &fk);
+    span_depth_set(tid, top);      // authoritative pop
+    return 0;
+}
+
 // Syscall entry: if a span is open on this thread, tag it and emit.
 SEC("kprobe/do_el0_svc")
 int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
@@ -111,6 +173,48 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
     e->args[3] = BPF_CORE_READ(user_regs, regs[3]);
     e->args[4] = BPF_CORE_READ(user_regs, regs[4]);
     e->args[5] = BPF_CORE_READ(user_regs, regs[5]);
+
+    // Resolve string arguments (copied from syscalls.bpf.c: same mask -> str[]
+    // shape, unrolled so each e->str[i] is a constant offset).
+    e->str_present = 0;
+    __u32 nr32 = (__u32)e->nr;
+    __u8 *maskp = (nr32 < ARG_TYPES_MAX) ? bpf_map_lookup_elem(&arg_types, &nr32) : NULL;
+    __u8 mask = maskp ? *maskp : 0;
+    if (mask) {
+        #pragma clang loop unroll(full)
+        for (int i = 0; i < CORR_STR_SLOTS; i++) {
+            if (!((mask >> i) & 1))
+                continue;
+            long r = bpf_probe_read_user_str(e->str[i], CORR_STR_MAX,
+                             (const void *)e->args[i]);
+            if (r > 0)
+                e->str_present |= (1u << i);
+            else
+                e->str[i][0] = '\0';
+        }
+    }
+
+    // Capture the sockaddr for connect/bind/sendto (copied from syscalls.bpf.c).
+    e->sock_len = 0;
+    __u8 *sap = (nr32 < ARG_TYPES_MAX) ? bpf_map_lookup_elem(&sock_args, &nr32) : NULL;
+    __u8 sidx = sap ? *sap : 0;
+    if (sidx) {
+        const void *ptr = NULL;
+        __u64 alen = 0;
+        #pragma clang loop unroll(full)
+        for (int j = 0; j < CORR_SYS_ARGS - 1; j++) {
+            if (sidx == (__u8)(j + 1)) {
+                ptr = (const void *)e->args[j];
+                alen = e->args[j + 1];
+            }
+        }
+        if (ptr && alen) {
+            __u32 cnt = (__u32)alen & (CORR_SOCK_MAX - 1);
+            if (cnt && bpf_probe_read_user(e->sock, cnt, ptr) == 0)
+                e->sock_len = cnt;
+        }
+    }
+
     bpf_ringbuf_submit(e, 0);
     return 0;
 }

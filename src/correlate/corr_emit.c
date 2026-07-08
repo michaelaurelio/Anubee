@@ -32,8 +32,21 @@ void corr_emit_func(struct jbuf *j, const struct corr_func_event *e)
     jb_c(j, '}');
 }
 
+void corr_emit_func_return(struct jbuf *j, const struct corr_func_return_event *e)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");        jb_s(j, trace_type_name(TRACE_RETURN)); jb_c(j, '"');
+    jb_s(j, ",\"span\":");         jb_u64(j, e->span);
+    jb_s(j, ",\"pid\":");          jb_u64(j, e->h.pid);
+    jb_s(j, ",\"tid\":");          jb_u64(j, e->h.tid);
+    jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
+    jb_s(j, ",\"retval\":\"");     jb_hex(j, e->retval); jb_c(j, '"');
+    jb_s(j, ",\"elapsed_ns\":");   jb_u64(j, e->elapsed_ns);
+    jb_c(j, '}');
+}
+
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
-                       const char *syscall_name)
+                       const char *syscall_name, unsigned fdmask, int sockidx)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");   jb_s(j, trace_type_name(TRACE_SYSCALL)); jb_c(j, '"');
@@ -43,16 +56,28 @@ void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
     jb_s(j, ",\"nr\":");      jb_u64(j, e->nr);
     jb_s(j, ",\"syscall\":\""); jb_esc(j, syscall_name); jb_c(j, '"');
     emit_hex_args(j, e->args, CORR_SYS_ARGS);
-    // Decoded array: human-readable form per arg where a flag decoder applies,
-    // empty string otherwise. Parallel to args[] so consumers index by position.
+    // Decoded array: human-readable form per arg — string > fd > sockaddr >
+    // flags/enum, empty string if none apply. Parallel to args[] so consumers
+    // index by position; empty means "use the raw hex in args[]".
     jb_s(j, ",\"decoded\":[");
     for (int i = 0; i < CORR_SYS_ARGS; i++) {
         if (i) jb_c(j, ',');
-        char dec[128];
-        if (flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec)))
-            { jb_c(j, '"'); jb_esc(j, dec); jb_c(j, '"'); }
-        else
-            jb_s(j, "\"\"");
+        char dec[300];
+        int have = 0;
+        if (i < CORR_STR_SLOTS && (e->str_present & (1u << i))) {
+            snprintf(dec, sizeof(dec), "%.*s", (int)(sizeof(dec) - 1), e->str[i]);
+            have = 1;
+        } else if (fdmask & (1u << i)) {
+            render_fd((int)e->h.pid, e->args[i], dec, sizeof(dec));
+            have = 1;
+        } else if (i == sockidx && e->sock_len > 0 &&
+                   decode_sockaddr(e->sock, e->sock_len, dec, sizeof(dec))) {
+            have = 1;
+        } else if (flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec))) {
+            have = 1;
+        }
+        if (have) { jb_c(j, '"'); jb_esc(j, dec); jb_c(j, '"'); }
+        else jb_s(j, "\"\"");
     }
     jb_c(j, ']');
     jb_c(j, '}');

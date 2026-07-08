@@ -213,11 +213,10 @@ static int  g_funcs_uid;               // resolved UID for the launch banner
 // Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
 static struct ares_sink g_sink;
 
-// Coverage-health record (CR5). Mutated only on the drain thread (STACK handler
-// runs inline in handle_event, called from the ring-buffer poll loop in
-// funcs_run) - CALL/RETURN records are written by the worker thread instead, so
-// there's no cross-thread race today. If the N1 refactor moves this CFI walk to
-// the worker thread, guard g_cov under g_sink_lock.
+// Coverage-health record (CR5). Mutated only from process_call_return()'s STACK
+// branch, which (N1 fix) runs exclusively on the worker thread; read at teardown
+// only after pthread_join(g_worker, ...) has returned, so the worker is no longer
+// running - no lock needed (same reasoning as syscalls.c's g_cov).
 static struct ares_coverage g_cov = { .engine = "funcs" };
 
 // Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
@@ -308,6 +307,47 @@ int probe_target_count = 0;
 static probe_target_t retired_targets[4096];
 static int retired_count;
 
+// addr -> probe_target_t* cache (AA4). probe_targets[]+retired_targets[] cap at
+// 4096 each (8192 total distinct addresses, worst case), so a fixed 16384-slot
+// table stays <=50% loaded even at that ceiling — no grow/rehash needed, unlike
+// symbolize.c's sc_ent (which caches an unbounded (pid,addr) set over a trace).
+// Guarded by g_targets_lock, same as the arrays it indexes.
+#define PT_HASH_CAP (1u << 14)   /* 16384, power of 2 */
+struct pt_hash_ent { __u64 addr; probe_target_t *target; int used; };
+static struct pt_hash_ent pt_hash[PT_HASH_CAP];
+
+static uint64_t pt_hash_fn(__u64 addr)
+{
+    uint64_t h = addr;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return h;
+}
+
+// Both must be called with g_targets_lock held.
+static probe_target_t *pt_hash_get(__u64 addr)
+{
+    size_t mask = PT_HASH_CAP - 1, i = pt_hash_fn(addr) & mask;
+    for (size_t probe = 0; probe < PT_HASH_CAP; probe++) {
+        struct pt_hash_ent *e = &pt_hash[i];
+        if (!e->used) return NULL;
+        if (e->addr == addr) return e->target;
+        i = (i + 1) & mask;
+    }
+    return NULL;
+}
+
+static void pt_hash_put(__u64 addr, probe_target_t *target)
+{
+    size_t mask = PT_HASH_CAP - 1, i = pt_hash_fn(addr) & mask;
+    while (pt_hash[i].used && pt_hash[i].addr != addr)
+        i = (i + 1) & mask;
+    pt_hash[i].used = 1;
+    pt_hash[i].addr = addr;
+    pt_hash[i].target = target;
+}
+
 // Parser module for target resolution
 int mod_re_count = 0;
 int func_re_count = 0;
@@ -333,10 +373,7 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
     // ponytail: coarse mutex, held across the /proc miss path; per-entry locking only if contention shows.
     pthread_mutex_lock(&g_targets_lock);
 
-    for (int i = 0; i < probe_target_count && !result; i++) {
-        if (probe_targets[i].runtime_entry_addr == entry_addr)
-            result = &probe_targets[i];
-    }
+    result = pt_hash_get(entry_addr);
 
     if (!result) {
         char maps_path[64];
@@ -358,6 +395,7 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
                         strcmp(probe_targets[i].mod_path, ml.path) == 0) {
                         probe_targets[i].runtime_entry_addr = entry_addr;
                         result = &probe_targets[i];
+                        pt_hash_put(entry_addr, &probe_targets[i]);
                         break;
                     }
                 }
@@ -392,6 +430,7 @@ static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bo
             candidate->runtime_entry_addr = entry_addr;
             *used_fallback = true;
             result = candidate;
+            pt_hash_put(entry_addr, candidate);
         }
     }
 
@@ -675,12 +714,52 @@ static void process_call_return(const void *data, size_t data_sz)
                 out_print("         [event]   | #%u %s\n", i, frame_sym);
         }
     }
+
+    if (header->type == ARES_EVENT_STACK) {
+        if (data_sz < (int)sizeof(struct ares_stack_snapshot)) return;
+        // ponytail: worker-thread scratch jbuf — worker is single-writer, no lock
+        // (N1 fix: this used to run on the drain thread, same single-writer
+        // reasoning applied there; only the thread changed).
+        static struct jbuf sj;
+        sj.len = 0;
+        ares_stack_snapshot_emit_json(&sj, data);
+        if (sj.b && sj.len)
+            fwrite(sj.b, 1, sj.len, g_stacks);
+        g_stack_count++;
+
+        const struct ares_stack_snapshot *s = (const void *)data;
+        uint64_t pcs[64], sps[64];
+        struct cfi_step_diag diags[64];
+        // Unconditional zero-init: cfi_unwind_snapshot's early-exit break
+        // paths (frame cap, maps miss) don't always write out_diags[n-1],
+        // so an un-memset buffer would leave the terminal stop_reason as
+        // uninitialized stack garbage aliasing a valid enum value and
+        // silently corrupting g_cov.cfi_stop[]. Zero means an unwritten
+        // terminal reads as CFI_OK (0).
+        memset(diags, 0, sizeof(diags));
+        int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
+        if (n > 0) {
+            g_cov.snaps_total++;
+            g_cov.cfi_walks++;
+            int stop_reason = diags[n - 1].stop_reason;
+            if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
+                g_cov.cfi_stop[stop_reason]++;
+
+            struct jbuf cj = {0};
+            ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
+            if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
+            free(cj.b);
+            char frag[208];
+            if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
+                ares_jcache_put(s->stack_id, frag);
+        }
+    }
 }
 
 static void *funcs_worker_main(void *arg)
 {
     (void)arg;
-    static char rec[sizeof(struct event)];
+    static char rec[sizeof(struct ares_stack_snapshot) + 64];
     size_t sz;
     unsigned long flushed = 0;
     while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
@@ -702,45 +781,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     //   RETURN — done (worker via funcs_emit_return)
     //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
     //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
-    //   STACK  — done (drain, inline, to g_stacks sidecar — no lock needed)
+    //   STACK  — done (worker via process_call_return, N1 fix — mirrors syscalls'
+    //            worker-only CFI/chain walk; queued here, not processed inline)
 
     if (header->type == ARES_EVENT_STACK) {
-        if (g_stacks && data_sz >= (int)sizeof(struct ares_stack_snapshot)) {
-            // ponytail: drain-thread scratch jbuf — drain is single-writer, no lock.
-            static struct jbuf sj;
-            sj.len = 0;
-            ares_stack_snapshot_emit_json(&sj, data);
-            if (sj.b && sj.len)
-                fwrite(sj.b, 1, sj.len, g_stacks);
-            g_stack_count++;
-
-            const struct ares_stack_snapshot *s = (const void *)data;
-            uint64_t pcs[64], sps[64];
-            struct cfi_step_diag diags[64];
-            // Unconditional zero-init: cfi_unwind_snapshot's early-exit break
-            // paths (frame cap, maps miss) don't always write out_diags[n-1],
-            // so an un-memset buffer would leave the terminal stop_reason as
-            // uninitialized stack garbage aliasing a valid enum value and
-            // silently corrupting g_cov.cfi_stop[]. Zero means an unwritten
-            // terminal reads as CFI_OK (0).
-            memset(diags, 0, sizeof(diags));
-            int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
-            if (n > 0) {
-                g_cov.snaps_total++;
-                g_cov.cfi_walks++;
-                int stop_reason = diags[n - 1].stop_reason;
-                if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
-                    g_cov.cfi_stop[stop_reason]++;
-
-                struct jbuf cj = {0};
-                ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
-                if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
-                free(cj.b);
-                char frag[208];
-                if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
-                    ares_jcache_put(s->stack_id, frag);
-            }
-        }
+        if (g_stacks)
+            ares_evq_push(&g_q, data, data_sz);
         return 0;
     }
 

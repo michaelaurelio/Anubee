@@ -96,7 +96,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/art_shadow.c \
                $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c $(SRC)/common/sym_jit.c \
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
-               $(SRC)/common/coverage.c
+               $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -122,7 +122,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_jcache_reset ares_managed_chain ares_emit_cfi_stack_json \
                ares_is_interp_frame \
                ares_coverage_report ares_cfi_stop_name \
-               ares_art_naming_disabled
+               ares_art_naming_disabled \
+               ares_syscall_table ares_syscall_table_count
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -161,7 +162,7 @@ LIB_CFLAGS  := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/lib -I$(BUILD) -I$(LIBBPF_INC
 CORR_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/correlate -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 DUMP_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/dump -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 TRACE_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/trace -I$(LIBBPF_INC) $(DEPFLAGS)
-COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(LIBBPF_INC) $(DEPFLAGS)
+COMMON_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
 
 # Static link: libelf (zstd-enabled) pulls in zstd+zlib; liblzma decodes
 # .gnu_debugdata mini-debug-info in the symbolizer. Superset of both engines.
@@ -272,6 +273,11 @@ $(BUILD)/funcs/%.o: $(SRC)/funcs/%.c $(FUNC_SKEL) $(LIBBPF_A)
 $(BUILD)/common/%.o: $(SRC)/common/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
+
+# syscall_table.c #includes the generated table (R9 residual); explicit
+# first-build-ordering prerequisite, same reasoning as syscalls.o/correlate.o
+# above — auto-deps (-MMD -MP) only catch this after a first successful compile.
+$(BUILD)/common/syscall_table.o: $(SYSCALLS_TBL)
 
 $(BUILD)/lib/%.o: $(SRC)/lib/%.c $(LIB_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)

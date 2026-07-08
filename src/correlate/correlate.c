@@ -30,14 +30,13 @@
 #include "common/runtime.h"
 #include "common/maps.h"
 #include "common/syscall_index.h"
+#include "common/syscall_table.h"
 #include "common/coverage.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
-// nr -> name table (generated for the device's arm64 ABI).
-static const struct ares_sysent syscall_names[] = {
-#include "syscalls_gen.h"
-};
+// nr -> name table (generated for the device's arm64 ABI). R9 residual: table
+// data now lives once in common/syscall_table.c, shared with syscalls.c.
 static struct ares_sysindex g_sysidx;
 
 static const char *syscall_name(long nr)
@@ -281,8 +280,7 @@ static int                     g_total;
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    ares_sysindex_build(&g_sysidx, syscall_names,
-                        sizeof(syscall_names) / sizeof(syscall_names[0]));
+    ares_sysindex_build(&g_sysidx, ares_syscall_table, ares_syscall_table_count);
     (void)rc;  // plumbed for parity; trace --correlate wiring deferred (post-launch attach)
     // ponytail: static so specs/pkg strings (pointing into argv) outlive setup.
     static struct corr_args ca = { 0 };

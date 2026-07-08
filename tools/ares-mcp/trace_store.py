@@ -14,6 +14,7 @@ funcs analysis means loading those types into their own tables — see
 DOCUMENTATION.md "Unified trace schema".
 """
 
+import bisect
 import os
 import duckdb
 
@@ -168,22 +169,23 @@ class TraceStore:
                     "pid INTEGER, tid INTEGER, entry_addr VARCHAR, args VARCHAR[])")
         con.execute("CREATE TABLE span_syscalls(span BIGINT, pid INTEGER, tid INTEGER, "
                     "nr BIGINT, syscall VARCHAR, args VARCHAR[], decoded VARCHAR[])")
-        for c in calls:
-            con.execute("INSERT INTO calls VALUES (?,?,?,?,?,?)",
-                        [c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
-                         c.get("entry_addr"), c.get("args") or []])
-        for r in returns:
-            con.execute("INSERT INTO returns VALUES (?,?,?,?,?,?)",
-                        [r.get("pid"), r.get("tid"), r.get("module"), r.get("symbol"),
-                         r.get("retval"), r.get("elapsed_ns")])
-        for s in fspans:
-            con.execute("INSERT INTO func_spans VALUES (?,?,?,?,?,?)",
-                        [s.get("span"), s.get("parent_span"), s.get("pid"), s.get("tid"),
-                         s.get("entry_addr"), s.get("args") or []])
-        for s in syscalls:
-            con.execute("INSERT INTO span_syscalls VALUES (?,?,?,?,?,?,?)",
-                        [s.get("span"), s.get("pid"), s.get("tid"), s.get("nr"),
-                         s.get("syscall"), s.get("args") or [], s.get("decoded") or []])
+        if calls:
+            con.executemany("INSERT INTO calls VALUES (?,?,?,?,?,?)",
+                [[c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
+                  c.get("entry_addr"), c.get("args") or []] for c in calls])
+        if returns:
+            con.executemany("INSERT INTO returns VALUES (?,?,?,?,?,?)",
+                [[r.get("pid"), r.get("tid"), r.get("module"), r.get("symbol"),
+                  r.get("retval"), r.get("elapsed_ns")] for r in returns])
+        if fspans:
+            con.executemany("INSERT INTO func_spans VALUES (?,?,?,?,?,?)",
+                [[s.get("span"), s.get("parent_span"), s.get("pid"), s.get("tid"),
+                  s.get("entry_addr"), s.get("args") or []] for s in fspans])
+        if syscalls:
+            con.executemany("INSERT INTO span_syscalls VALUES (?,?,?,?,?,?,?)",
+                [[s.get("span"), s.get("pid"), s.get("tid"), s.get("nr"),
+                  s.get("syscall"), s.get("args") or [], s.get("decoded") or []]
+                 for s in syscalls])
         self.con = con
         self.path = path
         return path, skipped
@@ -533,15 +535,18 @@ class TraceStore:
         n_mprotect = n_mmap = 0
 
         def add_ivl(s, e):
-            ever_w.append((s, e))
-            ever_w.sort()
+            i = bisect.bisect_left(ever_w, (s, e))
+            ever_w.insert(i, (s, e))
+            # ever_w stays sorted+disjoint everywhere except around the interval
+            # we just inserted — merge only that local window (AA8).
+            lo, hi = max(0, i - 1), min(len(ever_w), i + 2)
             merged = []
-            for a, b in ever_w:
+            for a, b in ever_w[lo:hi]:
                 if merged and a <= merged[-1][1]:
                     merged[-1] = (merged[-1][0], max(merged[-1][1], b))
                 else:
                     merged.append((a, b))
-            ever_w[:] = merged
+            ever_w[lo:hi] = merged
 
         def overlaps(s, e):
             for a, b in ever_w:

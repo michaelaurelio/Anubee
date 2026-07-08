@@ -58,15 +58,14 @@
 #include "common/engine_args.h"
 #include "common/managed_frame.h"
 #include "common/syscall_index.h"
+#include "common/syscall_table.h"
 #include "common/coverage.h"
 #include "common/art_buildid.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
+// R9 residual: table data now lives once in common/syscall_table.c, shared
+// with correlate.c (previously each compiled its own copy of syscalls_gen.h).
 
-static const struct ares_sysent g_sys[] = {
-#include "syscalls_gen.h"
-};
-static const int g_nsys = (int)(sizeof(g_sys) / sizeof(g_sys[0]));
 static struct ares_sysindex g_sysidx;
 
 static const char *sysname(unsigned long long nr)
@@ -86,8 +85,19 @@ static const struct { long nr; int count; } g_argc[] = {
 };
 static const int g_nargc = (int)(sizeof(g_argc) / sizeof(g_argc[0]));
 
+// by_nr[512] dense indexes (AA7), mirroring ares_sysindex_build's scatter pattern
+// for syscall_name() (R9). Each attribute table keeps its own array/sentinel since
+// the payload types differ (count/mask/index); build_arg_tables() runs once at
+// setup, before the worker thread starts.
+#define ARG_TBL_CAP 512
+
+static int           g_argc_by_nr[ARG_TBL_CAP];
+static unsigned char g_fdmask_by_nr[ARG_TBL_CAP];
+static signed char   g_sockidx_by_nr[ARG_TBL_CAP];
+
 static int arg_count(unsigned long long nr)
 {
+	if (nr < ARG_TBL_CAP) return g_argc_by_nr[nr];
 	for (int i = 0; i < g_nargc; i++)
 		if ((unsigned long long)g_argc[i].nr == nr)
 			return g_argc[i].count;
@@ -97,9 +107,9 @@ static int arg_count(unsigned long long nr)
 // Syscall name -> number (reverse of the generated table), or -1 if unknown.
 static long sysnr(const char *name)
 {
-	for (int i = 0; i < g_nsys; i++)
-		if (!strcmp(g_sys[i].name, name))
-			return g_sys[i].nr;
+	for (size_t i = 0; i < ares_syscall_table_count; i++)
+		if (!strcmp(ares_syscall_table[i].name, name))
+			return ares_syscall_table[i].nr;
 	return -1;
 }
 
@@ -488,6 +498,7 @@ static const struct { long nr; unsigned char mask; } g_fd_args[] = {
 
 static unsigned arg_fd_mask(unsigned long long nr)
 {
+	if (nr < ARG_TBL_CAP) return g_fdmask_by_nr[nr];
 	for (size_t i = 0; i < sizeof(g_fd_args) / sizeof(g_fd_args[0]); i++)
 		if ((unsigned long long)g_fd_args[i].nr == nr)
 			return g_fd_args[i].mask;
@@ -512,10 +523,32 @@ static const struct { long nr; int arg; } g_sock_args[] = {
 
 static int arg_sock_index(unsigned long long nr)
 {
+	if (nr < ARG_TBL_CAP) return g_sockidx_by_nr[nr];
 	for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++)
 		if ((unsigned long long)g_sock_args[i].nr == nr)
 			return g_sock_args[i].arg;
 	return -1;
+}
+
+// Scatter all three sparse tables into their dense by_nr[] arrays (AA7). Must
+// run once at setup, before the worker thread starts reading arg_count/
+// arg_fd_mask/arg_sock_index.
+static void build_arg_tables(void)
+{
+	for (int i = 0; i < ARG_TBL_CAP; i++) {
+		g_argc_by_nr[i]    = SYSC_SYSCALL_NARGS;   // default: unknown -> all 6
+		g_fdmask_by_nr[i]  = 0;                    // default: unknown -> no fd args
+		g_sockidx_by_nr[i] = -1;                   // default: unknown -> no sockaddr arg
+	}
+	for (int i = 0; i < g_nargc; i++)
+		if (g_argc[i].nr >= 0 && g_argc[i].nr < ARG_TBL_CAP)
+			g_argc_by_nr[g_argc[i].nr] = g_argc[i].count;
+	for (size_t i = 0; i < sizeof(g_fd_args) / sizeof(g_fd_args[0]); i++)
+		if (g_fd_args[i].nr >= 0 && g_fd_args[i].nr < ARG_TBL_CAP)
+			g_fdmask_by_nr[g_fd_args[i].nr] = g_fd_args[i].mask;
+	for (size_t i = 0; i < sizeof(g_sock_args) / sizeof(g_sock_args[0]); i++)
+		if (g_sock_args[i].nr >= 0 && g_sock_args[i].nr < ARG_TBL_CAP)
+			g_sockidx_by_nr[g_sock_args[i].nr] = (signed char)g_sock_args[i].arg;
 }
 
 // Mirror the table into the BPF sock_args map (1-based index; 0 = none).
@@ -530,7 +563,11 @@ static void install_sock_args(int fd)
 }
 
 // Render argument i of a syscall: string > fd > decoded flags/enum > raw hex.
-static void render_arg(const struct syscalls_syscall_event *e, int i, char *out, size_t outsz)
+// fdm/sockidx are precomputed once per event by the caller (AA7) — arg_fd_mask/
+// arg_sock_index are invariant across a syscall's arguments, so a per-argument
+// loop shouldn't re-call them (even O(1) lookups are pure waste repeated N times).
+static void render_arg(const struct syscalls_syscall_event *e, int i, unsigned fdm,
+			int sockidx, char *out, size_t outsz)
 {
 	const char *s = arg_string(e, i);
 	if (s) {
@@ -540,11 +577,11 @@ static void render_arg(const struct syscalls_syscall_event *e, int i, char *out,
 		snprintf(out, outsz, "\"%.*s\"", (int)(outsz - 3), s);
 		return;
 	}
-	if (arg_fd_mask(e->nr) & (1u << i)) {
+	if (fdm & (1u << i)) {
 		render_fd((int)e->h.pid, e->args[i], out, outsz);
 		return;
 	}
-	if (i == arg_sock_index(e->nr) && e->sock_len > 0 &&
+	if (i == sockidx && e->sock_len > 0 &&
 	    decode_sockaddr((const unsigned char *)e->sock, (unsigned)e->sock_len, out, outsz))
 		return;
 	if (flags_decode_arg((long)e->nr, i, e->args[i], out, outsz))
@@ -672,7 +709,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	jb_s(j, "},\"decoded_args\":{");
 	for (int i = 0, first = 1; i < nargs; i++) {
 		char dec[256];
-		if (arg_string(e, i) || (arg_fd_mask(e->nr) & (1u << i)))
+		if (arg_string(e, i) || (fdm & (1u << i)))
 			continue;
 		if (!flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec)))
 			continue;
@@ -801,11 +838,13 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 	if (!g_quiet) {
 		char arg[320];
 		int nargs = arg_count(e->nr);
+		unsigned fdm = arg_fd_mask(e->nr);
+		int sockidx = arg_sock_index(e->nr);
 		printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
 		for (int i = 0; i < nargs; i++) {
 			if (i)
 				printf(", ");
-			render_arg(e, i, arg, sizeof(arg));
+			render_arg(e, i, fdm, sockidx, arg, sizeof(arg));
 			fputs(arg, stdout);
 		}
 		printf(")\n");
@@ -1060,7 +1099,8 @@ static const struct argp sysc_argp = {
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-	ares_sysindex_build(&g_sysidx, g_sys, (size_t)g_nsys);
+	ares_sysindex_build(&g_sysidx, ares_syscall_table, ares_syscall_table_count);
+	build_arg_tables();
 	// ponytail: g_pkg/g_lib/g_activity alias into sa; static so they stay valid
 	// through the run/launch phases after setup returns. setup runs once per process.
 	static struct sysc_args sa = { .c = COMMON_ARGS_INIT };

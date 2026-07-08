@@ -43,18 +43,10 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
 - C9 — `funcs` sockaddr decode.
-- R9 residual — syscall table data compiled twice (two `syscalls_gen.h` copies).
 - SW1 — switch-interp ShadowFrame walk follow-ups (hardening, BuildID rows).
-- N1 — `funcs` CFI/managed-chain runs inline on the drain thread.
-- `vmlinux.h` dedup (C8).
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
-- AA4 — `funcs` per-event O(N) probe-target scan.
-- AA5 — `cfi_unwind_snapshot` per-frame invariant rescans (pid/module lookups).
-- AA6 — MCP `load_structured` per-row DuckDB insert loop.
-- AA7 — `syscalls` `json_emit` per-event attribute table scans.
-- AA8 — MCP `wx_scan` O(m²·log m) writable-range re-sort.
 - AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.
 
 ---
@@ -290,12 +282,6 @@ lists can't diverge silently.
 - **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
   decoding).
 
-- **R9 residual — syscall table data compiled twice.** `syscall_name()` is now
-  nr-indexed O(1) (`src/common/syscall_index.h`; R9 done 2026-07-01), but the table
-  *data* is still compiled twice (`syscall_names[]` in `correlate`, `g_sys[]` in
-  `syscalls` — two copies of `syscalls_gen.h`). Collapse into one shared
-  `common/syscall_table` TU.
-
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). Deferred polish:
   - **`art_buildid` ELF-note parser hardening** (`src/common/art_buildid.c`,
@@ -316,17 +302,6 @@ lists can't diverge silently.
   - **`ARES_CFI_DEBUG` `[shadow]` diagnostics** are intentional (match CFI diag
     convention); keep unless a dedicated verbosity split is wanted.
 
-- **N1 — `funcs` CFI/managed-chain runs inline on the drain thread.** In `funcs`
-  (`funcs.c` STACK handler) the CFI walk (`cfi_unwind_snapshot`) and managed-chain
-  build (`ares_managed_chain`) run inline on the ring-buffer drain thread, whereas
-  `syscalls` runs the equivalent work on the worker thread (off the drain path). On the
-  loud engine this raises drain latency and can increase drop rate under load.
-  Correctness is unaffected (deduped per `stack_id`, bounded `n <= 64`). Deferred:
-  move the `funcs` STACK-event CFI/chain work to the worker thread, mirroring `syscalls`.
-
-- **C8 (remaining) — duplicate `vmlinux.h`.** Signal handlers, `dropped`
-  map/`bump_dropped()`, and `syscalls_hdr` alias are unified; `vmlinux.h` dedup still
-  open.
 
 - **Unified MCP richness (follow-on).** Minimal ingest + span join done; remaining:
   call histograms, timing views, symbol/module filters, full `server.py` tool surface
@@ -359,54 +334,6 @@ lists can't diverge silently.
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.
 
-- **AA4 — `funcs` per-event O(N) probe-target scan.** Source: 2026-07-07 graph-informed
-  audit. `find_target_by_entry_addr` linear-scans `probe_targets[]` (up to
-  `probe_target_count`, cap 4096) per CALL (`funcs.c:508`) and per RETURN (`funcs.c:607`)
-  — even the fast path (`funcs.c:336-339`) is O(N); the `/proc/maps`-miss fallback
-  (`:356-390`) adds a `strcmp` per row on top. Under a broad `-I/-i` regex resolving
-  thousands of symbols this is the dominant per-event cost on the worker thread. Fix:
-  add an `runtime_entry_addr → probe_target_t*` hash (mirrors the existing `sc_ent`/
-  `fdc_ent` tables), populated where `runtime_entry_addr` is first assigned
-  (`funcs.c:359,392`); fall back to the scan only on a hash miss.
-
-- **AA5 — `cfi_unwind_snapshot` per-frame invariant rescans.** Source: 2026-07-07
-  graph-informed audit. `pm_get(pid)` is called *inside* the per-frame unwind loop
-  (`symbolize.c:296`) though `pid` never changes across a stack's frames; `cfi_get`/
-  `dynsym_get` are linear scans with `strcmp` over every cached module
-  (`sym_elf.c:450-453,321-323`). A 64-frame unwind does 64 redundant pid-table scans
-  plus 64 module-table `strcmp` walks over every ELF the process has ever cached
-  (dozens–hundreds on a real app). Fix: hoist `pm_get(pid)` out of the loop in
-  `cfi_unwind_snapshot`; hash the `cfi_get`/`dynsym_get` caches on `(elf_off, path)` or
-  intern the path pointer for identity compares instead of `strcmp`. Do together with
-  AA1 (same function — add the lock and hoist `pm_get` in one pass).
-
-- **AA6 — MCP `load_structured` per-row DuckDB insert loop.** Source: 2026-07-07
-  graph-informed audit. `tools/ares-mcp/trace_store.py:171-186` issues one
-  `con.execute("INSERT ... VALUES", ...)` per record across four Python loops for
-  funcs/correlate records — O(rows) Python↔DuckDB round-trips, unlike the syscall
-  loader's bulk `read_json(...)` path (`trace_store.py:65-69`). Visibly slow on large
-  funcs/correlate traces for no structural reason. Fix: load via `read_json(path,
-  format='newline_delimited', ...)` filtered by `type` in SQL (as `load()` does), or at
-  minimum `executemany`/the DuckDB Appender.
-
-- **AA7 — `syscalls` `json_emit` per-event attribute table scans.** Source: 2026-07-07
-  graph-informed audit. Unlike `syscall_name()` (R9: nr-indexed O(1)), the sibling
-  attribute tables are still linear scans per event: `arg_count` over `g_argc`
-  (`syscalls.c:89-95`), `arg_fd_mask` over `g_fd_args` (`:489-495`), `arg_sock_index`
-  over `g_sock_args` (`:513-519`); `json_emit` also recomputes `arg_fd_mask(e->nr)` once
-  per *argument* inside its decode loop (`:662` then again `:675`), not once per event.
-  Fix: build `by_nr[512]` indexes for each attribute at setup (same pattern as
-  `ares_sysindex`), and hoist the per-record `arg_fd_mask`/`arg_count` calls in
-  `json_emit` out of the per-argument loop.
-
-- **AA8 — MCP `wx_scan` O(m²·log m) writable-range re-sort.** Source: 2026-07-07
-  graph-informed audit. `add_ivl` appends then re-sorts and re-merges the *entire*
-  accumulated `ever_w` list on every writable mapping (`trace_store.py:535-544`, called
-  per W mapping at `:583-584`) — O(m²·log m) over *m* writable mmap/mprotect events,
-  worst on exactly the packer/JIT-heavy RASP workloads `wx_scan` targets. Fix:
-  `bisect.insort` + merge only the neighbors of the inserted interval (O(m) amortized),
-  or collect all W intervals and sort+merge once.
-
 - **AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.**
   Source: 2026-07-07 graph-informed audit. `ares_managed_chain` heap-allocates a `jbuf`
   whose first `jb_need` floors at 8192 bytes (`managed_frame.c:43`; `emit.c:16`), freed
@@ -426,6 +353,75 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-07
+
+- **Tier 3 perf/efficiency batch (AA4, AA5-remainder, AA7, R9 residual, N1, AA6, AA8 —
+  fixed; C8 closed as stale).** Seven independent perf items from the graph-informed
+  audit, all landed together:
+  - **AA4** — `funcs.c`'s `find_target_by_entry_addr` fast path was an O(N) linear
+    scan of `probe_targets[]`. Added a fixed 16384-slot open-addressing hash
+    (`addr -> probe_target_t*`, `pt_hash_get`/`pt_hash_put`), populated at the same
+    two sites that already assign `runtime_entry_addr` (the `/proc/maps`-miss path
+    and the low-12-bit fallback). No grow/rehash needed — `probe_targets[]` +
+    `retired_targets[]` cap at 4096 each, so the fixed table stays ≤50% loaded even
+    at that ceiling. Also caches `retired_targets[]` fallback hits for the first
+    time (previously re-scanned every repeat event).
+  - **AA5 remainder** — `dynsym_get`/`cfi_get` (`src/common/sym_elf.c`) linear-scanned
+    with a `strcmp` per candidate. Added a growable `(path,elf_off) -> index` hash
+    (`elfidx_get`/`elfidx_put`, FNV-1a path hash), verified by a single `strcmp` only
+    on a hash hit. AA1's `pm_get` hoist was the other half of AA5; this closes it.
+  - **AA7** — `syscalls.c`'s `arg_count`/`arg_fd_mask`/`arg_sock_index` were per-event
+    linear scans. Added `by_nr[512]` dense arrays (`build_arg_tables()`, called once
+    at setup alongside the existing `ares_sysindex_build`), mirroring the R9 pattern.
+    Also fixed `json_emit`'s redundant re-scan of `arg_fd_mask` per argument (now
+    reuses the already-hoisted `fdm`), and hoisted the same two lookups in
+    `render_arg` (found during the audit, not in the original BACKLOG text — its
+    signature now takes precomputed `fdm`/`sockidx` from its one caller,
+    `handle_syscall`).
+  - **R9 residual** — `g_sys[]` (`syscalls.c`) and `syscall_names[]` (`correlate.c`)
+    were two separate compilations of the same generated `syscalls_gen.h` data.
+    Collapsed into a new shared `src/common/syscall_table.{c,h}` (`ares_syscall_table`/
+    `ares_syscall_table_count`), consumed by both engines' `ares_sysindex_build` calls
+    and `syscalls.c`'s `sysnr()`. Required Makefile changes: added the new file to
+    `COMMON_CSRC`, both new symbols to `COMMON_API`'s `--keep-global-symbol` list,
+    `-I$(BUILD)` to `COMMON_CFLAGS`, and an explicit `$(SYSCALLS_TBL)` prerequisite
+    on `syscall_table.o` (mirroring `syscalls.o`/`correlate.o`'s existing explicit
+    deps, since auto-deps only catch this after a first successful compile).
+  - **N1** — `funcs.c`'s STACK-event CFI walk (`cfi_unwind_snapshot`) and managed-chain
+    build (`ares_managed_chain`) ran inline on the drain thread; moved into
+    `process_call_return` so they run on the worker thread instead, mirroring
+    `syscalls.c` exactly. Confirmed via `syscalls.c`'s own `g_cov` comment
+    ("mutated only on the worker thread ... no lock needed") that no new locking
+    was needed here either — the old `funcs.c` comment's speculation that a lock
+    would be required was itself the thing to correct, not a real requirement.
+    Worker's scratch buffer enlarged to fit a `struct ares_stack_snapshot`.
+  - **AA6** — MCP `load_structured`'s four per-row `con.execute(INSERT...)` loops
+    replaced with `con.executemany(...)` (one round-trip per table instead of per
+    row), preserving the existing Python-side type-bucketing/skip-counting rather
+    than a riskier `read_json`-based rewrite.
+  - **AA8** — MCP `wx_scan`'s `add_ivl` re-sorted and rebuilt the entire `ever_w`
+    list per writable mapping; replaced with `bisect.bisect_left` + local-window
+    merge (only the interval immediately before/after the insertion point).
+  - **C8 "duplicate vmlinux.h"** — investigated directly: only one `vmlinux.h`
+    exists in ARES's own build graph (repo root); the only other file by that name
+    is vendored libbpf's own CI action (`third_party/libbpf/.github/...`),
+    unreferenced by ARES's Makefile. Closing as stale rather than inventing a fix
+    for a problem that isn't there; reopen with a concrete file:line if the
+    original concern resurfaces.
+
+  Host-verified: `make test` green throughout (unaffected — no host test targets
+  any of these hot paths directly). Real compiles, not just review, for the pure-
+  userspace pieces: `sym_elf.c` and `syscalls.c` (Part A) syntax-check clean via a
+  borrowed `lzma.h`/the existing skeleton (0 errors); the R9-residual Makefile
+  wiring verified via `make -n`, confirming the exact recipe (`-Ibuild` present,
+  correct cross-compiler invoked) and the correct `--keep-global-symbol` additions
+  in the dry-run `common.part.o` link line — a real compile needs the aarch64
+  cross-toolchain, unavailable in this environment. `funcs.c` (AA4/N1) couldn't be
+  compiled (`gelf.h` missing, no root to install `libelf-dev`) — verified by
+  careful manual diff review instead. `trace_store.py` (AA6/AA8) syntax-checked
+  clean with `python3 -m py_compile`; `add_ivl`'s merge logic additionally verified
+  against a standalone hand-worked reproduction (including cases beyond the
+  original plan: fully-contained and bridging inserts), matching the old
+  full-rebuild's output exactly.
 
 - **CR5 follow-on: `mod` coverage (fixed) — closes Tier 2.** `mod.c` now builds a
   minimal `struct ares_coverage { .engine = <analyzer name>, .ring_drops = <count> }`

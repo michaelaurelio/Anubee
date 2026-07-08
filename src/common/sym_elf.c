@@ -315,22 +315,95 @@ done:
 	close(fd);
 }
 
+// (path,elf_off) -> index into g_ds[]/g_cfi[] (AA5). Replaces the linear
+// scan+strcmp dynsym_get/cfi_get used to do per lookup with an O(1)-amortized
+// hash probe; the strcmp only runs once, to confirm a hash hit, not per candidate.
+// Grows like symbolize.c's sc_ent but with no eviction ceiling — an ELF/CFI cache
+// entry is expensive to reparse, and the realistic module count per trace is small.
+struct elfidx_ent { uint64_t elf_off; uint32_t path_hash; size_t idx; int used; };
+
+static uint32_t elf_path_hash(const char *path, uint64_t elf_off)
+{
+	uint32_t h = 2166136261u;                 // FNV-1a
+	for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+		h ^= *p;
+		h *= 16777619u;
+	}
+	h ^= (uint32_t)(elf_off ^ (elf_off >> 32));
+	return h;
+}
+
+static struct elfidx_ent *g_ds_idx;  static size_t g_ds_idx_cap, g_ds_idx_used;
+static struct elfidx_ent *g_cfi_idx; static size_t g_cfi_idx_cap, g_cfi_idx_used;
+
+static ssize_t elfidx_get(struct elfidx_ent *tab, size_t cap, const char *path,
+			  uint64_t elf_off)
+{
+	if (!cap) return -1;
+	uint32_t ph = elf_path_hash(path, elf_off);
+	size_t mask = cap - 1, i = ph & mask;
+	for (size_t probe = 0; probe < cap; probe++) {
+		struct elfidx_ent *e = &tab[i];
+		if (!e->used) return -1;
+		if (e->elf_off == elf_off && e->path_hash == ph)
+			return (ssize_t)e->idx;   // caller re-verifies path via the real array
+		i = (i + 1) & mask;
+	}
+	return -1;
+}
+
+static void elfidx_put(struct elfidx_ent **tab, size_t *cap, size_t *used,
+			const char *path, uint64_t elf_off, size_t idx)
+{
+	if (!*cap) {
+		*cap = 256;
+		*tab = calloc(*cap, sizeof(**tab));
+		if (!*tab) { *cap = 0; return; }
+	}
+	if ((*used + 1) * 4 >= *cap * 3) {          // grow at 75% load, no ceiling
+		size_t ncap = *cap * 2, nmask = ncap - 1;
+		struct elfidx_ent *ng = calloc(ncap, sizeof(*ng));
+		if (ng) {
+			for (size_t k = 0; k < *cap; k++) {
+				if (!(*tab)[k].used) continue;
+				size_t j = (*tab)[k].path_hash & nmask;
+				while (ng[j].used) j = (j + 1) & nmask;
+				ng[j] = (*tab)[k];
+			}
+			free(*tab);
+			*tab = ng;
+			*cap = ncap;
+		}
+	}
+	uint32_t ph = elf_path_hash(path, elf_off);
+	size_t mask = *cap - 1, i = ph & mask;
+	while ((*tab)[i].used) i = (i + 1) & mask;  // idx is always new (never overwrites)
+	(*tab)[i].used = 1;
+	(*tab)[i].elf_off = elf_off;
+	(*tab)[i].path_hash = ph;
+	(*tab)[i].idx = idx;
+	(*used)++;
+}
+
 struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
 				 int pid, uint64_t vstart, uint64_t vend)
 {
-	for (size_t i = 0; i < g_nds; i++)
-		if (g_ds[i].elf_off == elf_off && !strcmp(g_ds[i].path, path))
-			return &g_ds[i];
+	ssize_t hit = elfidx_get(g_ds_idx, g_ds_idx_cap, path, elf_off);
+	if (hit >= 0 && !strcmp(g_ds[hit].path, path))
+		return &g_ds[hit];
 
 	struct dynsym *nd = realloc(g_ds, (g_nds + 1) * sizeof(*nd));
 	if (!nd)
 		return NULL;
 	g_ds = nd;
-	struct dynsym *ds = &g_ds[g_nds++];
+	size_t idx = g_nds;
+	struct dynsym *ds = &g_ds[idx];
 	memset(ds, 0, sizeof(*ds));
 	snprintf(ds->path, sizeof(ds->path), "%s", path);
 	ds->elf_off = elf_off;
 	parse_symbols(ds, pid, vstart, vend);
+	g_nds++;
+	elfidx_put(&g_ds_idx, &g_ds_idx_cap, &g_ds_idx_used, path, elf_off, idx);
 	return ds;
 }
 
@@ -446,21 +519,23 @@ struct cfi_section *
 cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 	int pid, uint64_t vstart, uint64_t vend)
 {
-	/* 1. Cache hit by (elf_off, path). */
-	for (size_t i = 0; i < g_ncfi; i++) {
-		if (g_cfi[i].elf_off == elf_off && !strcmp(g_cfi[i].path, path))
-			return g_cfi[i].ok ? &g_cfi[i].sec : NULL;
-	}
+	/* 1. Cache hit by (elf_off, path) — O(1)-amortized via the index hash. */
+	ssize_t hit = elfidx_get(g_cfi_idx, g_cfi_idx_cap, path, elf_off);
+	if (hit >= 0 && !strcmp(g_cfi[hit].path, path))
+		return g_cfi[hit].ok ? &g_cfi[hit].sec : NULL;
 
-	/* 2. Append a new entry (failed-by-default). */
+	/* 2. Append a new entry (failed-by-default); index it immediately so every
+	 * return path below (success or failure) short-circuits next time. */
 	struct cfimod *nc = realloc(g_cfi, (g_ncfi + 1) * sizeof(*nc));
 	if (!nc)
 		return NULL;
 	g_cfi = nc;
-	struct cfimod *m = &g_cfi[g_ncfi++];
+	size_t idx = g_ncfi++;
+	struct cfimod *m = &g_cfi[idx];
 	memset(m, 0, sizeof(*m));
 	snprintf(m->path, sizeof(m->path), "%s", path);
 	m->elf_off   = elf_off;
+	elfidx_put(&g_cfi_idx, &g_cfi_idx_cap, &g_cfi_idx_used, path, elf_off, idx);
 	m->load_base = load_base;
 	m->ok        = 0;
 

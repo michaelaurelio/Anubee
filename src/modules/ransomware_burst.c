@@ -125,10 +125,6 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
 {
-    rb_check_manage_ext_storage(mc->pkg);
-    if (g_manage_ext_storage == 1)
-        printf("[burst] target holds MANAGE_EXTERNAL_STORAGE (All files access)\n");
-
     g_skel = ransomware_burst_bpf__open();
     if (!g_skel) {
         fprintf(stderr, "mod ransomware-burst: failed to open BPF skeleton\n");
@@ -166,6 +162,16 @@ static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
         fprintf(stderr, "mod ransomware-burst: no rename/unlink kprobe attached, aborting\n");
         goto err;
     }
+
+    // Deliberately after attach, not before: this shells out (appops) and can
+    // take hundreds of ms+ on real hardware. Kprobes going live ASAP matters
+    // more than this informational check running early -- getting this order
+    // backwards cost real detection window on-device (confirmed: a fixed-
+    // timing device-test trigger missed its burst while attach waited behind
+    // this call).
+    rb_check_manage_ext_storage(mc->pkg);
+    if (g_manage_ext_storage == 1)
+        printf("[burst] target holds MANAGE_EXTERNAL_STORAGE (All files access)\n");
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         rb_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);

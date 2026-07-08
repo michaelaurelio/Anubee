@@ -21,8 +21,12 @@
 // RING_LEN > THRESHOLD is load-bearing (see ransomware_burst.bpf.c): the
 // per-pid hash ring never wraps before a window resets, so at emit time the
 // first `touch_count` ring slots are always exactly this window's hashes --
-// no stale cross-window data, no wraparound bookkeeping needed.
-#define RANSOMWARE_BURST_RING_LEN 24
+// no stale cross-window data, no wraparound bookkeeping needed. RING_LEN must
+// also stay a power of two: the slot index is computed with a `& (RING_LEN-1)`
+// mask (not `%`) because the BPF verifier can prove a constant-mask AND is
+// bounded but can't range-track a non-power-of-2 modulo's multiply/shift
+// codegen -- confirmed on-device (-EACCES "unbounded memory access" at 24).
+#define RANSOMWARE_BURST_RING_LEN 32
 #define BURST_THRESHOLD           20
 
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).

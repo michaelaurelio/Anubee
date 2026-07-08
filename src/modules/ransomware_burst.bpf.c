@@ -110,7 +110,7 @@ static __always_inline void record_touch(const char *path)
         st->ring_head = 0;
     }
 
-    __u32 slot = st->ring_head % RANSOMWARE_BURST_RING_LEN;
+    __u32 slot = st->ring_head & (RANSOMWARE_BURST_RING_LEN - 1);
     st->path_hashes[slot] = path_hash(path);
     st->ring_head++;
     st->count++;

@@ -50,6 +50,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
+- `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
+  `bpf_d_path` canonicalization to close (see Minor section below).
+- `mod ransomware-burst` coverage is conditional on scoped-storage bypass
+  (`MANAGE_EXTERNAL_STORAGE` or legacy targetSdk) and doesn't cover
+  lock-overlay-style extortion (see Minor section below).
 
 ---
 
@@ -297,6 +302,43 @@ authoritative-path migration before sinking more into offset tables.
   `#include bpf_drop.bpf.h` + `bump_dropped()` in each of the 3 analyzer BPF objects
   (execve/proc_event/prop_read), and call `ares_drops_report` from `mod.c` teardown.
   ~8 files; do as its own pass.
+
+- `mod file-access` dirfd-relative opens. An `openat(dirfd, "relative/path", ...)`
+  where `dirfd` isn't `AT_FDCWD` won't prefix-match the in-kernel gate's 4 fixed
+  strings and is silently dropped. Fix = switch from an entry-only kprobe to an
+  entry+kretprobe pair (stash flags in a per-tid map at entry, like
+  `prop_read.c`'s `prop_entry_map`), then at return walk the task's fd table to
+  the newly-opened fd and call `bpf_d_path()` for the canonical absolute path.
+  Deferred at ship time: adds a real dependency on `bpf_d_path` kernel-version
+  availability (5.10+) and CO-RE reads into `fdtable` internals, and only
+  matters when an app deliberately holds a cached dir fd for a sensitive/foreign
+  path — narrow compared to the common case (absolute paths).
+- `mod ransomware-burst` known v1 limitations (shipped 2026-07-08): coverage
+  depends on the traced app holding `MANAGE_EXTERNAL_STORAGE` or targeting a
+  legacy API level — scoped storage (Android 11+) otherwise blocks raw
+  `renameat`/`unlinkat` on shared-storage files outright (surfaced via a
+  startup permission-check banner, not silently assumed). Doesn't detect
+  screen-lock/overlay-style extortion (DroidLock/HOOK-style) — different
+  attack surface entirely, not file-syscall-observable. Fixed threshold (20
+  touches/10s) is evadable by a sample that throttles itself. No exact
+  same-file pairing across a rename and a later unlink (volume/mix is the
+  signal, not proven per-file identity — see design doc). MediaStore-mediated
+  bulk delete/rename is invisible (same structural blind spot as
+  `file-access`'s `openat` detection) — **confirmed on-device 2026-07-08**,
+  not just theoretical: Files by Google's "delete" never fired this
+  regardless of `MANAGE_EXTERNAL_STORAGE`, because scoped-storage delete goes
+  through MediaStore's `IS_TRASHED` column (a soft-delete rename to
+  `.trashed-*`, still on disk) performed by the MediaProvider process, not
+  the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
+  see it. Real-app-driven verification (as opposed to a synthetic PID
+  trigger) is now `scripts/burstapp/build.sh install` — see
+  DOCUMENTATION.md §"Testing tiers".
+- Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
+  future work per the ransomware-burst design's research: current Android
+  "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock
+  overlays + data-destruction threats rather than actual file encryption.
+  Different mechanism entirely (likely Window Manager /
+  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse), not file syscalls.
 
 - **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
   decoding).

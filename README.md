@@ -84,7 +84,7 @@ make                         # -> build/ares
 
 ## Testing
 
-Three tiers, each runnable on its own:
+Three automated tiers, each runnable on its own, plus a manual fourth:
 
 ```sh
 make test            # host unit tests — pure logic, no device, no cross-toolchain
@@ -98,6 +98,58 @@ make device-test     # on-device smoke — pushes the binary, asserts each capab
 - **`make device-test`** runs `scripts/device-test.sh [lib|syscalls|all]`. Override
   the target app with `ARES_TEST_PKG=<package>` and the per-capability window with
   `ARES_TEST_TIMEOUT=<secs>` (default 10). It needs a rooted device with kernel BTF.
+- **`scripts/burstapp/build.sh install`** (manual, not wired into `make`) builds and
+  installs a minimal real app for verifying `mod ransomware-burst` against genuine
+  app-UID file activity instead of a synthetic PID — see DOCUMENTATION.md §"Testing
+  tiers" for why. Needs **two terminals** from step 3 onward, because that step
+  blocks (and its output is fully buffered — invisible until you stop it from the
+  *other* terminal). Two numbers look similar but are not interchangeable: the
+  **UID** (step 1) is who runs the trigger; the **PID** (step 3b) is what you kill.
+
+**Setup — either terminal, doesn't matter which:**
+
+```sh
+# 1. build, install, and grant All Files Access — prints the assigned UID
+scripts/burstapp/build.sh install
+#   installed dev.ares.burstapp — uid <UID>, MANAGE_EXTERNAL_STORAGE granted
+
+# 2. make sure the on-device ares binary is current, and push the trigger binary
+scripts/deploy.sh   # or: make push
+aarch64-linux-gnu-gcc -static -O2 -o build/ares_burst_gen scripts/ares_burst_gen.c
+adb push build/ares_burst_gen /data/local/tmp/ares_burst_gen
+adb shell chmod 755 /data/local/tmp/ares_burst_gen
+```
+
+**Terminal A — run this and leave it alone. It blocks with no output at all
+until Terminal B kills it in step 5 — that's expected (stdio buffering), not a
+hang:**
+
+```sh
+adb shell "su -c '/data/local/tmp/ares mod ransomware-burst -P dev.ares.burstapp -o /data/local/tmp/burst.jsonl'"
+```
+
+**Terminal B — everything from here on. Terminal A is busy; nothing below
+this line runs there:**
+
+```sh
+# 3b. find the PID Terminal A is running as (this is NOT the UID from step 1 —
+#     it's whatever number shows up here, e.g. 7283)
+adb shell "su -c 'ps -ef | grep \"ares mod\" | grep -v grep'"
+
+# 4. trigger the burst AS the app's own UID (from step 1) — no timing race,
+#    since UID-gating doesn't depend on catching a narrow window
+adb shell "su -c 'mkdir -p /sdcard/Download/burst_test'"
+adb shell "su -c 'su <UID> -c \"/data/local/tmp/ares_burst_gen /sdcard/Download/burst_test\"'"
+
+# 5. stop Terminal A by the PID from step 3b (Ctrl-C in Terminal A doesn't
+#    reliably reach a non-pty adb shell command) — this is what flushes
+#    Terminal A's buffered output and returns its prompt
+adb shell "su -c 'kill -INT <PID>'"
+
+# 6. read the result
+adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
+#   {"type":"ransomware_burst","pid":...,"touch_count":20,"distinct_estimate":10,...}
+```
 
 ---
 

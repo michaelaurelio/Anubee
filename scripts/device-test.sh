@@ -352,6 +352,71 @@ test_funcs_structured() {
     info "funcs --structured OK — structured call record found"
 }
 
+# mod file-access: kprobe-only analyzer. deskclock's own /data/data opens at
+# startup are enough to prove attach + emission; we don't rely on it touching
+# external storage or another app's dir (timing/app-dependent).
+test_mod_file_access() {
+    echo "=== mod file-access (stealthy openat/openat2 kprobes) ==="
+    forcestop
+    local out; out="$(ares "mod file-access -P $PKG")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "mod-file-access: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    grep -q 'stealthy: file-access uses kernel-only probes' <<<"$out" \
+        || { tail -5 <<<"$out" >&2; fail "mod-file-access: no stealthy-attach banner"; }
+    if grep -q '^\[file\]' <<<"$out"; then
+        info "mod-file-access OK — $(grep -c '^\[file\]' <<<"$out") [file] line(s)"
+    else
+        echo "  SKIP: no [file] events in this window (app's own data-dir opens are timing-dependent)"
+    fi
+}
+
+# mod ransomware-burst: deterministic trigger via a compiled single-process
+# generator (scripts/ares_burst_gen.c), attached by PID (-p gates on
+# target_pids regardless of the generator's UID, so this doesn't need it to
+# run as the traced app). Hard-fail, not SKIP: we control the trigger, unlike
+# file-access's timing-dependent natural app behavior.
+#
+# Two requirements confirmed the hard way, both load-bearing:
+#   - One process, no forked mv/rm: burst_map keys per calling PID, so 25
+#     touches split across 25 short-lived subprocesses never accumulate to
+#     BURST_THRESHOLD — each subprocess only ever contributes one touch.
+#   - nohup+setsid: a bare `cmd & echo $!` backgrounded inside `su -c '...'`
+#     gets killed with the su session on some devices' su/shell before ares
+#     ever attaches (confirmed via `ps` — the pid was gone within ~1s, well
+#     inside its own pre-touch sleep). Detaching from the session is what
+#     keeps it alive to be traced.
+test_ransomware_burst() {
+    echo "=== mod ransomware-burst (rename/unlink burst on external storage) ==="
+    forcestop
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "ransomware-burst: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/ares_burst_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_burst_gen.c" \
+        || fail "ransomware-burst: failed to compile burst generator"
+    local gen="/data/local/tmp/ares_burst_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "ransomware-burst: push failed"
+    adb shell "chmod 755 $gen"
+
+    local loop_pid
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_burst_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
+        fail "ransomware-burst: could not start burst-generator (no pid captured)"
+    fi
+
+    local out; out="$(ares "mod ransomware-burst -p $loop_pid")"
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_burst_test'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "ransomware-burst: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    if grep -q '^\[burst\]' <<<"$out"; then
+        info "ransomware-burst OK — $(grep -c '^\[burst\]' <<<"$out") [burst] line(s)"
+    else
+        tail -10 <<<"$out" >&2
+        fail "ransomware-burst: no [burst] line from a 25-touch generator loop (threshold/window mistuned, or timing missed the attach window)"
+    fi
+}
 
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
 # stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
@@ -418,9 +483,11 @@ case "$WHAT" in
     syscalls-regs)     test_syscalls_regs ;;
     syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
+    mod-file-access)   test_mod_file_access ;;
+    ransomware-burst)  test_ransomware_burst ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
 esac
 
 forcestop

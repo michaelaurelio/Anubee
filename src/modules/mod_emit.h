@@ -11,6 +11,8 @@ struct spawn_event;      // modules/mod_events.h
 struct proc_exit_event;  // modules/mod_events.h
 struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
+struct file_access_event; // modules/mod_events.h
+struct ransomware_burst_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -30,5 +32,25 @@ void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *c
 // SCAN: {"type":"prop","op":"scan","pid":N,"tid":N,"comm":".."} — no name/value/is_ret/found
 //  (SCAN is a marker event with no property name captured).
 void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
+
+// {"type":"file_access","pid":N,"tid":N,"comm":"..","path":"..",
+//  "flags":["O_RDONLY"|...],
+//  "categories":["external_storage"|"media_subdir"|"credential_pattern"|
+//                "foreign_app_dir"|"unknown_self",...]}
+// categories: bitmask of FA_* (modules/file_access_classify.h). flag_strs/n_flags:
+// pre-decoded via file_access_decode_flags (caller decodes; keeps this builder
+// free of the flags bit-layout).
+void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
+                           unsigned categories, const char *const *flag_strs, int n_flags);
+
+// {"type":"ransomware_burst","pid":N,"comm":"..","touch_count":N,
+//  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
+//  "manage_external_storage":true|false|null}
+// distinct_estimate: caller-computed via burst_distinct_count (keeps this
+// builder free of that logic). manage_ext_storage is tri-state: 1 = granted
+// -> true, 0 = checked and not granted -> false, negative = unknown
+// (package unresolved, never checked) -> null.
+void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+                                int distinct_estimate, int manage_ext_storage);
 
 #endif /* __ARES_MOD_EMIT_H */

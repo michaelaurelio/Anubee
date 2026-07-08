@@ -5,6 +5,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Max managed-chain fragment size (bytes incl. NUL) - the jcache slot size and the
+ * size every caller's fragment buffer must use. Sized to hold typical Kotlin/Compose
+ * chains whole (long dotted names); deeper chains truncate with a "..." marker in
+ * ares_managed_chain_build rather than being dropped. */
+#define ARES_JCACHE_FRAG 512
+
 struct ares_stack_snapshot;   /* full def in common/stack_snapshot.h */
 struct jbuf;                  /* full def in common/emit.h */
 struct cfi_step_diag;         /* full def in common/cfi_unwind.h (optional debug) */

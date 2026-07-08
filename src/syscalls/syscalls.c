@@ -617,7 +617,7 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	ares_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
-	char frag[208];
+	char frag[ARES_JCACHE_FRAG];
 	if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
 		ares_jcache_put(s->stack_id, frag);
 }
@@ -692,7 +692,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	if (e->stack_id) {
 		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
-		char js[208];
+		char js[ARES_JCACHE_FRAG];
 		if (ares_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
 	}
 

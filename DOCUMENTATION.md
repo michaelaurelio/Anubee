@@ -811,9 +811,13 @@ stream:
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
-  Best-effort: AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
-  limits (see BACKLOG). The authoritative full native+managed walk stays in the `.stacks` sidecar `cfi_stack`
-  record, joinable by `stack_id`. Stack snapshot schema:
+  Best-effort: AOT frames are reliable; interpreted frames inherit the documented precision/hit-rate
+  limits (see BACKLOG). Both interpreter terminals are named inline, matching the `.stacks` sidecar:
+  nterp (`nterp_chain`) and the switch interpreter (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the
+  latter is what carries app Kotlin, so it must not be omitted from the inline chain. The fragment is
+  bounded by `ARES_JCACHE_FRAG` (512 B); a chain that overflows is truncated innermost-first with a
+  trailing `"..."` marker (never dropped whole). The authoritative full, untruncated native+managed walk
+  stays in the `.stacks` sidecar `cfi_stack` record, joinable by `stack_id`. Stack snapshot schema:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP

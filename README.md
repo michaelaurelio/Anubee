@@ -84,7 +84,7 @@ make                         # -> build/ares
 
 ## Testing
 
-Three tiers, each runnable on its own:
+Three automated tiers, each runnable on its own, plus a manual fourth:
 
 ```sh
 make test            # host unit tests — pure logic, no device, no cross-toolchain
@@ -98,6 +98,10 @@ make device-test     # on-device smoke — pushes the binary, asserts each capab
 - **`make device-test`** runs `scripts/device-test.sh [lib|syscalls|all]`. Override
   the target app with `ARES_TEST_PKG=<package>` and the per-capability window with
   `ARES_TEST_TIMEOUT=<secs>` (default 10). It needs a rooted device with kernel BTF.
+- **`scripts/burstapp/build.sh install`** (manual, not wired into `make`) builds and
+  installs a minimal real app for verifying `mod ransomware-burst` against genuine
+  app-UID file activity instead of a synthetic PID — see DOCUMENTATION.md §"Testing
+  tiers" for the flow.
 
 ---
 

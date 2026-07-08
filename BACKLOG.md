@@ -325,7 +325,15 @@ authoritative-path migration before sinking more into offset tables.
   same-file pairing across a rename and a later unlink (volume/mix is the
   signal, not proven per-file identity — see design doc). MediaStore-mediated
   bulk delete/rename is invisible (same structural blind spot as
-  `file-access`'s `openat` detection). Spec:
+  `file-access`'s `openat` detection) — **confirmed on-device 2026-07-08**,
+  not just theoretical: Files by Google's "delete" never fired this
+  regardless of `MANAGE_EXTERNAL_STORAGE`, because scoped-storage delete goes
+  through MediaStore's `IS_TRASHED` column (a soft-delete rename to
+  `.trashed-*`, still on disk) performed by the MediaProvider process, not
+  the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
+  see it. Real-app-driven verification (as opposed to a synthetic PID
+  trigger) is now `scripts/burstapp/build.sh install` — see
+  DOCUMENTATION.md §"Testing tiers". Spec:
   `docs/superpowers/specs/2026-07-08-mod-ransomware-burst-design.md`.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
   future work per the ransomware-burst design's research: current Android

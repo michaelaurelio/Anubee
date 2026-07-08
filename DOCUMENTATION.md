@@ -259,6 +259,21 @@ expensive one:
    `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
    grep -q` pipe SIGPIPEs under `pipefail` on large output).
+4. **Realistic app-driven verification** (`scripts/burstapp/`, manual, not part of
+   `make device-test`) — for capabilities where a synthetic trigger's fidelity to
+   the real threat model is itself in question (`mod ransomware-burst`: does a
+   real app's file mutation, not a purpose-built binary, actually get seen?).
+   `scripts/burstapp/build.sh install` builds and installs `dev.ares.burstapp`, a
+   minimal code-free APK (`android:hasCode="false"`, references the stock
+   `android.app.Activity` by name — no dex compiler needed, see the script's
+   header for why one isn't available in this toolchain), grants it
+   `MANAGE_EXTERNAL_STORAGE`, and prints its UID. Attach with
+   `ares mod ransomware-burst -P dev.ares.burstapp -o <file>`, then trigger file
+   activity as that exact UID with `su <uid> -c scripts/ares_burst_gen
+   <target-dir>` (root allows arbitrary-UID exec directly — no `run-as` dance).
+   This is also how the MediaStore-trash blind spot noted in §6.6 was found:
+   real file managers routing "delete" through `IS_TRASHED` never reached
+   this at all.
 
 ### Attach modes: launch (`-P`) vs PID (`-p`)
 
@@ -818,7 +833,12 @@ object — no shared skeleton with `funcs`. Available analyzers:
   (Android 11+) otherwise blocks this signal outright. Known limitations:
   doesn't detect screen-lock/overlay-style extortion, evadable by throttling
   below the threshold, no exact same-file pairing across a rename and a
-  later unlink (see BACKLOG.md).
+  later unlink; a UID/PID-gated trace is structurally blind to any app that
+  deletes via MediaStore's trash API (`IS_TRASHED`) rather than direct file
+  I/O — the real `renameat` runs under MediaProvider's UID, not the calling
+  app's (confirmed on-device: Files by Google's "delete" never fires this,
+  regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
+  MediaStore either way) (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the

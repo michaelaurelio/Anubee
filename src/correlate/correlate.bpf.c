@@ -27,6 +27,15 @@ struct {
 #include "common/follow_fork.bpf.h"
 #include "common/bpf_drop.bpf.h"     // dropped map + bump_dropped()
 
+// Shared native-library load tracing (kprobes on uprobe_mmap/uprobe_munmap).
+// Source-shared into this one BPF object; adds only kprobes, so the loud/quiet
+// firewall class is unchanged (correlate is already loud via its uprobe).
+#define LIBTRACE_TYPE_MAP    CORR_EV_MAP
+#define LIBTRACE_TYPE_UNMAP  CORR_EV_UNMAP
+#define LIBTRACE_EXTRA_GATE() pid_matches()   // mirror the engine's PID mode
+#define LIBTRACE_ON_DROP()   bump_dropped()
+#include "common/lib_trace.bpf.h"
+
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"
 

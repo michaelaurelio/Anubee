@@ -73,6 +73,25 @@ int main(void)
     CHECK(n == 1, "art_jni_trampoline excluded from managed chain");
     CHECK(strcmp(out, "[\"pkg.Inner.method\"]") == 0, "trampoline not in java_stack");
 
+    // Overflow: a chain longer than cap is TRUNCATED with a "..." marker, never
+    // dropped whole. Real Kotlin/Compose names make chains routinely exceed the
+    // cache fragment size; all-or-nothing drop silently loses the whole java_stack.
+    const char *big[] = {
+        "boot.oat!pkg.Alpha.one", "boot.oat!pkg.Beta.two", "boot.oat!pkg.Gamma.three",
+    };
+    char small[36];
+    n = ares_managed_chain_build(big, 3, NULL, 0, small, sizeof(small));
+    CHECK(n > 0, "overflow truncates instead of dropping (n>0)");
+    CHECK(strlen(small) + 1 <= sizeof(small), "truncated fragment fits within cap");
+    CHECK(strlen(small) > 0 && small[strlen(small) - 1] == ']', "truncated output is a closed JSON array");
+    CHECK(strstr(small, "\"...\"") != NULL, "truncation marker present");
+    CHECK(strstr(small, "pkg.Alpha.one") != NULL, "keeps the innermost frame(s)");
+
+    // A chain that fits exactly is emitted whole, with no marker.
+    char just[64];
+    n = ares_managed_chain_build(big, 3, NULL, 0, just, sizeof(just));
+    CHECK(n == 3 && strstr(just, "\"...\"") == NULL, "no marker when the whole chain fits");
+
     // is_interp_frame classification.
     CHECK(ares_is_interp_frame("libart.so!nterp_helper"), "nterp_helper is interp");
     CHECK(ares_is_interp_frame("libart.so!art_quick_to_interpreter_bridge_ToInterpreterBridge"),

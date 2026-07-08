@@ -292,7 +292,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
-- Output: structured per-event JSONL (see §7).
+- Output: structured per-event JSONL (see §7). The same mmap/munmap probes that
+  feed the stack-origin filter also emit `{"type":"lib",...}` / `{"type":"unlib",...}`
+  records for every executable load/unload **to the `-o` sink** (via the shared
+  `ares_libtrace_emit_lib/unlib`); console stays as-is (the `-v` `map`/`unmap`
+  trace lines are the stdout echo). Sink-only, so a fileless run is unchanged.
 - **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
   and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
   one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
@@ -425,6 +429,15 @@ located the module-base bug and stays available for future CFI diagnosis.
   run ares with `ARES_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
   iterate the offsets until the oracle confirms the names → bake the confirmed row into
   `k_table`. Reads-only (own-process file); no target write.
+  - **Known builds / source-bound offsets.** `k_table` carries two rows for the same
+    POCO C85 (Android 15) device: `1f156fc6...` and `cecb684d...`, the latter an OTA libart
+    rebuild (same Android 15, new binary, new BuildID). Their 13 offsets are **identical**,
+    empirical evidence the offset layout is bound to the AOSP source release
+    (`android15-release`), not the compiled binary. So an OTA that only rebuilds libart within
+    the same release needs a fresh row keyed on the new BuildID but **reuses** the offsets; a
+    genuine ART version bump is what shifts them. The `cecb684d...` row was Frida-oracle-verified
+    on 2026-07-08 (95.6% of emitted interp names were real app methods the ART-native oracle
+    also observed).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);
@@ -679,6 +692,12 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `"decoded"` array: each element is the human-readable flag expansion (from
   `flags_decode_arg`) where a decoder applied, or `""` otherwise. One row per
   event, joinable on `span`; syscalls are never nested inside a func record.
+- **Library-load records**: the same object also carries the shared
+  `src/common/lib_trace.bpf.h` kprobes (uprobe_mmap/uprobe_munmap, PID-gated to
+  mirror the engine's filter), emitting `{"type":"lib",...}` / `{"type":"unlib",...}`
+  for every executable load/unload — to the `-o` sink, plus a `[lib]`/`[unlib]`
+  console line unless `-q` (consistent with the engine's other records). These are
+  kprobes only, so the loud/quiet firewall class is unchanged.
 - **Robustness**: each entry-uprobe `bpf_link` is tracked and `bpf_link__destroy`'d
   on teardown (not leaked to process exit). The fixed input caps — `-p` (64 PIDs),
   `-e`/`-F` (64 specs), per-pid attach dedup (256) — now emit a warning when hit
@@ -824,9 +843,13 @@ stream:
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
-  Best-effort: AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
-  limits (see BACKLOG). The authoritative full native+managed walk stays in the `.stacks` sidecar `cfi_stack`
-  record, joinable by `stack_id`. Stack snapshot schema:
+  Best-effort: AOT frames are reliable; interpreted frames inherit the documented precision/hit-rate
+  limits (see BACKLOG). Both interpreter terminals are named inline, matching the `.stacks` sidecar:
+  nterp (`nterp_chain`) and the switch interpreter (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the
+  latter is what carries app Kotlin, so it must not be omitted from the inline chain. The fragment is
+  bounded by `ARES_JCACHE_FRAG` (512 B); a chain that overflows is truncated innermost-first with a
+  trailing `"..."` marker (never dropped whole). The authoritative full, untruncated native+managed walk
+  stays in the `.stacks` sidecar `cfi_stack` record, joinable by `stack_id`. Stack snapshot schema:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP

@@ -617,7 +617,7 @@ static void emit_cfi_backtrace(const struct ares_stack_snapshot *s)
 	ares_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
-	char frag[208];
+	char frag[ARES_JCACHE_FRAG];
 	if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
 		ares_jcache_put(s->stack_id, frag);
 }
@@ -692,7 +692,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	if (e->stack_id) {
 		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
-		char js[208];
+		char js[ARES_JCACHE_FRAG];
 		if (ares_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
 	}
 
@@ -861,6 +861,15 @@ static void process_event(const void *data, size_t sz)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
+		// Record every executable load to the -o sink (quiet=1: the -v "map" line
+		// above is the console echo, so don't double-print a [lib] line).
+		if (g_sink.f) {
+			char path[256];
+			if (ares_libtrace_resolve_path(m->h.pid, m->start, m->name,
+			                               path, sizeof(path)) != 0)
+				snprintf(path, sizeof(path), "%s", m->name);
+			ares_libtrace_emit_lib(&g_sink, 1, m, path, NULL);
+		}
 		// The shared probe only emits executable mappings, so no is_exec test.
 		if (lib_name_matches(m->name))
 			push_lib_range(m->h.pid, m->start, m->end, m->name);
@@ -870,6 +879,8 @@ static void process_event(const void *data, size_t sz)
 		if (sz < sizeof(struct lib_unmap_event))
 			return;
 		const struct lib_unmap_event *u = data;
+		if (g_sink.f)
+			ares_libtrace_emit_unlib(&g_sink, 1, u);  // sink-only, mirrors MAP
 		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
 		break;
 	}

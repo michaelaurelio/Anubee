@@ -12,9 +12,12 @@ enum corr_event_type {
     CORR_EV_FUNC    = 1,     // a probed function was entered (span opened)
     CORR_EV_SYSCALL = 2,     // a syscall issued while inside a probed function
     CORR_EV_RETURN  = 3,     // a probed function returned (span closed)
+    CORR_EV_MAP     = 4,     // an executable library was mapped (shared lib_trace)
+    CORR_EV_UNMAP   = 5,     // an executable range was unmapped (shared lib_trace)
 };
 
 #include "common/trace_schema.h"
+#include "common/lib_trace.h"   // struct lib_map_event / lib_unmap_event + emitters
 
 // A probed-function entry. `span` is this frame's id; `parent_span` links to the
 // enclosing probed frame (0 = outermost).

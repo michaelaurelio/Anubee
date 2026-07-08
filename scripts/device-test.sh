@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|syscalls|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -446,8 +446,37 @@ test_correlate_returns() {
     fi
 }
 
+# lib-records: syscalls + correlate must write {"type":"lib",...} to the -o sink
+# (mmap/munmap probes now emit library-load records alongside their normal output).
+test_lib_records() {
+    echo "=== lib records to -o sink (syscalls + correlate) ==="
+    forcestop
+    local of="/data/local/tmp/ares_librec_test.jsonl"
+
+    adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
+    local so; so="$(ares "syscalls -a -s openat -o $of -P $PKG")"
+    grep -qi 'BPF load failed\|-EPERM' <<<"$so" \
+        && { tail -5 <<<"$so" >&2; fail "lib-records/syscalls: BPF load failed"; }
+    local sc; sc="$(adb shell "su -c 'cat $of 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    grep -q '"type":"lib"' <<<"$sc" \
+        || { echo "  out: $(tail -3 <<<"$sc")" >&2; fail "lib-records/syscalls: no {\"type\":\"lib\"} in -o sink"; }
+    info "lib-records/syscalls OK — $(grep -c '"type":"lib"' <<<"$sc") lib record(s) in sink"
+
+    forcestop
+    adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
+    local co; co="$(ares "correlate -P $PKG -e 'libc.so!open' -o $of")"
+    grep -qi 'BPF load failed\|-EPERM' <<<"$co" \
+        && { tail -5 <<<"$co" >&2; fail "lib-records/correlate: BPF load failed"; }
+    local cc; cc="$(adb shell "su -c 'cat $of 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
+    grep -q '"type":"lib"' <<<"$cc" \
+        || { echo "  out: $(tail -3 <<<"$cc")" >&2; fail "lib-records/correlate: no {\"type\":\"lib\"} in -o sink"; }
+    info "lib-records/correlate OK — $(grep -c '"type":"lib"' <<<"$cc") lib record(s) in sink"
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
+    lib-records)       test_lib_records ;;
     syscalls)          test_syscalls ;;
     syscalls-jit)      test_syscalls_jit ;;
     syscalls-vdso)     test_syscalls_vdso ;;
@@ -457,8 +486,8 @@ case "$WHAT" in
     mod-file-access)   test_mod_file_access ;;
     ransomware-burst)  test_ransomware_burst ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
 esac
 
 forcestop

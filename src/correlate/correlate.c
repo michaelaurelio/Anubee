@@ -129,6 +129,19 @@ static int handle_event(void *ctx, void *data, size_t sz)
             corr_emit_return(&g_sink.jb, e);
             ares_sink_emit(&g_sink);
         }
+    } else if (h->type == CORR_EV_MAP) {
+        if (sz < sizeof(struct lib_map_event)) return 0;
+        const struct lib_map_event *e = data;
+        char path[256];
+        if (ares_libtrace_resolve_path(e->h.pid, e->start, e->name,
+                                       path, sizeof(path)) != 0)
+            snprintf(path, sizeof(path), "%s", e->name);
+        // emit self-gates: console line unless -q, {"type":"lib"} when -o set.
+        ares_libtrace_emit_lib(&g_sink, g_quiet, e, path, NULL);
+    } else if (h->type == CORR_EV_UNMAP) {
+        if (sz < sizeof(struct lib_unmap_event)) return 0;
+        const struct lib_unmap_event *e = data;
+        ares_libtrace_emit_unlib(&g_sink, g_quiet, e);
     }
     return 0;
 }
@@ -304,9 +317,24 @@ static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_d
 static struct ares_correlate *g_skel;
 static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
+static struct bpf_link        *g_map_kp;    // shared lib_trace uprobe_mmap kprobe
+static struct bpf_link        *g_unmap_kp;  // shared lib_trace uprobe_munmap kprobe
 static struct ring_buffer     *g_rb;
 static int                     g_total;
 static int                     g_returns;   // --returns active; gates the CR5 capture-rate field
+
+// Attach the shared lib_trace kprobes (uprobe_mmap / uprobe_munmap) that emit the
+// {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
+// the UID install) so the target's startup library maps are captured, not just
+// later dlopens.
+static int attach_lib_kprobes(struct ares_correlate *skel)
+{
+    g_map_kp = bpf_program__attach(skel->progs.on_uprobe_mmap);
+    if (!g_map_kp) { fprintf(stderr, "correlate: attach uprobe_mmap kprobe failed\n"); return -1; }
+    g_unmap_kp = bpf_program__attach(skel->progs.on_uprobe_munmap);
+    if (!g_unmap_kp) { fprintf(stderr, "correlate: attach uprobe_munmap kprobe failed\n"); return -1; }
+    return 0;
+}
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
@@ -339,6 +367,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", ca.pkg); goto err_skel; }
         if (install_uid(skel, uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
         ares_launch_banner(ca.pkg, uid);
+        // Attach lib_trace kprobes before launch so startup maps are captured.
+        if (attach_lib_kprobes(skel) != 0) goto err_skel;
         pid_t p;
         if (ares_launch_app(ca.pkg, NULL, &p) != 0) {
             fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
@@ -361,6 +391,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
             if (!g_ff) fprintf(stderr, "correlate: follow-fork attach failed (non-fatal)\n");
         }
+        // Already-running target: catches future maps/unmaps (dlopen/dlclose).
+        if (attach_lib_kprobes(skel) != 0) goto err_skel;
     }
 
     // Span-gated syscall kprobe (one, shared).
@@ -417,6 +449,8 @@ void correlate_teardown(void)
         bpf_link__destroy(g_ff);
         g_ff = NULL;
     }
+    if (g_map_kp)   { bpf_link__destroy(g_map_kp);   g_map_kp = NULL; }
+    if (g_unmap_kp) { bpf_link__destroy(g_unmap_kp); g_unmap_kp = NULL; }
     destroy_uprobe_links();
     if (g_skel) {
         // Always report the final tally, so "no message" never means "didn't

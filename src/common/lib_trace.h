@@ -2,10 +2,13 @@
 // Shared Android native-library (.so) load tracing.
 //
 // One implementation of the mmap/munmap capture, /proc/<pid>/maps full-path
-// resolution, and the unified "[lib]" emitter, used by all three engines:
+// resolution, and the unified "[lib]" emitter, used by every engine:
 //   - `ares lib`     (src/lib)      — standalone library-load tracer
 //   - `ares syscalls`(src/syscalls) — feeds its lib_ranges stack-origin filter
+//                                     + emits lib/unlib records to the -o sink
 //   - `ares funcs`   (src/funcs)    — triggers uprobe attachment on map
+//   - `ares correlate`(src/correlate) — emits lib/unlib records alongside spans
+//   - `ares dump`    (src/dump)     — library-load context for the dump
 //
 // The BPF probe lives in lib_trace.bpf.h (source-shared, compiled into each
 // engine's own skeleton — the detectability firewall requires per-engine BPF

@@ -114,18 +114,23 @@ aarch64-linux-gnu-gcc -static -O2 -o build/ares_burst_gen scripts/ares_burst_gen
 adb push build/ares_burst_gen /data/local/tmp/ares_burst_gen
 adb shell chmod 755 /data/local/tmp/ares_burst_gen
 
-# 3. start tracing (no timeout — stays up until you stop it; -o so output survives
-#    stdio buffering when the shell isn't a tty)
+# 3. start tracing (no timeout — runs until stopped; -o so output survives stdio
+#    buffering when the shell isn't a tty). This may return to your prompt right
+#    away instead of blocking (seen from some shells/terminals) — that's fine,
+#    ares is still running detached (reparented to init); don't take a quick
+#    return as a crash. Confirm either way:
 adb shell "su -c '/data/local/tmp/ares mod ransomware-burst -P dev.ares.burstapp -o /data/local/tmp/burst.jsonl'"
-#   run this in its own terminal/pane — it blocks until Ctrl-C
+adb shell "su -c 'ps -ef | grep \"ares mod\" | grep -v grep'"   # find its PID either way
 
-# 4. in a second terminal: trigger the burst AS the app's own uid (from step 1) —
-#    no timing race, since UID-gating doesn't depend on catching a narrow window
+# 4. trigger the burst AS the app's own uid (from step 1) — no timing race, since
+#    UID-gating doesn't depend on catching a narrow window
 adb shell "su -c 'mkdir -p /sdcard/Download/burst_test'"
 adb shell "su -c 'su <UID> -c \"/data/local/tmp/ares_burst_gen /sdcard/Download/burst_test\"'"
 
-# 5. back in the first terminal, Ctrl-C once the trigger has finished (its own
-#    internal sleep + 25 touches take a few seconds) — clean shutdown flushes output
+# 5. stop it by PID (Ctrl-C doesn't reliably reach a non-pty adb shell command) —
+#    a clean SIGINT shutdown is what flushes the buffered output from step 3
+adb shell "su -c 'kill -INT <PID>'"
+
 # 6. read the result
 adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
 #   {"type":"ransomware_burst","pid":...,"touch_count":20,"distinct_estimate":10,...}

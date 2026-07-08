@@ -371,33 +371,35 @@ test_mod_file_access() {
     fi
 }
 
-# mod ransomware-burst: deterministic trigger via a throwaway shell loop
-# doing 25 create+rename+delete cycles under /sdcard, attached by PID
-# (-p gates on target_pids regardless of the loop's UID, so this doesn't
-# need the loop to run as the traced app). Hard-fail, not SKIP: we control
-# the trigger, unlike file-access's timing-dependent natural app behavior.
+# mod ransomware-burst: deterministic trigger via a compiled single-process
+# generator (scripts/ares_burst_gen.c), attached by PID (-p gates on
+# target_pids regardless of the generator's UID, so this doesn't need it to
+# run as the traced app). Hard-fail, not SKIP: we control the trigger, unlike
+# file-access's timing-dependent natural app behavior.
+#
+# Two requirements confirmed the hard way, both load-bearing:
+#   - One process, no forked mv/rm: burst_map keys per calling PID, so 25
+#     touches split across 25 short-lived subprocesses never accumulate to
+#     BURST_THRESHOLD — each subprocess only ever contributes one touch.
+#   - nohup+setsid: a bare `cmd & echo $!` backgrounded inside `su -c '...'`
+#     gets killed with the su session on some devices' su/shell before ares
+#     ever attaches (confirmed via `ps` — the pid was gone within ~1s, well
+#     inside its own pre-touch sleep). Detaching from the session is what
+#     keeps it alive to be traced.
 test_ransomware_burst() {
     echo "=== mod ransomware-burst (rename/unlink burst on external storage) ==="
     forcestop
-    local gen="/data/local/tmp/ares_burst_gen.sh"
-    adb shell "cat > $gen" <<'GENEOF'
-#!/system/bin/sh
-d=/sdcard/.ares_burst_test
-mkdir -p "$d"
-sleep 2
-i=1
-while [ "$i" -le 25 ]; do
-    f="$d/f$i.txt"
-    echo x > "$f"
-    mv "$f" "$f.locked"
-    rm -f "$f.locked"
-    i=$((i + 1))
-done
-rm -rf "$d"
-GENEOF
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "ransomware-burst: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/ares_burst_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_burst_gen.c" \
+        || fail "ransomware-burst: failed to compile burst generator"
+    local gen="/data/local/tmp/ares_burst_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "ransomware-burst: push failed"
     adb shell "chmod 755 $gen"
+
     local loop_pid
-    loop_pid="$(adb shell "su -c 'sh $gen > /dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_burst_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
         fail "ransomware-burst: could not start burst-generator (no pid captured)"
     fi

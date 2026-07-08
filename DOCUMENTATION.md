@@ -292,7 +292,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
-- Output: structured per-event JSONL (see §7).
+- Output: structured per-event JSONL (see §7). The same mmap/munmap probes that
+  feed the stack-origin filter also emit `{"type":"lib",...}` / `{"type":"unlib",...}`
+  records for every executable load/unload **to the `-o` sink** (via the shared
+  `ares_libtrace_emit_lib/unlib`); console stays as-is (the `-v` `map`/`unmap`
+  trace lines are the stdout echo). Sink-only, so a fileless run is unchanged.
 - **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
   and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
   one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
@@ -688,6 +692,12 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `"decoded"` array: each element is the human-readable flag expansion (from
   `flags_decode_arg`) where a decoder applied, or `""` otherwise. One row per
   event, joinable on `span`; syscalls are never nested inside a func record.
+- **Library-load records**: the same object also carries the shared
+  `src/common/lib_trace.bpf.h` kprobes (uprobe_mmap/uprobe_munmap, PID-gated to
+  mirror the engine's filter), emitting `{"type":"lib",...}` / `{"type":"unlib",...}`
+  for every executable load/unload — to the `-o` sink, plus a `[lib]`/`[unlib]`
+  console line unless `-q` (consistent with the engine's other records). These are
+  kprobes only, so the loud/quiet firewall class is unchanged.
 - **Robustness**: each entry-uprobe `bpf_link` is tracked and `bpf_link__destroy`'d
   on teardown (not leaked to process exit). The fixed input caps — `-p` (64 PIDs),
   `-e`/`-F` (64 specs), per-pid attach dedup (256) — now emit a warning when hit

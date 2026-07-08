@@ -745,12 +745,22 @@ static void process_call_return(const void *data, size_t data_sz)
             if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
                 g_cov.cfi_stop[stop_reason]++;
 
+            // AA9: resolve each frame once and share it with both emitters
+            // below (they previously each re-resolved the same n symbols).
+            char sym_store[64][320];
+            const char *syms[64];
+            int nsym = n < 64 ? n : 64;
+            for (int i = 0; i < nsym; i++) {
+                sym_resolve((int)s->h.pid, pcs[i], sym_store[i], sizeof(sym_store[i]));
+                syms[i] = sym_store[i];
+            }
+
             struct jbuf cj = {0};
-            ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
+            ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, syms, NULL);
             if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
             free(cj.b);
             char frag[208];
-            if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
+            if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
                 ares_jcache_put(s->stack_id, frag);
         }
     }

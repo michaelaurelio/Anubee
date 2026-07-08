@@ -33,7 +33,9 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - CR2 — `syscalls` attribution is "presence on stack," not "issued by" (+ FP-omit /
   vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR3 — `correlate` SP-based span pop corrupts on non-LIFO stacks (Kotlin coroutines).
-- CR4 — managed-frame naming: version treadmill + guess-path is primary (see CFI item).
+- CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
+  still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
+  see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
 - AA3 — `trace`↔engine driver ABI held by two hand-maintained, uncross-checked lists
   (inline prototypes in `trace.c` vs. the Makefile's `--keep-global-symbol` lists).
 
@@ -43,11 +45,13 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
 - Phase 3d — coordinator-wide `-p` in `trace`.
 - C9 — `funcs` sockaddr decode.
-- SW1 — switch-interp ShadowFrame walk follow-ups (hardening, BuildID rows).
+- SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
+  liveness tightening; ELF-note hardening done — see Resolved/Done).
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
-- Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2).
-- AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.
+- Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2; CR4 parity fix).
+- AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —
+  see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 
 ---
 
@@ -188,29 +192,41 @@ Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
 (uretprobe, planned) as the accuracy path — the two are currently framed as
 near-equivalent.
 
-### CR4 — managed-frame naming: version treadmill + guess-path is primary
+### CR4 — managed-frame naming: version treadmill + nterp guess-path
 
 Source: 2026-07-03 architecture critique. Extends the "generalize beyond one ART build"
 item above with a strategic critique.
 
-- **Version treadmill.** One `k_table` row (`src/common/art_buildid.c:12`) gates *all*
-  Java naming, keyed on the exact libart BuildID. ART is an apex (mainline) module
-  updated ~monthly; every ART update / vendor rebuild / new release → BuildID miss →
-  managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
+- **Version treadmill (still open).** One `k_table` row (`src/common/art_buildid.c:12`)
+  gates *all* Java naming, keyed on the exact libart BuildID. ART is an apex (mainline)
+  module updated ~monthly; every ART update / vendor rebuild / new release → BuildID miss
+  → managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
   vanish). The `ARES_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
-  it is still one row of manual labor per device per ART build.
-- **Guess-path is primary for nterp.** `art_nterp.c:204` guesses `ArtMethod*` from raw
-  stack slots and corroborates via a dex_pc in a 512-byte window — which proves *method
-  identity, not frame identity*, so two live/stale activations of the same method are
-  indistinguishable (right name, wrong dex_pc / wrong activation), and the uncorroborated
-  fallback can emit a wholly wrong `name?`. The **authoritative** path already exists
-  (`src/common/art_shadow.c` reads ART's real `ShadowFrame.method_`, no guessing); it
-  should be primary and the guess-path the fallback (tracked as "Path Y").
+  it is still one row of manual labor per device per ART build. Tracked under the CFI
+  Major item above.
+- **ShadowFrame parity in the compact chain — fixed 2026-07-08.** The compact `managed[]`
+  fragment shared by both engines (`ares_managed_chain`, `src/common/symbolize.c`) only
+  ever tried the nterp guess-path, even at an `ExecuteSwitchImpl` (switch-interpreter)
+  terminal — the authoritative ShadowFrame walk (`art_shadow.c`) was reachable only from
+  the full `cfi_stack` JSON emitter, not the compact fragment used for the jcache. Both
+  call sites now try `shadow_frame_chain` at its own terminal, at parity with the JSON
+  path. See Resolved/Done.
+- **Guess-path is still primary for nterp specifically (residual, tracked as "Path Y").**
+  `art_nterp.c:204` guesses `ArtMethod*` from raw stack slots and corroborates via a
+  dex_pc in a 512-byte window — which proves *method identity, not frame identity*, so
+  two live/stale activations of the same method are indistinguishable (right name, wrong
+  dex_pc / wrong activation), and the uncorroborated fallback can emit a wholly wrong
+  `name?`. **Correction (2026-07-08 audit):** `art_shadow.c`'s ShadowFrame walk cannot
+  substitute for nterp here — it reads `ManagedStack.top_shadow_frame_`, a field nterp
+  doesn't use (nterp frames live on `top_quick_frame_`, which no reader in this repo
+  parses today). A genuinely authoritative nterp path needs a **new**
+  `top_quick_frame_` reader, not reuse of the existing shadow walk — a separate, harder,
+  ART-internals-risky project, not bundled with the parity fix above.
 
 Strategic: this is the largest, most fragile surface in the repo, for best-effort output
-on a tool whose real edge is stealthy syscalls. Consider labeling managed naming clearly
-experimental so a silent BuildID miss doesn't read as "app used no Java," and finish the
-authoritative-path migration before sinking more into offset tables.
+on a tool whose real edge is stealthy syscalls. Managed naming is now labeled
+**experimental** in README/DOCUMENTATION (2026-07-08) so a silent BuildID miss doesn't
+read as "app used no Java."
 
 ### AA3 — `trace`↔engine driver ABI held by two hand-maintained lists, no compile check
 
@@ -283,14 +299,9 @@ lists can't diverge silently.
   decoding).
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
-  and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). Deferred polish:
-  - **`art_buildid` ELF-note parser hardening** (`src/common/art_buildid.c`,
-    `read_build_id_hex`): section-header fields read at fixed offsets after
-    `fread(sh, min(shentsize,64), …)`; a malformed `shentsize < 0x28` reads
-    uninitialized `sh[]`. Harmless today (fails closed → gate off), but add a
-    `shentsize < 0x28 → skip` guard.
-  - **Unused `sf_dex_instr`** in `struct art_offsets` (`src/common/art_buildid.h`):
-    populated but never read. Drop it or mark reserved.
+  and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser
+  hardening (`shentsize < 0x28` guard) landed 2026-07-08 — see Resolved/Done. Remaining
+  deferred polish:
   - **BuildID offset-table generalization** — see the Major CFI item; add rows per
     device/ART build.
   - **Formal precision cross-check** — validate named switch-interp frames against an
@@ -334,16 +345,29 @@ lists can't diverge silently.
   suspected of unbounded append into `pids[64]`/`specs[64]`, but it is correctly guarded
   with user warnings (`correlate.c:233,242,251`). No action.
 
-- **AA9 — managed-chain per-stack 8 KB alloc churn + double frame symbolization.**
-  Source: 2026-07-07 graph-informed audit. `ares_managed_chain` heap-allocates a `jbuf`
-  whose first `jb_need` floors at 8192 bytes (`managed_frame.c:43`; `emit.c:16`), freed
-  at `managed_frame.c:62-66`, once per distinct CFI stack — for an output fragment
-  capped at `JC_FRAG=208` bytes. Separately, `emit_cfi_backtrace` symbolizes every frame
-  twice per snapshot: `ares_emit_cfi_stack_json` resolves each frame (`symbolize.c:395`)
-  and `ares_managed_chain` resolves the same frames again (`symbolize.c:368`), each
-  under `g_lock` with its own `snprintf`. Fix: format `ares_managed_chain_build` into a
-  small stack buffer sized to `cap` instead of a heap `jbuf`; resolve frame symbols once
-  per snapshot and hand the resolved array to both call sites.
+- **AA9 — managed-chain double frame symbolization (fixed) + per-event alloc churn
+  (deferred).** Source: 2026-07-07 graph-informed audit.
+  - **Double symbolization — fixed 2026-07-08.** `emit_cfi_backtrace`/its `funcs`
+    equivalent symbolized every frame twice per snapshot **event** (not just per distinct
+    stack, since `ares_managed_chain` ran unconditionally before the jcache put — the
+    audit's "once per distinct CFI stack" framing undersold it): `ares_emit_cfi_stack_json`
+    resolved each frame and `ares_managed_chain` resolved the same frames again, each
+    under `g_lock` with its own `snprintf`. Both public functions
+    (`src/common/managed_frame.h`) now take an optional pre-resolved `syms` array; both
+    call sites (`src/funcs/funcs.c`, `src/syscalls/syscalls.c`) resolve once and share it.
+  - **8 KB alloc churn — deferred, not fixed.** `ares_managed_chain_build`
+    (`managed_frame.c`) still heap-allocates a `jbuf` that floors its first grow at
+    8192 bytes for an output fragment capped at `JC_FRAG=208`. The obvious fixes both have
+    a real cost: building directly into the caller's `out` buffer breaks the documented
+    "0 => out is left untouched" contract (an existing host test asserts a stale byte
+    survives a no-managed-frames call — writing straight into `out` would corrupt it
+    before the empty-result check runs); backing it with a fixed-size local scratch buffer
+    instead avoids that, but hardcodes an internal cap independent of the caller's `cap`
+    argument, silently narrowing the API for a hypothetical caller with a larger
+    destination (today's two callers both use `frag[208]`, so it would work in practice,
+    but the general-purpose pure builder would no longer honor its own documented
+    contract). Left as-is; revisit only if profiling shows this alloc actually matters —
+    it is not gated at 8192 bytes per snapshot, but it is a single small heap round-trip.
 
 ---
 
@@ -351,6 +375,56 @@ lists can't diverge silently.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-08
+
+- **Tier 4 — ART/managed-frame batch (CR4 parity fix, AA9 double-symbolization, SW1
+  hardening — fixed).** Three items from the 2026-07-07 graph-informed audit, all
+  touching the same managed-frame naming surface, landed together:
+  - **CR4 — ShadowFrame parity in the compact managed chain.** `ares_managed_chain`
+    (`src/common/symbolize.c`) — the compact `managed[]` fragment shared by both engines
+    and cached in the jcache — only ever tried the nterp guess-path, even at an
+    `ExecuteSwitchImpl` (switch-interpreter) terminal; the authoritative ShadowFrame walk
+    (`art_shadow.c`) was reachable only from the full `cfi_stack` JSON emitter
+    (`ares_emit_cfi_stack_json`). Added the missing `ExecuteSwitchImpl` branch calling
+    `shadow_frame_chain`, mirroring the JSON path exactly — no reordering across
+    terminals (nterp and switch-interp are distinct terminals reading different
+    `ManagedStack` fields, so one can't substitute for the other; see the Major CR4 item
+    for why a fully-authoritative nterp path is separate, harder future work). Zero
+    regression by construction: `shadow_frame_chain` returns 0 on BuildID miss /
+    `tls_base==0`, so the nterp branch runs exactly as before whenever shadow doesn't
+    apply.
+  - **AA9 — double frame symbolization.** `funcs.c`/`syscalls.c` each called
+    `ares_emit_cfi_stack_json` then `ares_managed_chain` back-to-back on the same
+    snapshot, each re-resolving all `n` frames independently under `g_lock`. Both public
+    functions (`src/common/managed_frame.h`) gained an optional pre-resolved `syms`
+    array (NULL = resolve internally, preserving existing host-test call shape); both
+    call sites now resolve once and share the result. The alloc-churn half of AA9
+    (heap `jbuf` floored at 8192 B) was investigated and deferred — see Minor for why.
+  - **SW1 — ELF-note parser hardening.** `read_build_id_hex`
+    (`src/common/art_buildid.c`) read section-header fields at fixed offsets after a
+    `min(shentsize, 64)`-bounded `fread`; a malformed `shentsize < 0x28` would leave
+    those fields reading uninitialized `sh[]` bytes. Added a `shentsize < 0x28` guard
+    (fails closed — same behavior class as today's other malformed-input paths). Exposed
+    (no longer `static`) as a test seam per the `art_shadow.h`-style precedent already in
+    this codebase; `test_art_buildid` gained a malformed-shentsize case.
+  - **Docs.** Managed-frame (Java) naming labeled experimental/best-effort in
+    `DOCUMENTATION.md` and `README.md` — a BuildID miss returns no Java names silently
+    and must not read as "app used no Java" (the CR4 strategic ask).
+  - Host-verified: `make test` all green, incl. new `test_art_buildid` case;
+    `symbolize.c`/`managed_frame.c`/`art_buildid.c`/`art_shadow.c` syntax-checked clean
+    (`cc -fsyntax-only`, `symbolize.c` via a throwaway `lzma.h` stub since its one real
+    dependency gap — the WSL dev env lacking `liblzma-dev` — is unrelated to the touched
+    code, confirmed by grepping for actual `lzma_*` call sites: none exist in the file).
+    `funcs.c`/`syscalls.c` call-site edits could not be compiled end-to-end (missing
+    `libbpf`/`gelf.h`/generated BPF skeletons, the same pre-existing WSL gap noted in
+    prior tiers) — verified instead by type-checking the call sites against the
+    now-compiling `symbolize.c` signatures, confirming `sym_resolve` is already visible
+    in both files, and a standalone snippet confirming the `const char *arr[N]` →
+    `const char *const *` parameter passing used at both call sites is valid C. **Pending
+    on-device verification** (added to the on-device list above): confirm ShadowFrame
+    names now surface in the compact `managed[]` fragment at an `ExecuteSwitchImpl`
+    terminal, and that `nterp_helper` terminals are unchanged.
 
 ### 2026-07-07
 

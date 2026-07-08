@@ -366,18 +366,22 @@ void sym_flush_pid(int pid)
 }
 
 // Resolve the managed method chain for an already-CFI-walked snapshot. Mirrors
-// the nterp-terminal logic in syscalls' emit_cfi_backtrace (single source now):
-// only an nterp_helper terminal places the ArtMethod* at the managed frame base,
-// so only then do we name the interpreted method.
+// the terminal logic in syscalls' emit_cfi_backtrace (single source now): only
+// an nterp_helper or ExecuteSwitchImpl terminal places the interpreted method
+// within reach, so only then do we name it. ExecuteSwitchImpl uses the
+// authoritative ShadowFrame walk (no guessing); nterp_helper keeps the
+// stack-slot guess-path (CR4: kept as separate per-terminal branches — the two
+// walk different ManagedStack fields, so one can't substitute for the other).
 int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
                        const uint64_t *pcs, const uint64_t *sps, int n,
-                       char *out, size_t cap)
+                       const char *const *syms_in, char *out, size_t cap)
 {
     if (n <= 0) return 0;
     static _Thread_local char store[64][320];
     const char *syms[64];
     int m = n < 64 ? n : 64;
     for (int i = 0; i < m; i++) {
+        if (syms_in) { syms[i] = syms_in[i]; continue; }
         sym_resolve(pid, pcs[i], store[i], sizeof(store[i]));
         syms[i] = store[i];
     }
@@ -389,6 +393,9 @@ int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
         if (nn == 0 && nterp_name(pid, s, sps[m - 1], chain[0], sizeof(chain[0])))
             nn = 1;   /* fallback: never regress today's single-frame naming */
         for (int k = 0; k < nn; k++) nptr[k] = chain[k];
+    } else if (strstr(syms[m - 1], "ExecuteSwitchImpl")) {
+        nn = shadow_frame_chain(pid, s->tls_base, chain, 16);
+        for (int k = 0; k < nn; k++) nptr[k] = chain[k];
     }
     return ares_managed_chain_build(syms, m, nptr, nn, out, cap);
 }
@@ -396,16 +403,19 @@ int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
 void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
                               const struct ares_stack_snapshot *s,
                               const uint64_t *pcs, const uint64_t *sps, int n,
+                              const char *const *syms_in,
                               const struct cfi_step_diag *diags)
 {
     jb_s(j, "{\"type\":\"cfi_stack\",\"pid\":"); jb_u64(j, s->h.pid);
     jb_s(j, ",\"tid\":");      jb_u64(j, s->h.tid);
     jb_s(j, ",\"stack_id\":"); jb_u64(j, s->stack_id);
     jb_s(j, ",\"cfi_backtrace\":[");
-    char sym[320];
+    char sym_buf[320];
+    const char *sym = "";
     for (int i = 0; i < n; i++) {
         if (i) jb_c(j, ',');
-        sym_resolve(pid, pcs[i], sym, sizeof(sym));
+        if (syms_in) sym = syms_in[i];
+        else { sym_resolve(pid, pcs[i], sym_buf, sizeof(sym_buf)); sym = sym_buf; }
         jb_s(j, "{\"frame\":"); jb_u64(j, (unsigned)i);
         jb_s(j, ",\"addr\":\""); jb_hex(j, pcs[i]);
         jb_s(j, "\",\"symbol\":\""); jb_esc(j, sym); jb_c(j, '"');

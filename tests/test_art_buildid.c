@@ -3,6 +3,7 @@
 #include "common/art_buildid.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static int checks = 0, failures = 0;
 #define CHECK(cond, msg) do { checks++; if (!(cond)) { failures++; printf("  FAIL: %s\n", msg); } } while (0)
@@ -56,6 +57,30 @@ int main(void)
             "buildid=abc\nbogus_key=0x1\n";
         CHECK(art_offsets_parse(unknown, bid, sizeof bid, &ov) == 0,
               "parse: unknown key -> 0");
+    }
+
+    /* read_build_id_hex — malformed shentsize must fail closed, not read
+     * uninitialized section-header bytes (SW1 hardening). */
+    {
+        char path[] = "/tmp/ares_test_buildid_XXXXXX";
+        int fd = mkstemp(path);
+        CHECK(fd >= 0, "shentsize test: temp file created");
+        if (fd >= 0) {
+            unsigned char e[64] = {0};
+            memcpy(e, "\x7f""ELF", 4);
+            uint64_t shoff = 64; memcpy(e + 0x28, &shoff, 8);
+            uint16_t shentsize = 0x10, shnum = 1;   /* < 0x28: malformed */
+            memcpy(e + 0x3a, &shentsize, 2);
+            memcpy(e + 0x3c, &shnum, 2);
+            FILE *f = fdopen(fd, "wb");
+            fwrite(e, 1, sizeof e, f);
+            fclose(f);
+
+            char hex[64];
+            CHECK(read_build_id_hex(path, hex, sizeof hex) == 0,
+                  "shentsize < 0x28 -> 0 (fail closed, no UB read)");
+            remove(path);
+        }
     }
 
     printf("%d checks, %d failures\n", checks, failures);

@@ -127,7 +127,7 @@ JNI-originated stacks), each trapped syscall
 captures a frozen register file + up to 32 KB of user-stack bytes. These are written
 to `<file>.stacks` as a `{"type":"stack",...}` record. Immediately after, the CFI
 unwinder (`cfi_unwind_snapshot`) walks the frozen snapshot across module boundaries
-using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`). The syscall/call records themselves now carry an inline `java_stack` field — a managed/Java call chain (innermost-first, native frames elided) when a managed caller resolves, e.g. `["pkg.Inner.method","pkg.Outer.method"]` (best-effort; AOT frames reliable, nterp frames inherit documented precision limits).
+using DWARF `.eh_frame`/`.debug_frame`. A companion `{"type":"cfi_stack","stack_id":N,"cfi_backtrace":[...]}` record follows in the same sidecar, each frame carrying `addr`, `symbol`, and `kind` (`native` | `jni-trampoline` | `managed` | `interp`). The syscall/call records themselves now carry an inline `java_stack` field — a managed/Java call chain (innermost-first, native frames elided) when a managed caller resolves, e.g. `["pkg.Inner.method","pkg.Outer.method"]` (**experimental/best-effort** — see Limits below; AOT frames reliable, nterp frames inherit documented precision limits).
 
 **Status: native unwinding works; the live `art_jni_trampoline` cross is not yet
 complete.** Under capture-all the engine now unwinds the full native chain on JNI-originated
@@ -140,6 +140,10 @@ trampoline; fix is a chunked stack capture. **W5** — JIT-compiled caller frame
 file-backed CFI; unreachable until W3-window lands.
 
 **Limits of `--snapshot` / CFI unwind:**
+- **Managed (Java) naming is experimental / best-effort, not guaranteed.** A silent
+  BuildID miss (untracked ART build or vendor rebuild) disables it entirely for that run
+  with no per-record marker — an absent `java_stack` means "not verified this run," never
+  "app used no Java." See BACKLOG's CFI/managed-frame-naming and CR4 items.
 - Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. JIT-compiled callers (W5) and interpreter frames (`ShadowFrame`, tagged `"kind":"interp"`) are not yet crossed/named.
 - **Inlining defeats CFI attribution:** an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid, synchronous).

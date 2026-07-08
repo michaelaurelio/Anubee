@@ -411,8 +411,14 @@ byte-identical; reads only the frozen snapshot (firewall unaffected). It is the 
 located the module-base bug and stays available for future CFI diagnosis.
 
 **Limits:**
+- **Managed (Java) naming is experimental / best-effort**, not a guaranteed capability —
+  the largest and most version-fragile surface in the tool, for a feature outside its
+  core stealthy-syscall focus. A silent BuildID miss (untracked ART build or vendor
+  rebuild) disables it entirely for that run with no per-record marker: treat an absent
+  `java_stack`/managed frame as "not verified this run," never as "app used no Java."
+  See the CFI/managed-frame-naming and CR4 items in BACKLOG for the full caveat.
 - Works only for **compiled-JNI** paths where the Java method was compiled to native (`.oat`/`.odex`/`.vdex`) and its frame appears in the CFI-unwound chain.
-- Interpreter frames are detected by `is_interp_frame` and tagged `"kind":"interp"`. `nterp_chain` names the full interpreted chain from the terminal (each frame dex_pc-corroborated via `dex_lookup_range`, `+0x<dexpc>` suffix, innermost-first); uncorroborated frames are dropped (precision over recall). `nterp_name` is the single-frame fallback. Recall is bounded by the snapshot window (a chain deeper than the captured window truncates), and adjacent frames of the *same* `ArtMethod*` are deduped — so a directly-recursive `A→A` collapses to one entry (`A→B→A` is unaffected). The ART `Thread→ManagedStack` heap walk (spiked, parked) remains the authoritative-but-version-coupled alternative for deeper/off-stack (switch-interpreter ShadowFrame) frames.
+- Interpreter frames are detected by `is_interp_frame` and tagged `"kind":"interp"`. `nterp_chain` names the full interpreted chain from the terminal (each frame dex_pc-corroborated via `dex_lookup_range`, `+0x<dexpc>` suffix, innermost-first); uncorroborated frames are dropped (precision over recall). `nterp_name` is the single-frame fallback. Recall is bounded by the snapshot window (a chain deeper than the captured window truncates), and adjacent frames of the *same* `ArtMethod*` are deduped — so a directly-recursive `A→A` collapses to one entry (`A→B→A` is unaffected). The switch-interpreter `Thread→ManagedStack→ShadowFrame` walk (`art_shadow.c`, shipped and wired into both the compact `managed[]` chain and the full `cfi_stack` JSON) is the authoritative alternative at its own (`ExecuteSwitchImpl`) terminal — it reads a different `ManagedStack` field than nterp and cannot substitute for it at nterp's terminal; nterp's stack-slot guess-path stays primary there (tracked as CR4 "Path Y" in BACKLOG).
 - **Onboarding a new ART build (managed-frame naming).** The version-coupled offsets are
   keyed on the target's `libart.so` BuildID: `art_buildid_offsets` (`src/common/art_buildid.c`)
   reads the target BuildID and returns the matching `k_table` row (both the ShadowFrame and
@@ -766,7 +772,7 @@ stream:
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
-  Best-effort: AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
+  Experimental/best-effort (see §managed-frame naming limits): AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
   limits (see BACKLOG). The authoritative full native+managed walk stays in the `.stacks` sidecar `cfi_stack`
   record, joinable by `stack_id`. Stack snapshot schema:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
@@ -786,8 +792,8 @@ stream:
   "retval":..,"elapsed_ns":..}` (see §3.1). CALL records always carry a `backtrace`
   array of raw addresses (addr-only, no inline symbols — see §3.1). `java_stack` (optional, `--snapshot` + `-o`):
   the managed/Java call chain (innermost-first, native frames elided) that issued the event, e.g.
-  `["pkg.Inner.method","pkg.Outer.method"]`. Best-effort: AOT frames are reliable; interpreted (nterp) frames
-  inherit the documented precision/hit-rate limits (see BACKLOG). The authoritative full native+managed walk
+  `["pkg.Inner.method","pkg.Outer.method"]`. Experimental/best-effort (see §managed-frame naming limits):
+  AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate limits (see BACKLOG). The authoritative full native+managed walk
   stays in the `.stacks` sidecar `cfi_stack` record, joinable by `stack_id`. `funcs` now also writes
   `{"type":"cfi_stack"}` records to its sidecar (parity with syscalls). The `-o` file receives structured records
   only; human-readable console output is suppressed when `-o` is active (implied `-q`).

@@ -40,20 +40,27 @@ void ares_jcache_reset(void);
 /* ---- IMPURE (symbolize.c; declared here, device-tested) ----------------- */
 
 /* Resolve the managed chain for an already-CFI-walked snapshot. pcs/sps/n come
- * from cfi_unwind_snapshot(). Resolves each PC, detects an nterp terminal and
- * names it, then calls ares_managed_chain_build. Returns method count. */
+ * from cfi_unwind_snapshot(). Detects an nterp or switch-interp terminal and
+ * names it (ShadowFrame authoritative path, nterp guess-path fallback), then
+ * calls ares_managed_chain_build. `syms`, if non-NULL, must hold >= n already-
+ * resolved symbols for pcs (AA9: lets a caller that also calls
+ * ares_emit_cfi_stack_json on the same snapshot resolve each frame once and
+ * share it); NULL resolves internally as before. Returns method count. */
 int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
                        const uint64_t *pcs, const uint64_t *sps, int n,
-                       char *out, size_t cap);
+                       const char *const *syms, char *out, size_t cap);
 
 /* Serialize a {"type":"cfi_stack",...} record (kind tags + nterp terminal
  * append) into j, from an already-walked pcs/sps/n. The single cfi_stack
- * serializer for BOTH engines. If diags != NULL, per-frame ARES_CFI_DEBUG fields
- * are emitted (parallel to pcs, length n); funcs passes NULL, syscalls passes its
- * diag array when ARES_CFI_DEBUG is set. */
+ * serializer for BOTH engines. `syms`, if non-NULL, must hold >= n already-
+ * resolved symbols for pcs (see ares_managed_chain); NULL resolves internally.
+ * If diags != NULL, per-frame ARES_CFI_DEBUG fields are emitted (parallel to
+ * pcs, length n); funcs passes NULL, syscalls passes its diag array when
+ * ARES_CFI_DEBUG is set. */
 void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
                               const struct ares_stack_snapshot *s,
                               const uint64_t *pcs, const uint64_t *sps, int n,
+                              const char *const *syms,
                               const struct cfi_step_diag *diags);
 
 #endif /* ARES_MANAGED_FRAME_H */

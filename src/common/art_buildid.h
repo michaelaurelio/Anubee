@@ -42,4 +42,8 @@ int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
 // 1 if an unknown libart BuildID disabled managed (Java) naming this run.
 int ares_art_naming_disabled(void);
 
+// Test seam: read the ELF .note.gnu.build-id from `path`, lowercase hex into
+// `out`. Returns 1 on success, 0 on any malformed/missing input (fail-closed).
+int read_build_id_hex(const char *path, char *out, size_t outsz);
+
 #endif

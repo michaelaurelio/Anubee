@@ -90,7 +90,8 @@ const struct art_offsets *art_offsets_for_buildid(const char *hexid)
 
 // Read the ELF .note.gnu.build-id from a file, format as lowercase hex.
 // Returns 1 on success. Small, self-contained ELF64 note scan.
-static int read_build_id_hex(const char *path, char *out, size_t outsz)
+// Test seam: exposed (not static) so test_art_buildid.c can drive it directly.
+int read_build_id_hex(const char *path, char *out, size_t outsz)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -101,6 +102,9 @@ static int read_build_id_hex(const char *path, char *out, size_t outsz)
     uint64_t shoff; memcpy(&shoff, e + 0x28, 8);
     uint16_t shentsize, shnum;
     memcpy(&shentsize, e + 0x3a, 2); memcpy(&shnum, e + 0x3c, 2);
+    // sh_type/off/size below are read at fixed offsets up to 0x28; a shentsize
+    // that short would leave them reading uninitialized `sh[]` bytes.
+    if (shentsize < 0x28) { fclose(f); return 0; }
     for (uint16_t i = 0; i < shnum && !ok; i++) {
         unsigned char sh[64];
         if (fseek(f, (long)(shoff + (uint64_t)i * shentsize), SEEK_SET) != 0) break;

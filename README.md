@@ -101,10 +101,15 @@ make device-test     # on-device smoke — pushes the binary, asserts each capab
 - **`scripts/burstapp/build.sh install`** (manual, not wired into `make`) builds and
   installs a minimal real app for verifying `mod ransomware-burst` against genuine
   app-UID file activity instead of a synthetic PID — see DOCUMENTATION.md §"Testing
-  tiers" for why. Steps:
+  tiers" for why. Needs **two terminals** from step 3 onward, because that step
+  blocks (and its output is fully buffered — invisible until you stop it from the
+  *other* terminal). Two numbers look similar but are not interchangeable: the
+  **UID** (step 1) is who runs the trigger; the **PID** (step 3b) is what you kill.
+
+**Setup — either terminal, doesn't matter which:**
 
 ```sh
-# 1. build, install, and grant All Files Access — prints the assigned uid
+# 1. build, install, and grant All Files Access — prints the assigned UID
 scripts/burstapp/build.sh install
 #   installed dev.ares.burstapp — uid <UID>, MANAGE_EXTERNAL_STORAGE granted
 
@@ -113,22 +118,32 @@ scripts/deploy.sh   # or: make push
 aarch64-linux-gnu-gcc -static -O2 -o build/ares_burst_gen scripts/ares_burst_gen.c
 adb push build/ares_burst_gen /data/local/tmp/ares_burst_gen
 adb shell chmod 755 /data/local/tmp/ares_burst_gen
+```
 
-# 3. start tracing (no timeout — runs until stopped; -o so output survives stdio
-#    buffering when the shell isn't a tty). This may return to your prompt right
-#    away instead of blocking (seen from some shells/terminals) — that's fine,
-#    ares is still running detached (reparented to init); don't take a quick
-#    return as a crash. Confirm either way:
+**Terminal A — run this and leave it alone. It blocks with no output at all
+until Terminal B kills it in step 5 — that's expected (stdio buffering), not a
+hang:**
+
+```sh
 adb shell "su -c '/data/local/tmp/ares mod ransomware-burst -P dev.ares.burstapp -o /data/local/tmp/burst.jsonl'"
-adb shell "su -c 'ps -ef | grep \"ares mod\" | grep -v grep'"   # find its PID either way
+```
 
-# 4. trigger the burst AS the app's own uid (from step 1) — no timing race, since
-#    UID-gating doesn't depend on catching a narrow window
+**Terminal B — everything from here on. Terminal A is busy; nothing below
+this line runs there:**
+
+```sh
+# 3b. find the PID Terminal A is running as (this is NOT the UID from step 1 —
+#     it's whatever number shows up here, e.g. 7283)
+adb shell "su -c 'ps -ef | grep \"ares mod\" | grep -v grep'"
+
+# 4. trigger the burst AS the app's own UID (from step 1) — no timing race,
+#    since UID-gating doesn't depend on catching a narrow window
 adb shell "su -c 'mkdir -p /sdcard/Download/burst_test'"
 adb shell "su -c 'su <UID> -c \"/data/local/tmp/ares_burst_gen /sdcard/Download/burst_test\"'"
 
-# 5. stop it by PID (Ctrl-C doesn't reliably reach a non-pty adb shell command) —
-#    a clean SIGINT shutdown is what flushes the buffered output from step 3
+# 5. stop Terminal A by the PID from step 3b (Ctrl-C in Terminal A doesn't
+#    reliably reach a non-pty adb shell command) — this is what flushes
+#    Terminal A's buffered output and returns its prompt
 adb shell "su -c 'kill -INT <PID>'"
 
 # 6. read the result

@@ -371,12 +371,18 @@ int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
     char chain[16][256];
     const char *nptr[16];
     int nn = 0;
+    /* Mirror ares_emit_cfi_stack_json's two interpreter terminals so the inline
+     * java_stack names the same managed frames as the .stacks sidecar. Without the
+     * ExecuteSwitchImpl arm, app methods running on the switch interpreter (common
+     * for app Kotlin) were named in the sidecar but never inline. */
     if (strstr(syms[m - 1], "nterp_helper")) {
         nn = nterp_chain(pid, s, sps[m - 1], chain, 16);
         if (nn == 0 && nterp_name(pid, s, sps[m - 1], chain[0], sizeof(chain[0])))
             nn = 1;   /* fallback: never regress today's single-frame naming */
-        for (int k = 0; k < nn; k++) nptr[k] = chain[k];
+    } else if (strstr(syms[m - 1], "ExecuteSwitchImpl")) {
+        nn = shadow_frame_chain(pid, s->tls_base, chain, 16);
     }
+    for (int k = 0; k < nn; k++) nptr[k] = chain[k];
     return ares_managed_chain_build(syms, m, nptr, nn, out, cap);
 }
 

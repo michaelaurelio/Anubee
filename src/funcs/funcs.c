@@ -516,7 +516,7 @@ static void process_call_return(const void *data, size_t data_sz)
             if (g_sink.f) {
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
-                char js[208];
+                char js[ARES_JCACHE_FRAG];
                 const char *jsp = ares_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp);
                 ares_sink_emit(&g_sink);
@@ -736,7 +736,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
                 ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, NULL);
                 if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
                 free(cj.b);
-                char frag[208];
+                char frag[ARES_JCACHE_FRAG];
                 if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, frag, sizeof(frag)) > 0)
                     ares_jcache_put(s->stack_id, frag);
             }

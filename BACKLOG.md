@@ -312,8 +312,7 @@ authoritative-path migration before sinking more into offset tables.
   Deferred at ship time: adds a real dependency on `bpf_d_path` kernel-version
   availability (5.10+) and CO-RE reads into `fdtable` internals, and only
   matters when an app deliberately holds a cached dir fd for a sensitive/foreign
-  path — narrow compared to the common case (absolute paths). Spec:
-  `docs/superpowers/specs/2026-07-07-mod-file-access-design.md`.
+  path — narrow compared to the common case (absolute paths).
 - `mod ransomware-burst` known v1 limitations (shipped 2026-07-08): coverage
   depends on the traced app holding `MANAGE_EXTERNAL_STORAGE` or targeting a
   legacy API level — scoped storage (Android 11+) otherwise blocks raw
@@ -333,8 +332,7 @@ authoritative-path migration before sinking more into offset tables.
   the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
   see it. Real-app-driven verification (as opposed to a synthetic PID
   trigger) is now `scripts/burstapp/build.sh install` — see
-  DOCUMENTATION.md §"Testing tiers". Spec:
-  `docs/superpowers/specs/2026-07-08-mod-ransomware-burst-design.md`.
+  DOCUMENTATION.md §"Testing tiers".
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
   future work per the ransomware-burst design's research: current Android
   "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock

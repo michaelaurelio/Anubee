@@ -3,7 +3,7 @@
 // paths (mod file-access, mod ransomware-burst). Source-shared only -- each
 // BPF object that #includes this gets its own compiled copy, so this has no
 // effect on the detectability firewall (that's about attached programs, not
-// shared code); see CLAUDE.md's "Shared BPF is source-shared" rule.
+// shared code).
 #ifndef __ARES_PATH_GATE_BPF_H
 #define __ARES_PATH_GATE_BPF_H
 

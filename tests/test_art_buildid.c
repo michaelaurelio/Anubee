@@ -26,7 +26,7 @@ int main(void)
     CHECK(art_offsets_for_buildid("deadbeef") == NULL, "unknown BuildID -> NULL (gate off)");
     CHECK(art_offsets_for_buildid(NULL) == NULL, "NULL BuildID -> NULL");
 
-    /* cecb684d… — the OTA-swapped libart on the same POCO C85 / Android 15;
+    /* cecb684d - the OTA-swapped libart on the same POCO C85 / Android 15;
      * struct layout unchanged from 1f156fc6, so offsets are identical. */
     const struct art_offsets *o2 =
         art_offsets_for_buildid("cecb684d19b4f44ee3cbd66142c315f4");

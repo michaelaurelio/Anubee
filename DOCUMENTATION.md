@@ -141,12 +141,15 @@ flowchart TD
   PID-attach via top-level `-p` (Phase 3d: `trace` injects `-p <csv>` into each
   requested engine's own argv and skips the launch — each engine already arms
   `target_pids` itself from `-p`, so no `ares_run_ctx`/`launch.h` change was
-  needed). `correlate` has the lifecycle contract but is not yet wired into
-  `trace` — see [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception:
-  `correlate_setup` owns its launch internally (uprobe attach requires
-  the child PID, only known post-launch) and ignores `rc`; it now routes through
-  `ares_launch_app` with the new `out_pid` param (GA6-keystone done). Wiring
-  `correlate` into `trace` remains deferred — see BACKLOG.md GA2 deferred items.
+  needed). `correlate` is now wired into `trace` too (GA2 complete): unlike the
+  other four, its uprobe attach needs the launched PID, only known post-launch,
+  so `correlate_setup` no longer launches internally — it now honors `rc->pkg`
+  pre-fill like the others and arms everything PID-independent, and a 5th public
+  function, `correlate_attach(pid)`, does the post-launch uprobe attach. Both
+  `cmd_correlate` (standalone) and `trace`'s coordinator call
+  `ares_launch_app(..., &pid)` themselves and then `correlate_attach(pid)` right
+  after — `correlate_attach` is a no-op in `-p` attach mode, where PIDs are
+  already known at setup time and attached there instead.
   The driver contract itself (`<engine>_setup`/`_run`/`_teardown` signatures) is
   now declared once in `src/common/engine_driver.h`, included by both `trace.c`
   and every engine's `.c` — a signature change is a compile error instead of the
@@ -828,12 +831,14 @@ entry uprobe.
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 
-`ares trace` runs the `syscalls` (kprobe), `funcs` (uprobe), `lib` (kprobe), and
-`dump` (kprobe) engines together from a **single app launch** (or a single PID
-attach via `-p`), emitting each engine's full output as an independent stream
-(no correlation — that is `correlate`'s job, and it is not yet wired in — see
-§ below). It owns no BPF object of its own: it is a thin coordinator
-(`src/trace/trace.c`) over the engines' setup/run/teardown phases (§1).
+`ares trace` runs the `syscalls` (kprobe), `funcs` (uprobe), `lib` (kprobe),
+`dump` (kprobe), and `correlate` (uprobe) engines together from a **single app
+launch** (or a single PID attach via `-p`), emitting each engine's full output
+as an independent stream (`syscalls`/`funcs` are not cross-correlated with each
+other by `trace` itself — running `correlate` alongside them gets you that
+correlation for its own spec'd functions, but as a 5th independent stream, not
+a merge of the others). It owns no BPF object of its own: it is a thin
+coordinator (`src/trace/trace.c`) over the engines' setup/run/teardown phases (§1).
 
 - **Why a coordinator (not a fused probe):** each real engine keeps all its
   features (return values, typed args, modules, sockaddr/fd decode, stack-origin
@@ -850,21 +855,28 @@ attach via `-p`), emitting each engine's full output as an independent stream
   their package name from `rc->pkg` before calling `argp_parse`, so no `-P` flag
   appears in any engine's argv section in launch mode. In `-p` attach mode `rc`
   stays zeroed and `trace` instead injects `-p <csv>` into each requested
-  engine's own argv (`dump` needs this explicitly — unlike the other three, its
-  `argp` parser errors without a `-P`/`-p` of its own). The driver symbols
-  (`<engine>_setup`/`_run`/`_teardown` for all five engines) are declared once in
+  engine's own argv (`dump`/`correlate` need this explicitly — unlike `syscalls`/
+  `funcs`/`lib`, their `argp` parsers error without a `-P`/`-p` of their own).
+  `correlate` is the one engine `trace` can't just launch-then-run: its uprobe
+  attach needs the launched PID, so after `ares_launch_app` succeeds `trace`
+  calls the 5th driver function, `correlate_attach(pid)`, before starting its
+  drain thread (no-op in `-p` mode, where `correlate_setup` already attached
+  using the known PIDs). The driver symbols (`<engine>_setup`/`_run`/`_teardown`
+  for all five engines, plus `correlate_attach`) are declared once in
   `src/common/engine_driver.h` (AA3) and kept global through the partial-link so
   `trace.part.o` can call them (see the `*_DRIVER` `--keep-global-symbol` lists
   in the Makefile).
-- **CLI:** `ares trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [--syscalls <args…>] [--funcs <args…>] [--lib] [--dump <args…>]`.
+- **CLI:** `ares trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [--syscalls <args…>] [--funcs <args…>] [--lib] [--dump <args…>] [--correlate <args…>]`.
   With `-o`, each engine writes its own file (`<prefix>.syscalls.jsonl` /
-  `<prefix>.funcs.jsonl` / `<prefix>.lib.jsonl` / `<prefix>.dump.jsonl`) — no
-  shared `FILE*`, and all are ingestable by the unified MCP today. Each `--…`
-  section is that engine's normal options; the package/PID is not repeated
-  (`rc->pkg`/injected `-p` supplies it). `dump`'s output is ELF image files plus
-  an on-exit rescan, not a live stream, so combining it with the streaming
-  engines mixes a batch engine into an otherwise-live run — wired for lifecycle
-  parity (GA2), not because the combination is especially useful.
+  `<prefix>.funcs.jsonl` / `<prefix>.lib.jsonl` / `<prefix>.dump.jsonl` /
+  `<prefix>.event.jsonl`) — no shared `FILE*`, and all are ingestable by the
+  unified MCP today. Each `--…` section is that engine's normal options; the
+  package/PID is not repeated (`rc->pkg`/injected `-p` supplies it). `dump`'s
+  output is ELF image files plus an on-exit rescan, not a live stream, so
+  combining it with the streaming engines mixes a batch engine into an
+  otherwise-live run — wired for lifecycle parity (GA2), not because the
+  combination is especially useful. `--correlate` needs its own probe targets
+  (`-e`/`-F` or `-I`/`-i`), same as standalone `correlate`.
 - **Operational notes:** without `-o`, requested engines print to stdout from
   their own threads and the text interleaves — `trace` warns and `-o` is
   recommended. A first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the

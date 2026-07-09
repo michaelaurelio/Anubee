@@ -6,12 +6,18 @@
 set -eu
 root=$(dirname "$0")/..
 
-# Symbols the header declares: ARES_ENGINE_DRIVER(e) expands to e_setup/e_run/e_teardown.
-# (excludes the macro's own #define line, which also matches the pattern)
+# Symbols the header declares, from two shapes:
+#  1. ARES_ENGINE_DRIVER(e) invocations -> e_setup/e_run/e_teardown.
+#     (excludes the macro's own #define line, which also matches the pattern)
+#  2. Standalone prototypes at column 0, e.g. "int correlate_attach(pid_t pid);"
+#     (the macro's own body lines are indented, so this doesn't double-count them)
 hdr_engines=$(grep -v '^#define' "$root/src/common/engine_driver.h" \
               | grep -oE 'ARES_ENGINE_DRIVER\([a-z]+\)' \
               | sed -E 's/ARES_ENGINE_DRIVER\(([a-z]+)\)/\1/')
-hdr_syms=$(for e in $hdr_engines; do printf '%s_setup\n%s_run\n%s_teardown\n' "$e" "$e" "$e"; done | sort -u)
+hdr_macro_syms=$(for e in $hdr_engines; do printf '%s_setup\n%s_run\n%s_teardown\n' "$e" "$e" "$e"; done)
+hdr_standalone_syms=$(grep -E '^(int|void)[[:space:]]' "$root/src/common/engine_driver.h" \
+              | sed -E 's/^(int|void)[[:space:]]+\**([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\(.*/\2/')
+hdr_syms=$(printf '%s\n%s\n' "$hdr_macro_syms" "$hdr_standalone_syms" | sort -u)
 
 # Symbols kept global by the Makefile's *_DRIVER variables.
 mk_syms=$(grep -E '^[A-Z_]+_DRIVER[[:space:]]*:=' "$root/Makefile" \

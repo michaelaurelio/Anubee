@@ -31,7 +31,7 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 static int is_section_delim(const char *s)
 {
 	return !strcmp(s, "--syscalls") || !strcmp(s, "--funcs") || !strcmp(s, "--lib") ||
-	       !strcmp(s, "--dump");
+	       !strcmp(s, "--dump") || !strcmp(s, "--correlate");
 }
 
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
@@ -40,6 +40,7 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 	o->sys_start = o->sys_end = o->func_start = o->func_end = -1;
 	o->lib_start = o->lib_end = -1;
 	o->dump_start = o->dump_end = -1;
+	o->corr_start = o->corr_end = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-P")) {
@@ -76,6 +77,11 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 			for (int j = o->dump_start; j < argc; j++)
 				if (is_section_delim(argv[j])) { o->dump_end = j; break; }
 			i = o->dump_end - 1;
+		} else if (!strcmp(argv[i], "--correlate")) {
+			o->corr_start = i + 1; o->corr_end = argc;
+			for (int j = o->corr_start; j < argc; j++)
+				if (is_section_delim(argv[j])) { o->corr_end = j; break; }
+			i = o->corr_end - 1;
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			return 1;
 		} else {

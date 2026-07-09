@@ -332,7 +332,7 @@ $(MAIN_OBJ): $(SRC)/main.c
 SYSC_DRIVER := syscalls_setup syscalls_run syscalls_teardown
 FUNC_DRIVER := funcs_setup funcs_run funcs_teardown
 LIB_DRIVER  := lib_setup lib_run lib_teardown
-CORR_DRIVER := correlate_setup correlate_run correlate_teardown
+CORR_DRIVER := correlate_setup correlate_run correlate_teardown correlate_attach
 DUMP_DRIVER := dump_setup dump_run dump_teardown
 
 # ---- partial-link each engine + localize all but its cmd_* entry ----------

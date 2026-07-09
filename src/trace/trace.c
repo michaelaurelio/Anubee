@@ -12,13 +12,15 @@
 #include <signal.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <sys/types.h>
 
 #include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
 #include "common/runtime.h"  // ares_install_stop_handler
 #include "trace/trace_args.h"
 
-// Engine driver entry points (syscalls_/funcs_/lib_ setup/run/teardown). Defined
-// in their respective engines and kept global through the partial-link (see the
+// Engine driver entry points (setup/run/teardown for syscalls/funcs/lib/dump/
+// correlate, plus correlate's post-launch correlate_attach). Defined in their
+// respective engines and kept global through the partial-link (see the
 // --keep-global-symbol lists in the Makefile) — declared once in
 // common/engine_driver.h so this coordinator and each engine's definition can't
 // silently drift (AA3).
@@ -32,11 +34,13 @@ static void usage(const char *argv0)
 {
 	fprintf(stderr,
 		"usage: %s (-P <package> | -p <pid[,pid...]>) [-o <prefix>] "
-		"[--syscalls <args...>] [--funcs <args...>] [--lib] [--dump <args...>]\n"
+		"[--syscalls <args...>] [--funcs <args...>] [--lib] [--dump <args...>] "
+		"[--correlate <args...>]\n"
 		"\n"
 		"Run the kprobe syscall tracer, uprobe function tracer, library-load tracer,\n"
-		"and/or module dumper together from a single app launch (LOUD: the uprobe\n"
-		"writes a BRK into the target if --funcs is used).\n"
+		"module dumper, and/or function->syscall correlator together from a single\n"
+		"app launch (LOUD: the uprobe writes a BRK into the target if --funcs or\n"
+		"--correlate is used).\n"
 		"\n"
 		"  -P <package>    app to launch and trace (mutually exclusive with -p)\n"
 		"  -p <pid[,...]>  attach to already-running PID(s) instead of launching\n"
@@ -44,8 +48,9 @@ static void usage(const char *argv0)
 		"                  target_pids from this list, no UID resolve/launch)\n"
 		"  -A <activity>   override launch activity component (default: auto-resolve)\n"
 		"  -o <prefix>     write <prefix>.syscalls.jsonl, <prefix>.funcs.jsonl,\n"
-		"                  <prefix>.lib.jsonl, and/or <prefix>.dump.jsonl (recommended:\n"
-		"                  keeps engine streams separate and silences console output)\n"
+		"                  <prefix>.lib.jsonl, <prefix>.dump.jsonl, and/or\n"
+		"                  <prefix>.event.jsonl (recommended: keeps engine streams\n"
+		"                  separate and silences console output)\n"
 		"  --syscalls ...  options for the syscalls engine, e.g. '-a' or '<lib> -s openat'\n"
 		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --funcs ...     options for the funcs engine, e.g. \"-e 'libc.so!open' -J\"\n"
@@ -55,8 +60,12 @@ static void usage(const char *argv0)
 		"                  (no package/PID args — they come from -P/-p above; dump's\n"
 		"                  output is ELF images + an on-exit rescan, not a live stream,\n"
 		"                  so it's a batch engine riding alongside the streaming ones)\n"
+		"  --correlate ... options for the correlate engine, e.g. \"-e 'libnative.so!Java_*'\"\n"
+		"                  (no package/PID args — they come from -P/-p above; needs at\n"
+		"                  least one of -e/-F or -I/-i, same as standalone correlate)\n"
 		"\n"
-		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib / --dump sections.\n",
+		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib / --dump /\n"
+		"--correlate sections.\n",
 		argv0);
 }
 
@@ -80,15 +89,17 @@ int cmd_trace(int argc, char **argv)
 	int func_start = ta.func_start, func_end = ta.func_end;
 	int lib_start = ta.lib_start, lib_end = ta.lib_end;
 	int dump_start = ta.dump_start, dump_end = ta.dump_end;
+	int corr_start = ta.corr_start, corr_end = ta.corr_end;
 
 	if (!pkg && !pids) {
 		fprintf(stderr, "trace: one of -P <package> / -p <pid[,...]> is required\n");
 		usage(argv[0]); return 1;
 	}
 	int want_sys = (sys_start >= 0), want_func = (func_start >= 0), want_lib = (lib_start >= 0);
-	int want_dump = (dump_start >= 0);
-	if (!want_sys && !want_func && !want_lib && !want_dump) {
-		fprintf(stderr, "trace: at least one of --syscalls / --funcs / --lib / --dump is required\n");
+	int want_dump = (dump_start >= 0), want_corr = (corr_start >= 0);
+	if (!want_sys && !want_func && !want_lib && !want_dump && !want_corr) {
+		fprintf(stderr, "trace: at least one of --syscalls / --funcs / --lib / --dump / "
+		                "--correlate is required\n");
 		usage(argv[0]); return 1;
 	}
 	if (!prefix)
@@ -109,8 +120,8 @@ int cmd_trace(int argc, char **argv)
 
 	// Build each engine's argv: ["<engine>", ("-o" file)?, <section args...>].
 	// All engines read the package name from rc->pkg (pre-filled before argp_parse).
-	struct trace_argv sysv, funcv, libv, dumpv;
-	int sys_argc = 0, func_argc = 0, lib_argc = 0, dump_argc = 0;
+	struct trace_argv sysv, funcv, libv, dumpv, corrv;
+	int sys_argc = 0, func_argc = 0, lib_argc = 0, dump_argc = 0, corr_argc = 0;
 
 	if (want_sys) {
 		int tr = 0;
@@ -176,6 +187,25 @@ int cmd_trace(int argc, char **argv)
 			dumpv.argv[dump_argc]   = NULL;
 		}
 	}
+	if (want_corr) {
+		int tr = 0;
+		corr_argc = trace_build_argv(&corrv, "correlate", prefix,
+		                             "event.jsonl", argv, corr_start, corr_end, &tr);
+		if (tr) fprintf(stderr, "trace: --correlate section truncated (too many args)\n");
+		// correlate requires -P or -p in its own argv (like dump) — rc->pkg pre-fill
+		// covers launch mode (correlate_setup honors it), attach mode needs -p
+		// injected explicitly, same as the other engines above.
+		if (pids && corr_argc < 62) {
+			corrv.argv[corr_argc++] = "-p";
+			corrv.argv[corr_argc++] = (char *)pids;
+			corrv.argv[corr_argc]   = NULL;
+		}
+		// Mirror the others: -o implies quiet for correlate too.
+		if (prefix && corr_argc < 63) {
+			corrv.argv[corr_argc++] = "-q";
+			corrv.argv[corr_argc]   = NULL;
+		}
+	}
 
 	// Arm all requested engines BEFORE the single launch. None launch on their
 	// own — setup only opens/loads/attaches and installs the UID filter (via rc->uid).
@@ -201,6 +231,14 @@ int cmd_trace(int argc, char **argv)
 		if (want_sys) syscalls_teardown();
 		return 1;
 	}
+	if (want_corr && correlate_setup(corr_argc, corrv.argv, &rc) != 0) {
+		fprintf(stderr, "trace: correlate setup failed\n");
+		if (want_dump) dump_teardown();
+		if (want_lib) lib_teardown();
+		if (want_func) funcs_teardown();
+		if (want_sys) syscalls_teardown();
+		return 1;
+	}
 
 	ares_install_stop_handler(&g_stop);
 
@@ -210,14 +248,19 @@ int cmd_trace(int argc, char **argv)
 		printf("trace: attaching to pid(s) %s\n", pids);
 	} else {
 		ares_launch_banner(pkg, uid);
-		if (ares_launch_app(pkg, activity, NULL) != 0) {
+		pid_t pid;
+		if (ares_launch_app(pkg, activity, &pid) != 0) {
 			fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
+			if (want_corr) correlate_teardown();
 			if (want_dump) dump_teardown();
 			if (want_lib) lib_teardown();
 			if (want_func) funcs_teardown();
 			if (want_sys) syscalls_teardown();
 			return 1;
 		}
+		// correlate's uprobe attach needs the launched PID, only known now —
+		// see engine_driver.h's correlate_attach doc comment (GA2).
+		if (want_corr) correlate_attach(pid);
 	}
 
 	// Drain all ring buffers concurrently until Ctrl-C. Each engine has its own
@@ -226,29 +269,34 @@ int cmd_trace(int argc, char **argv)
 	// all serialize on symbolize.c's internal g_lock (AA1 fix, 2026-07-07), so the
 	// two threads don't race on those globals despite calling into them concurrently.
 	// The only state owned directly by this file is g_stop.
-	pthread_t sys_th, func_th, lib_th, dump_th;
+	pthread_t sys_th, func_th, lib_th, dump_th, corr_th;
 	struct run_arg sa = { .run = syscalls_run };
 	struct run_arg fa = { .run = funcs_run };
 	struct run_arg la = { .run = lib_run };
 	struct run_arg da = { .run = dump_run };
-	int sys_th_ok = 0, func_th_ok = 0, lib_th_ok = 0, dump_th_ok = 0;
+	struct run_arg ca = { .run = correlate_run };
+	int sys_th_ok = 0, func_th_ok = 0, lib_th_ok = 0, dump_th_ok = 0, corr_th_ok = 0;
 
 	if (want_sys) sys_th_ok = (pthread_create(&sys_th, NULL, run_thread, &sa) == 0);
 	if (want_func) func_th_ok = (pthread_create(&func_th, NULL, run_thread, &fa) == 0);
 	if (want_lib) lib_th_ok = (pthread_create(&lib_th, NULL, run_thread, &la) == 0);
 	if (want_dump) dump_th_ok = (pthread_create(&dump_th, NULL, run_thread, &da) == 0);
+	if (want_corr) corr_th_ok = (pthread_create(&corr_th, NULL, run_thread, &ca) == 0);
 
 	// Fallback: if a thread failed to spawn, drain that engine inline.
 	if (want_sys && !sys_th_ok) syscalls_run(&g_stop);
 	if (want_func && !func_th_ok) funcs_run(&g_stop);
 	if (want_lib && !lib_th_ok) lib_run(&g_stop);
 	if (want_dump && !dump_th_ok) dump_run(&g_stop);
+	if (want_corr && !corr_th_ok) correlate_run(&g_stop);
 
 	if (sys_th_ok) pthread_join(sys_th, NULL);
 	if (func_th_ok) pthread_join(func_th, NULL);
 	if (lib_th_ok) pthread_join(lib_th, NULL);
 	if (dump_th_ok) pthread_join(dump_th, NULL);
+	if (corr_th_ok) pthread_join(corr_th, NULL);
 
+	if (want_corr) correlate_teardown();
 	if (want_dump) dump_teardown();
 	if (want_lib) lib_teardown();
 	if (want_func) funcs_teardown();

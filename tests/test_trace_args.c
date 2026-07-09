@@ -82,6 +82,19 @@ int main(void)
 	assert(t.dump_start == 4 && t.dump_end == 4);   // empty, stops at --syscalls
 	assert(t.sys_start == 5 && t.sys_end == 6);
 
+	// --correlate section (GA2 Phase 4): located alongside the other sections
+	char *o[] = { A("trace"), A("-P"), A("pkg"), A("--funcs"), A("-e"), A("x"),
+	              A("--correlate"), A("-e"), A("lib!fn") };
+	assert(trace_parse_args(9, o, &t) == 0);
+	assert(t.func_start == 4 && t.func_end == 6);
+	assert(t.corr_start == 7 && t.corr_end == 9);   // "-e","lib!fn"
+
+	// --correlate before --funcs, empty --correlate section
+	char *q[] = { A("trace"), A("-P"), A("pkg"), A("--correlate"), A("--funcs"), A("-e"), A("x") };
+	assert(trace_parse_args(7, q, &t) == 0);
+	assert(t.corr_start == 4 && t.corr_end == 4);   // empty, stops at --funcs
+	assert(t.func_start == 5 && t.func_end == 7);
+
 	// --- trace_build_argv ---
 	struct trace_argv v;
 

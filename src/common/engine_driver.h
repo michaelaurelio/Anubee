@@ -10,7 +10,8 @@
 #ifndef __ARES_COMMON_ENGINE_DRIVER_H
 #define __ARES_COMMON_ENGINE_DRIVER_H
 
-#include <signal.h>   // sig_atomic_t
+#include <signal.h>     // sig_atomic_t
+#include <sys/types.h>  // pid_t
 
 struct ares_run_ctx;  // fwd decl (defined in common/launch.h); params are pointers
 
@@ -24,5 +25,11 @@ ARES_ENGINE_DRIVER(funcs);
 ARES_ENGINE_DRIVER(lib);
 ARES_ENGINE_DRIVER(correlate);
 ARES_ENGINE_DRIVER(dump);
+
+// correlate's post-launch uprobe attach (GA2): -P mode can't attach uprobes
+// until the launched child's PID is known, so the caller (standalone
+// cmd_correlate, or trace's coordinator) calls this right after its single
+// ares_launch_app succeeds. No-op in -p attach mode. See correlate.c.
+int correlate_attach(pid_t pid);
 
 #endif /* __ARES_COMMON_ENGINE_DRIVER_H */

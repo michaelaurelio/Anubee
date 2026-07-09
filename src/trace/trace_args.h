@@ -13,6 +13,7 @@ struct trace_args {
 	int func_start, func_end;  // likewise for --funcs
 	int lib_start, lib_end;    // likewise for --lib
 	int dump_start, dump_end;  // likewise for --dump
+	int corr_start, corr_end;  // likewise for --correlate
 };
 
 // Parse the coordinator-level flags and locate each engine section.

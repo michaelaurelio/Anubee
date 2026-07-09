@@ -720,15 +720,17 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
 
 static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_doc, corr_doc, 0, 0, 0 };
 
-// ---- three-phase driver ---------------------------------------------------
-// correlate_setup/run/teardown are kept global for signature parity with the
-// other engines. rc is plumbed through for future coordinator use but is not
-// consumed: correlate's -P launch stays inside setup because uprobe attach needs
-// the child PID (only known post-launch) before setup returns.
-// ponytail: correlate stays standalone — trace --correlate is deferred; the
-// coordinator would need a post-launch correlate_attach(pid) step (5th public fn).
+// ---- four-phase driver -----------------------------------------------------
+// correlate_setup arms everything that doesn't need the target PID; the caller
+// (standalone cmd_correlate, or trace's coordinator) owns the single app launch
+// and calls correlate_attach(pid) right after it succeeds, matching the other
+// four engines' "setup arms, caller launches" contract (AA3/GA2) — the one
+// correlate-specific wrinkle is that uprobe attach needs the launched PID, only
+// known post-launch, so that one step is a 5th public function instead of living
+// inside correlate_run/_teardown. In -p attach mode the PID(s) are already known
+// at setup time, so setup attaches immediately and correlate_attach is a no-op.
 
-// Cross-phase state: published by correlate_setup, consumed by run/teardown.
+// Cross-phase state: published by correlate_setup, consumed by run/teardown/attach.
 static struct ares_correlate *g_skel;
 static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
@@ -736,6 +738,11 @@ static struct bpf_link        *g_map_kp;    // shared lib_trace uprobe_mmap kpro
 static struct bpf_link        *g_unmap_kp;  // shared lib_trace uprobe_munmap kprobe
 static struct ring_buffer     *g_rb;
 static int                     g_total;
+static const char             *g_pkg;       // non-NULL in launch mode (-P); NULL in -p mode
+static int                      g_uid;      // resolved UID, valid when g_pkg is set
+// ponytail: promoted from correlate_setup's old function-local static so
+// correlate_attach can reach the same specs/tgt state after setup returns.
+static struct corr_args         g_ca = { 0 };
 
 // Attach the shared lib_trace kprobes (uprobe_mmap / uprobe_munmap) that emit the
 // {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
@@ -753,31 +760,32 @@ static int attach_lib_kprobes(struct ares_correlate *skel)
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
     ares_sysindex_build(&g_sysidx, ares_syscall_table, ares_syscall_table_count);
-    (void)rc;  // plumbed for parity; trace --correlate wiring deferred (post-launch attach)
-    // ponytail: static so specs/pkg strings (pointing into argv) outlive setup.
-    static struct corr_args ca = { 0 };
-    if (argp_parse(&corr_argp, argc, argv, 0, NULL, &ca) != 0)
+    // Coordinator pre-fill (mirrors lib/dump/syscalls/funcs): lets trace drive
+    // -P mode without repeating -P in the --correlate argv section.
+    if (rc && rc->pkg)
+        g_ca.pkg = rc->pkg;
+    if (argp_parse(&corr_argp, argc, argv, 0, NULL, &g_ca) != 0)
         return 1;
 
-    g_quiet   = ca.quiet || (ca.out_path != NULL);
+    g_quiet   = g_ca.quiet || (g_ca.out_path != NULL);
 
-    for (int i = 0; i < ca.mod_pattern_count; i++) {
-        g_mod_has_slash[i] = strchr(ca.mod_patterns[i], '/') != NULL;
-        if (regcomp(&g_mod_re[i], ca.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "correlate: invalid -I regex: %s\n", ca.mod_patterns[i]);
+    for (int i = 0; i < g_ca.mod_pattern_count; i++) {
+        g_mod_has_slash[i] = strchr(g_ca.mod_patterns[i], '/') != NULL;
+        if (regcomp(&g_mod_re[i], g_ca.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "correlate: invalid -I regex: %s\n", g_ca.mod_patterns[i]);
             return 1;
         }
         g_mod_re_count++;
     }
-    for (int i = 0; i < ca.func_pattern_count; i++) {
-        if (regcomp(&g_func_re[i], ca.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "correlate: invalid -i regex: %s\n", ca.func_patterns[i]);
+    for (int i = 0; i < g_ca.func_pattern_count; i++) {
+        if (regcomp(&g_func_re[i], g_ca.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
+            fprintf(stderr, "correlate: invalid -i regex: %s\n", g_ca.func_patterns[i]);
             return 1;
         }
         g_func_re_count++;
     }
-    if (ca.out_path && ares_sink_open(&g_sink, ca.out_path, "event", 1) != 0) {
-        fprintf(stderr, "correlate: cannot open %s: %s\n", ca.out_path, strerror(errno));
+    if (g_ca.out_path && ares_sink_open(&g_sink, g_ca.out_path, "event", 1) != 0) {
+        fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.out_path, strerror(errno));
         return 1;
     }
 
@@ -793,33 +801,30 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     install_arg_types(bpf_map__fd(skel->maps.arg_types));
     install_sock_args(bpf_map__fd(skel->maps.sock_args));
 
-    // -P: install UID before launch so the kprobe gates from the start.
-    if (ca.pkg) {
-        int uid = ares_resolve_uid(ca.pkg);
-        if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", ca.pkg); goto err_skel; }
-        if (install_uid(skel, uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
-        ares_launch_banner(ca.pkg, uid);
+    if (g_ca.pkg) {
+        // Launch mode (-P, standalone or coordinator): arm everything that
+        // doesn't need the target PID. Install UID before launch so the kprobe
+        // gates from the start. The launch itself, and the post-launch uprobe
+        // attach, are the caller's job now — see correlate_attach() below.
+        g_uid = ares_resolve_uid(g_ca.pkg);
+        if (g_uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", g_ca.pkg); goto err_skel; }
+        if (install_uid(skel, g_uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
         // Attach lib_trace kprobes before launch so startup maps are captured.
         if (attach_lib_kprobes(skel) != 0) goto err_skel;
-        pid_t p;
-        if (ares_launch_app(ca.pkg, NULL, &p) != 0) {
-            fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
-        }
-        wait_for_target_mapped(p, ca.specs, ca.nspec);
-        ca.tgt.pids[ca.tgt.n++] = p;
+        g_pkg = g_ca.pkg;
     } else {
         // -p: arm target_pids for each PID; arm target_uids only if --siblings.
         __u8 one = 1;
-        for (int i = 0; i < ca.tgt.n; i++) {
-            __u32 tgid = (__u32)ca.tgt.pids[i];
+        for (int i = 0; i < g_ca.tgt.n; i++) {
+            __u32 tgid = (__u32)g_ca.tgt.pids[i];
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
-            if (ca.tgt.siblings) {
-                int uid = ares_get_pid_uid(ca.tgt.pids[i]);
+            if (g_ca.tgt.siblings) {
+                int uid = ares_get_pid_uid(g_ca.tgt.pids[i]);
                 if (uid > 0 && install_uid(skel, uid) != 0)
-                    fprintf(stderr, "correlate: install UID for PID %d failed\n", ca.tgt.pids[i]);
+                    fprintf(stderr, "correlate: install UID for PID %d failed\n", g_ca.tgt.pids[i]);
             }
         }
-        if (!ca.tgt.no_follow) {
+        if (!g_ca.tgt.no_follow) {
             g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
             if (!g_ff) fprintf(stderr, "correlate: follow-fork attach failed (non-fatal)\n");
         }
@@ -827,29 +832,34 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (attach_lib_kprobes(skel) != 0) goto err_skel;
     }
 
-    // Span-gated syscall kprobe (one, shared).
+    // Span-gated syscall kprobe (one, shared) — doesn't depend on the PID, so
+    // it's armed here regardless of mode.
     struct bpf_link *kp = bpf_program__attach(skel->progs.corr_on_svc);
     if (!kp) { fprintf(stderr, "correlate: attach do_el0_svc kprobe failed\n"); goto err_skel; }
-
-    int total = 0;
-    for (int i = 0; i < ca.tgt.n; i++) {
-        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec, ca.returns);
-        if (n > 0) total += n;
-    }
-    if (total == 0)
-        fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
-    if (ca.returns && total > 0)
-        fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
-                        "target stack is a 2nd detection surface (beyond the entry BRK)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); goto err_skel; }
 
-    g_skel  = skel;
-    g_kp    = kp;
-    g_rb    = rb;
+    g_skel    = skel;
+    g_kp      = kp;
+    g_rb      = rb;
+    g_returns = g_ca.returns;
+
+    int total = 0;
+    if (!g_ca.pkg) {
+        // -p mode: PIDs already known, attach uprobes now (launch mode defers
+        // this to correlate_attach, once the launched PID is known).
+        for (int i = 0; i < g_ca.tgt.n; i++) {
+            int n = attach_uprobes_for_pid(skel, g_ca.tgt.pids[i], g_ca.specs, g_ca.nspec, g_ca.returns);
+            if (n > 0) total += n;
+        }
+        if (total == 0)
+            fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
+        if (g_ca.returns && total > 0)
+            fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
+                            "target stack is a 2nd detection surface (beyond the entry BRK)\n");
+    }
     g_total = total;
-    g_returns = ca.returns;
     return 0;
 
 err_skel:
@@ -867,6 +877,28 @@ err_file:
         ares_sink_report(&g_sink);
     }
     return 1;
+}
+
+// Post-launch uprobe attach for -P (launch) mode: the caller (standalone
+// cmd_correlate, or trace's coordinator) calls this right after its single
+// ares_launch_app succeeds, since uprobe attach needs the launched PID. No-op
+// if correlate_setup ran in -p attach mode (PIDs were already known and
+// attached during setup).
+int correlate_attach(pid_t pid)
+{
+    if (!g_pkg) return 0;
+
+    wait_for_target_mapped(pid, g_ca.specs, g_ca.nspec);
+    g_ca.tgt.pids[g_ca.tgt.n++] = pid;
+
+    int n = attach_uprobes_for_pid(g_skel, pid, g_ca.specs, g_ca.nspec, g_ca.returns);
+    if (n > 0) g_total += n;
+    if (g_total == 0)
+        fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
+    if (g_ca.returns && g_total > 0)
+        fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
+                        "target stack is a 2nd detection surface (beyond the entry BRK)\n");
+    return 0;
 }
 
 int correlate_run(volatile sig_atomic_t *stop)
@@ -923,7 +955,21 @@ int cmd_correlate(int argc, char **argv)
     if (correlate_setup(argc, argv, NULL) != 0)
         return 1;
 
+    // Standalone: tracing is armed (UID installed in setup for -P mode); in -P
+    // mode launch now and attach uprobes to the fresh PID, in -p mode setup
+    // already attached everything.
     ares_install_stop_handler(&exiting);
+    if (g_pkg) {
+        ares_launch_banner(g_pkg, g_uid);
+        pid_t p;
+        if (ares_launch_app(g_pkg, NULL, &p) != 0) {
+            fprintf(stderr, "correlate: launch failed for %s\n", g_pkg);
+            correlate_teardown();
+            return 1;
+        }
+        correlate_attach(p);
+    }
+
     correlate_run(&exiting);
     correlate_teardown();
     return 0;

@@ -23,7 +23,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 ## Open work — at a glance
 
 **Major:**
-- GA2 deferred wiring — `correlate`→`trace`, `dump`→`trace`.
 - CFI / managed-frame naming — **generalize beyond one ART build**: version gate keys
   on apex `370549100` only (BuildID is the stronger anchor); nterp recall is bounded
   by the snapshot window.
@@ -31,8 +30,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
   still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
-- AA3 — `trace`↔engine driver ABI held by two hand-maintained, uncross-checked lists
-  (inline prototypes in `trace.c` vs. the Makefile's `--keep-global-symbol` lists).
 
 **Minor:**
 - CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field.
@@ -40,14 +37,14 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - lib-filter attribution defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A;
   the check moved from `stack_hits` to `sysc_issuer_hit` under CR2, same unresolved
   defect, see Minor section below).
-- Phase 3d — coordinator-wide `-p` in `trace`.
 - C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
   liveness tightening; ELF-note hardening done — see Resolved/Done).
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
-- Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2; CR4 parity fix;
-  Tier 5 `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing; CR2 issuer-only
+- Pending on-device verification (`trace` combined run incl. new `--dump`/`--correlate`
+  wiring and `-p` attach mode; `correlate` R3/R4/X2; CR4 parity fix; Tier 5
+  `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing; CR2 issuer-only
   attribution, compat hook, pre-arm window, `syscalls.skel.h` regen).
 - AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
@@ -66,27 +63,6 @@ None currently open.
 ---
 
 ## Major — features / substantial work
-
-### GA2 — deferred engine→`trace` wiring
-
-GA2 core landed 2026-06-26 (lifecycle symmetry + `lib`→`trace`; see Resolved/Done).
-Two wirings remain deferred by design:
-
-- **`correlate` into `trace`** — requires a post-launch `correlate_attach(pid)` step
-  (uprobes must attach after the child PID is known → a 5th public function and
-  coordinator special-casing). The PID-return barrier is gone (GA6 done), but the
-  5th-fn asymmetry isn't worth a marginal combined funcs+correlate run.
-- **`dump` into `trace`** — output model is ELF files + on-exit rescan, not a
-  concurrent stream; low-value combined run.
-
-Per-engine comparison (post-GA2):
-
-| Dimension | syscalls | funcs | lib | dump | correlate | trace |
-|---|---|---|---|---|---|---|
-| Lifecycle | setup/run/teardown | setup/run/teardown | setup/run/teardown | setup/run/teardown ✓ | setup/run/teardown ✓ | coordinator |
-| App launch | shared `ares_launch_app` | shared | shared | shared | shared (GA6 ✓) | shared |
-| Output path | SPSC evq + drain/worker | SPSC evq + drain/worker | sink, inline poll | ELF dumps (bypasses sink/evq) | sink, inline poll | per-engine |
-| Wired into `trace` | yes | yes | yes ✓ | no (deferred) | no (deferred) | — |
 
 ### CFI / managed-frame naming — generalize beyond one ART build
 
@@ -241,28 +217,6 @@ on a tool whose real edge is stealthy syscalls. Managed naming is now labeled
 **experimental** in README/DOCUMENTATION (2026-07-08) so a silent BuildID miss doesn't
 read as "app used no Java."
 
-### AA3 — `trace`↔engine driver ABI held by two hand-maintained lists, no compile check
-
-Source: 2026-07-07 graph-informed audit. `trace.c:23-31` hand-declares the nine engine
-entry-point prototypes (`syscalls_setup/_run/_teardown`, `funcs_*`, `lib_*`) inline,
-noting it does so "to avoid pulling in each engine's header." The Makefile
-independently keeps those same symbols global per engine via `--keep-global-symbol`
-lists (`Makefile:307-342`) — for all five engines, though `trace` only wires three.
-
-A signature change to any engine's `*_setup`/`*_run`/`*_teardown` produces **no compile
-error** in `trace.c` — the linker resolves the localized-but-kept symbol against a stale
-hand-written prototype, i.e. a silent ABI mismatch / UB at the coordinator boundary. The
-Makefile keep-list and the `trace.c` prototype list also have no mechanism keeping them
-in sync; drift in either is invisible until runtime. This is the same class of
-convention-over-enforcement fragility as the tracked `cmd_*` partial-link/localization
-hack, but on the coordinator-driver contract specifically, which the thin-presets
-refactor note doesn't obviously cover.
-
-Actionable: introduce one shared header (e.g. `common/engine_driver.h`) declaring the
-`{ setup; run; teardown; }` driver contract per engine, include it from both the engines
-and `trace.c`, and derive/generate the `--keep-global-symbol` list from it so the two
-lists can't diverge silently.
-
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
@@ -301,14 +255,6 @@ lists can't diverge silently.
   rewrite renamed the function to `sysc_issuer_hit` but didn't touch this path or
   fix it). W6-A (capture-all) bypasses it so it no longer gates the JNI cross, but
   the narrow-targeting path is still wrong.
-
-- **Phase 3d (deferred) — coordinator-wide `-p` in `trace`.** The standalone engines
-  each support `-p PID[,…]` (shipped 2026-06-30). The `trace` coordinator
-  (`src/trace/trace.c`) resolves one UID from `-P` and drives `syscalls`/`funcs`/`lib`
-  from a single launch; it does not use `engine_args.h` and has no `-p` today.
-  Extending it needs a PID set in `struct ares_run_ctx` (`launch.h`), `-p` wired into
-  `trace_args.h`'s bespoke splitter, and each engine's setup reading `rc->pids`.
-  Revisit only if a single PID across the whole `trace` run is wanted.
 
 - **`mod file-access`/`mod ransomware-burst` drop-telemetry gap.** The
   `mod` drop-telemetry-parity fix (`ares_analyzer_t.drops()`, see Resolved/Done)
@@ -441,6 +387,54 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-09
 
+- **AA3 — `trace`↔engine driver ABI unified via shared header (Tier 7, landed).**
+  `trace.c`'s 9 hand-written prototypes and the Makefile's per-engine
+  `--keep-global-symbol` lists could drift silently (a signature change
+  produced no compile error at the coordinator boundary). New
+  `src/common/engine_driver.h` declares the `{setup,run,teardown}` contract for
+  all five engines (plus `correlate_attach`, added with GA2 below) once; every
+  engine's `.c` and `trace.c` both `#include` it, so a signature change is now a
+  compile error. The Makefile's keep-lists moved into per-engine `*_DRIVER`
+  variables (`SYSC_DRIVER`/`FUNC_DRIVER`/`LIB_DRIVER`/`CORR_DRIVER`/
+  `DUMP_DRIVER`, same `$(foreach)` pattern as the existing `COMMON_API`); a new
+  `tests/check_driver_symbols.sh` (wired into `make test`) greps the header and
+  the Makefile lists and fails the build if they diverge — belt-and-suspenders
+  for the one case the compile-error fix doesn't cover (a stale *extra* keep,
+  which is harmless but silent).
+- **Phase 3d — coordinator-wide `-p` in `trace` (Tier 7, landed).** `trace`
+  previously only launched via `-P`; each standalone engine already supported
+  `-p PID[,...]` attach mode. Added a top-level `-p` to `trace_args` (mutually
+  exclusive with `-P`), which `trace` injects as `-p <csv>` into each requested
+  engine's own built argv and uses to skip the launch entirely — no
+  `ares_run_ctx`/`launch.h` change needed, since each engine already fully
+  self-arms `target_pids` from its own `-p` parsing when `rc` is zeroed.
+- **GA2 — `dump` and `correlate` wired into `trace` (Tier 7, landed).** Completes
+  the GA2 major item (`lib` wiring landed earlier, 2026-06-26).
+  - **`dump`**: purely additive — `dump_run` already fit the coordinator's
+    `run_thread` model (`ares_rb_poll_until` + on-exit rescan), so this was just
+    a `--dump` section in `trace_args` and slotting `dump_setup`/`_run`/
+    `_teardown` into the existing arm/launch/drain/teardown blocks. `dump`'s
+    `argp` requires an explicit `-P`/`-p` (stricter than syscalls/funcs/lib), so
+    `-p` attach mode needed the same `-p <csv>` argv injection Phase 3d added,
+    extended to `dump` (and later `correlate`) too.
+  - **`correlate`**: the real work. `correlate_setup` used to own its `-P`
+    launch internally, because uprobe attach needs the launched PID (only known
+    post-launch) — this was the one engine that couldn't fit the "setup arms,
+    caller launches" contract the other four already followed. Refactored to
+    match: `correlate_setup` now honors `rc->pkg` pre-fill like the others and
+    arms everything PID-independent (skel open/load, UID install, span kprobe,
+    lib-trace kprobes, ring buffer); a new 5th public function,
+    `correlate_attach(pid)`, does the post-launch uprobe attach
+    (`wait_for_target_mapped` + `attach_uprobes_for_pid`), called by both
+    `cmd_correlate` (standalone `-P` mode) and `trace`'s coordinator right after
+    their own `ares_launch_app` succeeds. No-op in `-p` attach mode, where PIDs
+    are already known at setup time and attached there instead — verified
+    byte-for-byte identical call order/behavior in both standalone modes
+    against the pre-refactor code (regression audit, load-bearing per the
+    coordinator's "setup arms, caller launches" invariant).
+  - `dump`'s output is ELF images + an on-exit rescan, not a live stream, so
+    combining it with the streaming engines is lifecycle parity, not
+    necessarily a useful combined run — documented as such.
 - **CR2 — `syscalls` "issued by" attribution + pre-arm window + 32-bit compat
   hook (Tier 6, landed).** Three changes to the same subsystem, all in
   `src/syscalls/`:

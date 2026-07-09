@@ -26,6 +26,12 @@ int ares_resolve_uid(const char *pkg);
 // Read the UID of a running pid from /proc/<pid>/status. Returns uid, or -1.
 int ares_get_pid_uid(pid_t pid);
 
+// Best-effort resolve a running pid's package name from /proc/<pid>/cmdline
+// (zygote sets cmdline to the package name for the common case; diverges for
+// android:process-named secondary processes, e.g. ":remote" -- keeps only the
+// part before ':' in that case). Returns 0 and fills buf, or -1 if unresolvable.
+int ares_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz);
+
 // Resolve a package's launchable component ("pkg/.Activity") via `cmd package
 // resolve-activity --brief`. Writes into `out`; returns 0 on success, -1 otherwise.
 int ares_resolve_component(const char *pkg, char *out, size_t outsz);

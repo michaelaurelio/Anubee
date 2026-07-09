@@ -76,6 +76,10 @@ EXECVE_BPF_OBJ     := $(BUILD)/execve.bpf.o
 EXECVE_SKEL        := $(BUILD)/execve.skel.h
 PROP_READ_BPF_OBJ  := $(BUILD)/prop_read.bpf.o
 PROP_READ_SKEL     := $(BUILD)/prop_read.skel.h
+FILE_ACCESS_BPF_OBJ := $(BUILD)/file_access.bpf.o
+FILE_ACCESS_SKEL    := $(BUILD)/file_access.skel.h
+RANSOMWARE_BURST_BPF_OBJ := $(BUILD)/ransomware_burst.bpf.o
+RANSOMWARE_BURST_SKEL    := $(BUILD)/ransomware_burst.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I. $(DEPFLAGS)
 
@@ -103,6 +107,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_libtrace_emit_lib ares_libtrace_emit_unlib \
                proc_mem_open proc_mem_read nterp_name \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
+               ares_resolve_pkg_from_pid \
                ares_launch_app ares_launch_banner \
                mod_matches is_duplicate resolve_targets resolve_targets_for_file \
                parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path \
@@ -145,7 +150,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/ransomware_burst_classify.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/ransomware_burst.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -251,6 +256,20 @@ $(PROP_READ_BPF_OBJ): $(SRC)/modules/prop_read.bpf.c vmlinux.h $(LIBBPF_A)
 $(PROP_READ_SKEL): $(PROP_READ_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name prop_read_bpf > $@
 
+$(FILE_ACCESS_BPF_OBJ): $(SRC)/modules/file_access.bpf.c vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(FILE_ACCESS_SKEL): $(FILE_ACCESS_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name file_access_bpf > $@
+
+$(RANSOMWARE_BURST_BPF_OBJ): $(SRC)/modules/ransomware_burst.bpf.c vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(RANSOMWARE_BURST_SKEL): $(RANSOMWARE_BURST_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name ransomware_burst_bpf > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -297,7 +316,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(RANSOMWARE_BURST_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
@@ -445,6 +464,10 @@ test:
 	$(BUILD)/test_target_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
 	$(BUILD)/test_mod_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
+	$(BUILD)/test_file_access_classify
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_ransomware_burst_classify.c src/modules/ransomware_burst_classify.c -o $(BUILD)/test_ransomware_burst_classify
+	$(BUILD)/test_ransomware_burst_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
@@ -467,5 +490,6 @@ clean:
 ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
                 $(DUMP_OBJ) $(TRACE_OBJ) $(MOD_OBJ) $(MAIN_OBJ)
 ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
-                $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ)
+                $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ) \
+                $(FILE_ACCESS_BPF_OBJ) $(RANSOMWARE_BURST_BPF_OBJ)
 -include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

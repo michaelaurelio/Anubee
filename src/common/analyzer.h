@@ -17,6 +17,9 @@ struct ares_mod_ctx {
     int quiet;               // suppress human-readable console lines
     int verbose;             // extra console detail
     const struct target_args *tgt; // NULL → launch/UID mode; n>0 → PID attach
+    const char *pkg;          // launched package (-P), or best-effort resolved
+                              // in -p mode via ares_resolve_pkg_from_pid; NULL
+                              // if unknown. Used by file-access classification.
 };
 
 // One entry in the analyzer registry.
@@ -44,5 +47,7 @@ typedef struct {
 extern const ares_analyzer_t analyzer_proc_event;
 extern const ares_analyzer_t analyzer_execve;
 extern const ares_analyzer_t analyzer_prop_read;
+extern const ares_analyzer_t analyzer_file_access;
+extern const ares_analyzer_t analyzer_ransomware_burst;
 
 #endif /* __ARES_ANALYZER_H */

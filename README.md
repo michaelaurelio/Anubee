@@ -211,11 +211,32 @@ ares correlate -o corr.jsonl -e 'libc.so!open' -P com.example.app
 Flat JSONL: `{"type":"func","span":N,"parent_span":M,...}` and
 `{"type":"syscall","span":N,"syscall":"openat",...}` — join on `span`.
 Flags: `-p PID` / `-P package` · `-e SPEC` (repeatable) / `-F spec-file` ·
-`-o file.jsonl`. **Quote specs with parentheses** (`'libc.so!open(S)'`) so the
-shell doesn't choke on the `(`. v1 captures raw syscall args (no decode) and uses
-SP-based span close (no return values yet). Limits: up to 64 PIDs and 64 specs per
-run (a warning prints if you exceed either, rather than silently dropping the extras);
-`-o` reports `wrote N event(s)` at exit.
+`-o file.jsonl` · `--returns` (opt-in, see below). **Quote specs with
+parentheses** (`'libc.so!open(S)'`) so the shell doesn't choke on the `(`. v1
+captures raw syscall args (no decode) and, by default, uses SP-based span close
+(no return values). Limits: up to 64 PIDs and 64 specs per run (a warning
+prints if you exceed either, rather than silently dropping the extras); `-o`
+reports `wrote N event(s)` at exit.
+
+Plain `correlate` (no `--returns`) stays entry-uprobe-only: one BPF program, one
+`BRK` per probed call, span close inferred from the stack pointer. Pass
+`--returns` to also get the return value and exact call duration:
+
+```sh
+# Also capture retval + exact elapsed time for each probed call (LOUD: adds a
+# uretprobe trampoline, a second surface beyond the entry BRK):
+ares correlate --returns -e 'libc.so!open' -P com.example.app
+```
+
+This attaches a second BPF program (a uretprobe) at each spec'd function's
+offset, alongside the entry uprobe, and adds
+`{"type":"return","span":N,"entry_addr":"0x...","retval":"0x...","elapsed_ns":N}`
+records. `retval` is the raw return register (x0) only - no fd/string/errno
+decode yet. This is opt-in and strictly louder than plain `correlate`: it is a
+second detection surface on top of the entry `BRK`, and `ares` prints a
+one-line stderr notice when it is active. If a probed call's uretprobe never
+fires (e.g. the thread exits mid-call), the existing SP-based reconcile still
+closes that span - no return record for it, but tracking never gets stuck.
 
 ### `ares lib` — library-load tracer
 

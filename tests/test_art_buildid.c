@@ -27,6 +27,16 @@ int main(void)
     CHECK(art_offsets_for_buildid("deadbeef") == NULL, "unknown BuildID -> NULL (gate off)");
     CHECK(art_offsets_for_buildid(NULL) == NULL, "NULL BuildID -> NULL");
 
+    /* cecb684d - the OTA-swapped libart on the same POCO C85 / Android 15;
+     * struct layout unchanged from 1f156fc6, so offsets are identical. */
+    const struct art_offsets *o2 =
+        art_offsets_for_buildid("cecb684d19b4f44ee3cbd66142c315f4");
+    CHECK(o2 != NULL, "cecb684d BuildID -> offsets");
+    CHECK(o2 && o2->tls_thread_slot == 0x38, "cecb684d tls_thread_slot 0x38");
+    CHECK(o2 && o2->managed_stack   == 0xA8, "cecb684d managed_stack 0xA8");
+    CHECK(o2 && o2->sf_method       == 0x08, "cecb684d sf_method 0x08");
+    CHECK(o2 && o2->dexfile_datasize == 0x20, "cecb684d dexfile_datasize 0x20");
+
     /* art_offsets_parse — key=value override row parser */
     {
         const char *good =

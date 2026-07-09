@@ -428,25 +428,38 @@ static int handle_event(void *ctx, void *data, size_t sz)
             corr_emit_syscall(&g_sink.jb, e, name, fdmask, sockidx);
             ares_sink_emit(&g_sink);
         }
-    } else if (h->type == CORR_EV_FUNC_RETURN) {
-        if (sz < sizeof(struct corr_func_return_event)) return 0;
-        const struct corr_func_return_event *e = data;
+    } else if (h->type == CORR_EV_RETURN) {
+        if (sz < sizeof(struct corr_return_event)) return 0;
+        const struct corr_return_event *e = data;
         if (!g_quiet)
-            printf("[return]  > span=%llu pid=%u tid=%u @ 0x%llx retval=0x%llx elapsed=%lluns\n",
-                   (unsigned long long)e->span, e->h.pid, e->h.tid,
-                   (unsigned long long)e->entry_addr, (unsigned long long)e->retval,
-                   (unsigned long long)e->elapsed_ns);
+            printf("[return]  > span=%llu retval=0x%llx elapsed=%lluns @ 0x%llx\n",
+                   (unsigned long long)e->span, (unsigned long long)e->retval,
+                   (unsigned long long)e->elapsed_ns, (unsigned long long)e->entry_addr);
         if (g_sink.f) {
-            corr_emit_func_return(&g_sink.jb, e);
+            corr_emit_return(&g_sink.jb, e);
             ares_sink_emit(&g_sink);
         }
+    } else if (h->type == CORR_EV_MAP) {
+        if (sz < sizeof(struct lib_map_event)) return 0;
+        const struct lib_map_event *e = data;
+        char path[256];
+        if (ares_libtrace_resolve_path(e->h.pid, e->start, e->name,
+                                       path, sizeof(path)) != 0)
+            snprintf(path, sizeof(path), "%s", e->name);
+        // emit self-gates: console line unless -q, {"type":"lib"} when -o set.
+        ares_libtrace_emit_lib(&g_sink, g_quiet, e, path, NULL);
+    } else if (h->type == CORR_EV_UNMAP) {
+        if (sz < sizeof(struct lib_unmap_event)) return 0;
+        const struct lib_unmap_event *e = data;
+        ares_libtrace_emit_unlib(&g_sink, g_quiet, e);
     }
     return 0;
 }
 
 // Scan /proc/<pid>/maps and attach the entry uprobe at every spec'd function.
 static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
-                                  const custom_probe_spec_t *specs, int nspec)
+                                  const custom_probe_spec_t *specs, int nspec,
+                                  int returns)
 {
     char maps_path[64];
     snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
@@ -496,19 +509,18 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                 printf("[spec] > %s!%s @ 0x%lx\n", bname,
                        tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
                 attached++;
+                if (returns) {
+                    struct bpf_link *rl = bpf_program__attach_uprobe(
+                        skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
+                    if (rl)
+                        track_uprobe_link(rl);
+                    else
+                        fprintf(stderr, "[spec] > RET FAILED: %s!%s @ 0x%lx\n", bname,
+                                tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+                }
             } else {
                 fprintf(stderr, "[spec] > FAILED: %s!%s @ 0x%lx\n", bname,
                         tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
-            }
-
-            if (link && g_returns) {
-                struct bpf_link *rlink = bpf_program__attach_uprobe(
-                    skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
-                if (rlink)
-                    track_uprobe_link(rlink);
-                else
-                    fprintf(stderr, "[spec] > FAILED ret: %s!%s @ 0x%lx\n", bname,
-                            tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
             }
         }
 
@@ -618,6 +630,8 @@ static const char corr_doc[] =
     "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
 static const char corr_args_doc[] = "";
 
+#define ARES_KEY_RETURNS 0x200   // correlate-local long-only key (--returns)
+
 struct corr_args {
     const char        *pkg;
     const char        *out_path;
@@ -642,7 +656,9 @@ static const struct argp_option corr_options[] = {
     { "include", 'i', "FUNCTION",  0, "Target function to trace (regex, repeatable)", 0 },
     { "output",  'o', "FILE",      0, "Write structured JSONL (implies -q)", 0 },
     { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
-    { "returns", 'R', NULL,        0, "Attach a uretprobe per target for accurate span close + retval (CR3 fix)", 0 },
+    { "returns", ARES_KEY_RETURNS, NULL, 0,
+      "Also attach uretprobes: return value + exact span timing (LOUD: adds a "
+      "stack trampoline, a 2nd detection surface beyond the entry BRK)", 0 },
     { 0 }
 };
 
@@ -653,7 +669,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg; break;
     case 'o': a->out_path = arg; break;
     case 'q': a->quiet    = 1;   break;
-    case 'R': a->returns  = 1;   break;
+    case ARES_KEY_RETURNS: a->returns = 1; break;
     case 'I':
         if (a->mod_pattern_count < 32)
             snprintf(a->mod_patterns[a->mod_pattern_count++], 256, "%s", arg);
@@ -715,8 +731,23 @@ static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_d
 static struct ares_correlate *g_skel;
 static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
+static struct bpf_link        *g_map_kp;    // shared lib_trace uprobe_mmap kprobe
+static struct bpf_link        *g_unmap_kp;  // shared lib_trace uprobe_munmap kprobe
 static struct ring_buffer     *g_rb;
 static int                     g_total;
+
+// Attach the shared lib_trace kprobes (uprobe_mmap / uprobe_munmap) that emit the
+// {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
+// the UID install) so the target's startup library maps are captured, not just
+// later dlopens.
+static int attach_lib_kprobes(struct ares_correlate *skel)
+{
+    g_map_kp = bpf_program__attach(skel->progs.on_uprobe_mmap);
+    if (!g_map_kp) { fprintf(stderr, "correlate: attach uprobe_mmap kprobe failed\n"); return -1; }
+    g_unmap_kp = bpf_program__attach(skel->progs.on_uprobe_munmap);
+    if (!g_unmap_kp) { fprintf(stderr, "correlate: attach uprobe_munmap kprobe failed\n"); return -1; }
+    return 0;
+}
 
 int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
@@ -728,7 +759,6 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         return 1;
 
     g_quiet   = ca.quiet || (ca.out_path != NULL);
-    g_returns = ca.returns;
 
     for (int i = 0; i < ca.mod_pattern_count; i++) {
         g_mod_has_slash[i] = strchr(ca.mod_patterns[i], '/') != NULL;
@@ -768,6 +798,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         if (uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", ca.pkg); goto err_skel; }
         if (install_uid(skel, uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
         ares_launch_banner(ca.pkg, uid);
+        // Attach lib_trace kprobes before launch so startup maps are captured.
+        if (attach_lib_kprobes(skel) != 0) goto err_skel;
         pid_t p;
         if (ares_launch_app(ca.pkg, NULL, &p) != 0) {
             fprintf(stderr, "correlate: launch failed for %s\n", ca.pkg); goto err_skel;
@@ -790,6 +822,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
             if (!g_ff) fprintf(stderr, "correlate: follow-fork attach failed (non-fatal)\n");
         }
+        // Already-running target: catches future maps/unmaps (dlopen/dlclose).
+        if (attach_lib_kprobes(skel) != 0) goto err_skel;
     }
 
     // Span-gated syscall kprobe (one, shared).
@@ -798,11 +832,14 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     int total = 0;
     for (int i = 0; i < ca.tgt.n; i++) {
-        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec);
+        int n = attach_uprobes_for_pid(skel, ca.tgt.pids[i], ca.specs, ca.nspec, ca.returns);
         if (n > 0) total += n;
     }
     if (total == 0)
         fprintf(stderr, "correlate: warning — no uprobes attached (no spec'd functions found)\n");
+    if (ca.returns && total > 0)
+        fprintf(stderr, "correlate: --returns active - uretprobe trampoline on the "
+                        "target stack is a 2nd detection surface (beyond the entry BRK)\n");
 
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!rb) { fprintf(stderr, "correlate: ring buffer failed\n"); bpf_link__destroy(kp); goto err_skel; }
@@ -811,6 +848,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_kp    = kp;
     g_rb    = rb;
     g_total = total;
+    g_returns = ca.returns;
     return 0;
 
 err_skel:
@@ -851,6 +889,8 @@ void correlate_teardown(void)
         bpf_link__destroy(g_ff);
         g_ff = NULL;
     }
+    if (g_map_kp)   { bpf_link__destroy(g_map_kp);   g_map_kp = NULL; }
+    if (g_unmap_kp) { bpf_link__destroy(g_unmap_kp); g_unmap_kp = NULL; }
     destroy_uprobe_links();
     if (g_skel) {
         // Always report the final tally, so "no message" never means "didn't
@@ -863,6 +903,11 @@ void correlate_teardown(void)
         cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
         cov.queue_drops    = 0;
         cov.decode_partial = 0;   // string/fd/sockaddr/flags decode wired (see corr_emit.c)
+        if (g_returns) {
+            cov.returns_mode      = 1;
+            cov.spans_opened      = ares_coverage_read(covfd, COV_SPAN_OPEN);
+            cov.returns_captured  = ares_coverage_read(covfd, COV_URET_FIRED);
+        }
         ares_coverage_report(&g_sink, &cov);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;

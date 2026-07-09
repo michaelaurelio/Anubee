@@ -15,6 +15,12 @@ static const struct { const char *id; struct art_offsets off; } k_table[] = {
         .sf_dex_pc_ptr = 0x18,
         .artm_declclass = 0x00, .artm_dexidx = 0x08, .class_dexcache = 0x10,
         .dexcache_dexfile = 0x10, .dexfile_begin = 0x08, .dexfile_datasize = 0x20 } },
+    { "cecb684d19b4f44ee3cbd66142c315f4",
+      { .tls_thread_slot = 0x38, .managed_stack = 0xA8, .ms_link = 0x08,
+        .ms_top_shadow = 0x10, .sf_link = 0x00, .sf_method = 0x08,
+        .sf_dex_pc_ptr = 0x18,
+        .artm_declclass = 0x00, .artm_dexidx = 0x08, .class_dexcache = 0x10,
+        .dexcache_dexfile = 0x10, .dexfile_begin = 0x08, .dexfile_datasize = 0x20 } },
 };
 
 // Trim leading/trailing spaces/tabs/CR of [s, e): returns first non-space; writes

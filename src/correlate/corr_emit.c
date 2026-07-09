@@ -32,19 +32,6 @@ void corr_emit_func(struct jbuf *j, const struct corr_func_event *e)
     jb_c(j, '}');
 }
 
-void corr_emit_func_return(struct jbuf *j, const struct corr_func_return_event *e)
-{
-    jb_c(j, '{');
-    jb_s(j, "\"type\":\"");        jb_s(j, trace_type_name(TRACE_RETURN)); jb_c(j, '"');
-    jb_s(j, ",\"span\":");         jb_u64(j, e->span);
-    jb_s(j, ",\"pid\":");          jb_u64(j, e->h.pid);
-    jb_s(j, ",\"tid\":");          jb_u64(j, e->h.tid);
-    jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
-    jb_s(j, ",\"retval\":\"");     jb_hex(j, e->retval); jb_c(j, '"');
-    jb_s(j, ",\"elapsed_ns\":");   jb_u64(j, e->elapsed_ns);
-    jb_c(j, '}');
-}
-
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
                        const char *syscall_name, unsigned fdmask, int sockidx)
 {
@@ -80,5 +67,18 @@ void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
         else jb_s(j, "\"\"");
     }
     jb_c(j, ']');
+    jb_c(j, '}');
+}
+
+void corr_emit_return(struct jbuf *j, const struct corr_return_event *e)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");        jb_s(j, trace_type_name(TRACE_RETURN)); jb_c(j, '"');
+    jb_s(j, ",\"span\":");         jb_u64(j, e->span);
+    jb_s(j, ",\"pid\":");          jb_u64(j, e->h.pid);
+    jb_s(j, ",\"tid\":");          jb_u64(j, e->h.tid);
+    jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
+    jb_s(j, ",\"retval\":\"");     jb_hex(j, e->retval); jb_c(j, '"');
+    jb_s(j, ",\"elapsed_ns\":");   jb_u64(j, e->elapsed_ns);
     jb_c(j, '}');
 }

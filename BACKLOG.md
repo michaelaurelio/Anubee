@@ -181,8 +181,18 @@ LIFO-monotonic-SP assumption breaks on:
 
 Actionable: document coroutine/stack-switch hostility explicitly (not an edge case for
 Android); frame SP-pop as the best-effort *quiet* approximation and `--returns`
-(uretprobe, planned) as the accuracy path — the two are currently framed as
+(uretprobe, shipped 2026-07-06) as the accuracy path — the two are currently framed as
 near-equivalent.
+
+- **`--returns` return records inherit the mis-attribution (known drawback).** With
+  `--returns` the uretprobe pops the innermost *tracked* frame, so the same defects
+  emit *visibly wrong data* rather than a silent mis-gate: beyond `MAX_SPAN_DEPTH=32`
+  nested probed calls the 33rd call is never pushed (`span_stack_push` returns 0) yet
+  its return still fires and pops a live frame -> a spurious `{"type":"return"}` with
+  the wrong span/entry_addr/elapsed_ns, cascading until the stack unwinds under the
+  cap. Non-LIFO stacks (coroutines) corrupt the pop target the same way. The
+  uretprobe/reconcile interaction itself is benign (delete-by-key + depth--; a later
+  reconcile finds the frame already gone). Fix rides the CR3 accuracy work.
 
 ### CR4 — managed-frame naming: version treadmill + nterp guess-path
 
@@ -195,7 +205,12 @@ item above with a strategic critique.
   → managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
   vanish). The `ARES_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
   it is still one row of manual labor per device per ART build. Tracked under the CFI
-  Major item above.
+  Major item above. **Data point (2026-07-08):** the POCO C85 (A15) took an OTA that
+  rebuilt libart (`1f156fc6...` to `cecb684d...`); a new `k_table` row was needed for
+  the new BuildID, but the 13 offsets were **identical**, Frida-oracle-verified. So
+  within one AOSP source release a rebuild-only OTA is a BuildID-key add with reused
+  offsets, not a re-derivation; only a genuine ART version bump shifts the layout.
+  Softens the treadmill (key churn is not offset churn) but does not remove it.
 - **ShadowFrame parity in the compact chain — fixed 2026-07-08.** The compact `managed[]`
   fragment shared by both engines (`ares_managed_chain`, `src/common/symbolize.c`) only
   ever tried the nterp guess-path, even at an `ExecuteSwitchImpl` (switch-interpreter)
@@ -422,13 +437,14 @@ is in DOCUMENTATION.md and the referenced specs.
   targeting, `-P` timing — landed).** Four items from the 2026-07-07 audit, all on the
   `correlate` engine, reusing `funcs`'/`syscalls`' existing mechanisms rather than
   inventing new ones:
-  - **CR3 / `--returns`.** New `CORR_EV_FUNC_RETURN` event + `corr_uretprobe_ret`
+  - **CR3 / `--returns`.** `CORR_EV_RETURN` event + `corr_uretprobe_ret`
     (`correlate.bpf.c`), mirroring `funcs.bpf.c`'s `uretprobe_open` line-for-line: fires
     at the real return instruction and authoritatively pops the span
     (`bpf_map_delete_elem`+`span_depth_set`), independent of SP behavior. Opt-in via new
     `-R`/`--returns`; entry-only targets keep the SP-pop best-effort default unchanged
-    (see CR3 above for why SP-pop itself isn't touched). `corr_emit_func_return` emits
-    `{"type":"return",...}` with `span`/`entry_addr`/`retval`/`elapsed_ns`.
+    (see CR3 above for why SP-pop itself isn't touched). `corr_emit_return` emits
+    `{"type":"return",...}` with `span`/`entry_addr`/`retval`/`elapsed_ns`. (Event shipped
+    2026-07-06 — see below; this batch adds decode/regex/timing around it.)
   - **Decode completion.** `corr_syscall_event` gained `str_present`/`str[]`/`sock_len`/
     `sock[]` (sizes matched to `syscalls.h`); `corr_on_svc` gained the string- and
     sockaddr-capture blocks copied verbatim from `syscalls.bpf.c`. Userspace gained
@@ -637,6 +653,34 @@ is in DOCUMENTATION.md and the referenced specs.
   callers); real confirmation is the already-tracked "pending on-device verification:
   combined `trace` run" (Minor) — this fix rides that same verification pass rather
   than a new item.
+
+### 2026-07-06
+
+- **`correlate --returns` capture-rate coverage field.** CR5's `correlate` record
+  now carries `"returns":{"spans":N,"captured":M}` on `--returns` runs (BPF percpu
+  counters `COV_SPAN_OPEN` bumped on `span_stack_push` success, `COV_URET_FIRED` on
+  return-record emit; read at teardown). Surfaces how many return values were
+  captured vs. spans traced without hand-diffing; a gap (`captured < spans` =
+  SP-reconcile-backstop closes) flips the record to degraded. Firewall unchanged
+  (data-map bumps only). Host-tested (`test_coverage`); device-verified 2026-07-06
+  (clean path 15/15 captured; forced gap 723/722, banner + JSON `returns` block correct).
+
+- **`correlate --returns` - opt-in uretprobe for return value + exact exit
+  timing.** New `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`), emitted as
+  `{"type":"return",...}` (`src/correlate/corr_emit.c`, reuses `TRACE_RETURN`).
+  BPF side adds `corr_uretprobe_ret` (`SEC("uretprobe")` in
+  `src/correlate/correlate.bpf.c`), attached alongside each entry uprobe only
+  when `--returns` is passed; on a real return it authoritatively pops the top
+  span frame and reports raw `retval` (x0) + `elapsed_ns` (return ktime minus
+  entry ktime) - the pre-existing SP-based `span_stack_reconcile` stays wired
+  in as the backstop for a span whose uretprobe never fires. LOUD: this is a
+  second detection surface (uretprobe trampoline on the target stack) beyond
+  correlate's existing entry `BRK`; disclosed via a one-line stderr notice when
+  active. Firewall gate unaffected (`correlate` was already loud;
+  `capabilities.c` unchanged). Retval is raw only - no fd/string/errno decode
+  (stays parked, see Major). Device-verified 2026-07-06 (well-formed `{"type":"return"}`
+  records with raw retval + `elapsed_ns`; authoritative pop + SP-reconcile backstop both exercised).
 
 ### 2026-07-05
 

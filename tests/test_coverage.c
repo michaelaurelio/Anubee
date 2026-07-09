@@ -90,6 +90,32 @@ int main(void)
 	CHECK(ares_cfi_stop_is_blind(CFI_NO_FDE));
 	CHECK(!ares_cfi_stop_is_blind(CFI_SNAP_PC_ZERO));
 
+	// 6. returns_mode off -> no "returns" key even with counts set.
+	struct ares_coverage r0 = {0};
+	r0.engine = "correlate";
+	r0.spans_opened = 10; r0.returns_captured = 4;   // ignored: mode off
+	emit_json(&r0, j, sizeof(j));
+	CHECK(!strstr(j, "\"returns\""));
+	CHECK(strstr(j, "\"clean\":true"));   // no other degradation -> clean
+
+	// 7. returns_mode on, full capture -> returns block present, clean.
+	struct ares_coverage r1 = {0};
+	r1.engine = "correlate";
+	r1.returns_mode = 1;
+	r1.spans_opened = 8; r1.returns_captured = 8;
+	emit_json(&r1, j, sizeof(j));
+	CHECK(strstr(j, "\"returns\":{\"spans\":8,\"captured\":8}"));
+	CHECK(strstr(j, "\"clean\":true"));   // equal -> not a degradation
+
+	// 8. returns_mode on, gap -> returns block present, degraded.
+	struct ares_coverage r2 = {0};
+	r2.engine = "correlate";
+	r2.returns_mode = 1;
+	r2.spans_opened = 10; r2.returns_captured = 7;
+	emit_json(&r2, j, sizeof(j));
+	CHECK(strstr(j, "\"returns\":{\"spans\":10,\"captured\":7}"));
+	CHECK(!strstr(j, "\"clean\""));       // gap -> degraded
+
 	printf("test_coverage: %d checks passed\n", checks);
 	return 0;
 }

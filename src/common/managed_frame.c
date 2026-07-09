@@ -40,30 +40,45 @@ int ares_managed_chain_build(const char *const *syms, int n,
                              const char *const *nterp_names, int nterp_n,
                              char *out, size_t cap)
 {
+    // Collect method names innermost-first: native-resolved managed frames (module
+    // prefix stripped), then the interpreted (nterp) chain the CFI walk can't reach.
+    const char *m[128];
+    const int MAXM = (int)(sizeof m / sizeof m[0]);
+    int total = 0;
+    for (int i = 0; i < n && total < MAXM; i++) {
+        const char *mm = managed_method(syms[i]);
+        if (mm) m[total++] = mm;
+    }
+    for (int i = 0; i < nterp_n && total < MAXM; i++)
+        if (nterp_names[i] && nterp_names[i][0]) m[total++] = nterp_names[i];
+    if (total == 0) return 0;
+
+    // Emit as many frames as fit `cap`. On overflow, keep the innermost frames and
+    // append a "..." marker rather than dropping the whole chain - a truncated
+    // java_stack must never be mistaken for a complete one (real Kotlin/Compose
+    // names make chains routinely exceed the cache fragment). Innermost-first, so
+    // truncation drops the least-relevant outer callers.
     struct jbuf j = {0};
-    int count = 0;
+    int emitted = 0, truncated = 0;
     jb_c(&j, '[');
-    for (int i = 0; i < n; i++) {
-        const char *m = managed_method(syms[i]);
-        if (!m) continue;
-        if (count) jb_c(&j, ',');
-        jb_c(&j, '"'); jb_esc(&j, m); jb_c(&j, '"');
-        count++;
+    for (int i = 0; i < total; i++) {
+        size_t save = j.len;
+        if (emitted) jb_c(&j, ',');
+        jb_c(&j, '"'); jb_esc(&j, m[i]); jb_c(&j, '"');
+        // Reserve room for the close ']' + NUL (2); while frames remain after this
+        // one, also reserve a trailing ',"..."' (6) so a later overflow can mark.
+        size_t reserve = (i + 1 < total) ? 6 + 2 : 2;
+        if (j.err || j.len + reserve > cap) { j.len = save; truncated = 1; break; }
+        emitted++;
     }
-    // Interpreted (nterp) frames the CFI walk can't reach, innermost-first, appended
-    // after the native-resolved managed frames.
-    for (int i = 0; i < nterp_n; i++) {
-        if (!nterp_names[i] || !nterp_names[i][0]) continue;
-        if (count) jb_c(&j, ',');
-        jb_c(&j, '"'); jb_esc(&j, nterp_names[i]); jb_c(&j, '"');
-        count++;
-    }
+    if (emitted == 0) { free(j.b); return 0; }   // not even one frame fit: omit
+    if (truncated) jb_s(&j, ",\"...\"");
     jb_c(&j, ']');
-    if (count == 0 || j.err || !j.b || j.len + 1 > cap) { free(j.b); return 0; }
+    if (j.err || !j.b || j.len + 1 > cap) { free(j.b); return 0; }
     memcpy(out, j.b, j.len);
     out[j.len] = '\0';
     free(j.b);
-    return count;
+    return emitted;
 }
 
 // Direct-mapped fragment cache. Keyed by stack_id (a stack signature hash), so a
@@ -71,7 +86,7 @@ int ares_managed_chain_build(const char *const *syms, int n,
 // footprint; guarded by a mutex because the snapshot-drain thread writes while
 // the record-emit thread reads.
 #define JC_SLOTS 8192u          // power of two
-#define JC_FRAG  208            // max fragment bytes incl. NUL
+#define JC_FRAG  ARES_JCACHE_FRAG   // max fragment bytes incl. NUL (see managed_frame.h)
 struct jc_ent { uint64_t id; int used; char frag[JC_FRAG]; };
 static struct jc_ent g_jc[JC_SLOTS];
 static pthread_mutex_t g_jc_lock = PTHREAD_MUTEX_INITIALIZER;

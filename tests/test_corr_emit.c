@@ -17,7 +17,7 @@
 void corr_emit_func(struct jbuf *j, const struct corr_func_event *e);
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e, const char *syscall_name,
                        unsigned fdmask, int sockidx);
-void corr_emit_func_return(struct jbuf *j, const struct corr_func_return_event *e);
+void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
 
 static int checks = 0, failures = 0;
 #define HAS(j, sub, msg) do {                                        \
@@ -43,16 +43,6 @@ int main(void)
     HAS(j, "\"pid\":100", "func pid");
     HAS(j, "\"entry_addr\":\"0xabc\"", "func entry hex");
     HAS(j, "\"args\":[\"0x10\"", "func args hex");
-
-    struct corr_func_return_event r = {0};
-    r.h.type = TRACE_RETURN; r.h.pid = 100; r.h.tid = 101;
-    r.span = 5; r.entry_addr = 0xabc; r.retval = 0x1; r.elapsed_ns = 4200;
-    j.len = 0; corr_emit_func_return(&j, &r);
-    HAS(j, "\"type\":\"return\"", "return type");
-    HAS(j, "\"span\":5", "return span");
-    HAS(j, "\"entry_addr\":\"0xabc\"", "return entry hex");
-    HAS(j, "\"retval\":\"0x1\"", "return retval hex");
-    HAS(j, "\"elapsed_ns\":4200", "return elapsed_ns");
 
     // openat: string arg (path) + flags decode, no fd/sockaddr.
 #ifdef __NR_openat
@@ -96,6 +86,17 @@ int main(void)
     j.len = 0; corr_emit_syscall(&j, &sc, "connect", 0, 1);
     HAS(j, "127.0.0.1:8080", "connect decoded sockaddr");
 #endif
+
+    struct corr_return_event r = {0};
+    r.h.type = TRACE_RETURN; r.h.pid = 100; r.h.tid = 101;
+    r.span = 5; r.entry_addr = 0xabc; r.retval = 0xdeadbeef; r.elapsed_ns = 4200;
+    j.len = 0; corr_emit_return(&j, &r);
+    HAS(j, "\"type\":\"return\"", "ret type");
+    HAS(j, "\"span\":5", "ret span");
+    HAS(j, "\"pid\":100", "ret pid");
+    HAS(j, "\"entry_addr\":\"0xabc\"", "ret entry hex");
+    HAS(j, "\"retval\":\"0xdeadbeef\"", "ret retval hex");
+    HAS(j, "\"elapsed_ns\":4200", "ret elapsed");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

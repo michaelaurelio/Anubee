@@ -15,12 +15,15 @@
 #define CORR_SOCK_MAX  64
 
 enum corr_event_type {
-    CORR_EV_FUNC        = 1, // a probed function was entered (span opened)
-    CORR_EV_SYSCALL     = 2, // a syscall issued while inside a probed function
-    CORR_EV_FUNC_RETURN = 3, // a --returns-probed function returned (span closed)
+    CORR_EV_FUNC    = 1,     // a probed function was entered (span opened)
+    CORR_EV_SYSCALL = 2,     // a syscall issued while inside a probed function
+    CORR_EV_RETURN  = 3,     // a probed function returned (span closed)
+    CORR_EV_MAP     = 4,     // an executable library was mapped (shared lib_trace)
+    CORR_EV_UNMAP   = 5,     // an executable range was unmapped (shared lib_trace)
 };
 
 #include "common/trace_schema.h"
+#include "common/lib_trace.h"   // struct lib_map_event / lib_unmap_event + emitters
 
 // A probed-function entry. `span` is this frame's id; `parent_span` links to the
 // enclosing probed frame (0 = outermost).
@@ -44,8 +47,11 @@ struct corr_syscall_event {
     __u8  sock[CORR_SOCK_MAX];               // raw sockaddr (connect/bind/sendto)
 };
 
-// A --returns-probed function's return (authoritative span close).
-struct corr_func_return_event {
+// A probed-function return. `span` is the closing frame's id, so a consumer joins
+// it to the CORR_EV_FUNC that opened the span and every CORR_EV_SYSCALL tagged with
+// it. `retval` is the raw x0 at return (no decode); `elapsed_ns` is the exact span
+// duration (return ktime - entry ktime).
+struct corr_return_event {
     struct trace_event_header h;
     __u64 span;
     __u64 entry_addr;
@@ -57,6 +63,6 @@ struct jbuf;  /* common/emit.h */
 void corr_emit_func(struct jbuf *j, const struct corr_func_event *e);
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
                        const char *syscall_name, unsigned fdmask, int sockidx);
-void corr_emit_func_return(struct jbuf *j, const struct corr_func_return_event *e);
+void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
 
 #endif /* __ARES_CORRELATE_H */

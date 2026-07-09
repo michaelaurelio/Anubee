@@ -27,6 +27,15 @@ struct {
 #include "common/follow_fork.bpf.h"
 #include "common/bpf_drop.bpf.h"     // dropped map + bump_dropped()
 
+// Shared native-library load tracing (kprobes on uprobe_mmap/uprobe_munmap).
+// Source-shared into this one BPF object; adds only kprobes, so the loud/quiet
+// firewall class is unchanged (correlate is already loud via its uprobe).
+#define LIBTRACE_TYPE_MAP    CORR_EV_MAP
+#define LIBTRACE_TYPE_UNMAP  CORR_EV_UNMAP
+#define LIBTRACE_EXTRA_GATE() pid_matches()   // mirror the engine's PID mode
+#define LIBTRACE_ON_DROP()   bump_dropped()
+#include "common/lib_trace.bpf.h"
+
 #define NUM_ARGS CORR_NUM_ARGS
 #include "common/span_stack.bpf.h"
 
@@ -92,51 +101,6 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
     for (int i = 0; i < NUM_ARGS; i++)
         e->args[i] = (__u64)raw[i];
     bpf_ringbuf_submit(e, 0);
-    return 0;
-}
-
-// Function return (only attached when --returns is given): authoritatively pop
-// the span the instant its function returns, independent of SP behavior.
-// Mirrors funcs.bpf.c's uretprobe_open (same span_frames/span_depth shapes).
-SEC("uretprobe")
-int BPF_KRETPROBE(corr_uretprobe_ret)
-{
-    if (!uid_matches() && !pid_matches())
-        return 0;
-
-    __u64 id  = bpf_get_current_pid_tgid();
-    __u32 pid = (__u32)(id >> 32);
-    __u32 tid = (__u32)id;
-    __u64 now = bpf_ktime_get_ns();
-
-    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
-    if (!dp || *dp == 0)
-        return 0;
-    __u32 top = *dp - 1;
-    struct frame_key fk = { .tid = tid, .slot = top };
-    struct span_frame *saved = bpf_map_lookup_elem(&span_frames, &fk);
-    if (!saved) {
-        span_depth_set(tid, top);  // depth/frame desync: shrink and bail
-        return 0;
-    }
-
-    struct corr_func_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        bump_dropped();
-    } else {
-        e->h.type = CORR_EV_FUNC_RETURN;
-        e->h.pid  = pid;
-        e->h.tid  = tid;
-        e->h._pad = 0;
-        e->span       = saved->span_id;
-        e->entry_addr = saved->entry_addr;
-        e->retval     = (__u64)PT_REGS_RC(ctx);
-        e->elapsed_ns = now - saved->timestamp;
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&span_frames, &fk);
-    span_depth_set(tid, top);      // authoritative pop
     return 0;
 }
 
@@ -216,5 +180,53 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
     }
 
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+// Function return (LOUD, --returns only): authoritatively close the innermost
+// span, emitting its return value + exact elapsed time. SP-reconcile
+// (span_stack_reconcile) stays as the backstop for genuinely missed returns.
+SEC("uretprobe")
+int BPF_KRETPROBE(corr_uretprobe_ret)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __u64 id  = bpf_get_current_pid_tgid();
+    __u32 pid = (__u32)(id >> 32);
+    __u32 tid = (__u32)id;
+    __u64 now = bpf_ktime_get_ns();
+
+    __u32 *dp = bpf_map_lookup_elem(&span_depth, &tid);
+    if (!dp || *dp == 0)
+        return 0;
+    __u32 top = *dp - 1;
+    struct frame_key fk = { .tid = tid, .slot = top };
+    struct span_frame *saved = bpf_map_lookup_elem(&span_frames, &fk);
+    if (!saved) {
+        span_depth_set(tid, top);      // depth/frame desync: shrink and bail
+        return 0;
+    }
+
+    struct corr_return_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        bpf_map_delete_elem(&span_frames, &fk);
+        span_depth_set(tid, top);
+        bump_dropped();
+        return 0;
+    }
+    e->h.type     = CORR_EV_RETURN;
+    e->h.pid      = pid;
+    e->h.tid      = tid;
+    e->h._pad     = 0;
+    e->span       = saved->span_id;
+    e->entry_addr = saved->entry_addr;
+    e->retval     = (__u64)PT_REGS_RC(ctx);
+    e->elapsed_ns = now - saved->timestamp;
+    bpf_ringbuf_submit(e, 0);
+    cov_bump(COV_URET_FIRED);   // a return value was captured
+
+    bpf_map_delete_elem(&span_frames, &fk);
+    span_depth_set(tid, top);          // authoritative pop
     return 0;
 }

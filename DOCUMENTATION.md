@@ -292,7 +292,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
   otherwise walks the user stack and keeps the event only if a frame lands inside
   the target library's executable range.
-- Output: structured per-event JSONL (see §7).
+- Output: structured per-event JSONL (see §7). The same mmap/munmap probes that
+  feed the stack-origin filter also emit `{"type":"lib",...}` / `{"type":"unlib",...}`
+  records for every executable load/unload **to the `-o` sink** (via the shared
+  `ares_libtrace_emit_lib/unlib`); console stays as-is (the `-v` `map`/`unmap`
+  trace lines are the stdout echo). Sink-only, so a fileless run is unchanged.
 - **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
   and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
   one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
@@ -431,6 +435,15 @@ located the module-base bug and stays available for future CFI diagnosis.
   run ares with `ARES_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
   iterate the offsets until the oracle confirms the names → bake the confirmed row into
   `k_table`. Reads-only (own-process file); no target write.
+  - **Known builds / source-bound offsets.** `k_table` carries two rows for the same
+    POCO C85 (Android 15) device: `1f156fc6...` and `cecb684d...`, the latter an OTA libart
+    rebuild (same Android 15, new binary, new BuildID). Their 13 offsets are **identical**,
+    empirical evidence the offset layout is bound to the AOSP source release
+    (`android15-release`), not the compiled binary. So an OTA that only rebuilds libart within
+    the same release needs a fresh row keyed on the new BuildID but **reuses** the offsets; a
+    genuine ART version bump is what shifts them. The `cecb684d...` row was Frida-oracle-verified
+    on 2026-07-08 (95.6% of emitted interp names were real app methods the ART-native oracle
+    also observed).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);
@@ -700,6 +713,12 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   flag/enum expansion (`flags_decode_arg`), first that applies, `""` otherwise — same
   precedence as `syscalls`' `render_arg`. One row per event, joinable on `span`;
   syscalls are never nested inside a func record.
+- **Library-load records**: the same object also carries the shared
+  `src/common/lib_trace.bpf.h` kprobes (uprobe_mmap/uprobe_munmap, PID-gated to
+  mirror the engine's filter), emitting `{"type":"lib",...}` / `{"type":"unlib",...}`
+  for every executable load/unload — to the `-o` sink, plus a `[lib]`/`[unlib]`
+  console line unless `-q` (consistent with the engine's other records). These are
+  kprobes only, so the loud/quiet firewall class is unchanged.
 - **Robustness**: each uprobe `bpf_link` (entry and return) is tracked and
   `bpf_link__destroy`'d on teardown (not leaked to process exit). The fixed input
   caps — `-p` (64 PIDs), `-e`/`-F` (64 specs), `-I`/`-i` (32 patterns each), per-pid
@@ -715,6 +734,42 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   as the opt-in accuracy path, full syscall-arg decode (string/fd/sockaddr/flags).
   Return-only regex (`-r`, funcs' save-only pattern) deferred — see
   [BACKLOG.md](BACKLOG.md).
+
+### 6.1 `--returns`: return value + exact span timing (opt-in, LOUD)
+
+Off by default; SP-based reconcile (above) is the only span-close mechanism
+unless `--returns` is passed. When passed, the loader attaches a *second* BPF
+program at each spec'd function's offset: a uretprobe (`corr_uretprobe_ret`,
+`SEC("uretprobe")` in `src/correlate/correlate.bpf.c`), alongside the existing
+entry uprobe.
+
+- **Record**: `CORR_EV_RETURN` / `struct corr_return_event {span, entry_addr,
+  retval, elapsed_ns}` (`src/correlate/correlate.h`). JSON (`corr_emit_return`,
+  `src/correlate/corr_emit.c`), reusing the shared `"return"` type name
+  (`TRACE_RETURN`):
+  `{"type":"return","span":N,"pid":...,"tid":...,"entry_addr":"0x...","retval":"0x...","elapsed_ns":N}`.
+- **Semantics - authoritative pop, SP-reconcile as backstop**: on a real
+  return, `corr_uretprobe_ret` reads the top span frame, emits `retval` (raw
+  `PT_REGS_RC` / x0) and `elapsed_ns` (return `bpf_ktime_get_ns()` minus the
+  saved entry timestamp), then deletes the frame and pops the depth counter
+  itself - this is the exact close, not an estimate. The pre-existing
+  `span_stack_reconcile` SP check (used unconditionally without `--returns`)
+  stays wired in as a backstop for a span whose uretprobe never fires (e.g. the
+  thread exits mid-call); it still runs even with `--returns` on.
+- **Scope**: `retval` is the raw return register only - no fd/string/errno
+  decode. That interpretation stays parked with the other decode work above.
+- **Loudness - second detection surface**: `correlate` is already loud (entry
+  `BRK`). `--returns` adds a uretprobe trampoline pushed onto the *target's own
+  stack* to catch the return - a second, independent thing an anti-tampering
+  check on the target process could notice, beyond the entry `BRK`. Passing
+  `--returns` prints a one-line stderr notice disclosing this at attach time;
+  the firewall gate (`make check-firewall`, §CR1) is unaffected because
+  `correlate` was already classified loud - no `capabilities.c` change.
+- **Attach**: one uretprobe per resolved `(path,offset)`, attached right after
+  its paired entry uprobe in `attach_uprobes_for_pid`; a failed uretprobe attach
+  logs `RET FAILED` and does not fail the run (the entry uprobe for that offset
+  stays attached, span-open/syscall correlation for it still works - only that
+  offset's return record is missing).
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 
@@ -787,9 +842,14 @@ stream:
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
-  Experimental/best-effort (see §managed-frame naming limits): AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate
-  limits (see BACKLOG). The authoritative full native+managed walk stays in the `.stacks` sidecar `cfi_stack`
-  record, joinable by `stack_id`. Stack snapshot schema:
+  Experimental/best-effort (see §managed-frame naming limits): AOT frames are reliable; interpreted frames
+  inherit the documented precision/hit-rate limits (see BACKLOG). Both interpreter terminals are named
+  inline, matching the `.stacks` sidecar: nterp (`nterp_chain`) and the switch interpreter
+  (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the latter is what carries app Kotlin, so it must not be
+  omitted from the inline chain. The fragment is bounded by `ARES_JCACHE_FRAG` (512 B); a chain that
+  overflows is truncated innermost-first with a trailing `"..."` marker (never dropped whole). The
+  authoritative full, untruncated native+managed walk stays in the `.stacks` sidecar `cfi_stack` record,
+  joinable by `stack_id`. Stack snapshot schema:
   `{"type":"stack","stack_id":..,"pc":"0x..","sp":"0x..","fp":"0x..","lr":"0x..",
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
@@ -870,6 +930,13 @@ fields are omitted):
 | `prearm_drops` | syscalls dropped in the CR2 pre-arm window before uprobes attach | yes | no | no |
 | `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
 | `decode_partial` | raw syscall args only, no decode table match | no | no | no (Tier 5: full decode wired) |
+
+On `--returns` runs the record also carries `"returns":{"spans":N,"captured":M}` -
+`spans` = tracked function frames pushed (uretprobe-poppable), `captured` = return
+records the uretprobe emitted. A gap (`captured < spans`) means that many spans
+closed via the SP-reconcile backstop with no return record (thread exit mid-call,
+missed return) and flips the record to degraded; equal counts stay clean. Omitted
+on non-`--returns` runs.
 
 `lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
 `dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a

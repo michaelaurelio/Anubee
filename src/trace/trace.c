@@ -32,27 +32,31 @@ static void usage(const char *argv0)
 {
 	fprintf(stderr,
 		"usage: %s (-P <package> | -p <pid[,pid...]>) [-o <prefix>] "
-		"[--syscalls <args...>] [--funcs <args...>] [--lib]\n"
+		"[--syscalls <args...>] [--funcs <args...>] [--lib] [--dump <args...>]\n"
 		"\n"
-		"Run the kprobe syscall tracer, uprobe function tracer, and/or library-load\n"
-		"tracer together from a single app launch (LOUD: the uprobe writes a BRK into\n"
-		"the target if --funcs is used).\n"
+		"Run the kprobe syscall tracer, uprobe function tracer, library-load tracer,\n"
+		"and/or module dumper together from a single app launch (LOUD: the uprobe\n"
+		"writes a BRK into the target if --funcs is used).\n"
 		"\n"
 		"  -P <package>    app to launch and trace (mutually exclusive with -p)\n"
 		"  -p <pid[,...]>  attach to already-running PID(s) instead of launching\n"
 		"                  (mutually exclusive with -P; each engine arms its own\n"
 		"                  target_pids from this list, no UID resolve/launch)\n"
 		"  -A <activity>   override launch activity component (default: auto-resolve)\n"
-		"  -o <prefix>     write <prefix>.syscalls.jsonl, <prefix>.funcs.jsonl, and/or\n"
-		"                  <prefix>.lib.jsonl (recommended: keeps engine streams separate\n"
-		"                  and silences console output)\n"
+		"  -o <prefix>     write <prefix>.syscalls.jsonl, <prefix>.funcs.jsonl,\n"
+		"                  <prefix>.lib.jsonl, and/or <prefix>.dump.jsonl (recommended:\n"
+		"                  keeps engine streams separate and silences console output)\n"
 		"  --syscalls ...  options for the syscalls engine, e.g. '-a' or '<lib> -s openat'\n"
 		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --funcs ...     options for the funcs engine, e.g. \"-e 'libc.so!open' -J\"\n"
 		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --lib           enable library-load tracing (takes no sub-options)\n"
+		"  --dump ...      options for the dump engine, e.g. \"'libfoo*' -d /tmp/dumps\"\n"
+		"                  (no package/PID args — they come from -P/-p above; dump's\n"
+		"                  output is ELF images + an on-exit rescan, not a live stream,\n"
+		"                  so it's a batch engine riding alongside the streaming ones)\n"
 		"\n"
-		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib sections.\n",
+		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib / --dump sections.\n",
 		argv0);
 }
 
@@ -75,14 +79,16 @@ int cmd_trace(int argc, char **argv)
 	int sys_start = ta.sys_start, sys_end = ta.sys_end;
 	int func_start = ta.func_start, func_end = ta.func_end;
 	int lib_start = ta.lib_start, lib_end = ta.lib_end;
+	int dump_start = ta.dump_start, dump_end = ta.dump_end;
 
 	if (!pkg && !pids) {
 		fprintf(stderr, "trace: one of -P <package> / -p <pid[,...]> is required\n");
 		usage(argv[0]); return 1;
 	}
 	int want_sys = (sys_start >= 0), want_func = (func_start >= 0), want_lib = (lib_start >= 0);
-	if (!want_sys && !want_func && !want_lib) {
-		fprintf(stderr, "trace: at least one of --syscalls / --funcs / --lib is required\n");
+	int want_dump = (dump_start >= 0);
+	if (!want_sys && !want_func && !want_lib && !want_dump) {
+		fprintf(stderr, "trace: at least one of --syscalls / --funcs / --lib / --dump is required\n");
 		usage(argv[0]); return 1;
 	}
 	if (!prefix)
@@ -103,8 +109,8 @@ int cmd_trace(int argc, char **argv)
 
 	// Build each engine's argv: ["<engine>", ("-o" file)?, <section args...>].
 	// All engines read the package name from rc->pkg (pre-filled before argp_parse).
-	struct trace_argv sysv, funcv, libv;
-	int sys_argc = 0, func_argc = 0, lib_argc = 0;
+	struct trace_argv sysv, funcv, libv, dumpv;
+	int sys_argc = 0, func_argc = 0, lib_argc = 0, dump_argc = 0;
 
 	if (want_sys) {
 		int tr = 0;
@@ -151,6 +157,25 @@ int cmd_trace(int argc, char **argv)
 			libv.argv[lib_argc]   = NULL;
 		}
 	}
+	if (want_dump) {
+		int tr = 0;
+		dump_argc = trace_build_argv(&dumpv, "dump", prefix,
+		                             "dump.jsonl", argv, dump_start, dump_end, &tr);
+		if (tr) fprintf(stderr, "trace: --dump section truncated (too many args)\n");
+		// dump requires -P or -p in its own argv (unlike sys/func/lib, its ARGP_KEY_END
+		// errors without one) — rc->pkg pre-fill covers launch mode, but attach mode
+		// needs -p injected explicitly, same as the other engines above.
+		if (pids && dump_argc < 62) {
+			dumpv.argv[dump_argc++] = "-p";
+			dumpv.argv[dump_argc++] = (char *)pids;
+			dumpv.argv[dump_argc]   = NULL;
+		}
+		// Mirror funcs/lib: -o implies quiet for dump too.
+		if (prefix && dump_argc < 63) {
+			dumpv.argv[dump_argc++] = "-q";
+			dumpv.argv[dump_argc]   = NULL;
+		}
+	}
 
 	// Arm all requested engines BEFORE the single launch. None launch on their
 	// own — setup only opens/loads/attaches and installs the UID filter (via rc->uid).
@@ -169,6 +194,13 @@ int cmd_trace(int argc, char **argv)
 		if (want_sys) syscalls_teardown();
 		return 1;
 	}
+	if (want_dump && dump_setup(dump_argc, dumpv.argv, &rc) != 0) {
+		fprintf(stderr, "trace: dump setup failed\n");
+		if (want_lib) lib_teardown();
+		if (want_func) funcs_teardown();
+		if (want_sys) syscalls_teardown();
+		return 1;
+	}
 
 	ares_install_stop_handler(&g_stop);
 
@@ -180,6 +212,7 @@ int cmd_trace(int argc, char **argv)
 		ares_launch_banner(pkg, uid);
 		if (ares_launch_app(pkg, activity, NULL) != 0) {
 			fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
+			if (want_dump) dump_teardown();
 			if (want_lib) lib_teardown();
 			if (want_func) funcs_teardown();
 			if (want_sys) syscalls_teardown();
@@ -193,25 +226,30 @@ int cmd_trace(int argc, char **argv)
 	// all serialize on symbolize.c's internal g_lock (AA1 fix, 2026-07-07), so the
 	// two threads don't race on those globals despite calling into them concurrently.
 	// The only state owned directly by this file is g_stop.
-	pthread_t sys_th, func_th, lib_th;
+	pthread_t sys_th, func_th, lib_th, dump_th;
 	struct run_arg sa = { .run = syscalls_run };
 	struct run_arg fa = { .run = funcs_run };
 	struct run_arg la = { .run = lib_run };
-	int sys_th_ok = 0, func_th_ok = 0, lib_th_ok = 0;
+	struct run_arg da = { .run = dump_run };
+	int sys_th_ok = 0, func_th_ok = 0, lib_th_ok = 0, dump_th_ok = 0;
 
 	if (want_sys) sys_th_ok = (pthread_create(&sys_th, NULL, run_thread, &sa) == 0);
 	if (want_func) func_th_ok = (pthread_create(&func_th, NULL, run_thread, &fa) == 0);
 	if (want_lib) lib_th_ok = (pthread_create(&lib_th, NULL, run_thread, &la) == 0);
+	if (want_dump) dump_th_ok = (pthread_create(&dump_th, NULL, run_thread, &da) == 0);
 
 	// Fallback: if a thread failed to spawn, drain that engine inline.
 	if (want_sys && !sys_th_ok) syscalls_run(&g_stop);
 	if (want_func && !func_th_ok) funcs_run(&g_stop);
 	if (want_lib && !lib_th_ok) lib_run(&g_stop);
+	if (want_dump && !dump_th_ok) dump_run(&g_stop);
 
 	if (sys_th_ok) pthread_join(sys_th, NULL);
 	if (func_th_ok) pthread_join(func_th, NULL);
 	if (lib_th_ok) pthread_join(lib_th, NULL);
+	if (dump_th_ok) pthread_join(dump_th, NULL);
 
+	if (want_dump) dump_teardown();
 	if (want_lib) lib_teardown();
 	if (want_func) funcs_teardown();
 	if (want_sys) syscalls_teardown();

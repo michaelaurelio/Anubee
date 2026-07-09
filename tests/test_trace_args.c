@@ -69,6 +69,19 @@ int main(void)
 	char *k[] = { A("trace"), A("-p"), A("1"), A("-P"), A("pkg") };
 	assert(trace_parse_args(5, k, &t) < 0);          // -p then -P: rejected too
 
+	// --dump section (GA2 Phase 3): located alongside the other sections
+	char *m[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls"), A("-a"),
+	              A("--dump"), A("libfoo*"), A("-d"), A("/tmp/out") };
+	assert(trace_parse_args(9, m, &t) == 0);
+	assert(t.sys_start == 4 && t.sys_end == 5);
+	assert(t.dump_start == 6 && t.dump_end == 9);   // "libfoo*","-d","/tmp/out"
+
+	// --dump before --syscalls, empty --dump section
+	char *n[] = { A("trace"), A("-P"), A("pkg"), A("--dump"), A("--syscalls"), A("-a") };
+	assert(trace_parse_args(6, n, &t) == 0);
+	assert(t.dump_start == 4 && t.dump_end == 4);   // empty, stops at --syscalls
+	assert(t.sys_start == 5 && t.sys_end == 6);
+
 	// --- trace_build_argv ---
 	struct trace_argv v;
 

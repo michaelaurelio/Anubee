@@ -12,9 +12,10 @@ struct trace_args {
 	int sys_start, sys_end;    // [start,end) slice into argv; start<0 = no --syscalls
 	int func_start, func_end;  // likewise for --funcs
 	int lib_start, lib_end;    // likewise for --lib
+	int dump_start, dump_end;  // likewise for --dump
 };
 
-// Parse the coordinator-level flags and locate the two engine sections.
+// Parse the coordinator-level flags and locate each engine section.
 // argv[0] is the subcommand name. Returns 0 on success, 1 if -h/--help was seen
 // (caller prints usage, exits 0), -1 on a flag missing its value or an
 // unexpected token. A repeated section delimiter: the last one wins.

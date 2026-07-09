@@ -137,12 +137,21 @@ flowchart TD
   (`src/common/launch.h`) carries a pre-resolved UID + package name into each
   `*_setup`. Standalone behavior is unchanged; the split exists so engines can be
   armed, launched once, and polled together. The `trace` runner drives
-  `syscalls` + `funcs` + `lib` concurrently from one launch. `dump` and `correlate`
-  have the lifecycle contract but are not yet wired into `trace` — see
-  [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception: `correlate_setup` owns its launch internally (uprobe attach requires
+  `syscalls` + `funcs` + `lib` + `dump` concurrently from one launch, or one
+  PID-attach via top-level `-p` (Phase 3d: `trace` injects `-p <csv>` into each
+  requested engine's own argv and skips the launch — each engine already arms
+  `target_pids` itself from `-p`, so no `ares_run_ctx`/`launch.h` change was
+  needed). `correlate` has the lifecycle contract but is not yet wired into
+  `trace` — see [BACKLOG.md](BACKLOG.md) (GA2 deferred items). Exception:
+  `correlate_setup` owns its launch internally (uprobe attach requires
   the child PID, only known post-launch) and ignores `rc`; it now routes through
   `ares_launch_app` with the new `out_pid` param (GA6-keystone done). Wiring
   `correlate` into `trace` remains deferred — see BACKLOG.md GA2 deferred items.
+  The driver contract itself (`<engine>_setup`/`_run`/`_teardown` signatures) is
+  now declared once in `src/common/engine_driver.h`, included by both `trace.c`
+  and every engine's `.c` — a signature change is a compile error instead of the
+  silent coordinator-boundary UB the two hand-maintained lists used to allow
+  (AA3; see BACKLOG.md).
 - **The firewall-aware capability registry is the single audit point.** `src/common/capabilities.*`
   holds the static table of every BPF object and whether it writes into the target's
   userspace memory (the detectability firewall bit). Uprobe-bearing capabilities set
@@ -819,34 +828,46 @@ entry uprobe.
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud)
 
-`ares trace` runs the `syscalls` (kprobe) and `funcs` (uprobe) engines together
-from a **single app launch**, emitting both engines' full output as two
-independent streams (no correlation — that is `correlate`'s job). It owns no BPF
-object: it is a thin coordinator (`src/trace/trace.c`) over the engines'
-setup/run/teardown phases (§1).
+`ares trace` runs the `syscalls` (kprobe), `funcs` (uprobe), `lib` (kprobe), and
+`dump` (kprobe) engines together from a **single app launch** (or a single PID
+attach via `-p`), emitting each engine's full output as an independent stream
+(no correlation — that is `correlate`'s job, and it is not yet wired in — see
+§ below). It owns no BPF object of its own: it is a thin coordinator
+(`src/trace/trace.c`) over the engines' setup/run/teardown phases (§1).
 
 - **Why a coordinator (not a fused probe):** each real engine keeps all its
   features (return values, typed args, modules, sockaddr/fd decode, stack-origin
-  filter, snapshots). The blocker to running them as two processes was the launch
-  race — both force-stop + relaunch the app and arm their UID filter before
-  launch. `trace` resolves the UID once, calls `syscalls_setup` then `funcs_setup`
-  (both arm their probes/UID but **do not** launch), then `ares_launch_app` **once**,
-  then drains both ring buffers on two pthreads against a shared
-  `volatile sig_atomic_t` stop flag, and tears both down.
+  filter, snapshots). The blocker to running them as multiple processes was the
+  launch race — each force-stops + relaunches the app and arms its UID filter
+  before launch. `trace` resolves the UID once (or skips resolution entirely in
+  `-p` PID-attach mode), calls each requested engine's `*_setup` (arms
+  probes/UID but **does not** launch), then `ares_launch_app` **once** (skipped
+  in `-p` mode — the target is already running), then drains all ring buffers
+  on one pthread per engine against a shared `volatile sig_atomic_t` stop flag,
+  and tears all of them down.
 - **Coordinator mode plumbing:** `struct ares_run_ctx` (`src/common/launch.h`)
   carries the pre-resolved UID + package into each `*_setup`; the engines pre-fill
   their package name from `rc->pkg` before calling `argp_parse`, so no `-P` flag
-  appears in either engine's argv section. The driver symbols (`syscalls_setup`/`_run`/`_teardown`,
-  `funcs_*`) are kept global through the partial-link so `trace.part.o` can call
-  them (see the `--keep-global-symbol` lists in the Makefile).
-- **CLI:** `ares trace -P <pkg> [-o <prefix>] [--syscalls <args…>] [--funcs <args…>]`.
+  appears in any engine's argv section in launch mode. In `-p` attach mode `rc`
+  stays zeroed and `trace` instead injects `-p <csv>` into each requested
+  engine's own argv (`dump` needs this explicitly — unlike the other three, its
+  `argp` parser errors without a `-P`/`-p` of its own). The driver symbols
+  (`<engine>_setup`/`_run`/`_teardown` for all five engines) are declared once in
+  `src/common/engine_driver.h` (AA3) and kept global through the partial-link so
+  `trace.part.o` can call them (see the `*_DRIVER` `--keep-global-symbol` lists
+  in the Makefile).
+- **CLI:** `ares trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [--syscalls <args…>] [--funcs <args…>] [--lib] [--dump <args…>]`.
   With `-o`, each engine writes its own file (`<prefix>.syscalls.jsonl` /
-  `<prefix>.funcs.jsonl`) — no shared `FILE*`, and both are ingestable by the
-  unified MCP today. Each `--…` section is that engine's normal options; the package
-  is not repeated (`rc->pkg` supplies it).
-- **Operational notes:** without `-o`, both engines print to stdout from two
-  threads and the text interleaves — `trace` warns and `-o` is recommended. A
-  first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the
+  `<prefix>.funcs.jsonl` / `<prefix>.lib.jsonl` / `<prefix>.dump.jsonl`) — no
+  shared `FILE*`, and all are ingestable by the unified MCP today. Each `--…`
+  section is that engine's normal options; the package/PID is not repeated
+  (`rc->pkg`/injected `-p` supplies it). `dump`'s output is ELF image files plus
+  an on-exit rescan, not a live stream, so combining it with the streaming
+  engines mixes a batch engine into an otherwise-live run — wired for lifecycle
+  parity (GA2), not because the combination is especially useful.
+- **Operational notes:** without `-o`, requested engines print to stdout from
+  their own threads and the text interleaves — `trace` warns and `-o` is
+  recommended. A first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the
   standalone engines. The `syscalls` ring drain bails on the coordinator's stop
   flag (`g_stopp`), so shutdown is prompt even under a syscall flood.
 - **Detectability:** loud by construction — it loads the `funcs` uprobe (entry

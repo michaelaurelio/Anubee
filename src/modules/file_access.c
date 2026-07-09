@@ -196,6 +196,55 @@ static void fa_print_summary(void)
            flagged);
 }
 
+// File twin of fa_print_summary: same tally, one {"type":"file_access_summary",...}
+// record. Reuses the FA_* category names from mod_emit_file_access's tag table
+// (modules/mod_emit.c) so file and per-event records share one category
+// vocabulary. fa_stats is already sorted by fa_print_summary before this runs.
+static void fa_emit_summary(struct ares_sink *s)
+{
+    if (fa_stat_count == 0) return;
+
+    uint64_t total = 0;
+    int flagged = 0;
+    for (int i = 0; i < fa_stat_count; i++) {
+        total += fa_stats[i].count;
+        if (fa_stats[i].categories) flagged++;
+    }
+
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"file_access_summary\"");
+    jb_s(j, ",\"total\":");       jb_u64(j, total);
+    jb_s(j, ",\"unique_paths\":"); jb_u64(j, (unsigned long long)fa_stat_count);
+    jb_s(j, ",\"flagged\":");     jb_u64(j, (unsigned long long)flagged);
+    jb_s(j, ",\"paths\":[");
+    struct { unsigned bit; const char *name; } tags[] = {
+        { FA_EXTERNAL_STORAGE,   "external_storage"   },
+        { FA_MEDIA_SUBDIR,       "media_subdir"       },
+        { FA_CREDENTIAL_PATTERN, "credential_pattern" },
+        { FA_FOREIGN_APP_DIR,    "foreign_app_dir"    },
+        { FA_UNKNOWN_SELF,       "unknown_self"       },
+    };
+    for (int i = 0; i < fa_stat_count; i++) {
+        if (i) jb_c(j, ',');
+        jb_s(j, "{\"path\":\"");  jb_esc(j, fa_stats[i].path); jb_c(j, '"');
+        jb_s(j, ",\"count\":");   jb_u64(j, fa_stats[i].count);
+        jb_s(j, ",\"categories\":[");
+        int first = 1;
+        for (size_t t = 0; t < sizeof(tags) / sizeof(tags[0]); t++) {
+            if (!(fa_stats[i].categories & tags[t].bit)) continue;
+            if (!first) jb_c(j, ',');
+            first = 0;
+            jb_c(j, '"'); jb_s(j, tags[t].name); jb_c(j, '"');
+        }
+        jb_s(j, "]}");
+    }
+    jb_c(j, ']');
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_file_access = {
@@ -205,4 +254,5 @@ const ares_analyzer_t analyzer_file_access = {
     .setup         = fa_setup,
     .teardown      = fa_teardown,
     .print_summary = fa_print_summary,
+    .emit_summary  = fa_emit_summary,
 };

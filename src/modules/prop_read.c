@@ -138,6 +138,39 @@ static void pr_print_summary(void)
 #undef SEP
 }
 
+// File twin of pr_print_summary: same tally, one {"type":"prop_read_summary",...}
+// record. prop_stats is already sorted by pr_print_summary before this runs.
+static void pr_emit_summary(struct ares_sink *s)
+{
+    if (prop_stat_count == 0) return;
+
+    uint64_t total = 0;
+    int rasp_count = 0;
+    for (int i = 0; i < prop_stat_count; i++) {
+        total += prop_stats[i].count;
+        if (is_rasp_prop(prop_stats[i].name)) rasp_count++;
+    }
+
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"prop_read_summary\"");
+    jb_s(j, ",\"total\":");        jb_u64(j, total);
+    jb_s(j, ",\"unique_props\":"); jb_u64(j, (unsigned long long)prop_stat_count);
+    jb_s(j, ",\"rasp_count\":");   jb_u64(j, (unsigned long long)rasp_count);
+    jb_s(j, ",\"props\":[");
+    for (int i = 0; i < prop_stat_count; i++) {
+        if (i) jb_c(j, ',');
+        jb_s(j, "{\"name\":\"");  jb_esc(j, prop_stats[i].name); jb_c(j, '"');
+        jb_s(j, ",\"count\":");   jb_u64(j, prop_stats[i].count);
+        jb_s(j, ",\"rasp\":");    jb_s(j, is_rasp_prop(prop_stats[i].name) ? "true" : "false");
+        jb_c(j, '}');
+    }
+    jb_c(j, ']');
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 // ── BPF skeleton + link state ─────────────────────────────────────────────────
 
 static struct prop_read_bpf *g_skel         = NULL;
@@ -409,5 +442,6 @@ const ares_analyzer_t analyzer_prop_read = {
     .setup         = pr_setup,
     .teardown      = pr_teardown,
     .print_summary = pr_print_summary,
+    .emit_summary  = pr_emit_summary,
     .drops         = pr_drops,
 };

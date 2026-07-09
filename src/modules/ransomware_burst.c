@@ -221,6 +221,32 @@ static void rb_print_summary(void)
            rb_stat_count, rb_stat_count == 1 ? "" : "es");
 }
 
+// File twin of rb_print_summary: same tally, one
+// {"type":"ransomware_burst_summary",...} record.
+static void rb_emit_summary(struct ares_sink *s)
+{
+    if (rb_stat_count == 0) return;
+
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"ransomware_burst_summary\"");
+    jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)rb_stat_count);
+    jb_s(j, ",\"processes\":[");
+    for (int i = 0; i < rb_stat_count; i++) {
+        if (i) jb_c(j, ',');
+        jb_s(j, "{\"pid\":");        jb_u64(j, rb_stats[i].pid);
+        jb_s(j, ",\"comm\":\"");     jb_esc(j, rb_stats[i].comm); jb_c(j, '"');
+        jb_s(j, ",\"bursts\":");     jb_u64(j, rb_stats[i].burst_count);
+        jb_s(j, ",\"max_touch_count\":"); jb_u64(j, rb_stats[i].max_touch_count);
+        jb_s(j, ",\"max_distinct\":");    jb_i64(j, rb_stats[i].max_distinct);
+        jb_c(j, '}');
+    }
+    jb_c(j, ']');
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_ransomware_burst = {
@@ -231,4 +257,5 @@ const ares_analyzer_t analyzer_ransomware_burst = {
     .setup         = rb_setup,
     .teardown      = rb_teardown,
     .print_summary = rb_print_summary,
+    .emit_summary  = rb_emit_summary,
 };

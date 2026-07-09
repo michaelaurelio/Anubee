@@ -199,6 +199,7 @@ int cmd_mod(int argc, char **argv)
 
     an->teardown();
     if (an->print_summary) an->print_summary();
+    if (an->emit_summary && g_sink.f) an->emit_summary(&g_sink);
 
     struct ares_coverage cov = { .engine = ma.name };
     cov.ring_drops = drops;

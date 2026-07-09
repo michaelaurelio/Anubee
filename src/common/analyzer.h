@@ -36,6 +36,10 @@ typedef struct {
     void (*teardown)(void);
     // Print tally / RASP table to stdout at session end. May be NULL.
     void (*print_summary)(void);
+    // Emit one {"type":"<name>_summary",...} record to the sink, mirroring
+    // print_summary's tally into the file. Called only when a sink is open
+    // (sink->f != NULL). May be NULL.
+    void (*emit_summary)(struct ares_sink *sink);
     // Sum this analyzer's own `dropped` BPF map (mod drop-telemetry parity). Read
     // the fd BEFORE teardown() destroys the skeleton — call this first. May be
     // NULL only for an analyzer that genuinely can't drop events (none today).

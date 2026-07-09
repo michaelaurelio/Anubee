@@ -91,6 +91,23 @@ static void pe_print_summary(void)
            g_sig_exits);
 }
 
+// File twin of pe_print_summary: same counters, one
+// {"type":"proc_event_summary",...} record.
+static void pe_emit_summary(struct ares_sink *s)
+{
+    if (g_forks == 0 && g_exits == 0) return;
+
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"proc_event_summary\"");
+    jb_s(j, ",\"forks\":");        jb_u64(j, g_forks);
+    jb_s(j, ",\"exits\":");        jb_u64(j, g_exits);
+    jb_s(j, ",\"signal_exits\":"); jb_u64(j, g_sig_exits);
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 // ---- BPF lifecycle ----------------------------------------------------------
 
 static struct ring_buffer *pe_setup(int uid, struct ares_mod_ctx *mc)
@@ -158,5 +175,6 @@ const ares_analyzer_t analyzer_proc_event = {
     .setup         = pe_setup,
     .teardown      = pe_teardown,
     .print_summary = pe_print_summary,
+    .emit_summary  = pe_emit_summary,
     .drops         = pe_drops,
 };

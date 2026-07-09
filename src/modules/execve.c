@@ -267,6 +267,41 @@ static void ex_print_summary(void)
            flagged);
 }
 
+// File twin of ex_print_summary: same tally, one {"type":"execve_summary",...}
+// record so ares-mcp can consume the exec tally without re-deriving it from
+// the per-event stream. Not sorted (print_summary's qsort already ran on
+// exec_stats in-place by the time this is called).
+static void ex_emit_summary(struct ares_sink *s)
+{
+    if (exec_stat_count == 0) return;
+
+    uint64_t total = 0;
+    int flagged = 0;
+    for (int i = 0; i < exec_stat_count; i++) {
+        total += exec_stats[i].count;
+        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+    }
+
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"execve_summary\"");
+    jb_s(j, ",\"total_execs\":");    jb_u64(j, total);
+    jb_s(j, ",\"unique_binaries\":"); jb_u64(j, (unsigned long long)exec_stat_count);
+    jb_s(j, ",\"flagged\":");        jb_u64(j, (unsigned long long)flagged);
+    jb_s(j, ",\"binaries\":[");
+    for (int i = 0; i < exec_stat_count; i++) {
+        if (i) jb_c(j, ',');
+        jb_s(j, "{\"path\":\"");  jb_esc(j, exec_stats[i].path); jb_c(j, '"');
+        jb_s(j, ",\"count\":");   jb_u64(j, exec_stats[i].count);
+        jb_s(j, ",\"suspicious\":"); jb_s(j, is_suspicious_bin(exec_stats[i].path) ? "true" : "false");
+        jb_c(j, '}');
+    }
+    jb_c(j, ']');
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 static unsigned long long ex_drops(void)
 {
     return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
@@ -280,5 +315,6 @@ const ares_analyzer_t analyzer_execve = {
     .setup         = ex_setup,
     .teardown      = ex_teardown,
     .print_summary = ex_print_summary,
+    .emit_summary  = ex_emit_summary,
     .drops         = ex_drops,
 };

@@ -199,6 +199,9 @@ file-backed CFI; unreachable until W3-window lands.
 - Works only for **compiled-JNI** paths: the Java method must have been compiled ahead-of-time (`.oat`/`.odex`/`.vdex`) so it has a native frame with a DWARF FDE. JIT-compiled callers (W5) and interpreter frames (`ShadowFrame`, tagged `"kind":"interp"`) are not yet crossed/named.
 - **Inlining defeats CFI attribution:** an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid, synchronous).
+- This is a separate concern from the **in-kernel** stack-origin filter that decides
+  whether a syscall is kept at all (see the syscalls bullet above): that filter runs
+  before any CFI unwinding, on the raw frame-pointer walk only.
 
 ### `ares funcs` — function tracer
 
@@ -371,15 +374,30 @@ loading privileges (often SELinux permissive), itself a RASP tell.
 
 ## Limitations
 
-- **arm64 / ELF64 only**; no 32-bit or x86 targets.
+- **arm64 / ELF64 only**; no x86 targets. `syscalls` has a best-effort exception:
+  a second, optional hook (`do_el0_svc_compat`) covers 32-bit/AArch32 app
+  syscalls too (entry-only, numeric names — see below); every other engine
+  remains arm64/ELF64-only.
 - **Rooted device required**; needs eBPF + BTF and (usually) SELinux permissive.
-- `syscalls`: string args captured for a built-in syscall set; return values for
-  a curated set of syscalls; frame-pointer-based stack walks (omitted frame
-  pointers are missed). `syscalls` backtraces name on-disk libraries, AOT app methods (`base.odex`,
-  via embedded mini-debug-info), ART JIT methods (`[JIT]!`), and kernel vDSO
-  calls (`[vdso]!`). Still shown as file+offset: interpreter/quickened dex frames
-  (`base.vdex`, `[anon:dalvik-DEX data]` — planned). `[anon:dalvik-main space]`
-  frames are GC-heap addresses surfaced by frame-pointer unwinding, not methods.
+- `syscalls`: attribution is an **"issued by" heuristic**, not "library present
+  on the stack" — a syscall is attributed to the target library only if the
+  trap-PC frame or its immediate caller lands in the library's range, not any
+  frame on the full walked stack (a target library calling into libc, which
+  then syscalls, is correctly *not* attributed to the target). This depends on
+  the target's frame pointers for the immediate-caller check; a
+  `-fomit-frame-pointer`/hand-asm target degrades to trap-PC-only attribution.
+  vDSO calls issue no `svc` and are invisible to `syscalls` regardless. A
+  bounded pre-arm window exists between a library being mapped and its range
+  being armed in-kernel (syscalls issued in that window are dropped, not
+  mis-attributed). 32-bit/AArch32 app syscalls are covered best-effort, with
+  numeric names (`compat_syscall_<nr>`) rather than a full EABI name table.
+  String args captured for a built-in syscall set (64-bit only); return values
+  for a curated set of syscalls (64-bit only). `syscalls` backtraces name
+  on-disk libraries, AOT app methods (`base.odex`, via embedded mini-debug-info),
+  ART JIT methods (`[JIT]!`), and kernel vDSO calls (`[vdso]!`). Still shown as
+  file+offset: interpreter/quickened dex frames (`base.vdex`,
+  `[anon:dalvik-DEX data]` — planned). `[anon:dalvik-main space]` frames are
+  GC-heap addresses surfaced by frame-pointer unwinding, not methods.
 - `funcs`: uprobe instrumentation is detectable; spec-driven, so you must know
   which functions to target.
 - `ares funcs` emits log-line JSONL by default; pass `-J` to also emit structured

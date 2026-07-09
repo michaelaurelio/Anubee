@@ -299,14 +299,34 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
 
 ## 2. The `syscalls` engine (kprobe, injectionless)
 
-- Hooks the arm64 syscall dispatcher (`kprobe/do_el0_svc`) for entry, curated
-  per-function `kretprobe/__arm64_sys_*` for return values, and mmap/munmap
-  uprobes to track library load ranges.
-- **In-kernel stack-origin filter:** gates on the app UID (installed *before*
-  launch, so every thread is traced from its first syscall), then — unless in
-  capture-all mode — cheaply rejects a syscall if the target library isn't mapped,
-  otherwise walks the user stack and keeps the event only if a frame lands inside
-  the target library's executable range.
+- Hooks the arm64 64-bit syscall dispatcher (`kprobe/do_el0_svc`) for entry,
+  curated per-function `kretprobe/__arm64_sys_*` for return values, and
+  mmap/munmap uprobes to track library load ranges. A best-effort
+  `kprobe/do_el0_svc_compat` also covers 32-bit/AArch32 app code (CR2):
+  entry-only, no return values, and rendered with numeric names
+  (`compat_syscall_<nr>`) since the EABI syscall-number namespace has no name
+  table here; attach is non-fatal (kernels without `CONFIG_COMPAT` simply don't
+  get 32-bit coverage). vDSO calls issue no `svc` at all, so they're invisible
+  to `syscalls` by construction, on either ABI.
+- **In-kernel stack-origin filter is an "issued by" heuristic, not "present on
+  the stack":** gates on the app UID (installed *before* launch, so every
+  thread is traced from its first syscall), then — unless in capture-all mode —
+  cheaply rejects a syscall if the target library has no range armed yet (see
+  the pre-arm-window caveat below), otherwise keeps the event only if the
+  trap-PC frame (`stack[0]`, frame-pointer-independent) or its immediate caller
+  (`stack[1]`, one FP hop) lands inside the target library's executable range.
+  Earlier versions matched *any* frame on the walked stack, which over-attributed
+  transitively (e.g. `targetlib → malloc → mmap` counted as a target-lib
+  syscall even though libc's `malloc` issued it, CR2) — deeper frames are no
+  longer checked. The tradeoff: this depends on `stack[1]` being walkable, so a
+  frame-pointer-omitted target library degrades to `stack[0]`-only attribution
+  (still catches hand-asm inline-`svc` code, since that needs no frame pointer).
+- **Pre-arm window.** Arming a range is asynchronous to the kernel-side mmap —
+  the mapping event has to travel kernel ringbuf → drain thread → BPF map write
+  before the filter can match it. A syscall the library issues in that window
+  is dropped, not mis-filtered, counted by the `prearm_drops` coverage field.
+  The window is minimized (armed on the drain thread, ahead of the processing
+  queue) but not eliminated.
 - Output: structured per-event JSONL (see §7). The same mmap/munmap probes that
   feed the stack-origin filter also emit `{"type":"lib",...}` / `{"type":"unlib",...}`
   records for every executable load/unload **to the `-o` sink** (via the shared
@@ -393,7 +413,12 @@ trampoline**, tagging the frame `"fp_unwind_end":"jni-trampoline (managed caller
 cfi_stack)"` rather than emitting a misread ART quick-frame value (a garbage
 `[unmapped]`/non-canonical address). The companion `cfi_stack` record is the path that
 actually crosses the trampoline. Interpreter bridges are left intact (the interpreter is
-native C++ and keeps a valid FP chain through it).
+native C++ and keeps a valid FP chain through it). The same frame-pointer dependency
+applies to the in-kernel attribution filter (§2): a target library built
+`-fomit-frame-pointer` or with hand-written asm can make `stack[1]` unwalkable
+garbage — precisely the RASP/anti-tamper `.so` case this tool is meant for.
+Attribution then falls back to `stack[0]` (the trap PC itself, which needs no
+frame pointer) rather than reporting a false miss.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers
@@ -641,6 +666,12 @@ backing file). A frame renders as `[vdso]!__kernel_clock_gettime+0x..`. The
 parse reuses the on-disk symbol machinery (`ingest_fd_section` → `add_symbols`
 → `sym_lookup`) via `pread` on `/proc/<pid>/mem`; it writes nothing into the
 target (firewall-clean) and is built once per pid.
+
+This naming is a **backtrace-display** capability only. `syscalls` attribution
+(§2) is a different matter: vDSO calls (`clock_gettime`, `gettimeofday`, ...)
+resolve entirely in userspace against the mapped vDSO page and never execute
+`svc`, so they never reach `do_el0_svc`/`do_el0_svc_compat` at all — invisible
+to `syscalls` by construction, on either ABI, regardless of attribution rule.
 
 #### Backtrace frame classification (what resolves, what does not)
 

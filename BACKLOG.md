@@ -28,8 +28,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
   on apex `370549100` only (BuildID is the stronger anchor); nterp recall is bounded
   by the snapshot window.
 - Managed-frame **OAT/ODEX native-PC → Java method** — parked pending real ART OAT parsing.
-- CR2 — `syscalls` attribution is "presence on stack," not "issued by" (+ FP-omit /
-  vDSO / 32-bit-compat / pre-arm-window gaps).
 - CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
   still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
@@ -39,7 +37,9 @@ items lives in DOCUMENTATION.md and the referenced specs.
 **Minor:**
 - CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
-- lib-filter `stack_hits` defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A).
+- lib-filter attribution defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A;
+  the check moved from `stack_hits` to `sysc_issuer_hit` under CR2, same unresolved
+  defect, see Minor section below).
 - Phase 3d — coordinator-wide `-p` in `trace`.
 - C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
@@ -47,7 +47,8 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - MCP richness follow-on.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run; `correlate` R3/R4/X2; CR4 parity fix;
-  Tier 5 `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing).
+  Tier 5 `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing; CR2 issuer-only
+  attribution, compat hook, pre-arm window, `syscalls.skel.h` regen).
 - AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
@@ -293,11 +294,13 @@ lists can't diverge silently.
   now that CFI-misstep is fixed, but not the next wall. (AOT callers in
   `base.odex`/`boot.oat` don't hit this — they have `.debug_frame`.)
 
-- **lib-filter `stack_hits` defect (sidestepped, not fixed).** lib-filter on `libc.so`
+- **lib-filter attribution defect (sidestepped, not fixed).** lib-filter on `libc.so`
   *should* match every `openat` (frame-0 is always `libc!__openat`) yet drops the
-  runtime/JNI ones, keeping only native process-init — a real `stack_hits` defect.
-  W6-A (capture-all) bypasses it so it no longer gates the JNI cross, but the
-  narrow-targeting path is still wrong.
+  runtime/JNI ones, keeping only native process-init — a real defect, unrelated to
+  CR2 (frame-0 was, and still is, checked either way — the any-frame → issuer-only
+  rewrite renamed the function to `sysc_issuer_hit` but didn't touch this path or
+  fix it). W6-A (capture-all) bypasses it so it no longer gates the JNI cross, but
+  the narrow-targeting path is still wrong.
 
 - **Phase 3d (deferred) — coordinator-wide `-p` in `trace`.** The standalone engines
   each support `-p PID[,…]` (shipped 2026-06-30). The `trace` coordinator
@@ -435,6 +438,78 @@ lists can't diverge silently.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-09
+
+- **CR2 — `syscalls` "issued by" attribution + pre-arm window + 32-bit compat
+  hook (Tier 6, landed).** Three changes to the same subsystem, all in
+  `src/syscalls/`:
+  - **Issuer-only attribution** (the core fix). `stack_hits` — any-of-32-frames
+    in the target library's range — over-attributed transitively (`targetlib →
+    malloc → mmap` counted as a target-lib syscall). Replaced with
+    `sysc_issuer_hit` (new `attribution.h`, host-testable like
+    `snapshot_gate.h`): a hit requires `stack[0]` (trap PC, frame-pointer
+    independent) or `stack[1]` (immediate caller) in range — deeper frames are
+    transitive callers, not the issuer. New `tests/test_syscalls_attribution.c`
+    (12 checks) asserts the transitive-frame case now misses, plus edge cases
+    (n=0/1, half-open range boundary, multi-range, count==0). `COV_DEPTH_CAP`'s
+    bump moved to the stack-capture site (it's a general truncation signal
+    shared with `funcs`/`correlate`'s span-stack overflow, per
+    DOCUMENTATION.md's coverage table — not attribution-specific, so it was
+    kept, not deleted, when `stack_hits` was removed).
+  - **Pre-arm window** — reduced, not eliminated. Range arming
+    (`push_lib_range`) moved from the worker thread (`process_event`) to the
+    drain thread (`enqueue_event`), removing the queue-latency hop between an
+    mmap event arriving and its range landing in the BPF map. Three comments
+    that asserted arming was "race-free" (`syscalls.c` header, `syscalls.bpf.c`
+    header + gate) were factually wrong and now describe the real bounded
+    window, still counted by `COV_PREARM`/`prearm_drops`.
+  - **`do_el0_svc_compat` hook** (32-bit/AArch32 app syscalls, previously
+    totally invisible). New BPF program, nr from `regs[7]` (not x8), same
+    args/attribution/pre-arm/snapshot-dedup logic as the 64-bit path. Does
+    **not** reuse anything keyed on the arm64 syscall-number namespace: no
+    `-s`/`-x` allow/denylist, no string/sockaddr capture (`arg_types`/
+    `sock_args` are arm64-keyed — applying them to EABI numbers would decode
+    against the wrong syscall's metadata, a new bug), no return-value pairing
+    (no kretprobe attached to any compat syscall impl). New `compat` flag on
+    `struct syscalls_syscall_event`; userspace renders these as
+    `compat_syscall_<nr>` (`sysname()`) and skips `arg_count`/`arg_fd_mask`/
+    `arg_sock_index`/`flags_decode_arg` (same arm64-keyed reasoning) — args
+    shown raw. Attach is non-fatal (`bpf_program__set_autoattach(...,false)` +
+    manual `bpf_program__attach`, mirroring the existing `ares_follow_fork`
+    pattern) since kernels without `CONFIG_COMPAT` have no
+    `do_el0_svc_compat` symbol and the skeleton's blanket `syscalls__attach()`
+    fails whole-hog if any autoattach program can't attach. Deliberately
+    scoped down (`ponytail:` comment in `syscalls.c`): compat syscalls named
+    numerically; add an ARM-EABI `{nr,name}` table (mirrors
+    `common/syscall_table.c`) if compat naming matters — vendoring ~400 rows
+    was out of proportion for closing the visibility gap.
+  - **Docs** (closes Tier 0's remaining CR2 disclosure item too — same
+    paragraph). DOCUMENTATION.md §2 rewritten around the issuer-only rule +
+    compat hook + pre-arm window; the Raw-vs-CFI paragraph now notes
+    `stack[1]` degrades on frame-pointer-omitted targets; the vDSO section now
+    states vDSO calls are attribution-invisible (no `svc`), not just a naming
+    capability. README's syscalls Limitations bullet and the CFI-unwind limits
+    list got the equivalent disclosures.
+  - **Verification.** `make test` green including the new
+    `test_syscalls_attribution`. Unlike prior tiers, `clang -target bpf`
+    **does** work in this dev environment (only `bpftool` is missing) —
+    `src/syscalls/syscalls.bpf.c` (all three changes: attribution, pre-arm
+    comment/logic move, new compat program) compiled clean end-to-end via
+    `make build/syscalls.bpf.o`, a stronger check than prior tiers had for
+    BPF-side changes. `syscalls.c` (userspace) still can't be end-to-end
+    compiled — `build/syscalls.skel.h` predates this work and regenerating it
+    needs `bpftool gen skeleton`, not installed here (no root) — so the
+    userspace changes were verified by careful manual type/call-site review
+    instead (every `sysname`/`arg_count`/`arg_fd_mask`/`arg_sock_index`/
+    `flags_decode_arg` call site was grepped and confirmed gated or updated).
+  - **Pending on-device verification** (added to the on-device list above):
+    `target→malloc→mmap` no longer attributed while `target→mmap` still is;
+    an inline-`svc` hand-asm library attributed via `stack[0]`; a 32-bit app
+    surfaces `compat_syscall_*` events; `prearm_drops` lower than the
+    pre-change build on a library that syscalls at init; regenerate
+    `syscalls.skel.h` on a machine with `bpftool` and confirm `syscalls.c`
+    compiles end-to-end against the real (not hand-reviewed) layout.
 
 ### 2026-07-08
 

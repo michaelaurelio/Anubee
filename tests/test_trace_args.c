@@ -58,6 +58,17 @@ int main(void)
 	char *f[] = { A("trace"), A("bogus") };
 	assert(trace_parse_args(2, f, &t) < 0);          // unexpected token
 
+	// -p attach mode (Phase 3d): parses, mutually exclusive with -P either order
+	char *i[] = { A("trace"), A("-p"), A("123,456"), A("--syscalls"), A("-a") };
+	assert(trace_parse_args(5, i, &t) == 0);
+	assert(t.pkg == NULL && strcmp(t.pids, "123,456") == 0);
+	assert(t.sys_start == 4 && t.sys_end == 5);
+
+	char *j[] = { A("trace"), A("-P"), A("pkg"), A("-p"), A("1") };
+	assert(trace_parse_args(5, j, &t) < 0);          // -P then -p: rejected
+	char *k[] = { A("trace"), A("-p"), A("1"), A("-P"), A("pkg") };
+	assert(trace_parse_args(5, k, &t) < 0);          // -p then -P: rejected too
+
 	// --- trace_build_argv ---
 	struct trace_argv v;
 

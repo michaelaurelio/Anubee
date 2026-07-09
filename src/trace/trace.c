@@ -31,24 +31,28 @@ static volatile sig_atomic_t g_stop;
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s -P <package> [-o <prefix>] [--syscalls <args...>] [--funcs <args...>] [--lib]\n"
+		"usage: %s (-P <package> | -p <pid[,pid...]>) [-o <prefix>] "
+		"[--syscalls <args...>] [--funcs <args...>] [--lib]\n"
 		"\n"
 		"Run the kprobe syscall tracer, uprobe function tracer, and/or library-load\n"
 		"tracer together from a single app launch (LOUD: the uprobe writes a BRK into\n"
 		"the target if --funcs is used).\n"
 		"\n"
-		"  -P <package>    app to launch and trace (required)\n"
+		"  -P <package>    app to launch and trace (mutually exclusive with -p)\n"
+		"  -p <pid[,...]>  attach to already-running PID(s) instead of launching\n"
+		"                  (mutually exclusive with -P; each engine arms its own\n"
+		"                  target_pids from this list, no UID resolve/launch)\n"
 		"  -A <activity>   override launch activity component (default: auto-resolve)\n"
 		"  -o <prefix>     write <prefix>.syscalls.jsonl, <prefix>.funcs.jsonl, and/or\n"
 		"                  <prefix>.lib.jsonl (recommended: keeps engine streams separate\n"
 		"                  and silences console output)\n"
 		"  --syscalls ...  options for the syscalls engine, e.g. '-a' or '<lib> -s openat'\n"
-		"                  (no package — it comes from -P)\n"
+		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --funcs ...     options for the funcs engine, e.g. \"-e 'libc.so!open' -J\"\n"
-		"                  (no -P — the package comes from -P above)\n"
+		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --lib           enable library-load tracing (takes no sub-options)\n"
 		"\n"
-		"-P, -A, and -o must come before the --syscalls / --funcs / --lib sections.\n",
+		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib sections.\n",
 		argv0);
 }
 
@@ -67,11 +71,15 @@ int cmd_trace(int argc, char **argv)
 	if (pr == 1) { usage(argv[0]); return 0; }   // -h/--help
 	if (pr < 0)  { usage(argv[0]); return 1; }
 	const char *pkg = ta.pkg, *prefix = ta.prefix, *activity = ta.activity;
+	const char *pids = ta.pids;
 	int sys_start = ta.sys_start, sys_end = ta.sys_end;
 	int func_start = ta.func_start, func_end = ta.func_end;
 	int lib_start = ta.lib_start, lib_end = ta.lib_end;
 
-	if (!pkg) { fprintf(stderr, "trace: -P <package> is required\n"); usage(argv[0]); return 1; }
+	if (!pkg && !pids) {
+		fprintf(stderr, "trace: one of -P <package> / -p <pid[,...]> is required\n");
+		usage(argv[0]); return 1;
+	}
 	int want_sys = (sys_start >= 0), want_func = (func_start >= 0), want_lib = (lib_start >= 0);
 	if (!want_sys && !want_func && !want_lib) {
 		fprintf(stderr, "trace: at least one of --syscalls / --funcs / --lib is required\n");
@@ -81,11 +89,16 @@ int cmd_trace(int argc, char **argv)
 		fprintf(stderr, "trace: no -o; the engines' console output will interleave "
 		                "— use -o <prefix> for clean per-engine JSONL\n");
 
-	int uid = ares_resolve_uid(pkg);
-	if (uid < 0) {
-		fprintf(stderr, "trace: cannot resolve UID for '%s' (installed? run as root?)\n", pkg);
-		return 1;
+	int uid = 0;
+	if (pkg) {
+		uid = ares_resolve_uid(pkg);
+		if (uid < 0) {
+			fprintf(stderr, "trace: cannot resolve UID for '%s' (installed? run as root?)\n", pkg);
+			return 1;
+		}
 	}
+	// -p attach mode: rc stays zeroed — each engine reads "-p <pids>" from its own
+	// argv (injected below) and arms target_pids itself, same as standalone.
 	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg };
 
 	// Build each engine's argv: ["<engine>", ("-o" file)?, <section args...>].
@@ -98,12 +111,23 @@ int cmd_trace(int argc, char **argv)
 		sys_argc = trace_build_argv(&sysv, "syscalls", prefix,
 		                            "syscalls.jsonl", argv, sys_start, sys_end, &tr);
 		if (tr) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
+		// -p attach mode: inject "-p <pids>" so the engine arms target_pids itself.
+		if (pids && sys_argc < 62) {
+			sysv.argv[sys_argc++] = "-p";
+			sysv.argv[sys_argc++] = (char *)pids;
+			sysv.argv[sys_argc]   = NULL;
+		}
 	}
 	if (want_func) {
 		int tr = 0;
 		func_argc = trace_build_argv(&funcv, "funcs", prefix,
 		                             "funcs.jsonl", argv, func_start, func_end, &tr);
 		if (tr) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
+		if (pids && func_argc < 62) {
+			funcv.argv[func_argc++] = "-p";
+			funcv.argv[func_argc++] = (char *)pids;
+			funcv.argv[func_argc]   = NULL;
+		}
 		// ponytail: -o implies quiet in syscalls; mirror that for funcs under trace
 		// so "trace -o prefix" silences both engines' consoles symmetrically.
 		if (prefix && func_argc < 63) {
@@ -116,6 +140,11 @@ int cmd_trace(int argc, char **argv)
 		lib_argc = trace_build_argv(&libv, "lib", prefix,
 		                            "lib.jsonl", argv, lib_start, lib_end, &tr);
 		if (tr) fprintf(stderr, "trace: --lib section truncated (too many args)\n");
+		if (pids && lib_argc < 62) {
+			libv.argv[lib_argc++] = "-p";
+			libv.argv[lib_argc++] = (char *)pids;
+			libv.argv[lib_argc]   = NULL;
+		}
 		// Mirror funcs: -o implies quiet for lib too.
 		if (prefix && lib_argc < 63) {
 			libv.argv[lib_argc++] = "-q";
@@ -143,13 +172,19 @@ int cmd_trace(int argc, char **argv)
 
 	ares_install_stop_handler(&g_stop);
 
-	ares_launch_banner(pkg, uid);
-	if (ares_launch_app(pkg, activity, NULL) != 0) {
-		fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
-		if (want_lib) lib_teardown();
-		if (want_func) funcs_teardown();
-		if (want_sys) syscalls_teardown();
-		return 1;
+	if (pids) {
+		// -p attach mode: engines already armed target_pids in setup above; there
+		// is no launch (the target is already running).
+		printf("trace: attaching to pid(s) %s\n", pids);
+	} else {
+		ares_launch_banner(pkg, uid);
+		if (ares_launch_app(pkg, activity, NULL) != 0) {
+			fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
+			if (want_lib) lib_teardown();
+			if (want_func) funcs_teardown();
+			if (want_sys) syscalls_teardown();
+			return 1;
+		}
 	}
 
 	// Drain all ring buffers concurrently until Ctrl-C. Each engine has its own

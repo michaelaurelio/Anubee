@@ -35,14 +35,19 @@ static int is_section_delim(const char *s)
 
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
 {
-	o->pkg = o->prefix = o->activity = NULL;
+	o->pkg = o->prefix = o->activity = o->pids = NULL;
 	o->sys_start = o->sys_end = o->func_start = o->func_end = -1;
 	o->lib_start = o->lib_end = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-P")) {
 			if (++i >= argc) return -1;
+			if (o->pids) return -1;   // -P and -p are mutually exclusive
 			o->pkg = argv[i];
+		} else if (!strcmp(argv[i], "-p")) {
+			if (++i >= argc) return -1;
+			if (o->pkg) return -1;    // -P and -p are mutually exclusive
+			o->pids = argv[i];
 		} else if (!strcmp(argv[i], "-A")) {
 			if (++i >= argc) return -1;
 			o->activity = argv[i];

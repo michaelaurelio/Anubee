@@ -34,9 +34,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 **Minor:**
 - CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
-- lib-filter attribution defect on `libc.so` runtime/JNI stacks (sidestepped by W6-A;
-  the check moved from `stack_hits` to `sysc_issuer_hit` under CR2, same unresolved
-  defect, see Minor section below).
 - C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
   liveness tightening; ELF-note hardening done — see Resolved/Done).
@@ -45,7 +42,8 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - Pending on-device verification (`trace` combined run incl. new `--dump`/`--correlate`
   wiring and `-p` attach mode; `correlate` R3/R4/X2; CR4 parity fix; Tier 5
   `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing; CR2 issuer-only
-  attribution, compat hook, pre-arm window, `syscalls.skel.h` regen).
+  attribution, compat hook, pre-arm window, `syscalls.skel.h` regen; lib-filter
+  maps-seed fix — confirm `libc.so`-filtered runtime/JNI `openat`s now appear).
 - AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
@@ -248,14 +246,6 @@ read as "app used no Java."
   now that CFI-misstep is fixed, but not the next wall. (AOT callers in
   `base.odex`/`boot.oat` don't hit this — they have `.debug_frame`.)
 
-- **lib-filter attribution defect (sidestepped, not fixed).** lib-filter on `libc.so`
-  *should* match every `openat` (frame-0 is always `libc!__openat`) yet drops the
-  runtime/JNI ones, keeping only native process-init — a real defect, unrelated to
-  CR2 (frame-0 was, and still is, checked either way — the any-frame → issuer-only
-  rewrite renamed the function to `sysc_issuer_hit` but didn't touch this path or
-  fix it). W6-A (capture-all) bypasses it so it no longer gates the JNI cross, but
-  the narrow-targeting path is still wrong.
-
 - **`mod file-access`/`mod ransomware-burst` drop-telemetry gap.** The
   `mod` drop-telemetry-parity fix (`ares_analyzer_t.drops()`, see Resolved/Done)
   covers only the 3 analyzers it shipped with (`proc-event`/`execve`/`prop-read`);
@@ -386,6 +376,23 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-09
+
+- **lib-filter attribution defect fixed (was: sidestepped, not fixed).**
+  `lib_ranges` was armed *only* from live `uprobe_mmap` events, so `libc.so`
+  (and any other library mapped in the zygote and inherited by the forked app
+  via COW) never got a range armed — no mmap fires in the child — and every
+  syscall it issued failed the `sysc_issuer_hit` check even though frame-0 is
+  reliably `libc!__openat`. Fixed by seeding `lib_ranges` from a one-time
+  `/proc/<pid>/maps` scan (`seed_lib_ranges_from_maps`, `src/syscalls/syscalls.c`)
+  the moment the target pid is known — attach (`-p`) and just-launched (`-P`,
+  now passes `out_pid` to `ares_launch_app`) — before the event loop starts.
+  Live mmap arming is unchanged for libraries loaded later; `push_lib_range`
+  already dedups by `[start,end)` so overlap with the seed is a no-op. The
+  glob/substring match predicate (`lib_name_matches`) is now shared with the
+  new seed path via `lib_selector_matches_name` (new `src/syscalls/lib_seed.h`,
+  header-only pure predicate, same pattern as `attribution.h`/`snapshot_gate.h`)
+  so the two arming paths can't drift. New `tests/test_lib_seed.c` (7 checks).
+  Not yet device-verified — folds into the existing pending on-device item.
 
 - **AA3 — `trace`↔engine driver ABI unified via shared header (Tier 7, landed).**
   `trace.c`'s 9 hand-written prototypes and the Makefile's per-engine

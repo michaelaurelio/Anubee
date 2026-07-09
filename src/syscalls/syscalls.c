@@ -65,6 +65,8 @@
 #include "common/syscall_table.h"
 #include "common/coverage.h"
 #include "common/art_buildid.h"
+#include "common/maps.h"
+#include "syscalls/lib_seed.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 // R9 residual: table data now lives once in common/syscall_table.c, shared
@@ -210,11 +212,7 @@ static const char *g_activity;                  // optional launcher activity
 // syscall tracing and dumping.
 static int lib_name_matches(const char *name)
 {
-	if (!g_lib[0])
-		return 0;
-	if (strpbrk(g_lib, "*?["))
-		return fnmatch(g_lib, name, 0) == 0;
-	return strstr(name, g_lib) != NULL;
+	return lib_selector_matches_name(name, g_lib);
 }
 
 // Push a newly seen executable range of the target library into lib_ranges[tgid]
@@ -242,6 +240,39 @@ static void push_lib_range(__u32 tgid, __u64 start, __u64 end, const char *name)
 		printf("[+] %s mapped in pid %u: [0x%llx, 0x%llx) — filter armed (%u range%s)\n",
 		       name, tgid, (unsigned long long)start, (unsigned long long)end,
 		       lr.count, lr.count == 1 ? "" : "s");
+}
+
+// Seed lib_ranges from a one-time /proc/<tgid>/maps scan (lib-filter attribution
+// defect, BACKLOG.md): libc.so et al. are mapped once in the zygote and
+// inherited by the forked app via COW, so no uprobe_mmap ever fires for them in
+// the child and the event-driven arming above never catches them — every
+// syscall they issue then fails the issuer check. Called once the target pid is
+// known (attach or just-launched), before the event loop starts, so already-
+// mapped matches are armed immediately; later live mmaps still arm anything
+// mapped after this scan. Best-effort: silent if maps is unreadable.
+static void seed_lib_ranges_from_maps(__u32 tgid)
+{
+	if (!g_lib[0] || g_lib_ranges_fd < 0)
+		return;
+
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%u/maps", tgid);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return;
+
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		struct ares_map_line ml;
+		if (!ares_parse_maps_line(line, &ml))
+			continue;
+		if (!lib_seed_line_arms(&ml, g_lib))
+			continue;
+		const char *base = strrchr(ml.path, '/');
+		base = base ? base + 1 : ml.path;
+		push_lib_range(tgid, ml.start, ml.end, base);
+	}
+	fclose(f);
 }
 
 // ---- string-argument types -----------------------------------------------
@@ -1265,10 +1296,14 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 	__u8 one = 1;
 	if (sa.tgt.n > 0) {
-		// -p mode: arm target_pids; target_uids only if --siblings.
+		// -p mode: arm target_pids; target_uids only if --siblings. Also seed
+		// the lib-filter from the attach-time maps snapshot (lib-filter
+		// attribution defect) — attaching to an already-running process means
+		// its libraries mapped long ago and will never fire a live mmap event.
 		for (int i = 0; i < sa.tgt.n; i++) {
 			__u32 tgid = (__u32)sa.tgt.pids[i];
 			bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
+			seed_lib_ranges_from_maps(tgid);
 			if (sa.tgt.siblings) {
 				int puid = ares_get_pid_uid(sa.tgt.pids[i]);
 				if (puid > 0) {
@@ -1472,11 +1507,16 @@ int cmd_syscalls(int argc, char **argv)
 	ares_install_stop_handler(&exiting);
 	if (g_pkg[0]) {
 		ares_launch_banner(g_pkg, g_uid);
-		if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+		pid_t pid;
+		if (ares_launch_app(g_pkg, g_activity, &pid) != 0) {
 			fprintf(stderr, "launch failed for '%s' (could not resolve activity? pass it explicitly)\n", g_pkg);
 			syscalls_teardown();
 			return 1;
 		}
+		// Seed the lib-filter from the just-launched process's maps (lib-filter
+		// attribution defect): inherited libraries (libc.so et al., mapped in
+		// the zygote before fork) never fire a live uprobe_mmap in the child.
+		seed_lib_ranges_from_maps((__u32)pid);
 	}
 
 	syscalls_run(&exiting);

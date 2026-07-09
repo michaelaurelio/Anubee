@@ -14,17 +14,24 @@
 // analyze funcs traces with the same field-level tools it uses for syscalls.
 //
 // target may be NULL (unresolved entry addr) — all resolved fields are omitted.
+// syms may be NULL (host tests / no resolver available) — per-frame "symbol" is
+// then omitted, same as before this field existed.
 void funcs_emit_call(struct jbuf *j, const struct event *e,
                      const char *module, const char *symbol,
-                     const probe_target_t *target, const char *java_stack)
+                     const probe_target_t *target, const char *java_stack,
+                     const char *const *syms)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_CALL)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
+    jb_s(j, ",\"ppid\":");       jb_i64(j, e->ppid);
     jb_s(j, ",\"module\":\"");   jb_esc(j, module); jb_c(j, '"');
     jb_s(j, ",\"symbol\":\"");   jb_esc(j, symbol); jb_c(j, '"');
     jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
+    if (target) {
+        jb_s(j, ",\"offset\":"); jb_u64(j, target->offset);
+    }
     jb_s(j, ",\"args\":[");
     for (int i = 0; i < NUM_ARGS; i++) {
         if (i) jb_c(j, ',');
@@ -36,9 +43,8 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
         if (java_stack) { jb_s(j, ",\"java_stack\":"); jb_s(j, java_stack); }
     }
 
-    // ponytail: addr-only (no sym_resolve) so this file stays libbpf/symbolizer-free
-    // and host-testable. The caller (funcs.c) already resolves symbols to the
-    // console; promote symbol field here if MCP consumers need it.
+    // symbol per frame comes from the caller-resolved syms[] (funcs.c mirrors the
+    // console's sym_resolve loop) — this file stays libbpf/symbolizer-free.
     jb_s(j, ",\"backtrace\":[");
     for (int i = 0, first = 1; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
         if (e->call_stack[i] == 0) break;
@@ -46,6 +52,9 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
         first = 0;
         jb_s(j, "{\"frame\":");    jb_u64(j, i);
         jb_s(j, ",\"addr\":\"");   jb_hex(j, e->call_stack[i]); jb_c(j, '"');
+        if (syms && syms[i] && syms[i][0]) {
+            jb_s(j, ",\"symbol\":\""); jb_esc(j, syms[i]); jb_c(j, '"');
+        }
         jb_c(j, '}');
     }
     jb_c(j, ']');
@@ -79,7 +88,7 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
 
 void funcs_emit_return(struct jbuf *j, const struct event *e,
                        const char *module, const char *symbol,
-                       const probe_target_t *target)
+                       const probe_target_t *target, const char *const *syms)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_RETURN)); jb_c(j, '"');
@@ -87,8 +96,27 @@ void funcs_emit_return(struct jbuf *j, const struct event *e,
     jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
     jb_s(j, ",\"module\":\"");   jb_esc(j, module); jb_c(j, '"');
     jb_s(j, ",\"symbol\":\"");   jb_esc(j, symbol); jb_c(j, '"');
+    if (target) {
+        jb_s(j, ",\"offset\":"); jb_u64(j, target->offset);
+    }
     jb_s(j, ",\"retval\":");     jb_i64(j, (long long)e->retval); // retval is ABI-signed; render signed so small negative error codes read naturally
     jb_s(j, ",\"elapsed_ns\":"); jb_u64(j, e->elapsed_ns);
+
+    // backtrace: mirrors the call record's frame builder (console already prints
+    // this on return, e.g. "caller: ..." — the file previously had no backtrace).
+    jb_s(j, ",\"backtrace\":[");
+    for (int i = 0, first = 1; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
+        if (e->call_stack[i] == 0) break;
+        if (!first) jb_c(j, ',');
+        first = 0;
+        jb_s(j, "{\"frame\":");    jb_u64(j, i);
+        jb_s(j, ",\"addr\":\"");   jb_hex(j, e->call_stack[i]); jb_c(j, '"');
+        if (syms && syms[i] && syms[i][0]) {
+            jb_s(j, ",\"symbol\":\""); jb_esc(j, syms[i]); jb_c(j, '"');
+        }
+        jb_c(j, '}');
+    }
+    jb_c(j, ']');
 
     if (target) {
         // retval_str: BPF-captured string return value (strings[0] slot).

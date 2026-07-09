@@ -553,11 +553,21 @@ static void process_call_return(const void *data, size_t data_sz)
                     e->h.pid, e->ppid, bname, target->func_name, target->offset,
                     used_fallback ? " (resolved from known offset)" : "");
             if (g_sink.f) {
+                // Resolve backtrace symbols the same way the console does (below) so
+                // the file record carries them too (parity with syscalls). Done
+                // before taking g_sink_lock — sym_resolve only reads e, not the sink.
+                char symbuf[STACK_DEPTH][320];
+                const char *syms[STACK_DEPTH];
+                for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
+                    if (!e->call_stack[i]) { syms[i] = NULL; continue; }
+                    sym_resolve((int)e->h.pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+                    syms[i] = symbuf[i];
+                }
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
                 char js[208];
                 const char *jsp = ares_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
-                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp);
+                funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp, syms);
                 ares_sink_emit(&g_sink);
                 pthread_mutex_unlock(&g_sink_lock);
             }
@@ -688,9 +698,17 @@ static void process_call_return(const void *data, size_t data_sz)
                 elapsed_buf, retval_buf);
 
         if (g_sink.f) {
+            // Resolve before taking the lock — same reasoning as the CALL path above.
+            char symbuf[STACK_DEPTH][320];
+            const char *syms[STACK_DEPTH];
+            for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
+                if (!e->call_stack[i]) { syms[i] = NULL; continue; }
+                sym_resolve((int)e->h.pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+                syms[i] = symbuf[i];
+            }
             pthread_mutex_lock(&g_sink_lock);
             g_sink.jb.len = 0;
-            funcs_emit_return(&g_sink.jb, e, bname, fname, target);
+            funcs_emit_return(&g_sink.jb, e, bname, fname, target, syms);
             ares_sink_emit(&g_sink);
             pthread_mutex_unlock(&g_sink_lock);
         }

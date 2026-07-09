@@ -31,7 +31,10 @@ void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2)));
 struct jbuf;   // common/emit.h
 struct event;  // funcs.h
 #include "common/probe_resolve.h"
-void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target, const char *java_stack);
-void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target);
+// syms: frame-parallel resolved symbol strings for e->call_stack (caller-resolved
+// via sym_resolve, same as it already does for the console); NULL entry or NULL
+// array omits the per-frame "symbol" field. Keeps this pair symbolizer-free.
+void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target, const char *java_stack, const char *const *syms);
+void funcs_emit_return(struct jbuf *j, const struct event *e, const char *module, const char *symbol, const probe_target_t *target, const char *const *syms);
 
 #endif /* __FUNCS_PRIV_H */

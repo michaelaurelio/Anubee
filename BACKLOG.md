@@ -377,6 +377,25 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-09
 
+- **Engine file-output symmetry with `ares syscalls` (stdout/file asymmetry closed).**
+  `syscalls`'s `-o` file was the reference (superset of stdout); `funcs` and `mod`
+  had real gaps. `funcs`: CALL/RETURN backtrace frames were addr-only (the earlier
+  "funcs JSON backtrace" entry below), no `ppid`/module-relative `offset`, and
+  RETURN carried no backtrace at all — console already resolved and printed all of
+  it. Fixed by resolving `syms[]` in `funcs.c` (same `sym_resolve` call the console
+  already makes) and passing it into the still-symbolizer-free `funcs_emit_call`/
+  `funcs_emit_return` (mirrors the `execve.c` pattern); `test_funcs_emit` extended
+  (29 checks). `mod`: each analyzer's teardown summary table (exec tallies, RASP
+  flags, file-access categories, burst stats, fork/exit counts) printed to stdout
+  only. New optional `emit_summary(sink)` hook on `ares_analyzer_t`
+  (`src/common/analyzer.h`), called from `mod.c` before the coverage footer; each
+  analyzer emits one `{"type":"<name>_summary",...}` record from the same tally
+  `print_summary` already reads. Scope: `dump` deliberately excluded (writes binary
+  rebuilt `.so` images, not a trace-event stream — no JSON record path to enrich).
+  `correlate`'s `decoded[]` array and the syscalls-only monotonic `id` were left
+  as-is (enrich-only; no reshape of already-equivalent-but-differently-shaped
+  fields). See DOCUMENTATION.md §3.1, §6.6, §7.
+
 - **lib-filter attribution defect fixed (was: sidestepped, not fixed).**
   `lib_ranges` was armed *only* from live `uprobe_mmap` events, so `libc.so`
   (and any other library mapped in the zygote and inherited by the forked app

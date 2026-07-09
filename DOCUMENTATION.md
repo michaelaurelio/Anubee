@@ -555,20 +555,25 @@ Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 `trace_schema.h`):
 
 ```json
-{"type":"call",   "pid":N,"tid":N,"module":"libc.so","symbol":"open",
-                  "entry_addr":"0xABCDEF","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"],
-                  "backtrace":[{"frame":0,"addr":"0x..."},{"frame":1,"addr":"0x..."}]}
+{"type":"call",   "pid":N,"tid":N,"ppid":N,"module":"libc.so","symbol":"open",
+                  "entry_addr":"0xABCDEF","offset":"0x1234","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"],
+                  "backtrace":[{"frame":0,"addr":"0x...","symbol":"libc.so\`caller+0x10"},{"frame":1,"addr":"0x..."}]}
 
-{"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open",
-                  "retval":7,"elapsed_ns":4096}
+{"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open","offset":"0x1234",
+                  "retval":7,"elapsed_ns":4096,
+                  "backtrace":[{"frame":0,"addr":"0x...","symbol":"libc.so\`caller+0x10"}]}
 ```
 
-`backtrace` is always present on CALL records (as long as `bpf_get_stack` returned frames),
-built from `e->call_stack`/`e->stack_depth` at entry — orthogonal to `--snapshot`.
-Addresses only (no inline symbols) to keep `funcs_emit.c` pure and host-testable without
-the symbolizer. Cross-reference with the console output for resolved names, or run
-`sym_resolve` offline. RETURN records carry no backtrace (same stack as entry; stack_depth
-was captured there).
+`backtrace` is present on both CALL and RETURN records (as long as `bpf_get_stack`
+returned frames), built from `e->call_stack`/`e->stack_depth` — orthogonal to
+`--snapshot`. Per-frame `symbol` is resolved by the caller (`funcs.c`, via
+`sym_resolve` — the same resolver the console already uses) and passed into
+`funcs_emit_call`/`funcs_emit_return` as a parallel array; `funcs_emit.c` itself
+stays pure and host-testable without the symbolizer (a `NULL`/omitted symbol
+just drops the `"symbol"` key for that frame — see `tests/test_funcs_emit.c`).
+`ppid` and `offset` (module-relative, decimal) mirror the fields the console
+already prints (`PPID:%d ... @ 0x%lx`); `offset` is omitted when the target
+couldn't be resolved.
 
 The `module` field is the library basename (no path). `args` always has `NUM_ARGS`
 (8) elements in hex. `elapsed_ns` is 0 if the uretprobe was not attached. These
@@ -929,6 +934,22 @@ object — no shared skeleton with `funcs`. Available analyzers:
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
 other engines (see §7).
 
+**Session summary record.** Each analyzer also prints an aggregate tally to
+stdout at teardown (per-binary exec counts, RASP-flagged property reads,
+file-access categories, per-pid burst stats, fork/exit totals). When `-o` is
+active, the same tally is additionally written as one final `*_summary` record
+(before the `coverage` footer, via the analyzer's `emit_summary` hook in
+`ares_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
+longer lost from the file:
+- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
+- `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
+- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
+- `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
+- `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
+
+Omitted entirely when the analyzer saw no relevant events (mirrors
+`print_summary`'s own early-return).
+
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, and `ransomware-burst` are
 kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
@@ -967,11 +988,13 @@ stream:
   `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
   `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
-  `{"type":"call","pid":..,"tid":..,"module":..,"symbol":..,"entry_addr":..,
-  "args":[..],"backtrace":[{"frame":0,"addr":"0x.."},..], "java_stack":[...]}` and
-  `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "retval":..,"elapsed_ns":..}` (see §3.1). CALL records always carry a `backtrace`
-  array of raw addresses (addr-only, no inline symbols — see §3.1). `java_stack` (optional, `--snapshot` + `-o`):
+  `{"type":"call","pid":..,"tid":..,"ppid":..,"module":..,"symbol":..,"entry_addr":..,
+  "offset":..,"args":[..],"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..],
+  "java_stack":[...]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
+  "offset":..,"retval":..,"elapsed_ns":..,"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..]}`
+  (see §3.1). Both CALL and RETURN carry a `backtrace` array with resolved `symbol`
+  per frame (caller-resolved via `sym_resolve`, same as the console — see §3.1).
+  `java_stack` (optional, `--snapshot` + `-o`):
   the managed/Java call chain (innermost-first, native frames elided) that issued the event, e.g.
   `["pkg.Inner.method","pkg.Outer.method"]`. Experimental/best-effort (see §managed-frame naming limits):
   AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate limits (see BACKLOG). The authoritative full native+managed walk

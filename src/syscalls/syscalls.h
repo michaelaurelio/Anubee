@@ -50,6 +50,10 @@ struct syscalls_syscall_event {
 	char  str[SYSC_STR_SLOTS][SYSC_STR_MAX]; /* string value of args[i] */
 	__u32 sock_len;                              /* bytes valid in sock[], 0 = none */
 	__u8  sock[SYSC_SOCK_MAX];               /* raw sockaddr (connect/bind/sendto) */
+	__u8  compat;      /* 1 = 32-bit/AArch32 (do_el0_svc_compat), a distinct
+			    * EABI syscall-number namespace: str[]/sock[] are
+			    * always empty here since arg_types/sock_args are
+			    * keyed on arm64 numbers (CR2). */
 };
 
 /* One stack snapshot — now the shared struct ares_stack_snapshot from

@@ -72,12 +72,22 @@
 
 static struct ares_sysindex g_sysidx;
 
-static const char *sysname(unsigned long long nr)
+// compat: 1 = 32-bit/AArch32 syscall (do_el0_svc_compat) — a distinct EABI
+// number namespace ares_sysindex_name doesn't cover, so these render
+// numerically rather than risk naming them against the wrong (arm64) table.
+// ponytail: numeric-only naming for compat syscalls; add an ARM-EABI
+// {nr,name} table (mirrors common/syscall_table.c) if compat naming matters —
+// vendoring ~400 rows was out of proportion for closing CR2's visibility gap.
+static const char *sysname(unsigned long long nr, int compat)
 {
+	static char buf[32];
+	if (compat) {
+		snprintf(buf, sizeof(buf), "compat_syscall_%llu", nr);
+		return buf;
+	}
 	const char *n = ares_sysindex_name(&g_sysidx, (long)nr);
 	if (n)
 		return n;
-	static char buf[32];
 	snprintf(buf, sizeof(buf), "sys_%llu", nr);
 	return buf;
 }
@@ -174,6 +184,7 @@ static struct ares_coverage g_cov = { .engine = "syscalls" };
 static struct syscalls *g_skel;
 static struct ring_buffer *g_rb;
 static struct bpf_link *g_ff;
+static struct bpf_link *g_compat;    // do_el0_svc_compat, NULL if not attached (optional)
 static pthread_t g_worker;
 static int g_worker_started;
 static int g_dropfd = -1;
@@ -588,7 +599,9 @@ static void render_arg(const struct syscalls_syscall_event *e, int i, unsigned f
 	if (i == sockidx && e->sock_len > 0 &&
 	    decode_sockaddr((const unsigned char *)e->sock, (unsigned)e->sock_len, out, outsz))
 		return;
-	if (flags_decode_arg((long)e->nr, i, e->args[i], out, outsz))
+	// compat: e->nr is an EABI number, not an arm64 one — arm64's flags/enum
+	// table would be a namespace mismatch (CR2), so skip straight to raw hex.
+	if (!e->compat && flags_decode_arg((long)e->nr, i, e->args[i], out, outsz))
 		return;
 	snprintf(out, outsz, "0x%llx", (unsigned long long)e->args[i]);
 }
@@ -689,9 +702,12 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	jb_s(j, ",\"pid\":");      jb_u64(j, e->h.pid);
 	jb_s(j, ",\"tid\":");      jb_u64(j, e->h.tid);
 	jb_s(j, ",\"syscall_nr\":"); jb_u64(j, e->nr);
-	jb_s(j, ",\"syscall\":\""); jb_s(j, sysname(e->nr)); jb_c(j, '"');
+	jb_s(j, ",\"syscall\":\""); jb_s(j, sysname(e->nr, e->compat)); jb_c(j, '"');
 
-	int nargs = arg_count(e->nr);
+	// compat: e->nr is an EABI number, so arg_count/arg_fd_mask/flags_decode_arg
+	// (all arm64-nr-keyed) would be a namespace mismatch (CR2) — show every raw
+	// argument slot instead and skip the decode sections below.
+	int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
 	jb_s(j, ",\"args\":[");
 	for (int i = 0; i < nargs; i++) {
 		if (i) jb_c(j, ',');
@@ -710,7 +726,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, s); jb_c(j, '"');
 	}
 	jb_s(j, "},\"fd_args\":{");
-	unsigned fdm = arg_fd_mask(e->nr);
+	unsigned fdm = e->compat ? 0u : arg_fd_mask(e->nr);
 	for (int i = 0, first = 1; i < SYSC_SYSCALL_NARGS; i++) {
 		if (!(fdm & (1u << i))) continue;
 		char fdbuf[320];
@@ -721,7 +737,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, fdbuf); jb_c(j, '"');
 	}
 	jb_s(j, "},\"decoded_args\":{");
-	for (int i = 0, first = 1; i < nargs; i++) {
+	for (int i = 0, first = 1; !e->compat && i < nargs; i++) {
 		char dec[256];
 		if (arg_string(e, i) || (fdm & (1u << i)))
 			continue;
@@ -851,10 +867,13 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 	// is still produced (and symbolized) once the return arrives.
 	if (!g_quiet) {
 		char arg[320];
-		int nargs = arg_count(e->nr);
-		unsigned fdm = arg_fd_mask(e->nr);
-		int sockidx = arg_sock_index(e->nr);
-		printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr));
+		// compat: arg_count/arg_fd_mask/arg_sock_index are arm64-nr-keyed
+		// tables, a namespace mismatch for EABI numbers (CR2) — show all raw
+		// argument slots instead of guessing counts/fds/sockaddr from them.
+		int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
+		unsigned fdm = e->compat ? 0u : arg_fd_mask(e->nr);
+		int sockidx = e->compat ? 0 : arg_sock_index(e->nr);
+		printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr, e->compat));
 		for (int i = 0; i < nargs; i++) {
 			if (i)
 				printf(", ");
@@ -885,7 +904,7 @@ static void handle_return(const struct syscalls_return_event *r)
 	if (!g_quiet) {
 		char rb[160];
 		render_ret(r->retval, rb, sizeof(rb));
-		printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr), rb);
+		printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr, p->ev.compat), rb);
 		fflush(stdout);
 	}
 	if (g_sink.f)
@@ -1268,14 +1287,23 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 	// We attach the return probe ourselves (classic kretprobes, per function),
 	// so disable its autoattach. Also disable follow-fork autoattach; it is
-	// attached manually below only in PID mode.
+	// attached manually below only in PID mode. Same for the 32-bit compat
+	// hook (CR2): kernels without CONFIG_COMPAT have no do_el0_svc_compat
+	// symbol, and syscalls__attach() below fails as a whole if any autoattach
+	// program can't attach — so it's attached manually, non-fatally, after.
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
 	bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
+	bpf_program__set_autoattach(skel->progs.on_svc_enter_compat, false);
 
 	if (syscalls__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
 		goto out;
 	}
+
+	g_compat = bpf_program__attach(skel->progs.on_svc_enter_compat);
+	if (!g_compat)
+		fprintf(stderr, "syscalls: do_el0_svc_compat attach failed (non-fatal; "
+				"no CONFIG_COMPAT? continuing without 32-bit coverage)\n");
 
 	if (sa.tgt.n > 0 && !sa.tgt.no_follow) {
 		g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
@@ -1325,11 +1353,15 @@ out_rb:
 	ring_buffer__free(rb);
 out:
 	// Setup failed: clean up the partial state and report failure. teardown is
-	// NOT called for this path (globals were never published), so g_ff (attached
-	// just above, if reached) must be destroyed here explicitly — AA11 fix.
+	// NOT called for this path (globals were never published), so g_ff/g_compat
+	// (attached just above, if reached) must be destroyed here explicitly — AA11 fix.
 	if (g_ff) {
 		bpf_link__destroy(g_ff);
 		g_ff = NULL;
+	}
+	if (g_compat) {
+		bpf_link__destroy(g_compat);
+		g_compat = NULL;
 	}
 	pend_flush_all();
 	ares_sink_close(&g_sink);
@@ -1420,6 +1452,10 @@ void syscalls_teardown(void)
 	if (g_ff) {
 		bpf_link__destroy(g_ff);
 		g_ff = NULL;
+	}
+	if (g_compat) {
+		bpf_link__destroy(g_compat);
+		g_compat = NULL;
 	}
 	if (g_skel) {
 		syscalls__destroy(g_skel);

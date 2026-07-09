@@ -222,6 +222,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h._pad = 0;
 
 	e->nr      = nr;
+	e->compat  = 0;
 	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
 	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
 	e->args[2] = BPF_CORE_READ(user_regs, regs[2]);
@@ -290,6 +291,99 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// Mark this thread so the return probe knows to emit this syscall's result.
 	__u32 tid32 = (__u32)id;
 	bpf_map_update_elem(&pending, &tid32, &nr, BPF_ANY);
+	return 0;
+}
+
+// ---- syscall entry (32-bit / AArch32 compat) ------------------------------
+//
+// AArch32 (EABI) app code traps through do_el0_svc_compat, not do_el0_svc, with
+// the syscall number in r7 (not x8) and args in r0..r5 — same slots, different
+// register file. EABI syscall numbers are also a wholly different namespace
+// from arm64's, so this program deliberately does NOT reuse anything keyed on
+// the arm64 nr: no -s/-x allow/denylist (syscall_filter), no string-arg or
+// sockaddr capture (arg_types/sock_args), no return-value pairing (the
+// kretprobe.multi list below attaches to __arm64_sys_* symbols, which compat
+// calls never pass through). Attribution (sysc_issuer_hit), the pre-arm gate,
+// and stack-snapshot dedup are namespace-agnostic and reused as-is. Closes
+// CR2's 32-bit blind spot; userspace renders these numerically (no EABI name
+// table — see sysname() in syscalls.c).
+SEC("kprobe/do_el0_svc_compat")
+int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
+{
+	if (!uid_matches() && !pid_matches())
+		return 0;
+
+	__u64 nr = BPF_CORE_READ(user_regs, regs[7]);   // EABI: syscall nr in r7
+
+	__u64 id   = bpf_get_current_pid_tgid();
+	__u32 tgid = id >> 32;
+
+	// Same pre-arm gate as the 64-bit path (see on_svc_enter for the CR2 caveat).
+	struct syscalls_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
+	if (!capture_all && (!lr || lr->count == 0)) {
+		cov_bump(COV_PREARM);
+		return 0;
+	}
+
+	__u64 stack[MAX_STACK_DEPTH];
+	long sz = bpf_get_stack(ctx, stack, sizeof(stack), BPF_F_USER_STACK);
+	int n = sz > 0 ? (int)((__u64)sz / sizeof(__u64)) : 0;
+	if (n >= MAX_STACK_DEPTH)
+		cov_bump(COV_DEPTH_CAP);
+
+	if (!capture_all) {
+		if (sz <= 0)
+			return 0;
+		if (!sysc_issuer_hit(lr, stack, n))
+			return 0;
+	}
+
+	__u64 stack_id = 0;
+	if (snapshot_enabled && sz > 0) {
+		stack_id = ares_hash_stack(stack, n, tgid);
+		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
+			__u8 one = 1;
+			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
+			ares_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+		}
+	}
+
+	struct syscalls_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		bump_dropped();
+		return 0;
+	}
+
+	e->h.type = SYSC_EV_SYSCALL;
+	e->h.pid  = tgid;
+	e->h.tid  = (__u32)id;
+	e->h._pad = 0;
+
+	e->nr      = nr;
+	e->compat  = 1;
+	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
+	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
+	e->args[2] = BPF_CORE_READ(user_regs, regs[2]);
+	e->args[3] = BPF_CORE_READ(user_regs, regs[3]);
+	e->args[4] = BPF_CORE_READ(user_regs, regs[4]);
+	e->args[5] = BPF_CORE_READ(user_regs, regs[5]);
+	e->stack_id = stack_id;
+	if (sz > 0) {
+		e->stack_sz = (__s32)sz;
+		__builtin_memcpy(e->stack, stack, sizeof(e->stack));
+	} else {
+		e->stack_sz = 0;
+		__builtin_memset(e->stack, 0, sizeof(e->stack));
+	}
+	// EABI nr namespace: arg_types/sock_args are arm64-keyed, so string and
+	// sockaddr capture are intentionally skipped here (see comment above).
+	e->str_present = 0;
+	e->sock_len = 0;
+
+	bpf_ringbuf_submit(e, 0);
+
+	// No pending-map entry: there is no kretprobe attached to any compat
+	// syscall implementation, so nothing would ever consume it.
 	return 0;
 }
 

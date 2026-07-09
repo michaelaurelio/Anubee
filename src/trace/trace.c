@@ -17,18 +17,12 @@
 #include "common/runtime.h"  // ares_install_stop_handler
 #include "trace/trace_args.h"
 
-// Engine driver entry points. Defined in the syscalls / funcs / lib engines and
-// kept global through their partial-link (see the --keep-global-symbol lists in
-// the Makefile). Declared here directly to avoid pulling in each engine's header.
-int  syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc);
-int  syscalls_run(volatile sig_atomic_t *stop);
-void syscalls_teardown(void);
-int  funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc);
-int  funcs_run(volatile sig_atomic_t *stop);
-void funcs_teardown(void);
-int  lib_setup(int argc, char **argv, const struct ares_run_ctx *rc);
-int  lib_run(volatile sig_atomic_t *stop);
-void lib_teardown(void);
+// Engine driver entry points (syscalls_/funcs_/lib_ setup/run/teardown). Defined
+// in their respective engines and kept global through the partial-link (see the
+// --keep-global-symbol lists in the Makefile) — declared once in
+// common/engine_driver.h so this coordinator and each engine's definition can't
+// silently drift (AA3).
+#include "common/engine_driver.h"
 
 // One stop flag shared by all engines' poll loops; set by the shared SIGINT/SIGTERM
 // stop handler (the engines do not install their own when driven here).

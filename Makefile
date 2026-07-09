@@ -324,22 +324,29 @@ $(MAIN_OBJ): $(SRC)/main.c
 	mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra $(DEPFLAGS) -c $< -o $@
 
+# ---- engine driver symbol lists (AA3) --------------------------------------
+# Each engine's {setup,run,teardown} triad, kept global below so a trace-style
+# coordinator can drive multiple engines from one process. Must list exactly the
+# symbols declared in src/common/engine_driver.h — tests/check_driver_symbols.sh
+# (run by `make test`) fails the build if the two drift.
+SYSC_DRIVER := syscalls_setup syscalls_run syscalls_teardown
+FUNC_DRIVER := funcs_setup funcs_run funcs_teardown
+LIB_DRIVER  := lib_setup lib_run lib_teardown
+CORR_DRIVER := correlate_setup correlate_run correlate_teardown
+DUMP_DRIVER := dump_setup dump_run dump_teardown
+
 # ---- partial-link each engine + localize all but its cmd_* entry ----------
 # syscalls/funcs/lib also export their setup/run/teardown phases so a trace-style
 # coordinator can drive multiple engines from one process (everything else localized).
 $(SYSC_PART): $(SYSC_OBJ)
 	$(LD) -r -o $@ $(SYSC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_syscalls \
-	           --keep-global-symbol=syscalls_setup \
-	           --keep-global-symbol=syscalls_run \
-	           --keep-global-symbol=syscalls_teardown $@
+	           $(foreach s,$(SYSC_DRIVER),--keep-global-symbol=$(s)) $@
 
 $(FUNC_PART): $(FUNC_OBJ)
 	$(LD) -r -o $@ $(FUNC_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_funcs \
-	           --keep-global-symbol=funcs_setup \
-	           --keep-global-symbol=funcs_run \
-	           --keep-global-symbol=funcs_teardown $@
+	           $(foreach s,$(FUNC_DRIVER),--keep-global-symbol=$(s)) $@
 
 $(COMMON_PART): $(COMMON_OBJ) Makefile
 	$(LD) -r -o $@ $(COMMON_OBJ)
@@ -348,23 +355,17 @@ $(COMMON_PART): $(COMMON_OBJ) Makefile
 $(LIB_PART): $(LIB_OBJ)
 	$(LD) -r -o $@ $(LIB_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_lib \
-	           --keep-global-symbol=lib_setup \
-	           --keep-global-symbol=lib_run \
-	           --keep-global-symbol=lib_teardown $@
+	           $(foreach s,$(LIB_DRIVER),--keep-global-symbol=$(s)) $@
 
 $(CORR_PART): $(CORR_OBJ)
 	$(LD) -r -o $@ $(CORR_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_correlate \
-	           --keep-global-symbol=correlate_setup \
-	           --keep-global-symbol=correlate_run \
-	           --keep-global-symbol=correlate_teardown $@
+	           $(foreach s,$(CORR_DRIVER),--keep-global-symbol=$(s)) $@
 
 $(DUMP_PART): $(DUMP_OBJ)
 	$(LD) -r -o $@ $(DUMP_OBJ)
 	$(OBJCOPY) --keep-global-symbol=cmd_dump \
-	           --keep-global-symbol=dump_setup \
-	           --keep-global-symbol=dump_run \
-	           --keep-global-symbol=dump_teardown $@
+	           $(foreach s,$(DUMP_DRIVER),--keep-global-symbol=$(s)) $@
 
 $(TRACE_PART): $(TRACE_OBJ)
 	$(LD) -r -o $@ $(TRACE_OBJ)
@@ -474,6 +475,7 @@ test:
 	$(BUILD)/test_syscalls_attribution
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
 	$(BUILD)/test_coverage
+	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
 	 else \

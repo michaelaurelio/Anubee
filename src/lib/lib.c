@@ -28,6 +28,7 @@
 #include "common/launch.h"
 #include "common/engine_args.h"
 #include "common/runtime.h"
+#include "common/engine_driver.h"  // lib_setup/_run/_teardown (AA3)
 
 static volatile sig_atomic_t exiting = 0;
 

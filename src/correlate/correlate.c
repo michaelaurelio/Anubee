@@ -34,6 +34,7 @@
 #include "common/maps.h"
 #include "common/syscall_index.h"
 #include "common/syscall_table.h"
+#include "common/engine_driver.h"  // correlate_setup/_run/_teardown (AA3)
 #include "common/coverage.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";

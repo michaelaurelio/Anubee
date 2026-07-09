@@ -32,6 +32,7 @@
 #include "common/launch.h"
 #include "common/engine_args.h"
 #include "common/runtime.h"
+#include "common/engine_driver.h"  // dump_setup/_run/_teardown (AA3)
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";

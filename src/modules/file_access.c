@@ -40,8 +40,7 @@ static void fa_stat_add(const char *path, unsigned categories)
         }
     }
     if (fa_stat_count >= FA_STAT_MAX) return;
-    strncpy(fa_stats[fa_stat_count].path, path, sizeof(fa_stats[0].path) - 1);
-    fa_stats[fa_stat_count].path[sizeof(fa_stats[0].path) - 1] = '\0';
+    snprintf(fa_stats[fa_stat_count].path, sizeof(fa_stats[0].path), "%s", path);
     fa_stats[fa_stat_count].count = 1;
     fa_stats[fa_stat_count].categories = categories;
     fa_stat_count++;

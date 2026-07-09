@@ -331,7 +331,7 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 				d->module_pc = pc - load_base;
 				d->load_base = load_base;
 				d->elf_off   = elf_off;
-				snprintf(d->path, sizeof(d->path), "%s", hit->path ? hit->path : "");
+				snprintf(d->path, sizeof(d->path), "%s", hit->path);
 				d->stop_reason = CFI_SNAP_CFI_GET_NULL;
 			}
 			break;
@@ -343,7 +343,7 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 			dp->module_pc = module_pc;
 			dp->load_base = load_base;
 			dp->elf_off   = elf_off;
-			snprintf(dp->path, sizeof(dp->path), "%s", hit->path ? hit->path : "");
+			snprintf(dp->path, sizeof(dp->path), "%s", hit->path);
 		}
 		int rc = cfi_step(sec, module_pc, regs, &sp, &pc,
 				  (const uint8_t *)snap->snap, snap->sp, (size_t)snap->snap_len,

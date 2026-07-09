@@ -49,8 +49,7 @@ static void rb_stat_add(__u32 pid, const char *comm, int touch_count, int distin
     }
     if (rb_stat_count >= RB_STAT_MAX) return;
     rb_stats[rb_stat_count].pid = pid;
-    strncpy(rb_stats[rb_stat_count].comm, comm, TASK_COMM_LEN - 1);
-    rb_stats[rb_stat_count].comm[TASK_COMM_LEN - 1] = '\0';
+    snprintf(rb_stats[rb_stat_count].comm, TASK_COMM_LEN, "%s", comm);
     rb_stats[rb_stat_count].burst_count = 1;
     rb_stats[rb_stat_count].max_touch_count = (uint32_t)touch_count;
     rb_stats[rb_stat_count].max_distinct = distinct;

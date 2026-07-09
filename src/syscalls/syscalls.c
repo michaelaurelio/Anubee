@@ -15,9 +15,13 @@
 //   2. Loads + attaches the BPF programs and installs the UID *before* the app
 //      is (re)launched, so tracing is armed from the app's first syscall.
 //   3. force-stops then launches the package via the native am/cmd tools.
-//   4. Arms the in-kernel library filter from uprobe_mmap events (event-driven,
-//      race-free): the moment the target library is mapped, its range is pushed
-//      into the BPF filter. Backtrace symbolization (every frame, all libs) is
+//   4. Arms the in-kernel library filter from uprobe_mmap events (event-driven):
+//      as soon as the target library's mapping is delivered off the ring, its
+//      range is pushed into the BPF filter, on the drain thread, ahead of the
+//      queue. This is NOT race-free — the push happens after an asynchronous
+//      kernel-to-userspace round trip, so syscalls the library issues in that
+//      window are dropped in-kernel (CR2 pre-arm window; see COV_PREARM /
+//      prearm_drops). Backtrace symbolization (every frame, all libs) is
 //      handled separately in symbolize.c via /proc/<pid>/maps + each ELF .dynsym.
 //   5. Prints each filtered syscall (name + raw args + symbolized backtrace).
 //
@@ -910,9 +914,9 @@ static void process_event(const void *data, size_t sz)
 			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
-		// The shared probe only emits executable mappings, so no is_exec test.
-		if (lib_name_matches(m->name))
-			push_lib_range(m->h.pid, m->start, m->end, m->name);
+		// Range is armed on the drain thread (enqueue_event, below) the moment
+		// the event arrives — this worker-side case only handles the verbose
+		// print, to close as much of the pre-arm window (CR2) as possible.
 		break;
 	}
 	case SYSC_EV_UNMAP: {
@@ -950,12 +954,27 @@ static void process_event(const void *data, size_t sz)
 
 static struct ares_evq g_q;
 
-// ring_buffer callback (drain thread): copy the raw event into the queue.
+// ring_buffer callback (drain thread): copy the raw event into the queue. Also
+// arms the target-library range here, synchronously, for SYSC_EV_MAP events —
+// rather than waiting for the worker thread to reach it off the queue — to
+// shrink the pre-arm window (CR2): any syscall the library issues before its
+// range is armed is dropped in-kernel (see COV_PREARM), and the queue hop was
+// pure added latency on top of the unavoidable kernel-to-userspace delivery
+// delay. push_lib_range/lib_name_matches are only ever called from this drain
+// thread, so this stays single-writer with no new locking.
 static int enqueue_event(void *ctx, void *data, size_t sz)
 {
 	(void)ctx;
 	if (exiting || (g_stopp && *g_stopp))
 		return -1;                          // bail the drain promptly on Ctrl+C / stop
+	if (sz >= sizeof(struct trace_event_header)) {
+		const struct trace_event_header *h = data;
+		if (h->type == SYSC_EV_MAP && sz >= sizeof(struct lib_map_event)) {
+			const struct lib_map_event *m = data;
+			if (lib_name_matches(m->name))
+				push_lib_range(m->h.pid, m->start, m->end, m->name);
+		}
+	}
 	ares_evq_push(&g_q, data, sz);
 	return 0;
 }

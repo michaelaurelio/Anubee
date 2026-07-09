@@ -17,8 +17,11 @@
 //
 //   * The module map is built entirely from uprobe_mmap / uprobe_munmap events.
 //     We never read /proc/<pid>/maps. As soon as the target library's text
-//     segment is mapped we learn its range live, and because a syscall can only
-//     originate from the library after it is mapped, there is no filter gap.
+//     segment is mapped, its mmap event is delivered to userspace, which arms
+//     the range as soon as it's processed (syscalls.c). That processing is
+//     asynchronous to the kernel-side mmap, so there IS a bounded pre-arm
+//     window: a syscall the library issues before its range lands in
+//     `lib_ranges` is dropped here rather than mis-filtered (CR2, COV_PREARM).
 //
 //   * Hook is a kprobe on do_el0_svc, the arm64 64-bit syscall dispatcher. This
 //     kernel ships CONFIG_FTRACE_SYSCALLS=n on many builds, so we don't rely on
@@ -161,9 +164,13 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	__u64 id   = bpf_get_current_pid_tgid();
 	__u32 tgid = id >> 32;
 
-	// Library-filter mode: with no target-library range for this process yet
-	// the library isn't mapped, so nothing can have originated from it — skip
-	// before paying for a stack walk. Capture-all mode keeps every syscall.
+	// Library-filter mode: with no target-library range armed for this process
+	// yet, skip before paying for a stack walk. Usually the library really
+	// isn't mapped yet; but it can also already be mapped in the kernel with its
+	// range not yet armed here (the async kernel-mmap -> userspace-push hop
+	// hasn't landed) — a real syscall from the library in that window is
+	// dropped, not just cheaply skipped (CR2 pre-arm window). Capture-all mode
+	// keeps every syscall regardless.
 	struct syscalls_lib_ranges *lr = bpf_map_lookup_elem(&lib_ranges, &tgid);
 	if (!capture_all && (!lr || lr->count == 0)) {
 		cov_bump(COV_PREARM);

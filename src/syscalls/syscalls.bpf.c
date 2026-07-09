@@ -1,9 +1,10 @@
 // syscalls.bpf.c
 //
 // Syscall tracer for a single Android app, filtered by native-library call
-// origin. A syscall event is emitted only when the issuing thread's user
-// backtrace passes through one of the target library's executable ranges
-// (e.g. a RASP/anti-tamper .so).
+// origin. A syscall event is emitted only when the target library itself
+// appears to be the issuer — the trap-PC frame or its immediate caller lands
+// in one of the target library's executable ranges (e.g. a RASP/anti-tamper
+// .so) — not merely present somewhere deeper on the call chain (CR2).
 //
 // Design notes (vs. the frida-strace lineage this is based on):
 //
@@ -33,12 +34,12 @@
 #include <bpf/bpf_core_read.h>
 
 #include "syscalls.h"
+#include "syscalls/attribution.h"
 #include "common/lib_trace.h"
 #include "common/bpf_drop.bpf.h"
 #include "common/coverage.bpf.h"
 
 #define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
-#define MAX_RANGES      SYSC_MAX_RANGES
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -140,33 +141,6 @@ static __always_inline int syscall_wanted(__u64 nr)
 	return (syscall_filter_mode == 1) ? flagged : !flagged;
 }
 
-// Returns 1 if any captured user return address lands in a target range. Both
-// loops are fully unrolled over fixed bounds so every stack[i]/r[j] is a
-// constant offset the verifier accepts; `n`/`count` are runtime guards only.
-static __always_inline int stack_hits(struct syscalls_lib_ranges *lr, __u64 *stack, int n)
-{
-	__u32 count = lr->count;
-	if (count > MAX_RANGES)
-		count = MAX_RANGES;
-	if (n > MAX_STACK_DEPTH)
-		n = MAX_STACK_DEPTH;
-	if (n >= MAX_STACK_DEPTH) /* buffer saturated: real stack may be deeper */
-		cov_bump(COV_DEPTH_CAP);
-
-	#pragma clang loop unroll(full)
-	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
-		if (i < n) {
-			__u64 ip = stack[i];
-			#pragma clang loop unroll(full)
-			for (int j = 0; j < MAX_RANGES; j++) {
-				if (j < count && ip >= lr->r[j].start && ip < lr->r[j].end)
-					return 1;
-			}
-		}
-	}
-	return 0;
-}
-
 // Shared snapshot BPF helpers (hash + emit) — pulled from common.
 // ARES_SNAPSHOT_RB names the ringbuf this engine uses.
 #define ARES_SNAPSHOT_RB events
@@ -201,11 +175,17 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// Unsigned division (guarded by sz > 0) so the BPF backend lowers it to a
 	// shift; a signed div by a power of two is rejected by older clang (<=14).
 	int n = sz > 0 ? (int)((__u64)sz / sizeof(__u64)) : 0;
+	// Buffer saturated: the true stack may be deeper than MAX_STACK_DEPTH, so
+	// the raw backtrace shipped in the event (and any CFI-unwind snapshot built
+	// from it) may be incomplete. Independent of attribution below, which only
+	// ever looks at stack[0]/stack[1].
+	if (n >= MAX_STACK_DEPTH)
+		cov_bump(COV_DEPTH_CAP);
 
 	if (!capture_all) {
 		if (sz <= 0)
 			return 0;
-		if (!stack_hits(lr, stack, n))
+		if (!sysc_issuer_hit(lr, stack, n))
 			return 0;
 	}
 

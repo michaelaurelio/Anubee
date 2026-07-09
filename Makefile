@@ -470,6 +470,8 @@ test:
 	$(BUILD)/test_ransomware_burst_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscalls_attribution.c -o $(BUILD)/test_syscalls_attribution
+	$(BUILD)/test_syscalls_attribution
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
 	$(BUILD)/test_coverage
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \

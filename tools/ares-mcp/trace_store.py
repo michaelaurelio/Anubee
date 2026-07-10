@@ -237,6 +237,67 @@ class TraceStore:
         self._require()
         return self._rows("SELECT *, clean AS is_clean FROM coverage")
 
+    # ---- span analysis (func_spans/span_syscalls) -------------------------
+
+    def spans(self, parent_span=None, pid=None, tid=None, limit=50):
+        """Filtered list of raw func_spans records (span, parent_span, pid, tid,
+        entry_addr, args). Filters (AND-combined): `parent_span` (direct
+        children of a span — "what's under span N"), `pid`, `tid` equality."""
+        self._require()
+        limit = _clamp(limit, default=50)
+        where, p = [], []
+        if parent_span is not None:
+            where.append("parent_span = ?"); p.append(parent_span)
+        if pid is not None:
+            where.append("pid = ?"); p.append(pid)
+        if tid is not None:
+            where.append("tid = ?"); p.append(tid)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        return self._rows(f"SELECT * FROM func_spans{w} LIMIT ?", p + [limit])
+
+    def span_tree(self, root, max_depth=None, limit=200):
+        """Call-tree subtree rooted at `root` span (the root itself plus all
+        descendants), each row tagged with `depth` (0 = root). Optional
+        `max_depth` bounds how many levels below root are included
+        (`max_depth=0` returns just the root)."""
+        self._require()
+        limit = _clamp(limit, default=200)
+        depth_clause = " AND t.depth < ?" if max_depth is not None else ""
+        params = [root]
+        if max_depth is not None:
+            params.append(max_depth)
+        params.append(limit)
+        return self._rows(
+            "WITH RECURSIVE tree AS ("
+            "SELECT span, parent_span, pid, tid, entry_addr, 0 AS depth "
+            "FROM func_spans WHERE span = ? "
+            "UNION ALL "
+            "SELECT f.span, f.parent_span, f.pid, f.tid, f.entry_addr, t.depth + 1 "
+            "FROM func_spans f JOIN tree t ON f.parent_span = t.span"
+            f"{depth_clause}"
+            ") SELECT * FROM tree ORDER BY depth, span LIMIT ?", params)
+
+    def span_syscalls_where(self, span=None, syscall=None, pid=None, tid=None, limit=50):
+        """Filtered list of in-span syscall records (span, pid, tid, nr, syscall,
+        args, decoded — `decoded` flattened to a space-joined string). Filters
+        (AND-combined): `span`, `syscall`, `pid`, `tid` equality."""
+        self._require()
+        limit = _clamp(limit, default=50)
+        where, p = [], []
+        if span is not None:
+            where.append("span = ?"); p.append(span)
+        if syscall is not None:
+            where.append("syscall = ?"); p.append(syscall)
+        if pid is not None:
+            where.append("pid = ?"); p.append(pid)
+        if tid is not None:
+            where.append("tid = ?"); p.append(tid)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        return self._rows(
+            "SELECT span, pid, tid, nr, syscall, args, "
+            "array_to_string(decoded, ' ') AS decoded "
+            f"FROM span_syscalls{w} LIMIT ?", p + [limit])
+
     # ---- funcs analysis (calls/returns) -----------------------------------
 
     def call_histogram(self, top=40, module=None):

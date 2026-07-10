@@ -1,0 +1,5 @@
+{"type":"func","span":5,"parent_span":0,"pid":100,"tid":101,"entry_addr":"0xabc","args":["0x10"]}
+{"type":"func","span":6,"parent_span":5,"pid":100,"tid":101,"entry_addr":"0xdef","args":["0x20"]}
+{"type":"func","span":7,"parent_span":5,"pid":100,"tid":102,"entry_addr":"0x123","args":["0x30"]}
+{"type":"syscall","span":6,"pid":100,"tid":101,"nr":56,"syscall":"openat","args":["0x1","0x0"],"decoded":["","O_RDONLY"]}
+{"type":"syscall","span":7,"pid":100,"tid":102,"nr":42,"syscall":"connect","args":["0x3","0x0"],"decoded":["","127.0.0.1:8080"]}

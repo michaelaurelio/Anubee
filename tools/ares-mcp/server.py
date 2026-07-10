@@ -132,6 +132,36 @@ def coverage() -> list:
 
 
 @mcp.tool()
+def spans(parent_span: Optional[int] = None, pid: Optional[int] = None,
+         tid: Optional[int] = None, limit: int = 50) -> list:
+    """Filtered list of raw func_spans records (span, parent_span, pid, tid,
+    entry_addr, args) from a correlate -o trace. `parent_span=N` answers
+    "what's directly under span N". Filters (AND-combined): `parent_span`,
+    `pid`, `tid`."""
+    return store.spans(parent_span=parent_span, pid=pid, tid=tid, limit=limit)
+
+
+@mcp.tool()
+def span_tree(root: int, max_depth: Optional[int] = None, limit: int = 200) -> list:
+    """Call-tree subtree rooted at `root` span: the root plus all descendants,
+    each row tagged with `depth` (0 = root). Optional `max_depth` bounds how
+    many levels below root are included (`max_depth=0` returns just the root).
+    Use this to walk call-tree nesting from a span found via `spans`."""
+    return store.span_tree(root=root, max_depth=max_depth, limit=limit)
+
+
+@mcp.tool()
+def span_syscalls(span: Optional[int] = None, syscall: Optional[str] = None,
+                  pid: Optional[int] = None, tid: Optional[int] = None,
+                  limit: int = 50) -> list:
+    """Filtered list of in-span syscall records (span, pid, tid, nr, syscall,
+    args, decoded flags) from a correlate -o trace. Filters (AND-combined):
+    `span`, `syscall`, `pid`, `tid`."""
+    return store.span_syscalls_where(span=span, syscall=syscall, pid=pid, tid=tid,
+                                     limit=limit)
+
+
+@mcp.tool()
 def call_histogram(top: int = 40, module: Optional[str] = None) -> list:
     """Count of function calls per (module, symbol) from a funcs trace, most
     frequent first. Optional `module` filter."""

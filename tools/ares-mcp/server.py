@@ -132,6 +132,18 @@ def coverage() -> list:
 
 
 @mcp.tool()
+def summaries(kind: Optional[str] = None, top: int = 50):
+    """Mod-analyzer teardown *_summary records ingested from a `-o` trace:
+    execve_summary, prop_read_summary, file_access_summary,
+    ransomware_burst_summary, proc_event_summary. Without `kind`, returns all
+    ingested kinds as {kind: [records]}; with `kind`, returns just that kind's
+    records (empty list if the trace had none). Each record's own nested list
+    (binaries/props/paths/processes) is capped to the top `top` entries by
+    `count` so a large run stays token-bounded."""
+    return store.summaries(kind=kind, top=top)
+
+
+@mcp.tool()
 def spans(parent_span: Optional[int] = None, pid: Optional[int] = None,
          tid: Optional[int] = None, limit: int = 50) -> list:
     """Filtered list of raw func_spans records (span, parent_span, pid, tid,

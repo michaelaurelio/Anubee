@@ -20,6 +20,19 @@ import duckdb
 
 MAX_ROWS = 200                 # hard cap on rows any query returns
 
+# The five mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
+# §6/§7) and, for the four that carry a nested list, which field to cap.
+_SUMMARY_TYPES = frozenset({
+    "execve_summary", "prop_read_summary", "file_access_summary",
+    "ransomware_burst_summary", "proc_event_summary",
+})
+_SUMMARY_LIST_FIELD = {
+    "execve_summary": "binaries",
+    "prop_read_summary": "props",
+    "file_access_summary": "paths",
+    "ransomware_burst_summary": "processes",
+}
+
 # Explicit schema so DuckDB never mis-infers the nested/heterogeneous fields.
 _COLS = (
     "{'id':'BIGINT','pid':'INTEGER','tid':'INTEGER','syscall_nr':'BIGINT',"
@@ -117,6 +130,7 @@ class TraceStore:
         self.con = None
         self.path = None
         self.last_load = None
+        self._summaries = {}
 
     def loaded(self):
         return self.con is not None
@@ -137,6 +151,7 @@ class TraceStore:
         if not os.path.exists(path):
             raise FileNotFoundError(path)
         calls, returns, fspans, syscalls, coverage = [], [], [], [], []
+        summaries = {}
         skipped = 0
         with open(path, "r", errors="replace") as f:
             for line in f:
@@ -159,6 +174,8 @@ class TraceStore:
                     syscalls.append(rec)
                 elif t == "coverage":
                     coverage.append(rec)
+                elif t in _SUMMARY_TYPES:
+                    summaries.setdefault(t, []).append(rec)
                 else:
                     # no "type" (legacy wrapper) or a plain syscalls-engine record
                     skipped += 1
@@ -213,6 +230,7 @@ class TraceStore:
                 [_cov_row(c) for c in coverage])
         self.con = con
         self.path = path
+        self._summaries = summaries
         return path, skipped
 
     def correlate_spans(self, top=50):
@@ -236,6 +254,30 @@ class TraceStore:
         `clean` column."""
         self._require()
         return self._rows("SELECT *, clean AS is_clean FROM coverage")
+
+    def summaries(self, kind=None, top=50):
+        """Analyzer teardown *_summary records (execve_summary, prop_read_summary,
+        file_access_summary, ransomware_burst_summary, proc_event_summary)
+        ingested from a mod analyzer's `-o` output. Without `kind`, returns all
+        ingested kinds as {kind: [records]}; with `kind`, returns just that
+        kind's records (empty list if none were ingested). Each record's own
+        nested list (`binaries`/`props`/`paths`/`processes`) is capped to the
+        top `top` entries by `count`."""
+        self._require()
+        top = _clamp(top)
+
+        def _cap(rec):
+            field = _SUMMARY_LIST_FIELD.get(rec.get("type"))
+            items = rec.get(field) if field else None
+            if not isinstance(items, list):
+                return rec
+            out = dict(rec)
+            out[field] = sorted(items, key=lambda it: it.get("count", 0), reverse=True)[:top]
+            return out
+
+        if kind is not None:
+            return [_cap(r) for r in self._summaries.get(kind, [])]
+        return {k: [_cap(r) for r in v] for k, v in self._summaries.items()}
 
     # ---- span analysis (func_spans/span_syscalls) -------------------------
 
@@ -351,6 +393,7 @@ class TraceStore:
         abspath, skipped = _build_events(con, path, "")
         self.con = con
         self.path = abspath
+        self._summaries = {}
 
         # Report how many records loaded and how many malformed ones were
         # dropped, so a bad trace doesn't silently mis-count.

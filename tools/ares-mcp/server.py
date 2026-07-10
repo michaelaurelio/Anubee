@@ -132,6 +132,31 @@ def coverage() -> list:
 
 
 @mcp.tool()
+def call_histogram(top: int = 40, module: Optional[str] = None) -> list:
+    """Count of function calls per (module, symbol) from a funcs trace, most
+    frequent first. Optional `module` filter."""
+    return store.call_histogram(top=top, module=module)
+
+
+@mcp.tool()
+def call_timing(top: int = 40, symbol: Optional[str] = None,
+                module: Optional[str] = None) -> list:
+    """Per (module, symbol) call-latency stats (count, min/max/avg, p50/p95 of
+    `elapsed_ns`) from a funcs trace, slowest average first. Optional
+    `symbol`/`module` filters."""
+    return store.call_timing(top=top, symbol=symbol, module=module)
+
+
+@mcp.tool()
+def calls_where(module: Optional[str] = None, symbol: Optional[str] = None,
+                pid: Optional[int] = None, tid: Optional[int] = None,
+                limit: int = 50) -> list:
+    """Filtered list of raw function-call records (pid, tid, module, symbol,
+    entry_addr, args). Filters (AND-combined): `module`, `symbol`, `pid`, `tid`."""
+    return store.calls_where(module=module, symbol=symbol, pid=pid, tid=tid, limit=limit)
+
+
+@mcp.tool()
 def get_event(event_id: int) -> Optional[dict]:
     """Full detail of a single event by id: all args, string/fd/decoded args, and
     the complete symbolized backtrace."""

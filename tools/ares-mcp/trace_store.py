@@ -237,6 +237,53 @@ class TraceStore:
         self._require()
         return self._rows("SELECT *, clean AS is_clean FROM coverage")
 
+    # ---- funcs analysis (calls/returns) -----------------------------------
+
+    def call_histogram(self, top=40, module=None):
+        """Count of function calls per (module, symbol), most frequent first.
+        Optional `module` equality filter."""
+        self._require()
+        top = _clamp(top)
+        w, p = ("WHERE module = ?", [module]) if module is not None else ("", [])
+        return self._rows(
+            f"SELECT module, symbol, COUNT(*) AS n FROM calls {w} "
+            f"GROUP BY module, symbol ORDER BY n DESC LIMIT ?", p + [top])
+
+    def call_timing(self, top=40, symbol=None, module=None):
+        """Per (module, symbol) call-latency stats from `returns.elapsed_ns`:
+        count, min/max/avg, and p50/p95. Optional `symbol`/`module` equality
+        filters (AND-combined). Ordered by avg descending."""
+        self._require()
+        top = _clamp(top)
+        where, p = [], []
+        if symbol is not None:
+            where.append("symbol = ?"); p.append(symbol)
+        if module is not None:
+            where.append("module = ?"); p.append(module)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        return self._rows(
+            f"SELECT module, symbol, COUNT(*) AS count, "
+            "MIN(elapsed_ns) AS min, MAX(elapsed_ns) AS max, AVG(elapsed_ns) AS avg, "
+            "quantile_cont(elapsed_ns, 0.5) AS p50, quantile_cont(elapsed_ns, 0.95) AS p95 "
+            f"FROM returns{w} GROUP BY module, symbol ORDER BY avg DESC LIMIT ?", p + [top])
+
+    def calls_where(self, module=None, symbol=None, pid=None, tid=None, limit=50):
+        """Filtered list of raw call records. Filters (AND-combined): `module`,
+        `symbol`, `pid`, `tid` equality."""
+        self._require()
+        limit = _clamp(limit, default=50)
+        where, p = [], []
+        if module is not None:
+            where.append("module = ?"); p.append(module)
+        if symbol is not None:
+            where.append("symbol = ?"); p.append(symbol)
+        if pid is not None:
+            where.append("pid = ?"); p.append(pid)
+        if tid is not None:
+            where.append("tid = ?"); p.append(tid)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        return self._rows(f"SELECT * FROM calls{w} LIMIT ?", p + [limit])
+
     def load(self, path):
         con = duckdb.connect()
         con.execute("PRAGMA threads=4")

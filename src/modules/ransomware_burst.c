@@ -16,6 +16,7 @@
 #include "common/engine_args.h"
 #include "common/emit.h"
 #include "common/launch.h"
+#include "common/runtime.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/ransomware_burst_classify.h"
@@ -247,6 +248,11 @@ static void rb_emit_summary(struct ares_sink *s)
     ares_sink_emit(s);
 }
 
+static unsigned long long rb_drops(void)
+{
+    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_ransomware_burst = {
@@ -258,4 +264,5 @@ const ares_analyzer_t analyzer_ransomware_burst = {
     .teardown      = rb_teardown,
     .print_summary = rb_print_summary,
     .emit_summary  = rb_emit_summary,
+    .drops         = rb_drops,
 };

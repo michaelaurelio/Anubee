@@ -23,6 +23,7 @@ struct {
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
 #include "common/path_gate.bpf.h"
+#include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
 #define BURST_WINDOW_NS (10ULL * 1000000000ULL)
@@ -122,6 +123,7 @@ static __always_inline void record_touch(const char *path)
     if (!e) {
         // Reserve failed (ring full): re-arm now so the next touch gets a
         // fresh attempt rather than never emitting again this window.
+        bump_dropped();
         st->window_start_ns = now;
         st->count = 0;
         st->ring_head = 0;

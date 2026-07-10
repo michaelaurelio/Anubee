@@ -21,6 +21,7 @@ struct {
 #include "common/pid_filter.bpf.h"
 #include "common/follow_fork.bpf.h"
 #include "common/path_gate.bpf.h"
+#include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
@@ -44,8 +45,10 @@ int BPF_KPROBE(on_openat, const struct pt_regs *regs)
         return 0;
 
     struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
 
     // Strip ARM64 MTE tag: bpf_probe_read_user's access_ok() rejects tagged ptrs.
     unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
@@ -80,8 +83,10 @@ int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
         return 0;
 
     struct file_access_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        bump_dropped();
         return 0;
+    }
 
     unsigned long path_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
     unsigned long how_ptr  = BPF_CORE_READ(regs, regs[2]) & 0x00FFFFFFFFFFFFFFul;

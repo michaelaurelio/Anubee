@@ -14,6 +14,7 @@
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
+#include "common/runtime.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/file_access_classify.h"
@@ -245,6 +246,11 @@ static void fa_emit_summary(struct ares_sink *s)
     ares_sink_emit(s);
 }
 
+static unsigned long long fa_drops(void)
+{
+    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+}
+
 // ---- analyzer registration --------------------------------------------------
 
 const ares_analyzer_t analyzer_file_access = {
@@ -255,4 +261,5 @@ const ares_analyzer_t analyzer_file_access = {
     .teardown      = fa_teardown,
     .print_summary = fa_print_summary,
     .emit_summary  = fa_emit_summary,
+    .drops         = fa_drops,
 };

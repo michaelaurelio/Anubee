@@ -1085,10 +1085,13 @@ one.
   (JSON array or JSONL) into in-memory **DuckDB** via the explicit syscall column
   set (non-syscall records, no `id`, are dropped). `load_structured()` is the
   type-discriminated JSONL path (`funcs -J` / `correlate -o`): buckets records by
-  `type` into `calls`/`returns`/`func_spans`/`span_syscalls` tables, plus a
-  `coverage` table flattening `{"type":"coverage",...}` records (see §7) — one row
-  per engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
-  zero/false defaults.
+  `type` into `calls`/`returns`/`func_spans`/`span_syscalls` tables, a `coverage`
+  table flattening `{"type":"coverage",...}` records (see §7) — one row per
+  engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
+  zero/false defaults — and a `TraceStore._summaries` dict (not a DuckDB table)
+  keyed by the five mod-analyzer teardown `*_summary` types (`execve_summary`,
+  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `proc_event_summary`; see §6), storing each parsed record as-is.
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
@@ -1096,7 +1099,13 @@ one.
   `ares dump`). Over the `load_structured()` path: `coverage` (per-engine
   coverage-health rows — "was this trace clean"), `call_histogram` (call counts by
   module/symbol), `call_timing` (count/min/max/avg/p50/p95 of `returns.elapsed_ns`
-  by module/symbol), `calls_where` (module/symbol/pid/tid-filtered raw calls).
+  by module/symbol), `calls_where` (module/symbol/pid/tid-filtered raw calls),
+  `spans`/`span_tree`/`span_syscalls` (call-tree structure and in-span syscalls
+  over `func_spans`/`span_syscalls` — parent/child nesting, "what's under span N"),
+  `span_timeline` (spans in allocation order with a per-span syscall count),
+  `diff_calls` (the `diff_traces` analog for funcs data — new call-sites/in-span
+  syscalls in a `compare` trace vs `baseline`), and `summaries` (the ingested
+  `*_summary` teardown records, optionally filtered by `kind`).
 - `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
   `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
   `dump_library` → `ares dump`.

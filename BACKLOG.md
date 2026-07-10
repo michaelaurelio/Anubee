@@ -37,9 +37,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
   liveness tightening; ELF-note hardening done — see Resolved/Done).
-- MCP richness follow-on (coverage ingest + call histogram/timing/filter tools done
-  2026-07-10 — see Resolved/Done; remaining: full `server.py` tool surface for
-  `func_spans`/`span_syscalls`/summary records, diff/timeline views).
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run incl. new `--dump`/`--correlate`
   wiring and `-p` attach mode; `correlate` R3/R4/X2; CR4 parity fix; Tier 5
@@ -299,11 +296,6 @@ read as "app used no Java."
     convention); keep unless a dedicated verbosity split is wanted.
 
 
-- **Unified MCP richness (follow-on).** Minimal ingest + span join done; coverage
-  ingest + call histogram/timing/filter tools done 2026-07-10 (see Resolved/Done).
-  Remaining: full `server.py` tool surface for `func_spans`/`span_syscalls`/the
-  `*_summary` records, diff/timeline views.
-
 - **U1/U2 — console style diverges (not recommended).** `funcs` uses timestamped
   tagged lines (`[spawn] >`, `[uprobe] >`, …); other engines use prose banners. Masked
   under `trace -o`. Low value / high cosmetic churn across 5 files.
@@ -363,6 +355,41 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-10
+
+- **MCP richness follow-on: span query tools.** Added `spans` (flat `func_spans`
+  filter — `parent_span=N` answers "what's under span N"), `span_tree`
+  (recursive-CTE call-tree subtree from a root span, rows tagged with `depth`),
+  and `span_syscalls` (flat `span_syscalls` filter, `decoded` flattened to a
+  string) query methods + MCP tools over the previously-unexposed
+  `func_spans`/`span_syscalls` tables (populated by `load_structured` but only
+  consumed internally by the un-wired `correlate_spans()` before this). Pure
+  read-only additions — existing tables/methods/tools untouched. New
+  `test_spans.py` (17 checks) + `testdata/spans.jsonl` fixture.
+
+- **MCP richness follow-on: `*_summary` ingest.** `load_structured` gained a
+  bucket for the five mod-analyzer teardown records (`execve_summary`,
+  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `proc_event_summary`) — previously falling into the `skipped` count, same as
+  `coverage` did before its fix. Stored as parsed Python dicts on
+  `TraceStore._summaries` rather than a DuckDB table (small, bounded records
+  whose nested arrays don't map cleanly to `STRUCT[]` inserts), reset on every
+  `load`/`load_structured`. One generic `summaries(kind=None, top=50)` query
+  method + MCP tool; each record's own nested list (`binaries`/`props`/`paths`/
+  `processes`) is capped to `top` entries by `count`. Pure addition — the only
+  behavior change is traces containing summary records now report a smaller
+  `skipped` count. New `test_summaries.py` (14 checks) +
+  `testdata/summaries.jsonl` fixture.
+
+- **MCP richness follow-on: diff/timeline for funcs-span data.** Added
+  `diff_calls` (the `diff_traces` analog for funcs data — loads two structured
+  traces into throwaway `TraceStore`s and reports `(module,symbol)` call-sites
+  and in-span syscalls seen only in `compare`) and `span_timeline` (spans in
+  allocation order with a per-span in-span-syscall count, the call-ordering
+  view a histogram doesn't give) query methods + MCP tools. Pure read-only
+  additions. New `test_diff_timeline.py` (16 checks) + `testdata/spans_b.jsonl`
+  fixture (`testdata/spans.jsonl` gained a matching `call` record so the diff
+  is meaningful). Closes out the "full `server.py` tool surface for
+  `func_spans`/`span_syscalls`/summary records, diff/timeline views" item.
 
 - **`mod file-access`/`mod ransomware-burst` drop-telemetry gap closed.** Both
   analyzers now follow the same pattern as `proc-event`/`execve`/`prop-read`:

@@ -14,6 +14,11 @@ char LICENSE[] SEC("license") = "GPL";
 // when the userspace loader opens a -o sink (set by funcs_setup).
 const volatile int snapshot_enabled = 0;
 
+// 1 = also copy raw sockaddr bytes for each user-pointer CALL arg, so userspace
+// can decode ARG_SOCKADDR args to ip:port. Set by funcs_setup only when a probe
+// actually tags a sockaddr arg — off by default, zero cost on the common path.
+const volatile int sockaddr_capture = 0;
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 4 * 1024 * 1024);
@@ -100,6 +105,8 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
             long n = bpf_probe_read_user_str(e->strings[i], MAX_STR_LEN, (void *)ptr);
             if (n > 1)
                 e->is_str[i] = 1;
+            if (sockaddr_capture)
+                bpf_probe_read_user(e->sock[i], SOCK_ADDR_MAX, (void *)ptr);
         }
     }
 

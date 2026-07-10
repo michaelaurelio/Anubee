@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 void funcs_emit_call(struct jbuf *j, const struct event *e, const char *module,
                      const char *symbol, const probe_target_t *target,
@@ -156,6 +158,30 @@ int main(void)
     funcs_emit_call(&j, &ef, "libc.so", "read", &tgt_fd, NULL, NULL);
     CHECK_HAS(j, "\"fd_args\"", "call fd_args key");
     CHECK_HAS(j, "fd=5", "call fd_args value");
+
+    // ---- call with ARG_SOCKADDR arg (sock_args decoded to ip:port) ---------
+    struct event esa = {0};
+    esa.h.type = TRACE_CALL;
+    esa.h.pid = 1234; esa.h.tid = 1240;
+    {
+        struct sockaddr_in sin = {0};
+        sin.sin_family = AF_INET;
+        sin.sin_port = htons(80);
+        inet_pton(AF_INET, "127.0.0.1", &sin.sin_addr);
+        memcpy(esa.sock[1], &sin, sizeof(sin));   // arg 1 is the sockaddr
+    }
+
+    probe_target_t tgt_sock = {0};
+    tgt_sock.arg_count = 3;
+    tgt_sock.arg_types[0] = ARG_FD;
+    tgt_sock.arg_types[1] = ARG_SOCKADDR;
+    tgt_sock.arg_types[2] = ARG_VAL;
+    tgt_sock.ret_type = ARG_NONE;
+
+    j.len = 0;
+    funcs_emit_call(&j, &esa, "libc.so", "connect", &tgt_sock, NULL, NULL);
+    CHECK_HAS(j, "\"sock_args\"", "call sock_args key");
+    CHECK_HAS(j, "127.0.0.1:80", "call sock_args value decoded to ip:port");
 
     // ---- basic return (no target) ------------------------------------------
     struct event r = {0};

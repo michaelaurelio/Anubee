@@ -359,6 +359,8 @@ int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                 out->arg_types[out->arg_count++] = ARG_VAL;
             else if (*tok == 'F' || *tok == 'f')
                 out->arg_types[out->arg_count++] = ARG_FD;
+            else if (*tok == 'A' || *tok == 'a')
+                out->arg_types[out->arg_count++] = ARG_SOCKADDR;
             else {
                 log("   [err] > unknown arg type '%c' in spec: %s\n", *tok, input);
                 return -1;

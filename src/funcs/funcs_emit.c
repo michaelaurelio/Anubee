@@ -81,6 +81,20 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
             jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, fdbuf); jb_c(j, '"');
         }
         jb_c(j, '}');
+
+        // sock_args: ARG_SOCKADDR args decoded to ip:port / [ip6]:port / unix:path.
+        jb_s(j, ",\"sock_args\":{");
+        for (int i = 0, first = 1; i < target->arg_count && i < NUM_ARGS; i++) {
+            if (target->arg_types[i] != ARG_SOCKADDR) continue;
+            char sbuf[128];
+            // ponytail: fixed SOCK_ADDR_MAX len — exact for INET/INET6; an AF_UNIX
+            // path >26 B truncates. No addrlen is captured on the funcs path.
+            if (!decode_sockaddr(e->sock[i], SOCK_ADDR_MAX, sbuf, sizeof(sbuf))) continue;
+            if (!first) jb_c(j, ',');
+            first = 0;
+            jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, sbuf); jb_c(j, '"');
+        }
+        jb_c(j, '}');
     }
 
     jb_c(j, '}');

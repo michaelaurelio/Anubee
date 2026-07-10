@@ -46,6 +46,12 @@ int main(void)
     CHECK(S.arg_count == 1 && S.arg_types[0] == ARG_FD, "read: one fd arg");
     CHECK(S.ret_type == ARG_NONE,                "read: no return probe");
 
+    // --- sockaddr arg type (C9) ---
+    CHECK(parse("libc.so!connect(F,A,V)") == 0,  "connect: rc 0");
+    CHECK(S.arg_count == 3 && S.arg_types[0] == ARG_FD &&
+          S.arg_types[1] == ARG_SOCKADDR && S.arg_types[2] == ARG_VAL,
+                                                 "connect: arg types F,A,V");
+
     // --- @offset, no function name ---
     CHECK(parse("libc.so@0x1234") == 0,          "offset: rc 0");
     CHECK(strcmp(S.mod, "libc.so") == 0 && S.func[0] == '\0', "offset: mod, empty func");

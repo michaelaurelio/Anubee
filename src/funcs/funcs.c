@@ -27,6 +27,7 @@
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
+#include "common/decode.h"
 #include "common/emit.h"
 #include "common/runtime.h"
 #include "common/evqueue.h"
@@ -600,6 +601,12 @@ static void process_call_return(const void *data, size_t data_sz)
                         if (rn > 0) { fpath[rn] = '\0'; out_print("         [event]   | args[%d] %ld -> \"%s\"\n", i, fd_val, fpath); }
                         else         out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)fd_val);
                     }
+                } else if (target->arg_types[i] == ARG_SOCKADDR) {
+                    char sbuf[128];
+                    if (decode_sockaddr(e->sock[i], SOCK_ADDR_MAX, sbuf, sizeof(sbuf)))
+                        out_print("         [event]   | args[%d] %s\n", i, sbuf);
+                    else
+                        out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
                 } else {
                     out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
                 }
@@ -1073,6 +1080,17 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
         skel->rodata->snapshot_enabled = (g_stacks != NULL) ? 1 : 0;
+
+        // sockaddr_capture: on iff some custom probe spec (-c / spec file) tags an
+        // arg as ARG_SOCKADDR. Only custom specs carry explicit arg types (the
+        // mod/func regex auto-probe path uses the BPF heuristic, arg_count == -1),
+        // and all specs are parsed by now (above), well before this rodata write —
+        // which must land before funcs_bpf__load() freezes .rodata.
+        int want_sock = 0;
+        for (int i = 0; i < custom_probe_spec_count && !want_sock; i++)
+            for (int a = 0; a < custom_probe_specs[i].arg_count; a++)
+                if (custom_probe_specs[i].arg_types[a] == ARG_SOCKADDR) { want_sock = 1; break; }
+        skel->rodata->sockaddr_capture = want_sock;
         if (funcs_bpf__load(skel)) {
             err_print("   [bpf] > failed to load skeleton\n");
             funcs_bpf__destroy(skel);

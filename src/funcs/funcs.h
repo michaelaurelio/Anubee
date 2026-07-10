@@ -4,6 +4,7 @@
 
 #define TASK_COMM_LEN    32
 #define MAX_STR_LEN      128
+#define SOCK_ADDR_MAX    28   // AF_INET6 sockaddr is 28 B; AF_INET is 16
 #define NUM_ARGS         8
 #define STACK_DEPTH      16
 #define MAX_ARGV_ENTRIES 8
@@ -42,6 +43,7 @@ struct event {
     unsigned long args[NUM_ARGS];
     __u8 is_str[NUM_ARGS];
     char strings[NUM_ARGS][MAX_STR_LEN];
+    __u8 sock[NUM_ARGS][SOCK_ADDR_MAX];  // raw sockaddr bytes for ARG_SOCKADDR args (see funcs.bpf.c sockaddr_capture)
     __u64 call_stack[STACK_DEPTH];
     __u32 stack_depth;
     __u64 stack_id;   /* FNV-1a hash of call_stack; 0 = none. Links to ARES_EVENT_STACK sidecar. */

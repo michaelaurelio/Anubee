@@ -13,6 +13,7 @@
 #define ARG_VAL  1
 #define ARG_NONE 2  // no return probe for this target
 #define ARG_FD   3  // fd argument; resolved to path via /proc/PID/fd/<n> at display time
+#define ARG_SOCKADDR 4  // sockaddr* argument; decoded to ip:port via decode_sockaddr at display time
 
 typedef struct {
     pid_t pid;

@@ -3,6 +3,7 @@
 // grammar (MOD!FUNC(S,V,F)>V, @offset, and malformed inputs). Pure logic, no
 // device and no cross-toolchain: built and run on the host via `make test`.
 #include "common/probe_resolve.h"
+#include "common/pattern_match.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -87,6 +88,133 @@ int main(void)
     CHECK(parse("libc.so!open>Z") == -1,         "err: unknown return type");
     CHECK(parse("!open") == -1,                  "err: empty module");
     CHECK(parse("libc.so!") == -1,               "err: no func name or offset");
+
+    // --- KIND: prefix (v2 grammar) ---
+    // Explicit "funcs:" behaves identically to the unprefixed default.
+    CHECK(parse("funcs:libc.so!open") == 0,      "kind funcs: rc 0");
+    CHECK(S.kind == SPEC_KIND_FUNCS && S.deny == false &&
+          strcmp(S.mod, "libc.so") == 0 && strcmp(S.func, "open") == 0,
+                                                 "kind funcs: fields match bare form");
+
+    // Unprefixed lines still default to SPEC_KIND_FUNCS (locks in the default).
+    CHECK(parse("libc.so!open") == 0,            "kind default: rc 0");
+    CHECK(S.kind == SPEC_KIND_FUNCS && S.deny == false, "kind default: FUNCS, not deny");
+
+    // '/regex/'-delimited MODULE and FUNC sides: delimiters kept verbatim in
+    // the struct (pattern_match interprets them); the '!' split is unaffected.
+    CHECK(parse("libc.so!/^encrypt/") == 0,      "regex func: rc 0");
+    CHECK(strcmp(S.mod, "libc.so") == 0 &&
+          strcmp(S.func, "/^encrypt/") == 0,     "regex func: mod/func verbatim");
+    CHECK(parse("/lib.*/!open") == 0,            "regex mod: rc 0");
+    CHECK(strcmp(S.mod, "/lib.*/") == 0 &&
+          strcmp(S.func, "open") == 0,           "regex mod: mod/func verbatim");
+
+    // syscall: kind — bare NAME, no args/ret grammar.
+    CHECK(parse("syscall:openat") == 0,          "kind syscall: rc 0");
+    CHECK(S.kind == SPEC_KIND_SYSCALL && S.deny == false &&
+          strcmp(S.mod, "openat") == 0,          "kind syscall: fields");
+    // syscall: leading '!' = deny.
+    CHECK(parse("syscall:!ptrace") == 0,         "kind syscall deny: rc 0");
+    CHECK(S.kind == SPEC_KIND_SYSCALL && S.deny == true &&
+          strcmp(S.mod, "ptrace") == 0,          "kind syscall deny: fields");
+
+    // lib: kind — bare PATTERN (glob ok), no args/ret grammar.
+    CHECK(parse("lib:libc.so") == 0,             "kind lib: rc 0");
+    CHECK(S.kind == SPEC_KIND_LIB && S.deny == false &&
+          strcmp(S.mod, "libc.so") == 0,         "kind lib: fields");
+    CHECK(parse("lib:*.so") == 0,                "kind lib glob: rc 0");
+    CHECK(S.kind == SPEC_KIND_LIB &&
+          strcmp(S.mod, "*.so") == 0,            "kind lib glob: pattern verbatim");
+    CHECK(parse("lib:!libbad.so") == 0,          "kind lib deny: rc 0");
+    CHECK(S.kind == SPEC_KIND_LIB && S.deny == true &&
+          strcmp(S.mod, "libbad.so") == 0,       "kind lib deny: fields");
+
+    // mod: kind — bare NAME (analyzer registry), no deny/args/ret grammar.
+    CHECK(parse("mod:execve") == 0,              "kind mod: rc 0");
+    CHECK(S.kind == SPEC_KIND_MOD && S.deny == false &&
+          strcmp(S.mod, "execve") == 0,          "kind mod: fields");
+
+    // syscall:/lib:/mod: malformed rejections.
+    CHECK(parse("syscall:openat(V)") == -1,      "err: syscall: rejects (args)");
+    CHECK(parse("syscall:openat>V") == -1,       "err: syscall: rejects >ret");
+    CHECK(parse("syscall:") == -1,               "err: syscall: empty pattern");
+    CHECK(parse("lib:") == -1,                   "err: lib: empty pattern");
+    CHECK(parse("mod:") == -1,                   "err: mod: empty name");
+
+    // --- lockstep: every specs/*.spec line must still parse as plain FUNCS,
+    // proving the KIND-prefix strip above never fires on real spec files ---
+    {
+        static const char *const spec_files[] = {
+            "specs/common-dynload.spec", "specs/common-file.spec",
+            "specs/common-getprop.spec", "specs/common-network.spec",
+            "specs/common-process.spec", "specs/common-string.spec",
+            "specs/example-fd.spec",
+        };
+        int total_lines = 0;
+        for (size_t fi = 0; fi < sizeof(spec_files) / sizeof(spec_files[0]); fi++) {
+            FILE *f = fopen(spec_files[fi], "r");
+            if (!f) {
+                failures++; checks++;
+                printf("  FAIL: lockstep: cannot open %s (run `make test` from repo root)\n",
+                       spec_files[fi]);
+                continue;
+            }
+            char line[512];
+            while (fgets(line, sizeof(line), f)) {
+                char *end = line + strlen(line) - 1;
+                while (end >= line && (*end == '\n' || *end == '\r' ||
+                                        *end == ' ' || *end == '\t'))
+                    *end-- = '\0';
+                if (line[0] == '\0' || line[0] == '#') continue;
+                checks++;
+                total_lines++;
+                if (parse_custom_probe_spec(line, &S, noop_log) != 0 ||
+                    S.kind != SPEC_KIND_FUNCS || S.deny != false) {
+                    failures++;
+                    printf("  FAIL: lockstep: %s: '%s' did not parse as plain FUNCS\n",
+                           spec_files[fi], line);
+                }
+            }
+            fclose(f);
+        }
+        CHECK(total_lines > 0, "lockstep: at least one spec line was checked");
+    }
+
+    // --- custom_spec_matches_path: behavior preserved for non-'[' patterns,
+    // one intentional delta documented (glob trigger "*?" -> "*?[") ---
+    {
+        custom_probe_spec_t spec;
+        memset(&spec, 0, sizeof(spec));
+
+        strcpy(spec.mod, "libc.so"); // exact basename, no glob/slash
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libc.so") == true,
+              "matches_path: exact basename match");
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libssl.so") == false,
+              "matches_path: exact basename no match");
+
+        strcpy(spec.mod, "*.so"); // glob, unchanged trigger char
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libc.so") == true,
+              "matches_path: glob basename match");
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libc.so.1") == false,
+              "matches_path: glob basename no match");
+
+        strcpy(spec.mod, "lib/mypath/libfoo.so"); // contains '/': full-path substring
+        CHECK(custom_spec_matches_path(&spec, "/data/app/lib/mypath/libfoo.so") == true,
+              "matches_path: slash pattern full-path substring");
+
+        // Intentional delta (Phase 1): glob trigger widens "*?" -> "*?[". No
+        // existing specs/*.spec line contains '[' (proven by the lockstep
+        // check above), so this never fires on real spec files.
+        strcpy(spec.mod, "lib[co].so");
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libc.so") == true,
+              "matches_path: intentional '[' glob widening");
+
+        // New capability (Phase 1): /regex/-delimited pattern, routed through
+        // pm_regex rather than the slash-triggers-substring branch.
+        strcpy(spec.mod, "/^libc/");
+        CHECK(custom_spec_matches_path(&spec, "/system/lib64/libc.so") == true,
+              "matches_path: /regex/ pattern (new capability)");
+    }
 
     // --- seg_vaddr_to_off: vaddr-to-file-offset conversion ---
     // standard: p_vaddr == p_offset → no change

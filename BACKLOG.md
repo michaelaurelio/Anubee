@@ -34,7 +34,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 **Minor:**
 - CR5 follow-on: `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
-- C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
   liveness tightening; ELF-note hardening done — see Resolved/Done).
 - U1/U2 console style unification (not recommended — high churn, low value).
@@ -277,9 +276,6 @@ read as "app used no Java."
   Different mechanism entirely (likely Window Manager /
   `SYSTEM_ALERT_WINDOW` / accessibility-service abuse), not file syscalls.
 
-- **C9 — `funcs` could borrow `syscalls`' `decode_sockaddr`** (funcs has no sockaddr
-  decoding).
-
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser
   hardening (`shentsize < 0x28` guard) landed 2026-07-08 — see Resolved/Done. Remaining
@@ -355,6 +351,38 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-10
+
+- **C9 — `funcs` sockaddr decode.** A `funcs` uprobe on a function taking a
+  `struct sockaddr *` (e.g. `-c 'libc.so!connect(F,A,V)'`) previously captured
+  that arg only as a NUL-terminated string — garbage for a binary sockaddr.
+  Added a new `ARG_SOCKADDR` arg type (`probe_resolve.h`) and DSL marker `A`
+  (`probe_resolve.c`'s `parse_custom_probe_spec`, grammar now
+  `MOD!FUNC(S,V,F,A)>V`); `struct event` gained a per-arg `sock[NUM_ARGS][28]`
+  capture buffer (`funcs.h`); BPF capture is gated by a `sockaddr_capture` rodata
+  flag (`funcs.bpf.c`, mirrors the existing `snapshot_enabled` pattern) — off by
+  default, zero cost unless a probe spec actually tags a sockaddr arg. The
+  loader scans `custom_probe_specs[]` (parsed before `funcs_bpf__load()`, since
+  target resolution/`probe_targets[]` only happens after skel load — not what
+  the item's naive "scan targets" framing assumed) to decide whether to enable
+  it. Decode reuses the already-shared `decode_sockaddr` (no engine-specific
+  decoder needed — `funcs_emit.c` already `#include`d `common/decode.h` for
+  `render_fd`); `funcs.c` gained the same include for its console renderer.
+  Emits a `sock_args` JSON object (mirrors `fd_args`/`string_args`) and prints
+  `args[N] ip:port` on console. New `test_funcs_emit.c` case (2 checks: 31 total,
+  was 29) + a `test_probe_spec.c` DSL assertion for the `A` marker (added but
+  **not run** in this env — `test_probe_spec` needs `libelf-dev`, not installed
+  here and no root to `apt install` it; pre-existing gap, same category as the
+  `python3+duckdb` note below). **v1 limits:** fixed `SOCK_ADDR_MAX=28` passed as
+  `len` — exact for INET/INET6 (fixed offsets), an AF_UNIX path >26 B truncates;
+  no `addrlen` captured on the funcs path (unlike syscalls, which reads the next
+  syscall arg) so length is always the fixed max. `make test` full suite green
+  (all pre-existing checks unaffected — pure addition, existing `S/V/F` specs
+  byte-identical). **Pending:** the `sock[]` field grows `struct event`, so the
+  checked-in `src/funcs/ares-tracer.skel.h` is stale and needs `bpftool`
+  regeneration (unavailable here — same blocker as the file-access/
+  ransomware-burst drop-telemetry entry below); on-device confirmation that
+  `ares funcs -c 'libc.so!connect(F,A,V)'` renders `ip:port` folds into the
+  standing pending-on-device-verification item.
 
 - **MCP richness follow-on: span query tools.** Added `spans` (flat `func_spans`
   filter — `parent_span=N` answers "what's under span N"), `span_tree`

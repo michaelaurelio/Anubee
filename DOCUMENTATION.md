@@ -252,7 +252,10 @@ expensive one:
 1. **Host unit tests** (`tests/`, `make test`) — pure, host-compilable logic with
    no device and no cross-toolchain. `tests/test_probe_spec.c` links the real
    `src/common/probe_resolve.c` (host `cc` + `-lelf`) and asserts the custom
-   probe-spec grammar (`MOD!FUNC(S,V,F)>V`, `@offset` (a file offset, not a readelf/nm vaddr), lowercase types, return-only
+   probe-spec grammar (`MOD!FUNC(S,V,F,A)>V` — `A` = sockaddr, gated BPF capture +
+   `decode_sockaddr` at display time, so a probe on e.g. `connect` renders
+   `ip:port` instead of a raw pointer), `@offset` (a file offset, not a readelf/nm
+   vaddr), lowercase types, return-only
    vs paired, arg clamp, and rejection of malformed input). Milliseconds; the first
    thing to extend when adding pure logic (escaping, decoders, maps parsing).
 2. **CI** (`.github/workflows/ci.yml`) — two jobs on every PR/push: `make test`, and

@@ -490,6 +490,9 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
     int max = ctx->targets_cap;
     for (int s = 0; s < ctx->custom_spec_count && *ctx->target_count < max; s++) {
         const custom_probe_spec_t *spec = &ctx->custom_specs[s];
+        // Multi-kind files (EPIC H11) may carry syscall:/lib:/mod: lines meant
+        // for other engines -- only funcs-kind specs describe a uprobe target.
+        if (spec->kind != SPEC_KIND_FUNCS) continue;
         if (!custom_spec_matches_path(spec, path)) continue;
 
         probe_target_t tgt;

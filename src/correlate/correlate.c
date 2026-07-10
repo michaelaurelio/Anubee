@@ -484,6 +484,10 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
         const char *path = ml.path;
 
         for (int s = 0; s < nspec; s++) {
+            // Multi-kind files (EPIC H11) may carry syscall:/lib:/mod: lines
+            // meant for other engines -- only funcs-kind specs describe a
+            // uprobe target.
+            if (specs[s].kind != SPEC_KIND_FUNCS) continue;
             if (!custom_spec_matches_path(&specs[s], path)) continue;
             probe_target_t tgt;
             if (resolve_custom_spec_for_path(pid, path, &specs[s], &tgt) != 0)

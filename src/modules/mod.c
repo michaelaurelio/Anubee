@@ -17,6 +17,8 @@
 #include "common/launch.h"
 #include "common/runtime.h"
 #include "common/engine_args.h"
+#include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
 
 static volatile sig_atomic_t exiting = 0;
 static struct ares_sink g_sink;
@@ -61,6 +63,8 @@ struct mod_args {
     const char *activity;
     struct common_args c;
     struct target_args tgt; // -p / --siblings / --no-follow-fork
+    custom_probe_spec_t specs[64];
+    int nspec;
 };
 
 // Only advertise flags that are actually wired. -J/-b/-Q are NOT included:
@@ -72,6 +76,7 @@ static const struct argp_option mod_options[] = {
     { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (implies -q)", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
+    { "specs", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
     TARGET_ARGP_OPTIONS,
     { 0 }
 };
@@ -82,6 +87,10 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
+    case 'F':
+        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+            argp_error(state, "cannot open spec file '%s'", arg);
+        break;
     case ARGP_KEY_ARG:
         if (!a->name) a->name = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
@@ -89,6 +98,9 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_END:
+        if (!a->name)
+            for (int i = 0; i < a->nspec; i++)
+                if (a->specs[i].kind == SPEC_KIND_MOD) { a->name = a->specs[i].mod; break; }
         if (!a->name)
             argp_error(state, "analyzer name is required (first positional)");
         if (a->tgt.n > 0 && a->pkg)

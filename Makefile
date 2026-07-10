@@ -478,7 +478,7 @@ test:
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscalls_attribution.c -o $(BUILD)/test_syscalls_attribution
 	$(BUILD)/test_syscalls_attribution
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_seed.c -o $(BUILD)/test_lib_seed
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_seed.c src/common/pattern_match.c -o $(BUILD)/test_lib_seed
 	$(BUILD)/test_lib_seed
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
 	$(BUILD)/test_coverage

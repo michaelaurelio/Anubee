@@ -66,6 +66,8 @@
 #include "common/coverage.h"
 #include "common/art_buildid.h"
 #include "common/maps.h"
+#include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
 #include "syscalls/lib_seed.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
@@ -1111,6 +1113,8 @@ struct sysc_args {
 	const char *syscall_list;    // value of -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
 	struct target_args tgt;      // -p / --siblings / --no-follow-fork
+	custom_probe_spec_t specs[64]; // -e / -F: syscall:/lib: kind lines (funcs:/mod: ignored)
+	int  nspec;
 };
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -1125,6 +1129,8 @@ static const struct argp_option sysc_options[] = {
 	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)",                        0 },
 	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
 	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names",            0 },
+	{ "spec",        'e', "SPEC",     0, "Probe spec: syscall:[!]NAME or lib:[!]PATTERN (repeatable)", 0 },
+	{ "specs",       'F', "FILE",     0, "Load probe specs from a file (one per line, # = comment)", 0 },
 	TARGET_ARGP_OPTIONS,
 	{ 0 }
 };
@@ -1147,6 +1153,16 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
 		a->syscall_list = arg; a->syscall_mode = 2;
 		break;
+	case 'e':
+		if (a->nspec >= 64)
+			fprintf(stderr, "syscalls: warning — spec cap (64) reached; '%s' ignored\n", arg);
+		else if (parse_custom_probe_spec(arg, &a->specs[a->nspec], NULL) == 0)
+			a->nspec++;
+		break;
+	case 'F':
+		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+			argp_error(state, "cannot open spec file '%s'", arg);
+		break;
 	case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
 		return parse_target_arg(key, arg, state, &a->tgt);
 	case ARGP_KEY_END:
@@ -1154,6 +1170,29 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 			argp_error(state, "specify exactly one of -p or -P");
 		if (!a->tgt.n && !a->package_name[0])
 			argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+		{
+			int spec_deny = 0, spec_allow = 0;
+			for (int i = 0; i < a->nspec; i++)
+				if (a->specs[i].kind == SPEC_KIND_SYSCALL) {
+					if (a->specs[i].deny) spec_deny = 1; else spec_allow = 1;
+				}
+			if (spec_deny && spec_allow)
+				argp_error(state, "spec file mixes syscall: allow and syscall:! deny lines; use one or the other");
+			if (a->syscall_mode == 1 && spec_deny)
+				argp_error(state, "-s (allowlist) conflicts with syscall:! deny lines in spec");
+			if (a->syscall_mode == 2 && spec_allow)
+				argp_error(state, "-x (denylist) conflicts with syscall: allow lines in spec");
+			if (a->syscall_mode == 0) {
+				if (spec_deny) a->syscall_mode = 2;
+				else if (spec_allow) a->syscall_mode = 1;
+			}
+			if (!a->lib_sel[0])
+				for (int i = 0; i < a->nspec; i++)
+					if (a->specs[i].kind == SPEC_KIND_LIB) {
+						copy_str(a->lib_sel, a->specs[i].mod, sizeof(a->lib_sel));
+						break;
+					}
+		}
 		if (!a->capture_all && a->lib_sel[0] == '\0')
 			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
 		break;
@@ -1260,7 +1299,12 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	printf("ring buffer: %zu MB%s\n", bufbytes >> 20, g_quiet ? ", console output suppressed" : "");
 
 	if (syscall_mode) {
-		int nf = install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), syscall_list);
+		int nf = 0;
+		if (syscall_list)
+			nf += install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), syscall_list);
+		for (int i = 0; i < sa.nspec; i++)
+			if (sa.specs[i].kind == SPEC_KIND_SYSCALL)
+				nf += install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), sa.specs[i].mod);
 		printf("syscall filter: %s %d syscall(s)\n",
 		       syscall_mode == 1 ? "only" : "excluding", nf);
 	}

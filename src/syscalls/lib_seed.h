@@ -1,9 +1,9 @@
 #ifndef ARES_SYSCALLS_LIB_SEED_H
 #define ARES_SYSCALLS_LIB_SEED_H
 
-#include <fnmatch.h>
 #include <string.h>
 #include "common/maps.h"   // struct ares_map_line
+#include "common/pattern_match.h"
 
 // Pure decision predicate for seeding the lib-filter from an already-open
 // /proc/<pid>/maps (lib-filter attribution defect, BACKLOG.md): libc.so et al.
@@ -21,9 +21,7 @@ static inline int lib_selector_matches_name(const char *base, const char *sel)
 {
     if (!sel[0])
         return 0;
-    if (strpbrk(sel, "*?["))
-        return fnmatch(sel, base, 0) == 0;
-    return strstr(base, sel) != NULL;
+    return pm_match(sel, base, false) ? 1 : 0;
 }
 
 // Returns 1 if `ml` is an executable, file-backed mapping whose basename

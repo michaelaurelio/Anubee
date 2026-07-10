@@ -222,6 +222,8 @@ read as "app used no Java."
 
 ### SPEC1 — unified probe-spec v2 + `funcs`/`correlate` argument consolidation (planned, 2026-07-10)
 
+**Status (2026-07-11):** H1-H11 done; H12 (hard-remove `-I`/`-i`/`-r`) deferred, tracked separately.
+
 `funcs` currently has two parallel, overlapping ways to select what to probe: regex-based
 (`-I` module, `-i` function, `-r` return-only function — each its own 32-entry array +
 `regcomp` compile loop, `src/funcs/funcs.c`) and spec-based (`-e SPEC`, `-F FILE`, feeding
@@ -410,6 +412,29 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-11
+
+- **SPEC1 / EPIC H — unified probe-spec v2.** One spec grammar
+  (`[KIND:]TARGET[(ARGTYPES)][>RETTYPE]`) now drives target selection on `funcs`,
+  `correlate`, `syscalls`, `dump`, and `mod` alike, via three new shared modules
+  (`common/pattern_match.{h,c}`, `common/probe_spec_loader.{h,c}`,
+  `common/target_validate.{h,c}`) retiring most of the previously-duplicated
+  glob/file-reading/validation logic. `funcs`'s old `-I`/`-i`/`-r` regex flags are
+  deprecated (one-time stderr warning naming the `-e` equivalent) but still work
+  unchanged; `correlate` gained full `COMMON_ARGP_OPTIONS` parity and its `-F` trim
+  bug is fixed; `syscalls`/`dump`/`mod` each gained new, purely-additive `-e`/`-F`
+  spec-file support they never had before. `specs/*.spec` and
+  `ARES-Detector/sim/rasp-checks.spec` migrated to add `syscall:`/`lib:` lines
+  alongside their existing uprobe lines, making the latter a genuine multi-engine
+  capture-driving file. Two real bugs were found and fixed along the way (not just
+  noted): a NULL-logger crash in `parse_custom_probe_spec` reachable from the three
+  new engines' malformed-spec paths, and a missing kind-filter in `funcs`/
+  `correlate`'s custom-spec attach loops that could otherwise misprocess a
+  `syscall:`/`lib:` line meant for another engine. `mod_matches` (the
+  precompiled-regex `-I`/`-i`/`-r` matcher) is intentionally NOT retired — kept
+  until a future hard-removal (H12) of that mechanism. Tracked in
+  `ares-project/TODO.md` EPIC H (H1-H11 done, H12 deferred).
 
 ### 2026-07-10
 

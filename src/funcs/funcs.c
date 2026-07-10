@@ -27,6 +27,8 @@
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
+#include "common/target_validate.h"
 #include "common/decode.h"
 #include "common/emit.h"
 #include "common/runtime.h"
@@ -104,6 +106,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'I':
+            if (args->mod_pattern_count == 0)
+                fprintf(stderr, "funcs: -I/--include-module is deprecated; use "
+                                "-e '/PATTERN/!FUNC' (regex module) or -F FILE. "
+                                "Removal tracked (EPIC H12).\n");
             if (args->mod_pattern_count < 32)
                 copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
             else
@@ -111,6 +117,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'i':
+            if (args->func_pattern_count == 0)
+                fprintf(stderr, "funcs: -i/--include is deprecated; use "
+                                "-e 'MODULE!/PATTERN/' (regex func) or -F FILE. "
+                                "Removal tracked (EPIC H12).\n");
             if (args->func_pattern_count < 32)
                 copy_str(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]));
             else
@@ -144,6 +154,10 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
 
         case 'r':
+            if (args->func_ret_pattern_count == 0)
+                fprintf(stderr, "funcs: -r/--include-ret is deprecated; use "
+                                "-e 'MODULE!/PATTERN/>V' (return-only regex func) or "
+                                "-F FILE. Removal tracked (EPIC H12).\n");
             if (args->func_ret_pattern_count < 32)
                 copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
                         sizeof(args->func_ret_patterns[0]));
@@ -165,10 +179,13 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         // No arguments case
         case ARGP_KEY_END:
-            if (args->tgt.n > 0 && args->package_name[0] != '\0')
-                argp_error(state, "cannot use -p and -P together");
-            if (args->tgt.n == 0 && args->package_name[0] == '\0')
-                argp_usage(state);
+            validate_pid_or_package(state, args->tgt.n,
+                args->package_name[0] ? args->package_name : NULL);
+            validate_have_selector(state,
+                args->mod_pattern_count + args->func_pattern_count +
+                args->func_ret_pattern_count + args->custom_spec_count +
+                args->spec_file_count,
+                "-I/-i/-r regex, -e SPEC, or -F FILE");
             break;
         
         case 'p':
@@ -1044,21 +1061,11 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Parse custom probe specs from -F spec files
     for (int fi = 0; fi < args.spec_file_count; fi++) {
-        FILE *sf = fopen(args.spec_files[fi], "r");
-        if (!sf) {
-            err_print("   [err] > cannot open spec file '%s': %s\n", args.spec_files[fi], strerror(errno));
+        if (load_probe_spec_file(args.spec_files[fi], custom_probe_specs, 64,
+                                 &custom_probe_spec_count, err_print) != 0) {
             err = -1;
             goto cleanup;
         }
-        char sline[512];
-        while (fgets(sline, sizeof(sline), sf) && custom_probe_spec_count < 64) {
-            char *end = sline + strlen(sline) - 1;
-            while (end >= sline && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t')) *end-- = '\0';
-            if (sline[0] == '\0' || sline[0] == '#') continue;
-            if (parse_custom_probe_spec(sline, &custom_probe_specs[custom_probe_spec_count], err_print) == 0)
-                custom_probe_spec_count++;
-        }
-        fclose(sf);
     }
 
 

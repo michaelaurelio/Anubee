@@ -141,8 +141,12 @@ int main(void)
     CHECK(parse("lib:") == -1,                   "err: lib: empty pattern");
     CHECK(parse("mod:") == -1,                   "err: mod: empty name");
 
-    // --- lockstep: every specs/*.spec line must still parse as plain FUNCS,
-    // proving the KIND-prefix strip above never fires on real spec files ---
+    // --- lockstep: every specs/*.spec line parses as its intended kind.
+    // Originally (Phase 1) every line was plain FUNCS, proving the KIND-prefix
+    // strip never fired on real spec files. EPIC H11 adds syscall:/lib: lines
+    // to two of these files, so a line's own prefix now decides which
+    // assertion applies -- still catches a real FUNCS line misclassified, or
+    // a real syscall:/lib: line failing to be recognized as such. ---
     {
         static const char *const spec_files[] = {
             "specs/common-dynload.spec", "specs/common-file.spec",
@@ -168,10 +172,19 @@ int main(void)
                 if (line[0] == '\0' || line[0] == '#') continue;
                 checks++;
                 total_lines++;
-                if (parse_custom_probe_spec(line, &S, noop_log) != 0 ||
-                    S.kind != SPEC_KIND_FUNCS || S.deny != false) {
+                bool expect_non_funcs = (strncmp(line, "syscall:", 8) == 0 ||
+                                          strncmp(line, "lib:", 4) == 0);
+                if (parse_custom_probe_spec(line, &S, noop_log) != 0) {
+                    failures++;
+                    printf("  FAIL: lockstep: %s: '%s' failed to parse\n",
+                           spec_files[fi], line);
+                } else if (!expect_non_funcs && (S.kind != SPEC_KIND_FUNCS || S.deny != false)) {
                     failures++;
                     printf("  FAIL: lockstep: %s: '%s' did not parse as plain FUNCS\n",
+                           spec_files[fi], line);
+                } else if (expect_non_funcs && S.kind == SPEC_KIND_FUNCS) {
+                    failures++;
+                    printf("  FAIL: lockstep: %s: '%s' expected non-FUNCS kind but got FUNCS\n",
                            spec_files[fi], line);
                 }
             }

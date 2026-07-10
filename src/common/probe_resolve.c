@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <libelf.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -311,9 +312,23 @@ bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path)
     return pm_match(spec->mod, bname, /*exact=*/true);
 }
 
+// Fallback logger substituted below when a caller passes log == NULL (e.g.
+// engines with no existing per-line-error logger of their own) — every
+// existing "log(...)" call site in this function stays unguarded/unchanged;
+// NULL is made safe once here instead of at each of the 9 error sites.
+static void default_log(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
 int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                             void (*log)(const char *fmt, ...))
 {
+    if (!log) log = default_log;
+
     memset(out, 0, sizeof(*out));
     out->arg_count = -1;
     out->ret_type  = ARG_NONE;

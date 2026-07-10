@@ -12,3 +12,5 @@ libc.so!access(S,V)>V
 
 libc.so!inotify_add_watch(V,S,V)>V
 
+syscall:openat
+

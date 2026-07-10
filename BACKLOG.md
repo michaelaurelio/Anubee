@@ -30,6 +30,9 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
   still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
+- SPEC1 — unified probe-spec v2 (`KIND:` prefix: `funcs:`/`syscall:`/`lib:`/`mod:`) +
+  `funcs`/`correlate` argument consolidation; spreads spec-file selection to `syscalls`/
+  `dump`/`mod`; deprecates `funcs -I/-i/-r` in favor of `-e`/`-F`.
 
 **Minor:**
 - CR5 follow-on: `dump` coverage field.
@@ -216,6 +219,64 @@ Strategic: this is the largest, most fragile surface in the repo, for best-effor
 on a tool whose real edge is stealthy syscalls. Managed naming is now labeled
 **experimental** in README/DOCUMENTATION (2026-07-08) so a silent BuildID miss doesn't
 read as "app used no Java."
+
+### SPEC1 — unified probe-spec v2 + `funcs`/`correlate` argument consolidation (planned, 2026-07-10)
+
+`funcs` currently has two parallel, overlapping ways to select what to probe: regex-based
+(`-I` module, `-i` function, `-r` return-only function — each its own 32-entry array +
+`regcomp` compile loop, `src/funcs/funcs.c`) and spec-based (`-e SPEC`, `-F FILE`, feeding
+`common/probe_resolve.c`'s `MODULE!FUNC[@OFFSET][(ARGTYPES)][>RETTYPE]` grammar).
+`correlate` duplicates the `-I`/`-i` regex arrays verbatim and re-implements `-e`/`-F` file
+loading with different whitespace-trimming than `funcs` (`\n\r \t` vs `\n`-only). Three
+more engines each have their own bespoke, spec-less selector: `syscalls` (`-l` library
+scope + `-a`/`-s`/`-x` syscall name allow/deny), `dump` (positional glob/substring
+PATTERN), `mod` (positional analyzer NAME). The glob-matching convention is independently
+reimplemented three times with inconsistent trigger chars (`*?[` in `lib_seed.h`/
+`rebuild.c` vs `*?` in `probe_resolve.c`). `funcs` is also missing a zero-target
+validation `correlate` already has (`ARGP_KEY_END`) — a `funcs` invocation with no
+`-I/-i/-e/-F` parses fine and only fails at runtime.
+
+**Plan:** one spec grammar, one loader, one matcher, with a `KIND:` prefix so a single
+spec file can drive selection on every engine, not just `funcs`/`correlate`:
+
+```
+[KIND:]TARGET[(ARGTYPES)][>RETTYPE]
+```
+
+| Kind | Prefix | TARGET grammar | Absorbs | ARGTYPES/RETTYPE |
+|---|---|---|---|---|
+| uprobe | `funcs:` or omitted (default — every existing `specs/*.spec` line keeps parsing unchanged) | `MODULE!FUNC[@OFFSET]`, each side exact/glob(`*?[`)/`/regex/` | `funcs -I/-i/-r`, `correlate -I/-i` | yes (S,V,F,A args; S,V return; bare `>RET` = return-only, replacing `-r`) |
+| `syscall:` | — | `[!]NAME` (glob ok; leading `!` = deny) | `syscalls -s/-x` | no |
+| `lib:` | — | `[!]PATTERN` (glob/substring) | `syscalls -l`, `dump`'s positional PATTERN | no |
+| `mod:` | — | `NAME` (exact, analyzer registry) | `mod`'s positional NAME | no |
+
+`custom_probe_spec_t` gains `spec_kind_t kind` (default 0 = `SPEC_KIND_FUNCS`, preserving
+today's unprefixed semantics) and `bool deny`; all existing fields unchanged. Three new
+shared modules replace the duplication above: `common/probe_spec_loader.{h,c}` (one
+`-F` file reader, consistent trimming, existing 64-spec/8-file caps kept),
+`common/pattern_match.{h,c}` (one exact/glob/regex matcher, retiring
+`lib_selector_matches_name`, `dump_name_matches`, `custom_spec_matches_path`/`mod_matches`),
+`common/target_validate.{h,c}` (one `-p`/`-P` exclusivity + zero-target check, retiring
+three copy-pasted, differently-worded versions in `funcs.c`/`correlate.c`/`syscalls.c`).
+
+**Per engine:** `funcs`'s `-I/-i/-r` deprecate (stderr warning naming the equivalent spec
+line, e.g. `-e 'libc.so!/^encrypt/'`; behavior unchanged this release) rather than
+hard-remove, so existing scripts/CI don't break — hard removal is a follow-up once
+`specs/*.spec`, docs, and `ARES-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
+onto the shared loader/matcher and gains full `COMMON_ARGP_OPTIONS` for surface parity
+(currently hand-rolls only `-o`/`-q`). `syscalls`/`dump`/`mod` each gain new, purely
+additive `-e`/`-F` support reading the kind lines relevant to them — no existing flag
+changes, first time these three can share a spec file with `funcs`/`correlate` at all.
+
+**Explicitly out of scope for this item:** unifying the deeper per-mapping resolve+attach
+driver duplication (`funcs`'s `apply_custom_specs_for_file` vs `correlate`'s
+`attach_uprobes_for_pid` — same maps-walk+dedup+attach shape, different BPF skeleton
+targets). That's a BPF-attach-path change, not an argument/spec-system change; noted here
+as a natural follow-on once SPEC1 lands.
+
+Tracked with concrete tasks in `ares-project/TODO.md` EPIC H. `tests/test_probe_spec.c`
+is the grammar regression guard and must gain KIND/glob/regex cases while every existing
+case (including the 6 malformed-input rejections) keeps passing unchanged.
 
 ---
 

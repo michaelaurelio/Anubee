@@ -29,6 +29,8 @@
 #include "common/emit.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
+#include "common/target_validate.h"
 #include "common/engine_args.h"
 #include "common/runtime.h"
 #include "common/maps.h"
@@ -634,9 +636,8 @@ static const char corr_args_doc[] = "";
 #define ARES_KEY_RETURNS 0x200   // correlate-local long-only key (--returns)
 
 struct corr_args {
+    struct common_args c;          // -o -v -q -J -b -Q (shared with funcs/syscalls)
     const char        *pkg;
-    const char        *out_path;
-    int                quiet;
     int                returns;
     struct target_args tgt;
     custom_probe_spec_t specs[64];
@@ -655,8 +656,7 @@ static const struct argp_option corr_options[] = {
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
     { "include-module", 'I', "MODULE", 0, "Target module to trace (regex, repeatable)", 0 },
     { "include", 'i', "FUNCTION",  0, "Target function to trace (regex, repeatable)", 0 },
-    { "output",  'o', "FILE",      0, "Write structured JSONL (implies -q)", 0 },
-    { "quiet",   'q', NULL,        0, "Suppress per-event console output", 0 },
+    COMMON_ARGP_OPTIONS,
     { "returns", ARES_KEY_RETURNS, NULL, 0,
       "Also attach uretprobes: return value + exact span timing (LOUD: adds a "
       "stack trampoline, a 2nd detection surface beyond the entry BRK)", 0 },
@@ -667,17 +667,25 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
 {
     struct corr_args *a = state->input;
     switch (key) {
-    case 'P': a->pkg      = arg; break;
-    case 'o': a->out_path = arg; break;
-    case 'q': a->quiet    = 1;   break;
+    case 'P': a->pkg = arg; break;
+    case 'o': case 'v': case 'q': case 'J': case 'b': case 'Q':
+        return parse_common_arg(key, arg, state, &a->c);
     case ARES_KEY_RETURNS: a->returns = 1; break;
     case 'I':
+        if (a->mod_pattern_count == 0)
+            fprintf(stderr, "correlate: -I/--include-module is deprecated; use "
+                            "-e '/PATTERN/!FUNC' (regex module) or -F FILE. "
+                            "Removal tracked (EPIC H12).\n");
         if (a->mod_pattern_count < 32)
             snprintf(a->mod_patterns[a->mod_pattern_count++], 256, "%s", arg);
         else
             fprintf(stderr, "correlate: warning — module pattern cap (32) reached; '%s' ignored\n", arg);
         break;
     case 'i':
+        if (a->func_pattern_count == 0)
+            fprintf(stderr, "correlate: -i/--include is deprecated; use "
+                            "-e 'MODULE!/PATTERN/' (regex func) or -F FILE. "
+                            "Removal tracked (EPIC H12).\n");
         if (a->func_pattern_count < 32)
             snprintf(a->func_patterns[a->func_pattern_count++], 256, "%s", arg);
         else
@@ -691,26 +699,14 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
         else if (parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) == 0)
             a->nspec++;
         break;
-    case 'F': {
-        FILE *sf = fopen(arg, "r");
-        if (!sf) argp_error(state, "cannot open '%s': %s", arg, strerror(errno));
-        char line[512];
-        while (fgets(line, sizeof(line), sf) && a->nspec < 64) {
-            char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
-            if (line[0] == '\0' || line[0] == '#') continue;
-            if (parse_custom_probe_spec(line, &a->specs[a->nspec], log_stderr) == 0) a->nspec++;
-        }
-        if (a->nspec >= 64 && !feof(sf))
-            fprintf(stderr, "correlate: warning — spec cap (64) reached; "
-                            "remaining lines in '%s' ignored\n", arg);
-        fclose(sf);
+    case 'F':
+        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, log_stderr) != 0)
+            argp_error(state, "cannot open spec file '%s'", arg);
         break;
-    }
     case ARGP_KEY_END:
-        if ((a->tgt.n == 0 && !a->pkg) || (a->tgt.n > 0 && a->pkg))
-            argp_error(state, "specify exactly one of -p or -P");
-        if (a->nspec == 0 && a->mod_pattern_count == 0 && a->func_pattern_count == 0)
-            argp_error(state, "no probe targets given (-e SPEC, -F FILE, or -I/-i regex)");
+        validate_pid_or_package(state, a->tgt.n, a->pkg);
+        validate_have_selector(state, a->nspec + a->mod_pattern_count + a->func_pattern_count,
+            "-e SPEC, -F FILE, or -I/-i regex");
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -742,7 +738,7 @@ static const char             *g_pkg;       // non-NULL in launch mode (-P); NUL
 static int                      g_uid;      // resolved UID, valid when g_pkg is set
 // ponytail: promoted from correlate_setup's old function-local static so
 // correlate_attach can reach the same specs/tgt state after setup returns.
-static struct corr_args         g_ca = { 0 };
+static struct corr_args         g_ca = { .c = COMMON_ARGS_INIT };
 
 // Attach the shared lib_trace kprobes (uprobe_mmap / uprobe_munmap) that emit the
 // {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
@@ -767,7 +763,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (argp_parse(&corr_argp, argc, argv, 0, NULL, &g_ca) != 0)
         return 1;
 
-    g_quiet   = g_ca.quiet || (g_ca.out_path != NULL);
+    g_quiet   = g_ca.c.quiet || (g_ca.c.output_file != NULL);
 
     for (int i = 0; i < g_ca.mod_pattern_count; i++) {
         g_mod_has_slash[i] = strchr(g_ca.mod_patterns[i], '/') != NULL;
@@ -784,8 +780,8 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         }
         g_func_re_count++;
     }
-    if (g_ca.out_path && ares_sink_open(&g_sink, g_ca.out_path, "event", 1) != 0) {
-        fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.out_path, strerror(errno));
+    if (g_ca.c.output_file && ares_sink_open(&g_sink, g_ca.c.output_file, "event", 1) != 0) {
+        fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.c.output_file, strerror(errno));
         return 1;
     }
 

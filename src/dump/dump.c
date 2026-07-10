@@ -33,6 +33,8 @@
 #include "common/engine_args.h"
 #include "common/runtime.h"
 #include "common/engine_driver.h"  // dump_setup/_run/_teardown (AA3)
+#include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -142,6 +144,8 @@ struct dump_args {
     int raw;
     int quiet;
     struct target_args tgt;
+    custom_probe_spec_t specs[64];
+    int nspec;
 };
 
 // Synthetic keys for long-only options (must be > 127 to avoid short-option collision).
@@ -155,6 +159,7 @@ static const struct argp_option dump_options[] = {
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
+    { "specs",    'F',        "FILE",     0, "Load probe specs from a file (one per line, # = comment); a lib: line supplies PATTERN when none is given positionally", 0 },
     TARGET_ARGP_OPTIONS,
     { 0 }
 };
@@ -169,6 +174,10 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;
+    case 'F':
+        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+            argp_error(state, "cannot open spec file '%s'", arg);
+        break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
@@ -178,6 +187,9 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
+        if (!a->pattern)
+            for (int i = 0; i < a->nspec; i++)
+                if (a->specs[i].kind == SPEC_KIND_LIB) { a->pattern = a->specs[i].mod; break; }
         if (a->tgt.n > 0 && a->pkg)
             argp_error(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)

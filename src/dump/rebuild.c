@@ -26,6 +26,7 @@
 #include "rebuild.h"
 #include "common/proc_mem.h"
 #include "common/maps.h"
+#include "common/pattern_match.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +36,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-#include <fnmatch.h>
 #include <elf.h>
 
 #define DUMP_MAX_PATH  256
@@ -116,15 +116,15 @@ static const char *basename_of(const char *p)
 // 'e_[0-9]*'. A plain pattern keeps the original substring-of-full-path match.
 int dump_name_matches(const char *pattern, const char *path)
 {
-	if (strpbrk(pattern, "*?[")) {
+	if (pm_is_glob(pattern)) {
 		char bn[DUMP_MAX_PATH];
 		snprintf(bn, sizeof(bn), "%s", basename_of(path));
 		char *del = strstr(bn, " (deleted)");
 		if (del)
 			*del = '\0';
-		return fnmatch(pattern, bn, 0) == 0;
+		return pm_match(pattern, bn, false) ? 1 : 0;
 	}
-	return strstr(path, pattern) != NULL;
+	return pm_match(pattern, path, false) ? 1 : 0;
 }
 
 // ---- dynamic info extracted from PT_DYNAMIC -------------------------------

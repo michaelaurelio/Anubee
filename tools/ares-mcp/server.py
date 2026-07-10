@@ -122,6 +122,16 @@ def query(syscall: Optional[str] = None, tid: Optional[int] = None,
 
 
 @mcp.tool()
+def coverage() -> list:
+    """Per-engine coverage-health records ingested from `type":"coverage"` lines
+    (funcs/syscalls/correlate -J/-o output): snapshot truncation, CFI unwind
+    stops, ring/queue drops, and function-return capture rate. Use it to gauge
+    how much of a trace is trustworthy vs blind spots before drawing conclusions
+    from it."""
+    return store.coverage()
+
+
+@mcp.tool()
 def get_event(event_id: int) -> Optional[dict]:
     """Full detail of a single event by id: all args, string/fd/decoded args, and
     the complete symbolized backtrace."""

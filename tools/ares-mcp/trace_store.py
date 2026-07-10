@@ -136,7 +136,7 @@ class TraceStore:
         path = os.path.abspath(os.path.expanduser(path))
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        calls, returns, fspans, syscalls = [], [], [], []
+        calls, returns, fspans, syscalls, coverage = [], [], [], [], []
         skipped = 0
         with open(path, "r", errors="replace") as f:
             for line in f:
@@ -157,6 +157,8 @@ class TraceStore:
                     fspans.append(rec)
                 elif t == "syscall" and "span" in rec:
                     syscalls.append(rec)
+                elif t == "coverage":
+                    coverage.append(rec)
                 else:
                     # no "type" (legacy wrapper) or a plain syscalls-engine record
                     skipped += 1
@@ -169,6 +171,12 @@ class TraceStore:
                     "pid INTEGER, tid INTEGER, entry_addr VARCHAR, args VARCHAR[])")
         con.execute("CREATE TABLE span_syscalls(span BIGINT, pid INTEGER, tid INTEGER, "
                     "nr BIGINT, syscall VARCHAR, args VARCHAR[], decoded VARCHAR[])")
+        con.execute("CREATE TABLE coverage(engine VARCHAR, clean BOOLEAN, "
+                    "snaps_total BIGINT, snaps_truncated BIGINT, cfi_walks BIGINT, "
+                    "ring_drops BIGINT, queue_drops BIGINT, managed_naming_off BOOLEAN, "
+                    "prearm_drops BIGINT, depth_capped BIGINT, decode_partial BOOLEAN, "
+                    "returns_spans BIGINT, returns_captured BIGINT, "
+                    "cfi_stops MAP(VARCHAR, BIGINT))")
         if calls:
             con.executemany("INSERT INTO calls VALUES (?,?,?,?,?,?)",
                 [[c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
@@ -186,6 +194,23 @@ class TraceStore:
                 [[s.get("span"), s.get("pid"), s.get("tid"), s.get("nr"),
                   s.get("syscall"), s.get("args") or [], s.get("decoded") or []]
                  for s in syscalls])
+        if coverage:
+            def _cov_row(c):
+                snaps = c.get("snaps") or {}
+                cfi = c.get("cfi") or {}
+                drops = c.get("drops") or {}
+                rets = c.get("returns") or {}
+                return [c.get("engine"), c.get("clean", False),
+                        snaps.get("total", 0), snaps.get("truncated", 0),
+                        cfi.get("walks", 0),
+                        drops.get("ring", 0), drops.get("queue", 0),
+                        c.get("managed_naming_off", False),
+                        c.get("prearm_drops", 0), c.get("depth_capped", 0),
+                        c.get("decode_partial", False),
+                        rets.get("spans", 0), rets.get("captured", 0),
+                        cfi.get("stops") or {}]
+            con.executemany("INSERT INTO coverage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [_cov_row(c) for c in coverage])
         self.con = con
         self.path = path
         return path, skipped
@@ -204,6 +229,13 @@ class TraceStore:
         ).fetchall()
         cols = ["span", "tid", "syscall", "func_entry", "decoded"]
         return [dict(zip(cols, r)) for r in rows]
+
+    def coverage(self):
+        """All ingested coverage-health records (one per engine record), flattened
+        from the nested `{snaps,cfi,drops,returns}` JSON. `is_clean` mirrors the
+        `clean` column."""
+        self._require()
+        return self._rows("SELECT *, clean AS is_clean FROM coverage")
 
     def load(self, path):
         con = duckdb.connect()

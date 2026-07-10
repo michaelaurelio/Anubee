@@ -1,0 +1,2 @@
+{"type":"coverage","engine":"syscalls","clean":true}
+{"type":"coverage","engine":"funcs","snaps":{"total":40,"truncated":2},"cfi":{"walks":100,"stops":{"no_fde":3,"ra_readfault":1}},"drops":{"ring":7,"queue":0},"prearm_drops":5,"depth_capped":1,"returns":{"spans":40,"captured":38}}

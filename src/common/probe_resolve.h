@@ -27,8 +27,19 @@ typedef struct {
     bool ret_only;       // true = -r match: uprobe_save_only + uretprobe, no CALL event
 } probe_target_t;
 
+// KIND: prefix on a spec line. Default (0) = SPEC_KIND_FUNCS so every
+// existing unprefixed spec line (funcs/correlate) keeps parsing unchanged.
+typedef enum {
+    SPEC_KIND_FUNCS = 0,
+    SPEC_KIND_SYSCALL,
+    SPEC_KIND_LIB,
+    SPEC_KIND_MOD,
+} spec_kind_t;
+
 typedef struct {
-    char mod[256];
+    spec_kind_t kind;    // KIND: prefix; default SPEC_KIND_FUNCS
+    bool deny;           // syscall:/lib: leading '!' (deny); unused for other kinds
+    char mod[256];        // FUNCS: module; syscall:/lib:/mod: the bare pattern/name
     char func[256];
     unsigned long offset; // 0 = resolve from symbol name
     int arg_count;

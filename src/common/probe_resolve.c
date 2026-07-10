@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "common/probe_resolve.h"
 #include "common/maps.h"
+#include "common/pattern_match.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <fnmatch.h>
 #include <gelf.h>
 #include <libelf.h>
 #include <stdio.h>
@@ -298,13 +298,17 @@ int resolve_targets_for_file(const struct probe_resolve_ctx *ctx,
 
 bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path)
 {
-    if (strchr(spec->mod, '/'))
+    // A '/' in the pattern means full-path substring match — unless it's a
+    // /regex/-delimited pattern, whose delimiters are also slashes.
+    if (strchr(spec->mod, '/') && !pm_is_regex(spec->mod))
         return strstr(path, spec->mod) != NULL;
     const char *bname = strrchr(path, '/');
     bname = bname ? bname + 1 : path;
-    if (strchr(spec->mod, '*') || strchr(spec->mod, '?'))
-        return fnmatch(spec->mod, bname, 0) == 0;
-    return strcmp(bname, spec->mod) == 0;
+    if (pm_is_regex(spec->mod))
+        return pm_regex(spec->mod, bname);
+    // exact=true: was fnmatch(*?) else strcmp; pm_match's glob trigger set
+    // widens to "*?[" (was "*?" here) — no existing specs/*.spec line uses '['.
+    return pm_match(spec->mod, bname, /*exact=*/true);
 }
 
 int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
@@ -316,6 +320,59 @@ int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
 
     char buf[512];
     copy_str(buf, input, sizeof(buf));
+
+    // Strip an optional "KIND:" prefix. Unrecognized text before ':' is NOT a
+    // kind (e.g. "libc.so!open" has no such prefix, and MODULE!FUNC can't
+    // collide with these tokens) — out->kind stays SPEC_KIND_FUNCS (0, from
+    // the memset above) when no prefix matches, preserving today's semantics.
+    {
+        static const struct { const char *p; spec_kind_t k; } KINDS[] = {
+            { "funcs:",   SPEC_KIND_FUNCS },
+            { "syscall:", SPEC_KIND_SYSCALL },
+            { "lib:",     SPEC_KIND_LIB },
+            { "mod:",     SPEC_KIND_MOD },
+        };
+        for (size_t i = 0; i < sizeof(KINDS) / sizeof(KINDS[0]); i++) {
+            size_t n = strlen(KINDS[i].p);
+            if (strncmp(buf, KINDS[i].p, n) == 0) {
+                out->kind = KINDS[i].k;
+                memmove(buf, buf + n, strlen(buf + n) + 1);
+                break;
+            }
+        }
+    }
+
+    // syscall:/lib:/mod: kinds: no (args)/>ret grammar, just an optional
+    // leading '!' (deny, syscall:/lib: only) and a bare pattern/name.
+    if (out->kind == SPEC_KIND_SYSCALL || out->kind == SPEC_KIND_LIB) {
+        char *p = buf;
+        if (*p == '!') { out->deny = true; p++; }
+        if (strchr(p, '(') || strchr(p, '>')) {
+            log("   [err] > %s spec does not support (args)/>ret: %s\n",
+                out->kind == SPEC_KIND_SYSCALL ? "syscall:" : "lib:", input);
+            return -1;
+        }
+        if (p[0] == '\0') {
+            log("   [err] > empty pattern in spec: %s\n", input);
+            return -1;
+        }
+        copy_str(out->mod, p, sizeof(out->mod));
+        return 0;
+    }
+    if (out->kind == SPEC_KIND_MOD) {
+        if (buf[0] == '\0') {
+            log("   [err] > empty name in spec: %s\n", input);
+            return -1;
+        }
+        copy_str(out->mod, buf, sizeof(out->mod));
+        return 0;
+    }
+
+    // SPEC_KIND_FUNCS (default): existing MODULE!FUNC[@OFFSET][(ARGS)][>RET]
+    // grammar, unchanged below. A "funcs:" prefix has already been stripped
+    // above if present; MODULE/FUNC sides may be plain, glob (*?[), or
+    // /regex/-delimited — the split logic here doesn't need to know which,
+    // since '/' isn't a delimiter it acts on.
 
     // Strip '>rettype' suffix (outside any parentheses): e.g. "libc.so!fgets(S,V,V)>V"
     {

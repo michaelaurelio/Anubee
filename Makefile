@@ -90,7 +90,7 @@ FUNC_CSRC := $(SRC)/funcs/funcs.c $(SRC)/funcs/funcs_emit.c
 # shared library-load tracing module (src/common), linked once; exports only its
 # ares_libtrace_* API (everything else localized, like the engines).
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
-               $(SRC)/common/probe_resolve.c $(SRC)/common/trace_schema.c \
+               $(SRC)/common/probe_resolve.c $(SRC)/common/probe_spec_loader.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
                $(SRC)/common/runtime.c $(SRC)/common/evqueue.c $(SRC)/common/symbolize.c \
                $(SRC)/common/maps.c $(SRC)/common/stack_snapshot.c \
@@ -100,7 +100,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/art_shadow.c \
                $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c $(SRC)/common/sym_jit.c \
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
-               $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c
+               $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
+               $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -110,7 +111,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_resolve_pkg_from_pid \
                ares_launch_app ares_launch_banner \
                mod_matches is_duplicate resolve_targets resolve_targets_for_file \
-               parse_custom_probe_spec resolve_custom_spec_for_path custom_spec_matches_path \
+               parse_custom_probe_spec load_probe_spec_file resolve_custom_spec_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
                ares_sink_open ares_sink_emit ares_sink_flush \
@@ -128,7 +129,9 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_is_interp_frame \
                ares_coverage_report ares_cfi_stop_name \
                ares_art_naming_disabled \
-               ares_syscall_table ares_syscall_table_count
+               ares_syscall_table ares_syscall_table_count \
+               validate_pid_or_package validate_have_selector \
+               pm_is_glob pm_is_regex pm_match pm_regex
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -405,8 +408,8 @@ $(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilit
 
 test:
 	@mkdir -p $(BUILD)
-	@if $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null </dev/null; then \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c -o $(BUILD)/test_probe_spec -lelf && \
+	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null; then \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
 	  $(BUILD)/test_probe_spec; \
 	 else \
 	  echo "skip: libelf-dev not installed, skipping test_probe_spec (apt install libelf-dev)"; \

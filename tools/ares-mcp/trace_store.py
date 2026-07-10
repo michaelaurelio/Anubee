@@ -340,6 +340,56 @@ class TraceStore:
             "array_to_string(decoded, ' ') AS decoded "
             f"FROM span_syscalls{w} LIMIT ?", p + [limit])
 
+    def span_timeline(self, pid=None, tid=None, limit=200):
+        """Spans in chronological/allocation order (by span id) with
+        parent_span, pid, tid, entry_addr, and how many syscalls fired inside
+        each span — the call-ordering view a histogram doesn't give. Optional
+        `pid`/`tid` filters (AND-combined)."""
+        self._require()
+        limit = _clamp(limit, default=200)
+        where, p = [], []
+        if pid is not None:
+            where.append("f.pid = ?"); p.append(pid)
+        if tid is not None:
+            where.append("f.tid = ?"); p.append(tid)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        return self._rows(
+            "SELECT f.span AS span, f.parent_span AS parent_span, f.pid AS pid, "
+            "f.tid AS tid, f.entry_addr AS entry_addr, "
+            "count(s.span) AS syscall_count "
+            "FROM func_spans f LEFT JOIN span_syscalls s ON s.span = f.span"
+            f"{w} GROUP BY f.span, f.parent_span, f.pid, f.tid, f.entry_addr "
+            "ORDER BY f.span LIMIT ?", p + [limit])
+
+    def diff_calls(self, baseline, compare, top=50):
+        """Compare two correlate/funcs structured traces and report call-sites
+        and in-span syscalls seen ONLY in `compare` — the diff_traces analog
+        for funcs-span data. `new_calls` are (module, symbol) call-sites absent
+        from `baseline`; `new_span_syscalls` are syscall names that appeared
+        only inside compare's spans. Both files are loaded fresh via throwaway
+        stores; the active trace is untouched."""
+        top = _clamp(top)
+        a, b = TraceStore(), TraceStore()
+        a.load_structured(baseline)
+        b.load_structured(compare)
+
+        base_calls = {(r["module"], r["symbol"]) for r in a.call_histogram(top=MAX_ROWS)}
+        new_calls = [r for r in b.call_histogram(top=MAX_ROWS)
+                     if (r["module"], r["symbol"]) not in base_calls]
+        new_calls.sort(key=lambda r: r["n"], reverse=True)
+
+        base_syscalls = {r[0] for r in a.con.execute("SELECT DISTINCT syscall FROM span_syscalls").fetchall()}
+        compare_syscalls = b._rows(
+            "SELECT syscall, count(*) AS count FROM span_syscalls "
+            "GROUP BY syscall ORDER BY count DESC")
+        new_span_syscalls = [r for r in compare_syscalls if r["syscall"] not in base_syscalls]
+
+        return {
+            "baseline": a.path, "compare": b.path,
+            "new_calls": new_calls[:top],
+            "new_span_syscalls": new_span_syscalls[:top],
+        }
+
     # ---- funcs analysis (calls/returns) -----------------------------------
 
     def call_histogram(self, top=40, module=None):

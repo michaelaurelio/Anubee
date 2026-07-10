@@ -174,6 +174,26 @@ def span_syscalls(span: Optional[int] = None, syscall: Optional[str] = None,
 
 
 @mcp.tool()
+def span_timeline(pid: Optional[int] = None, tid: Optional[int] = None,
+                  limit: int = 200) -> list:
+    """Spans in chronological/allocation order (by span id) with parent_span,
+    pid, tid, entry_addr, and how many syscalls fired inside each span — the
+    call-ordering view a histogram doesn't give. Optional `pid`/`tid` filters."""
+    return store.span_timeline(pid=pid, tid=tid, limit=limit)
+
+
+@mcp.tool()
+def diff_calls(baseline: str, compare: str, top: int = 50) -> dict:
+    """Compare two correlate/funcs structured traces (JSONL from `ares funcs -J`
+    or `ares correlate -o`) and report call-sites and in-span syscalls seen ONLY
+    in `compare` — the diff_traces analog for funcs-span data. `new_calls` are
+    (module, symbol) call-sites absent from `baseline`; `new_span_syscalls` are
+    syscall names that appeared only inside compare's spans. Both files are
+    loaded fresh; the active trace is untouched."""
+    return store.diff_calls(baseline=baseline, compare=compare, top=top)
+
+
+@mcp.tool()
 def call_histogram(top: int = 40, module: Optional[str] = None) -> list:
     """Count of function calls per (module, symbol) from a funcs trace, most
     frequent first. Optional `module` filter."""

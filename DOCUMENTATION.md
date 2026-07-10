@@ -1069,9 +1069,10 @@ on non-`--returns` runs.
 
 `lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
 `dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a
-minimal variant: each analyzer (`proc-event`/`execve`/`prop-read`) reports its own
-`drops.ring` count the same way, but has no snapshot/CFI/managed-naming/decode
-surface to report — every other field always reads clean.
+minimal variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
+`ransomware-burst`) reports its own `drops.ring` count the same way, but has no
+snapshot/CFI/managed-naming/decode surface to report — every other field always
+reads clean.
 
 The rationale generalizes the older `ares_drops_report` contract: **silence
 never means "didn't check"** - every run states its own coverage explicitly,
@@ -1080,15 +1081,22 @@ one.
 
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)
 
-- `trace_store.py` — loads a trace (JSON array or JSONL) into in-memory **DuckDB**
-  and exposes bounded, pre-aggregated queries. Reads only the explicit syscall
-  column set, so the new `type` field is ignored and non-syscall records (no `id`)
-  are dropped — i.e. it is forward-compatible with the discriminated schema today
-  and analyzes `type:"syscall"` records.
-- `server.py` — FastMCP tools: `overview`, `hot_loops`, `syscall_histogram`,
-  `files`, `threads`, `sockets`, `errors`, `distinct_backtraces`, `query`,
-  `get_event`, `search`, `wx_scan`, `diff_traces`, plus on-device
-  `list_libraries` (via `ares lib`) / `dump_library` (via `ares dump`).
+- `trace_store.py` — two ingest paths. `load()` loads a `type:"syscall"` trace
+  (JSON array or JSONL) into in-memory **DuckDB** via the explicit syscall column
+  set (non-syscall records, no `id`, are dropped). `load_structured()` is the
+  type-discriminated JSONL path (`funcs -J` / `correlate -o`): buckets records by
+  `type` into `calls`/`returns`/`func_spans`/`span_syscalls` tables, plus a
+  `coverage` table flattening `{"type":"coverage",...}` records (see §7) — one row
+  per engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
+  zero/false defaults.
+- `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
+  `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
+  `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
+  plus on-device `list_libraries` (via `ares lib`) / `dump_library` (via
+  `ares dump`). Over the `load_structured()` path: `coverage` (per-engine
+  coverage-health rows — "was this trace clean"), `call_histogram` (call counts by
+  module/symbol), `call_timing` (count/min/max/avg/p50/p95 of `returns.elapsed_ns`
+  by module/symbol), `calls_where` (module/symbol/pid/tid-filtered raw calls).
 - `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
   `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
   `dump_library` → `ares dump`.

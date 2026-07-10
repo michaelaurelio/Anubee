@@ -32,12 +32,14 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
 
 **Minor:**
-- CR5 follow-ons - MCP `coverage` ingest handler; `dump` coverage field.
+- CR5 follow-on: `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - C9 — `funcs` sockaddr decode.
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
   liveness tightening; ELF-note hardening done — see Resolved/Done).
-- MCP richness follow-on.
+- MCP richness follow-on (coverage ingest + call histogram/timing/filter tools done
+  2026-07-10 — see Resolved/Done; remaining: full `server.py` tool surface for
+  `func_spans`/`span_syscalls`/summary records, diff/timeline views).
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run incl. new `--dump`/`--correlate`
   wiring and `-p` attach mode; `correlate` R3/R4/X2; CR4 parity fix; Tier 5
@@ -48,6 +50,10 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
   `bpf_d_path` canonicalization to close (see Minor section below).
+- `mod file-access`/`ransomware-burst` `.bpf.o` compiles clean here, but their
+  `*.skel.h` are stale (no `dropped` map) and `bpftool` isn't available in this
+  dev env to regenerate them — full userspace compile + on-device confirmation
+  of nonzero `ring_drops` is pending (see 2026-07-10 Resolved/Done entry).
 - `mod ransomware-burst` coverage is conditional on scoped-storage bypass
   (`MANAGE_EXTERNAL_STORAGE` or legacy targetSdk) and doesn't cover
   lock-overlay-style extortion (see Minor section below).
@@ -219,15 +225,6 @@ read as "app used no Java."
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
-- **CR5 follow-on: MCP-side `coverage` ingest handler.** `ares_coverage_report`
-  writes `{"type":"coverage","engine":...}` to the `-o` sink, but
-  `tools/ares-mcp/trace_store.py`'s `load_structured` has no branch for it (only
-  `type:"syscall"` rows load into DuckDB today) and `server.py` has no tool
-  surfacing it. Add a `coverage` branch that stores the record(s) alongside the
-  trace and a small MCP tool (or a field on `overview`) that surfaces per-engine
-  coverage so an MCP client can check "was this trace clean" without grepping
-  the raw JSONL.
-
 - **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
   (no drop map, single-shot read). `dump`'s live-memory read
   (`src/dump/rebuild.c`) can still hit partial `/proc/<pid>/mem` reads or an ELF
@@ -245,17 +242,6 @@ read as "app used no Java."
   in only 9/201 stacks on the measured RASP target post-fix. Technically reachable
   now that CFI-misstep is fixed, but not the next wall. (AOT callers in
   `base.odex`/`boot.oat` don't hit this — they have `.debug_frame`.)
-
-- **`mod file-access`/`mod ransomware-burst` drop-telemetry gap.** The
-  `mod` drop-telemetry-parity fix (`ares_analyzer_t.drops()`, see Resolved/Done)
-  covers only the 3 analyzers it shipped with (`proc-event`/`execve`/`prop-read`);
-  `file_access.bpf.c` and `ransomware_burst.bpf.c` predate that fix and neither
-  `#include`s `bpf_drop.bpf.h` nor calls `bump_dropped()`, and neither
-  registration (`src/modules/file_access.c`/`ransomware_burst.c`) sets `.drops`
-  — `mod.c`'s `an->drops ? an->drops() : 0` silently reports 0 for both, even
-  if their ring buffers actually drop events. Fix = same pattern as the
-  original 3 (dropped map + `bump_dropped()` in each `.bpf.c`, a `*_drops()`
-  accessor wired into each registration struct).
 
 - `mod file-access` dirfd-relative opens. An `openat(dirfd, "relative/path", ...)`
   where `dirfd` isn't `AT_FDCWD` won't prefix-match the in-kernel gate's 4 fixed
@@ -313,9 +299,10 @@ read as "app used no Java."
     convention); keep unless a dedicated verbosity split is wanted.
 
 
-- **Unified MCP richness (follow-on).** Minimal ingest + span join done; remaining:
-  call histograms, timing views, symbol/module filters, full `server.py` tool surface
-  for the new types.
+- **Unified MCP richness (follow-on).** Minimal ingest + span join done; coverage
+  ingest + call histogram/timing/filter tools done 2026-07-10 (see Resolved/Done).
+  Remaining: full `server.py` tool surface for `func_spans`/`span_syscalls`/the
+  `*_summary` records, diff/timeline views.
 
 - **U1/U2 — console style diverges (not recommended).** `funcs` uses timestamped
   tagged lines (`[spawn] >`, `[uprobe] >`, …); other engines use prose banners. Masked
@@ -374,6 +361,51 @@ read as "app used no Java."
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-07-10
+
+- **`mod file-access`/`mod ransomware-burst` drop-telemetry gap closed.** Both
+  analyzers now follow the same pattern as `proc-event`/`execve`/`prop-read`:
+  `bpf_drop.bpf.h` included, `bump_dropped()` called at each ring-buffer
+  reserve-failure site (`file_access.bpf.c`'s `on_openat`/`on_openat2`;
+  `ransomware_burst.bpf.c`'s `record_touch()` re-arm branch — the deliberate
+  `bpf_ringbuf_discard` path-gate-reject paths are untouched, not drops), and a
+  `*_drops()` accessor (needed adding `common/runtime.h`, previously unincluded
+  in these two files) wired into each `ares_analyzer_t.drops` field. Their
+  already-emitted `coverage` record's `ring_drops` field goes from always-`0` to
+  accurate. `make build/{file_access,ransomware_burst}.bpf.o` compile clean;
+  `make test` green (33+ existing checks incl. both classify suites, unaffected).
+  **Pending:** userspace `.c` compile needs `bpftool` to regenerate stale
+  `*.skel.h` (`dropped` map missing from the checked-in skeletons) — absent in
+  this dev env; on-device confirmation that `ring_drops` reports nonzero under
+  ring pressure folds into the standing pending-on-device-verification item.
+
+- **CR5 follow-on: MCP `coverage` ingest + tool.** `tools/ares-mcp/trace_store.py`'s
+  `load_structured` gained a `coverage` bucket (a flat, nullable `coverage` table,
+  one row per engine record, flattening the sparse omitted-when-zero
+  `snaps`/`cfi`/`drops`/`returns` JSON) and a `coverage()` query method; `server.py`
+  exposes it as an MCP `coverage` tool so a client can check "was this trace clean"
+  without grepping raw JSONL. Pure addition — existing `call`/`return`/`func`/
+  `syscall+span` buckets untouched; the only behavior change is traces containing
+  coverage records now report a smaller `skipped` count, verified against the
+  existing `test_unified_ingest.py` fixture (no coverage records in it, assertion
+  unaffected). New `test_coverage_ingest.py` + `testdata/coverage.jsonl` fixture
+  (19 checks).
+
+- **MCP richness follow-on: call analysis tools.** Added `call_histogram`,
+  `call_timing` (count/min/max/avg/p50/p95 of `returns.elapsed_ns`), and
+  `calls_where` (module/symbol/pid/tid filtered) query methods + MCP tools over the
+  previously-unexposed `calls`/`returns` tables (populated by `load_structured` but
+  only consumed internally by `correlate_spans` before this). Pure read-only
+  additions, existing tables/methods/tools untouched. New
+  `test_call_analysis.py` (25 checks) against the existing `unified.jsonl` fixture.
+
+- **Dev-env note:** `python3 -m venv` failed here (`ensurepip` missing, no root to
+  `apt install python3-venv`); worked around via `--without-pip` + bootstrapping pip
+  from `get-pip.py`, then normal `pip install -e tools/ares-mcp`. `duckdb`+`mcp` now
+  importable via `tools/ares-mcp/.venv` — the long-standing "no python3 duckdb
+  module" environment gap (see tiered-audit-fix-plan memory) is resolved for this
+  venv, not the bare system `python3`.
 
 ### 2026-07-09
 

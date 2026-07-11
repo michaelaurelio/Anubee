@@ -35,6 +35,7 @@ enum trace_event_type {
     TRACE_FILE_ACCESS, // sensitive file open (mod file-access)
     TRACE_RANSOMWARE_BURST, // rename/unlink burst (mod ransomware-burst)
     TRACE_EXFIL_BURST, // sensitive-read-then-network-burst (mod exfil-burst)
+    TRACE_A11Y_ABUSE, // binder-transaction burst to system_server (mod a11y-abuse)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

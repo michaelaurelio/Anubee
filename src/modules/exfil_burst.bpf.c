@@ -281,13 +281,29 @@ int BPF_KPROBE(on_connect, const struct pt_regs *regs)
 }
 
 // sendto(sockfd, buf, len, flags, dest_addr, addrlen): regs[0]=sockfd,
-// regs[2]=len. fd is inherently a socket for this syscall -- no sock_fds
-// check needed.
+// regs[2]=len, regs[4]=dest_addr. fd is inherently a socket for this
+// syscall (no sock_fds check needed), but unlike write/writev -- which
+// only ever run on an fd armed by a prior non-loopback connect() --
+// sendto can target an unconnected UDP socket directly via its own
+// dest_addr, so the loopback exclusion has to be re-checked here against
+// ITS OWN destination, not inherited from sock_fds. dest_addr is optional
+// (NULL when reusing an already-connected socket's destination); a NULL
+// or unreadable dest_addr counts rather than being excluded -- silently
+// under-counting a real exfil send is worse than missing the narrow
+// loopback-on-an-already-connected-socket case.
 SEC("kprobe/__arm64_sys_sendto")
 int BPF_KPROBE(on_sendto, const struct pt_regs *regs)
 {
     if (!uid_matches() && !pid_matches())
         return 0;
+
+    unsigned long addr_ptr = BPF_CORE_READ(regs, regs[4]) & 0x00FFFFFFFFFFFFFFul;
+    if (addr_ptr) {
+        unsigned char sa[28] = {};
+        if (bpf_probe_read_user(sa, sizeof(sa), (void *)addr_ptr) == 0 &&
+            sockaddr_is_loopback(sa))
+            return 0;
+    }
 
     __u64 len = BPF_CORE_READ(regs, regs[2]);
     record_bytes(len);

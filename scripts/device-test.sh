@@ -530,7 +530,7 @@ case "$WHAT" in
     exfil-burst)       test_exfil_burst ;;
     correlate-returns) test_correlate_returns ;;
     all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | correlate-returns | all)" ;;
 esac
 
 forcestop

@@ -130,6 +130,36 @@ int main(void)
 	assert(nd == 63);         // 1 engine name + 62 section args
 	assert(v.argv[63] == NULL);
 
+	// injection-overflow boundary (F2): trace.c injects "-p <pids>" (2 argv
+	// slots + NULL) right after trace_build_argv returns, guarded by
+	// "argc < TRACE_ARGV_CAP - 2" so the inject always has room for those 2
+	// slots. Pin the two boundary values that guard depends on, named against
+	// the same TRACE_ARGV_CAP the builder itself now uses (rather than a
+	// second hand-copied literal) -- if the two ever drift apart, this fails.
+	char *cap[TRACE_ARGV_CAP]; for (int i = 0; i < TRACE_ARGV_CAP; i++) cap[i] = A("x");
+
+	// section of TRACE_ARGV_CAP-3 tokens -> argc == TRACE_ARGV_CAP-2, the
+	// exact value at which trace.c's "< TRACE_ARGV_CAP-2" guard flips from
+	// true (inject fits) to false (inject dropped) -- this build itself is
+	// NOT truncated; the guard is a trace.c-level decision, not the builder's.
+	trunc = 0;
+	int ne = trace_build_argv(&v, "syscalls", NULL, NULL, cap, 0, TRACE_ARGV_CAP - 3, &trunc);
+	assert(trunc == 0);
+	assert(ne == TRACE_ARGV_CAP - 2);
+
+	// one token more -> argc == TRACE_ARGV_CAP-1, the true max a non-truncated
+	// section can reach (still not truncated by the builder itself).
+	trunc = 0;
+	int nf = trace_build_argv(&v, "syscalls", NULL, NULL, cap, 0, TRACE_ARGV_CAP - 2, &trunc);
+	assert(trunc == 0);
+	assert(nf == TRACE_ARGV_CAP - 1);
+
+	// one more token past that -> now the builder itself truncates.
+	trunc = 0;
+	int ng = trace_build_argv(&v, "syscalls", NULL, NULL, cap, 0, TRACE_ARGV_CAP - 1, &trunc);
+	assert(trunc == 1);
+	assert(ng == TRACE_ARGV_CAP - 1);
+
 	printf("trace_args: ok\n");
 	return 0;
 }

@@ -22,16 +22,22 @@ struct trace_args {
 // unexpected token. A repeated section delimiter: the last one wins.
 int trace_parse_args(int argc, char **argv, struct trace_args *out);
 
+// Shared capacity for one engine's argv vector (NULL-terminated, so at most
+// TRACE_ARGV_CAP-1 real entries). Named so trace.c's post-build injections
+// (-p / -q) can bound themselves against the same limit trace_build_argv
+// uses, instead of duplicating the literal in six places.
+#define TRACE_ARGV_CAP 64
+
 // Per-engine argv builder: owns storage for one NULL-terminated argv vector.
 struct trace_argv {
-	char *argv[64];    // NULL-terminated; [0] = engine name
-	char  outbuf[512]; // backing store for the "-o <prefix>.<suffix>" argument
+	char *argv[TRACE_ARGV_CAP]; // NULL-terminated; [0] = engine name
+	char  outbuf[512];          // backing store for the "-o <prefix>.<suffix>" argument
 };
 
 // Build one engine's argv into *out:
 //   [ engine, ("-o" prefix.suffix)?, src_argv[start..end) ]
 // prefix != NULL: insert "-o" "<prefix>.<suffix>" before the section args.
-// If the section overflows 63 slots the remainder is dropped and
+// If the section overflows TRACE_ARGV_CAP-1 slots the remainder is dropped and
 // *truncated is set to 1 (caller warns). Returns argc (not counting NULL).
 int trace_build_argv(struct trace_argv *out, const char *engine,
                      const char *prefix, const char *suffix,

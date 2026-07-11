@@ -11,7 +11,6 @@
 // SP-based span close by default, --returns opts a target into an authoritative
 // uretprobe pop; syscall args get string/fd/sockaddr/flags decode (see corr_emit.c).
 #include <errno.h>
-#include <regex.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +30,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/target_validate.h"
+#include "common/pattern_match.h"
 #include "common/engine_args.h"
 #include "common/runtime.h"
 #include "common/maps.h"
@@ -351,17 +351,6 @@ static struct ares_sink g_sink;
 static int              g_quiet = 0;
 static int              g_returns = 0;  // --returns: attach a uretprobe per target too
 
-// -I/-i regex targeting (mirrors funcs.c). Resolved targets accumulate here
-// across attach_uprobes_for_pid calls so resolve_targets_for_file's dedup
-// (ctx->targets/target_count) sees everything attached so far.
-static regex_t        g_mod_re[32];
-static bool            g_mod_has_slash[32];
-static int             g_mod_re_count = 0;
-static regex_t         g_func_re[32];
-static int             g_func_re_count = 0;
-static probe_target_t  g_regex_targets[1024];
-static int             g_regex_target_count = 0;
-
 // Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
 // kprobe is tracked separately via g_kp). Grown on demand; on OOM we drop
 // tracking for the new link — it stays attached and is reaped at process exit.
@@ -460,6 +449,54 @@ static int handle_event(void *ctx, void *data, size_t sz)
 }
 
 // Scan /proc/<pid>/maps and attach the entry uprobe at every spec'd function.
+struct corr_dedup_entry { char path[256]; unsigned long off; };
+
+// Attach a single resolved custom-spec target, deduping via `done[]`. Shared
+// by both the exact-match spec path and the bulk /regex/ func-match path
+// (EPIC H12).
+static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
+                                       const char *path, probe_target_t tgt, int returns,
+                                       struct corr_dedup_entry *done, int *ndone,
+                                       int *attached, int *warned)
+{
+    int dup = 0;
+    for (int d = 0; d < *ndone; d++)
+        if (done[d].off == tgt.offset && strcmp(done[d].path, path) == 0) { dup = 1; break; }
+    if (dup) return;
+    if (*ndone < 256) {
+        snprintf(done[*ndone].path, sizeof(done[*ndone].path), "%s", path);
+        done[*ndone].off = tgt.offset;
+        (*ndone)++;
+    } else if (!*warned) {
+        fprintf(stderr, "correlate: warning — dedup table full (256) for PID %d; "
+                        "duplicate uprobes may be attached\n", pid);
+        *warned = 1;
+    }
+
+    struct bpf_link *link = bpf_program__attach_uprobe(
+        skel->progs.corr_uprobe_entry, false, pid, path, tgt.offset);
+    const char *bname = strrchr(path, '/');
+    bname = bname ? bname + 1 : path;
+    if (link) {
+        track_uprobe_link(link);
+        printf("[spec] > %s!%s @ 0x%lx\n", bname,
+               tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+        (*attached)++;
+        if (returns) {
+            struct bpf_link *rl = bpf_program__attach_uprobe(
+                skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
+            if (rl)
+                track_uprobe_link(rl);
+            else
+                fprintf(stderr, "[spec] > RET FAILED: %s!%s @ 0x%lx\n", bname,
+                        tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+        }
+    } else {
+        fprintf(stderr, "[spec] > FAILED: %s!%s @ 0x%lx\n", bname,
+                tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
+    }
+}
+
 static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                                   const custom_probe_spec_t *specs, int nspec,
                                   int returns)
@@ -473,7 +510,7 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
     }
 
     // Small dedup of (path,offset) already attached for this pid.
-    struct { char path[256]; unsigned long off; } done[256];
+    struct corr_dedup_entry done[256];
     int ndone = 0, attached = 0, warned = 0;
 
     char line[512];
@@ -489,100 +526,27 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
             // uprobe target.
             if (specs[s].kind != SPEC_KIND_FUNCS) continue;
             if (!custom_spec_matches_path(&specs[s], path)) continue;
+
+            if (pm_is_regex(specs[s].func)) {
+                // Bulk match: one spec, potentially many symbols (EPIC H12,
+                // replaces -i's "scan every symbol in a matched module" shape).
+                probe_target_t matches[256];
+                int n = resolve_custom_spec_matches_for_path(pid, path, &specs[s], matches, 256);
+                if (n == 256)
+                    fprintf(stderr, "correlate: warning — regex match cap (256) reached for %s!%s "
+                                    "in %s; additional matches may exist and were ignored\n",
+                            specs[s].mod, specs[s].func, path);
+                for (int m = 0; m < n; m++)
+                    attach_custom_spec_target(skel, pid, path, matches[m], returns,
+                                               done, &ndone, &attached, &warned);
+                continue;
+            }
+
             probe_target_t tgt;
             if (resolve_custom_spec_for_path(pid, path, &specs[s], &tgt) != 0)
                 continue;
-
-            int dup = 0;
-            for (int d = 0; d < ndone; d++)
-                if (done[d].off == tgt.offset && strcmp(done[d].path, path) == 0) { dup = 1; break; }
-            if (dup) continue;
-            if (ndone < 256) {
-                snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
-                done[ndone].off = tgt.offset;
-                ndone++;
-            } else if (!warned) {
-                fprintf(stderr, "correlate: warning — dedup table full (256) for PID %d; "
-                                "duplicate uprobes may be attached\n", pid);
-                warned = 1;
-            }
-
-            struct bpf_link *link = bpf_program__attach_uprobe(
-                skel->progs.corr_uprobe_entry, false, pid, path, tgt.offset);
-            const char *bname = strrchr(path, '/');
-            bname = bname ? bname + 1 : path;
-            if (link) {
-                track_uprobe_link(link);
-                printf("[spec] > %s!%s @ 0x%lx\n", bname,
-                       tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
-                attached++;
-                if (returns) {
-                    struct bpf_link *rl = bpf_program__attach_uprobe(
-                        skel->progs.corr_uretprobe_ret, true, pid, path, tgt.offset);
-                    if (rl)
-                        track_uprobe_link(rl);
-                    else
-                        fprintf(stderr, "[spec] > RET FAILED: %s!%s @ 0x%lx\n", bname,
-                                tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
-                }
-            } else {
-                fprintf(stderr, "[spec] > FAILED: %s!%s @ 0x%lx\n", bname,
-                        tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
-            }
-        }
-
-        // -I/-i regex targeting: resolve symbols in this mapping, attach each
-        // (mirrors funcs.c's mmap-triggered resolve_targets_for_file path).
-        if ((g_mod_re_count > 0 || g_func_re_count > 0) &&
-            mod_matches(path, g_mod_re, g_mod_has_slash, g_mod_re_count)) {
-            struct probe_resolve_ctx rctx = {
-                .mod_re = g_mod_re, .mod_has_slash = g_mod_has_slash, .mod_re_count = g_mod_re_count,
-                .func_re = g_func_re, .func_re_count = g_func_re_count,
-                .func_ret_re = NULL, .func_ret_re_count = 0,
-                .targets = g_regex_targets, .target_count = &g_regex_target_count,
-                .targets_cap = (int)(sizeof(g_regex_targets) / sizeof(g_regex_targets[0])),
-                .custom_specs = NULL, .custom_spec_count = 0,
-                .verbose = 0, .log = log_stderr,
-            };
-            int max = (int)(sizeof(g_regex_targets) / sizeof(g_regex_targets[0])) - g_regex_target_count;
-            int resolved = (max > 0) ? resolve_targets_for_file(&rctx, pid, path,
-                                (unsigned long)ml.start, (unsigned long)ml.end,
-                                g_regex_targets + g_regex_target_count, max) : 0;
-
-            for (int i = g_regex_target_count; i < g_regex_target_count + (resolved > 0 ? resolved : 0); i++) {
-                probe_target_t *tgt = &g_regex_targets[i];
-                int dup = 0;
-                for (int d = 0; d < ndone; d++)
-                    if (done[d].off == tgt->offset && strcmp(done[d].path, path) == 0) { dup = 1; break; }
-                if (dup) continue;
-                if (ndone < 256) {
-                    snprintf(done[ndone].path, sizeof(done[ndone].path), "%s", path);
-                    done[ndone].off = tgt->offset;
-                    ndone++;
-                }
-
-                const char *bname = strrchr(path, '/');
-                bname = bname ? bname + 1 : path;
-                struct bpf_link *link = bpf_program__attach_uprobe(
-                    skel->progs.corr_uprobe_entry, false, pid, path, tgt->offset);
-                if (link) {
-                    track_uprobe_link(link);
-                    printf("[regex] > %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
-                    attached++;
-                } else {
-                    fprintf(stderr, "[regex] > FAILED: %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
-                }
-
-                if (link && g_returns) {
-                    struct bpf_link *rlink = bpf_program__attach_uprobe(
-                        skel->progs.corr_uretprobe_ret, true, pid, path, tgt->offset);
-                    if (rlink)
-                        track_uprobe_link(rlink);
-                    else
-                        fprintf(stderr, "[regex] > FAILED ret: %s!%s @ 0x%lx\n", bname, tgt->func_name, tgt->offset);
-                }
-            }
-            if (resolved > 0) g_regex_target_count += resolved;
+            attach_custom_spec_target(skel, pid, path, tgt, returns,
+                                       done, &ndone, &attached, &warned);
         }
     }
     fclose(f);
@@ -615,11 +579,6 @@ static void wait_for_target_mapped(pid_t pid, const custom_probe_spec_t *specs, 
                 if (ml.path[0] != '/' || !ml.exec) continue;
                 for (int s = 0; s < nspec; s++)
                     if (custom_spec_matches_path(&specs[s], ml.path)) { fclose(f); return; }
-                if ((g_mod_re_count > 0 || g_func_re_count > 0) &&
-                    mod_matches(ml.path, g_mod_re, g_mod_has_slash, g_mod_re_count)) {
-                    fclose(f);
-                    return;
-                }
             }
             fclose(f);
         }
@@ -633,7 +592,7 @@ static void wait_for_target_mapped(pid_t pid, const custom_probe_spec_t *specs, 
 static const char corr_doc[] =
     "Attach entry uprobes to spec'd functions + a span-gated syscall kprobe;\n"
     "emit each in-span syscall tagged with the enclosing function's span.\v"
-    "Exactly one of -p or -P must be given. At least one of -e/-F or -I/-i is required.\n"
+    "Exactly one of -p or -P must be given. At least one of -e/-F is required.\n"
     "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
 static const char corr_args_doc[] = "";
 
@@ -646,20 +605,14 @@ struct corr_args {
     struct target_args tgt;
     custom_probe_spec_t specs[64];
     int                nspec;
-    char               mod_patterns[32][256];
-    int                mod_pattern_count;
-    char               func_patterns[32][256];
-    int                func_pattern_count;
 };
 
 // Only the flags actually wired. -J/-b/-Q have nothing to attach here.
 static const struct argp_option corr_options[] = {
     TARGET_ARGP_OPTIONS,
     { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
-    { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable)", 0 },
+    { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable); MODULE/FUNC accept /regex/ for bulk matching", 0 },
     { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
-    { "include-module", 'I', "MODULE", 0, "Target module to trace (regex, repeatable)", 0 },
-    { "include", 'i', "FUNCTION",  0, "Target function to trace (regex, repeatable)", 0 },
     COMMON_ARGP_OPTIONS,
     { "returns", ARES_KEY_RETURNS, NULL, 0,
       "Also attach uretprobes: return value + exact span timing (LOUD: adds a "
@@ -675,26 +628,6 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'o': case 'v': case 'q': case 'J': case 'b': case 'Q':
         return parse_common_arg(key, arg, state, &a->c);
     case ARES_KEY_RETURNS: a->returns = 1; break;
-    case 'I':
-        if (a->mod_pattern_count == 0)
-            fprintf(stderr, "correlate: -I/--include-module is deprecated; use "
-                            "-e '/PATTERN/!FUNC' (regex module) or -F FILE. "
-                            "Removal tracked (EPIC H12).\n");
-        if (a->mod_pattern_count < 32)
-            snprintf(a->mod_patterns[a->mod_pattern_count++], 256, "%s", arg);
-        else
-            fprintf(stderr, "correlate: warning — module pattern cap (32) reached; '%s' ignored\n", arg);
-        break;
-    case 'i':
-        if (a->func_pattern_count == 0)
-            fprintf(stderr, "correlate: -i/--include is deprecated; use "
-                            "-e 'MODULE!/PATTERN/' (regex func) or -F FILE. "
-                            "Removal tracked (EPIC H12).\n");
-        if (a->func_pattern_count < 32)
-            snprintf(a->func_patterns[a->func_pattern_count++], 256, "%s", arg);
-        else
-            fprintf(stderr, "correlate: warning — function pattern cap (32) reached; '%s' ignored\n", arg);
-        break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case 'e':
@@ -709,8 +642,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
         break;
     case ARGP_KEY_END:
         validate_pid_or_package(state, a->tgt.n, a->pkg);
-        validate_have_selector(state, a->nspec + a->mod_pattern_count + a->func_pattern_count,
-            "-e SPEC, -F FILE, or -I/-i regex");
+        validate_have_selector(state, a->nspec, "-e SPEC or -F FILE");
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -769,21 +701,6 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     g_quiet   = g_ca.c.quiet || (g_ca.c.output_file != NULL);
 
-    for (int i = 0; i < g_ca.mod_pattern_count; i++) {
-        g_mod_has_slash[i] = strchr(g_ca.mod_patterns[i], '/') != NULL;
-        if (regcomp(&g_mod_re[i], g_ca.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "correlate: invalid -I regex: %s\n", g_ca.mod_patterns[i]);
-            return 1;
-        }
-        g_mod_re_count++;
-    }
-    for (int i = 0; i < g_ca.func_pattern_count; i++) {
-        if (regcomp(&g_func_re[i], g_ca.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            fprintf(stderr, "correlate: invalid -i regex: %s\n", g_ca.func_patterns[i]);
-            return 1;
-        }
-        g_func_re_count++;
-    }
     if (g_ca.c.output_file && ares_sink_open(&g_sink, g_ca.c.output_file, "event", 1) != 0) {
         fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.c.output_file, strerror(errno));
         return 1;

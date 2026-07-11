@@ -262,8 +262,20 @@ int BPF_KPROBE(on_connect, const struct pt_regs *regs)
     __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
 
     unsigned long addr_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    __u64 addrlen = BPF_CORE_READ(regs, regs[2]);
+    // Bounded read sized to the caller's own addrlen (masked to a
+    // verifier-provable power-of-2 ceiling, then clamped to the buffer),
+    // same pattern as correlate.bpf.c's g_sock_args capture -- avoids the
+    // old fixed 28-byte read silently faulting (and dropping the socket
+    // from sock_fds entirely) when a smaller sockaddr_in sits near a page
+    // boundary.
     unsigned char sa[28] = {};
-    if (bpf_probe_read_user(sa, sizeof(sa), (void *)addr_ptr) != 0)
+    __u32 cnt = (__u32)addrlen & 31;
+    if (cnt > sizeof(sa))
+        cnt = sizeof(sa);
+    if (cnt == 0)
+        return 0;
+    if (bpf_probe_read_user(sa, cnt, (void *)addr_ptr) != 0)
         return 0;
     if (sockaddr_is_loopback(sa))
         return 0; // exfil has no reason to target itself -- never armed

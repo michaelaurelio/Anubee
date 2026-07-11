@@ -168,3 +168,19 @@ void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
     }
     jb_c(j, '}');
 }
+
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_A11Y_ABUSE)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"touch_count\":"); jb_u64(j, e->touch_count);
+    jb_s(j, ",\"window_ms\":");   jb_u64(j, e->window_ms);
+    jb_s(j, ",\"granted\":");
+    if (granted < 0)
+        jb_s(j, "null");
+    else
+        jb_s(j, granted ? "true" : "false");
+    jb_c(j, '}');
+}

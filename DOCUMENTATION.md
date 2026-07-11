@@ -955,6 +955,17 @@ object — no shared skeleton with `funcs`. Available analyzers:
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
+- **`a11y-abuse`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
+  `ares` code to touch Binder). Gated to outbound calls (not replies) addressed to
+  `system_server`; per-process sliding-window counter flags a burst of 50 calls within
+  5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
+  see whether the traced app holds a granted Accessibility Service — the dominant
+  technique behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda,
+  RatOn, TrickMo), used for overlay-credential harvesting, automated-transfer-system
+  fraud, screen reading, and security-prompt bypass. v1 is a coarse volume signal only:
+  it does not decode which specific privileged action fired (transaction-code decode is
+  parked — see BACKLOG.md), and only gates on `system_server` as the destination
+  (misses accessibility routing through OEM-specific separate framework processes).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
@@ -972,14 +983,15 @@ longer lost from the file:
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
+- `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
 `print_summary`'s own early-return).
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, and
-`exfil-burst` are kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
+key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
+and `a11y-abuse` are kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
@@ -1097,8 +1109,8 @@ on non-`--returns` runs.
 `lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
 `dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a
 minimal variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`ransomware-burst`) reports its own `drops.ring` count the same way, but has no
-snapshot/CFI/managed-naming/decode surface to report — every other field always
+`ransomware-burst`/`a11y-abuse`) reports its own `drops.ring` count the same way, but
+has no snapshot/CFI/managed-naming/decode surface to report — every other field always
 reads clean.
 
 The rationale generalizes the older `ares_drops_report` contract: **silence

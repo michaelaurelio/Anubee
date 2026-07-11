@@ -29,6 +29,15 @@
 #define RANSOMWARE_BURST_RING_LEN 32
 #define BURST_THRESHOLD           20
 
+// Per-pid sliding-window burst counter for mod a11y-abuse (see
+// a11y_abuse.bpf.c). Same load-bearing relationship as
+// RANSOMWARE_BURST_RING_LEN/BURST_THRESHOLD above: the ring must never wrap
+// before a window resets (RING_LEN > THRESHOLD), and the slot index uses a
+// `& (RING_LEN-1)` mask, so RING_LEN must stay a power of two (the BPF
+// verifier can't range-track a non-pow2 modulo).
+#define A11Y_CODE_RING_LEN 64
+#define A11Y_THRESHOLD     50
+
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
     MOD_EV_SPAWN      = 1,
@@ -41,6 +50,7 @@ enum {
     MOD_EV_FILE_ACCESS = 8,
     MOD_EV_RANSOMWARE_BURST = 9,
     MOD_EV_EXFIL_BURST = 10,
+    MOD_EV_A11Y_ABUSE = 11,
 };
 
 struct spawn_event {
@@ -100,6 +110,14 @@ struct exfil_burst_event {
     char   sample_path[FILE_PATH_LEN];
     unsigned char dest[28];   // raw sockaddr bytes (sockaddr_in6-sized), or all-zero
     __u32  dest_len;          // 0 if no connect() was observed before threshold
+};
+
+struct a11y_abuse_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u32  touch_count;
+    __u32  window_ms;
+    __u32  code_samples[A11Y_CODE_RING_LEN];
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

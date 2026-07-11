@@ -14,6 +14,7 @@ struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
 struct ransomware_burst_event; // modules/mod_events.h
 struct exfil_burst_event; // modules/mod_events.h
+struct a11y_abuse_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -63,5 +64,14 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
 // sendto).
 void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
                            const char *dest_str);
+
+// {"type":"a11y_abuse","pid":N,"comm":"..","touch_count":N,"window_ms":N,
+//  "granted":true|false|null}
+// granted mirrors ransomware_burst's manage_ext_storage tri-state: 1 -> true,
+// 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
+// consumers derive it from touch_count/granted the same way classify_a11y()
+// does, matching ransomware_burst/exfil_burst's convention of exposing raw
+// fields rather than a baked-in classification string.
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 
 #endif /* __ARES_MOD_EMIT_H */

@@ -23,6 +23,7 @@ static const struct ares_bpf_object g_objects[] = {
     { "mod:file-access", false }, // kprobes on openat/openat2; zero uprobes
     { "mod:ransomware-burst", false }, // kprobes on renameat/renameat2/unlinkat; zero uprobes
     { "mod:exfil-burst", false }, // kprobes on openat/openat2/connect/sendto/write/writev/close; zero uprobes
+    { "mod:a11y-abuse", false }, // tracepoint on binder_transaction; zero uprobes
 };
 
 const struct ares_bpf_object *ares_bpf_objects(int *count)

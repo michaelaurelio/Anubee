@@ -345,12 +345,33 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
   arming (a soft precondition), not the byte-threshold detection itself.
   `writev()` calls with more than 8 iovecs undercount past the 8th entry
   (bounded-loop limit for verifier provability).
-- Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
-  future work per the ransomware-burst design's research: current Android
-  "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock
-  overlays + data-destruction threats rather than actual file encryption.
-  Different mechanism entirely (likely Window Manager /
-  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse), not file syscalls.
+- `mod a11y-abuse` known v1 limitations (shipped 2026-07-12): no transaction-code
+  decode — the analyzer proves "high Binder call volume to `system_server` while
+  Accessibility-granted," not *which* privileged action fired (parked, same version-
+  treadmill risk shape as ART's `k_table`/`ARES_ART_OFFSETS`). Only gates on
+  `system_server` as the destination — misses accessibility routing through any
+  OEM-specific separate framework process. Grant check
+  (`enabled_accessibility_services`) is a package-substring match against a
+  colon-separated settings string, not a structured parse — a package name that
+  happens to be a substring of another entry could false-match. Threshold (50 calls/
+  5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
+  `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
+  matching.
+- Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
+  Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
+  full-screen lock overlays + data-destruction threats rather than actual file
+  encryption. This item previously assumed the whole category (Window Manager /
+  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse) was "not file syscalls" and
+  therefore out of `ares`'s reach — that premise no longer holds for the
+  accessibility-service-abuse slice: `mod a11y-abuse` (shipped 2026-07-12) proves
+  Binder-mediated behavior is kernel-observable via the `binder_transaction`
+  tracepoint. What remains genuinely open is the Window-Manager/overlay-specific
+  mechanism itself (`SYSTEM_ALERT_WINDOW` window creation, screen-lock detection) —
+  `a11y-abuse` v1 only signals "Binder-chatty with `system_server` while
+  Accessibility-granted," not "created a full-screen overlay." A follow-on
+  analyzer targeting `IWindowManager` binder traffic specifically (same
+  `system_server`-destination-gating approach) is the natural next step — see
+  `mod a11y-abuse`'s design doc Follow-up ideas.
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser

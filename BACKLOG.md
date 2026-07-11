@@ -270,6 +270,20 @@ read as "app used no Java."
   see it. Real-app-driven verification (as opposed to a synthetic PID
   trigger) is now `scripts/burstapp/build.sh install` — see
   DOCUMENTATION.md §"Testing tiers".
+- `mod exfil-burst` known v1 limitations (shipped 2026-07-11): contacts/
+  SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,
+  same structural blind spot as `ransomware-burst`'s MediaStore gap) —
+  scoped deliberately to media/credential-file reads, which are visible as
+  real `openat` calls. Byte counts are requested length at syscall entry
+  (`write`/`writev`/`sendto`'s argument), not a kretprobe-verified
+  delivered length — a failed or blocked send still counts toward the
+  threshold; accepted since a real exfiltrating sample needs its sends to
+  actually succeed to be worth anything. Threshold (512 KiB/30s) is
+  evadable by a sample that throttles/chunks below it. Credential-pattern
+  matching in the BPF-side gate checks the pattern anywhere in the path,
+  not just the basename (`file_access_classify.c`'s stricter check) — a
+  documented precision simplification, acceptable since it only affects
+  arming (a soft precondition), not the byte-threshold detection itself.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
   future work per the ransomware-burst design's research: current Android
   "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock

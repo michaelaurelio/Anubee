@@ -18,6 +18,8 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
                                 int distinct_estimate, int manage_ext_storage);
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -244,6 +246,31 @@ int main(void)
     j.len = 0;
     mod_emit_ransomware_burst(&j, &rb, 15, -1);
     CHECK_HAS(j, "\"manage_external_storage\":null", "ransomware_burst manage_external_storage null");
+
+    // ---- exfil_burst: full event, destination known -------------------------
+    struct exfil_burst_event eb = {0};
+    eb.h.type = MOD_EV_EXFIL_BURST;
+    eb.h.pid  = 9100;
+    eb.h.tid  = 9100;
+    strncpy(eb.comm, "spyware", TASK_COMM_LEN - 1);
+    eb.bytes_sent = 600000;
+    eb.window_ms  = 4200;
+    strncpy(eb.sample_path, "/sdcard/DCIM/photo1.jpg", sizeof(eb.sample_path) - 1);
+
+    j.len = 0;
+    mod_emit_exfil_burst(&j, &eb, "203.0.113.1:443");
+    CHECK_HAS(j, "\"type\":\"exfil_burst\"",       "exfil_burst type");
+    CHECK_HAS(j, "\"pid\":9100",                   "exfil_burst pid");
+    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_burst comm");
+    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_burst bytes_sent");
+    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_burst window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_burst sample_path");
+    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_burst dest known");
+
+    // ---- exfil_burst: no destination observed --------------------------------
+    j.len = 0;
+    mod_emit_exfil_burst(&j, &eb, NULL);
+    CHECK_HAS(j, "\"dest\":null", "exfil_burst dest null");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

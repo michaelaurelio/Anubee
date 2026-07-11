@@ -149,3 +149,22 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
         jb_s(j, manage_ext_storage ? "true" : "false");
     jb_c(j, '}');
 }
+
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_BURST)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"bytes_sent\":");    jb_u64(j, e->bytes_sent);
+    jb_s(j, ",\"window_ms\":");     jb_u64(j, e->window_ms);
+    jb_s(j, ",\"sample_path\":\""); jb_esc(j, e->sample_path); jb_c(j, '"');
+    jb_s(j, ",\"dest\":");
+    if (dest_str && dest_str[0]) {
+        jb_c(j, '"'); jb_esc(j, dest_str); jb_c(j, '"');
+    } else {
+        jb_s(j, "null");
+    }
+    jb_c(j, '}');
+}

@@ -40,6 +40,7 @@ enum {
     MOD_EV_PROP_READ  = 7,
     MOD_EV_FILE_ACCESS = 8,
     MOD_EV_RANSOMWARE_BURST = 9,
+    MOD_EV_EXFIL_BURST = 10,
 };
 
 struct spawn_event {
@@ -89,6 +90,16 @@ struct ransomware_burst_event {
     __u32  window_ms;
     __u64  path_hashes[RANSOMWARE_BURST_RING_LEN];
     char   sample_path[FILE_PATH_LEN];
+};
+
+struct exfil_burst_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u64  bytes_sent;
+    __u32  window_ms;
+    char   sample_path[FILE_PATH_LEN];
+    unsigned char dest[28];   // raw sockaddr bytes (sockaddr_in6-sized), or all-zero
+    __u32  dest_len;          // 0 if no connect() was observed before threshold
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

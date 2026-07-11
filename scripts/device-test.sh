@@ -418,6 +418,48 @@ test_ransomware_burst() {
     fi
 }
 
+# mod exfil-burst: deterministic trigger via a compiled single-process
+# generator (scripts/ares_exfil_gen.c), attached by PID (-p gates on
+# target_pids regardless of the generator's UID). Hard-fail, not SKIP: we
+# control the trigger. Same single-process rationale as ransomware-burst's
+# generator (a forked write()-per-call pattern would split byte-volume
+# across too many short-lived pids to accumulate a per-pid signal) plus a
+# new constraint: the destination is a deliberately unreachable RFC 5737
+# test address, because exfil_burst.bpf.c's connect() hook discards
+# loopback destinations outright (a real listener on 127.0.0.1 would never
+# arm the socket fd).
+test_exfil_burst() {
+    echo "=== mod exfil-burst (sensitive-read + network byte-volume burst) ==="
+    forcestop
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "exfil-burst: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/ares_exfil_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_exfil_gen.c" \
+        || fail "exfil-burst: failed to compile exfil generator"
+    local gen="/data/local/tmp/ares_exfil_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-burst: push failed"
+    adb shell "chmod 755 $gen"
+
+    local loop_pid
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
+        fail "exfil-burst: could not start exfil-generator (no pid captured)"
+    fi
+
+    local out; out="$(ares "mod exfil-burst -p $loop_pid")"
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_exfil_test'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "exfil-burst: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    if grep -q '^\[exfil\]' <<<"$out"; then
+        info "exfil-burst OK — $(grep -c '^\[exfil\]' <<<"$out") [exfil] line(s)"
+    else
+        tail -10 <<<"$out" >&2
+        fail "exfil-burst: no [exfil] line from a 576KiB-write generator (threshold/window mistuned, or timing missed the attach window)"
+    fi
+}
+
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
 # stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
 # entry uprobe attaches before the target opens any files. Spec mirrors
@@ -485,8 +527,9 @@ case "$WHAT" in
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
     ransomware-burst)  test_ransomware_burst ;;
+    exfil-burst)       test_exfil_burst ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_correlate_returns ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_correlate_returns ;;
     *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | correlate-returns | all)" ;;
 esac
 

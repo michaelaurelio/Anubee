@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <libelf.h>
-#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +28,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/target_validate.h"
+#include "common/pattern_match.h"
 #include "common/decode.h"
 #include "common/emit.h"
 #include "common/runtime.h"
@@ -50,12 +50,9 @@ static const char args_doc[] = "";
 static const struct argp_option options[] = {
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
     { "activity",       'A', "ACTIVITY",    0, "Override launch activity component (default: auto-resolve)",                          0 },
-    { "include-module", 'I', "MODULE",       0, "Target module to trace (path, name)",                                                0 },
-    { "include",        'i', "FUNCTION",     0, "Target function to trace (regex)",                                                   0 },
     { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",           0 },
-    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]",        0 },
+    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]; MODULE/FUNC accept /regex/ for bulk matching", 0 },
     { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",            0 },
-    { "include-ret",    'r', "FUNCTION",     0, "Return-only probe: function regex (requires -I; attaches uretprobe, no CALL event)", 0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
     { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },
     { "no-snapshot",    2,   NULL,           0, "Disable stack snapshots (default)",                                                 0 },
@@ -69,17 +66,11 @@ struct args {
     struct target_args tgt;
     char package_name[256];
     char activity[256];
-    char mod_patterns[32][256];
-    int mod_pattern_count;
-    char func_patterns[32][256];
-    int func_pattern_count;
     bool resolve_syms;
     char custom_specs[64][512];
     int custom_spec_count;
     char spec_files[8][256];
     int spec_file_count;
-    char func_ret_patterns[32][256];
-    int func_ret_pattern_count;
     bool caller_only;
     int  want_snap;       /* --snapshot */
 };
@@ -103,28 +94,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         case 'A':
             copy_str(args->activity, arg, sizeof(args->activity));
-            break;
-
-        case 'I':
-            if (args->mod_pattern_count == 0)
-                fprintf(stderr, "funcs: -I/--include-module is deprecated; use "
-                                "-e '/PATTERN/!FUNC' (regex module) or -F FILE. "
-                                "Removal tracked (EPIC H12).\n");
-            if (args->mod_pattern_count < 32)
-                copy_str(args->mod_patterns[args->mod_pattern_count++], arg, sizeof(args->mod_patterns[0]));
-            else
-                fprintf(stderr, "funcs: warning — module cap (32) reached; '%s' ignored\n", arg);
-            break;
-
-        case 'i':
-            if (args->func_pattern_count == 0)
-                fprintf(stderr, "funcs: -i/--include is deprecated; use "
-                                "-e 'MODULE!/PATTERN/' (regex func) or -F FILE. "
-                                "Removal tracked (EPIC H12).\n");
-            if (args->func_pattern_count < 32)
-                copy_str(args->func_patterns[args->func_pattern_count++], arg, sizeof(args->func_patterns[0]));
-            else
-                fprintf(stderr, "funcs: warning — function cap (32) reached; '%s' ignored\n", arg);
             break;
 
         case 'v':
@@ -153,18 +122,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
                 fprintf(stderr, "funcs: warning — spec-file cap (8) reached; '%s' ignored\n", arg);
             break;
 
-        case 'r':
-            if (args->func_ret_pattern_count == 0)
-                fprintf(stderr, "funcs: -r/--include-ret is deprecated; use "
-                                "-e 'MODULE!/PATTERN/>V' (return-only regex func) or "
-                                "-F FILE. Removal tracked (EPIC H12).\n");
-            if (args->func_ret_pattern_count < 32)
-                copy_str(args->func_ret_patterns[args->func_ret_pattern_count++], arg,
-                        sizeof(args->func_ret_patterns[0]));
-            else
-                fprintf(stderr, "funcs: warning — return-pattern cap (32) reached; '%s' ignored\n", arg);
-            break;
-
         case 'c':
             args->caller_only = true;
             break;
@@ -182,10 +139,8 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             validate_pid_or_package(state, args->tgt.n,
                 args->package_name[0] ? args->package_name : NULL);
             validate_have_selector(state,
-                args->mod_pattern_count + args->func_pattern_count +
-                args->func_ret_pattern_count + args->custom_spec_count +
-                args->spec_file_count,
-                "-I/-i/-r regex, -e SPEC, or -F FILE");
+                args->custom_spec_count + args->spec_file_count,
+                "-e SPEC or -F FILE");
             break;
         
         case 'p':
@@ -313,12 +268,6 @@ void ts_print(const char *fmt, ...)
 }
 
 
-// Check module and function pattern match
-regex_t mod_re[32];
-bool mod_has_slash[32];
-regex_t func_re[32];
-
-
 probe_target_t probe_targets[4096];
 int probe_target_count = 0;
 
@@ -366,11 +315,6 @@ static void pt_hash_put(__u64 addr, probe_target_t *target)
     pt_hash[i].target = target;
 }
 
-// Parser module for target resolution
-int mod_re_count = 0;
-int func_re_count = 0;
-regex_t func_ret_re[32];
-int func_ret_re_count = 0;
 bool verbose = false;
 bool resolve_syms = false;
 bool caller_only = false;
@@ -483,6 +427,64 @@ static pid_t find_zygote_pid(void)
     return result;
 }
 
+// Store + attach one resolved custom-spec target. Shared by both the
+// exact-match spec path and the bulk /regex/ func-match path (EPIC H12).
+static void attach_one_custom_target(const struct probe_resolve_ctx *ctx, const char *path,
+                                      pid_t uprobe_pid, unsigned long map_start,
+                                      unsigned long map_end, probe_target_t tgt)
+{
+    pid_t pid = tgt.pid;
+    if (is_duplicate(ctx->targets, *ctx->target_count, path, tgt.offset))
+        return;
+
+    int idx = *ctx->target_count;
+    ctx->targets[idx] = tgt;
+    probe_links[idx] = NULL;
+    (*ctx->target_count)++;
+
+    const char *bname = strrchr(path, '/');
+    bname = bname ? bname + 1 : path;
+    const char *label = tgt.func_name[0] ? tgt.func_name : "?";
+
+    if (resolve_syms) {
+        ts_print("[sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
+    } else {
+        ts_print("[spec] > %s!%s @ 0x%lx%s\n", bname, label, tgt.offset,
+                  tgt.ret_only ? " (ret-only)" :
+                  tgt.ret_type != ARG_NONE ? " [+ret]" : "");
+        struct bpf_program *entry_prog = tgt.ret_only
+            ? skel->progs.uprobe_save_only
+            : skel->progs.uprobe_open;
+        probe_links[idx] = bpf_program__attach_uprobe(
+            entry_prog, false, uprobe_pid, path, tgt.offset);
+        if (!probe_links[idx] && map_start && map_end) {
+            char map_files[80];
+            ares_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
+            if (access(map_files, F_OK) == 0) {
+                probe_links[idx] = bpf_program__attach_uprobe(
+                    entry_prog, false, uprobe_pid, map_files, tgt.offset);
+                if (probe_links[idx])
+                    ts_print("[spec] > attached via map_files (file deleted): %s!%s\n",
+                              bname, label);
+                else
+                    err_print(" [spec] > FAILED: %s!%s\n", bname, label);
+            } else {
+                ts_print("[spec] > MISSED: %s!%s (mapping gone before attach)\n",
+                          bname, label);
+            }
+        } else if (!probe_links[idx]) {
+            err_print(" [spec] > FAILED: %s!%s\n", bname, label);
+        }
+
+        if (tgt.ret_type != ARG_NONE || tgt.ret_only) {
+            probe_ret_links[idx] = bpf_program__attach_uprobe(
+                skel->progs.uretprobe_open, true, uprobe_pid, path, tgt.offset);
+            if (!probe_ret_links[idx])
+                err_print(" [spec] > FAILED ret: %s!%s\n", bname, label);
+        }
+    }
+}
+
 static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                                          pid_t pid, const char *path, pid_t uprobe_pid,
                                          unsigned long map_start, unsigned long map_end)
@@ -495,62 +497,30 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
         if (spec->kind != SPEC_KIND_FUNCS) continue;
         if (!custom_spec_matches_path(spec, path)) continue;
 
+        if (pm_is_regex(spec->func)) {
+            // Bulk match: one spec, potentially many symbols (EPIC H12,
+            // replaces -i's "scan every symbol in a matched module" shape).
+            probe_target_t matches[256];
+            int cap = max - *ctx->target_count;
+            if (cap > 256) cap = 256;
+            if (cap <= 0) continue;
+            int n = resolve_custom_spec_matches_for_path(pid, path, spec, matches, cap);
+            if (n == cap)
+                err_print("   [err] > custom spec: regex match cap (%d) reached for %s!%s in %s; "
+                          "additional matches may exist and were ignored\n",
+                          cap, spec->mod, spec->func, path);
+            for (int m = 0; m < n && *ctx->target_count < max; m++)
+                attach_one_custom_target(ctx, path, uprobe_pid, map_start, map_end, matches[m]);
+            continue;
+        }
+
         probe_target_t tgt;
         if (resolve_custom_spec_for_path(pid, path, spec, &tgt) != 0) {
             if (ctx->verbose) err_print("   [err] > custom spec: could not resolve %s!%s in %s\n",
                 spec->mod, spec->func[0] ? spec->func : "?", path);
             continue;
         }
-
-        if (is_duplicate(ctx->targets, *ctx->target_count, path, tgt.offset))
-            continue;
-
-        int idx = *ctx->target_count;
-        ctx->targets[idx] = tgt;
-        probe_links[idx] = NULL;
-        (*ctx->target_count)++;
-
-        const char *bname = strrchr(path, '/');
-        bname = bname ? bname + 1 : path;
-        const char *label = tgt.func_name[0] ? tgt.func_name : "?";
-
-        if (resolve_syms) {
-            ts_print("[sym] > %s!%s @ 0x%lx\n", bname, label, tgt.offset);
-        } else {
-            ts_print("[spec] > %s!%s @ 0x%lx%s\n", bname, label, tgt.offset,
-                      tgt.ret_only ? " (ret-only)" :
-                      tgt.ret_type != ARG_NONE ? " [+ret]" : "");
-            struct bpf_program *entry_prog = tgt.ret_only
-                ? skel->progs.uprobe_save_only
-                : skel->progs.uprobe_open;
-            probe_links[idx] = bpf_program__attach_uprobe(
-                entry_prog, false, uprobe_pid, path, tgt.offset);
-            if (!probe_links[idx] && map_start && map_end) {
-                char map_files[80];
-                ares_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
-                if (access(map_files, F_OK) == 0) {
-                    probe_links[idx] = bpf_program__attach_uprobe(
-                        entry_prog, false, uprobe_pid, map_files, tgt.offset);
-                    if (probe_links[idx])
-                        ts_print("[spec] > attached via map_files (file deleted): %s!%s\n",
-                                  bname, label);
-                    else
-                        err_print(" [spec] > FAILED: %s!%s\n", bname, label);
-                } else {
-                    ts_print("[spec] > MISSED: %s!%s (mapping gone before attach)\n",
-                              bname, label);
-                }
-            } else if (!probe_links[idx]) {
-                err_print(" [spec] > FAILED: %s!%s\n", bname, label);
-            }
-
-            if (tgt.ret_type != ARG_NONE || tgt.ret_only) {
-                probe_ret_links[idx] = bpf_program__attach_uprobe(
-                    skel->progs.uretprobe_open, true, uprobe_pid, path, tgt.offset);
-                if (!probe_ret_links[idx])
-                    err_print(" [spec] > FAILED ret: %s!%s\n", bname, label);
-            }
-        }
+        attach_one_custom_target(ctx, path, uprobe_pid, map_start, map_end, tgt);
     }
 }
 
@@ -864,75 +834,6 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             pthread_mutex_unlock(&g_sink_lock);
         }
 
-        bool mod_matched = mod_matches(path, mod_re, mod_has_slash, mod_re_count);
-
-        // Normal symbol resolution (filtered by -I/-i/-r)
-        if (mod_matched && (mod_re_count > 0 || func_ret_re_count > 0)) {
-            int prev_count = probe_target_count;
-            int max_targets = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev_count;
-            int resolved = resolve_targets_for_file(rctx, header->pid, path,
-                                                     (unsigned long)e->start, (unsigned long)e->end,
-                                                     probe_targets + prev_count, max_targets);
-
-            if (resolved > 0) {
-                pthread_mutex_lock(&g_targets_lock);
-                probe_target_count += resolved;
-                pthread_mutex_unlock(&g_targets_lock);
-
-                for (int i = prev_count; i < probe_target_count && !exiting; i++) {
-                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
-
-                    if (resolve_syms) {
-                        ts_print("[sym] > %s!%s @ 0x%lx\\n",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset);
-                    } else {
-                        bool ro = probe_targets[i].ret_only;
-                        ts_print("%s > %s!%s @ 0x%lx%s\n",
-                            ro ? "[rprobe]" : "[uprobe]",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset,
-                            probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
-
-                        struct bpf_program *entry_prog = ro
-                            ? skel->progs.uprobe_save_only
-                            : skel->progs.uprobe_open;
-                        probe_links[i] = bpf_program__attach_uprobe(
-                            entry_prog, false, -1,
-                            probe_targets[i].mod_path, probe_targets[i].offset);
-
-                        if (!probe_links[i]) {
-                            char map_files[80];
-                            ares_map_files_path(map_files, sizeof(map_files),
-                                                header->pid, e->start, e->end);
-                            if (access(map_files, F_OK) == 0) {
-                                probe_links[i] = bpf_program__attach_uprobe(
-                                    entry_prog, false, -1,
-                                    map_files, probe_targets[i].offset);
-                                if (probe_links[i])
-                                    ts_print("[uprobe] > attached via map_files (file deleted): %s!%s\n",
-                                              bname, probe_targets[i].func_name);
-                                else
-                                    err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
-                            } else {
-                                ts_print("[uprobe] > MISSED: %s!%s (mapping gone before attach)\n",
-                                          bname, probe_targets[i].func_name);
-                            }
-                        }
-
-                        if (probe_targets[i].ret_type != ARG_NONE || ro) {
-                            probe_ret_links[i] = bpf_program__attach_uprobe(
-                                skel->progs.uretprobe_open, true, -1,
-                                probe_targets[i].mod_path, probe_targets[i].offset);
-                            if (!probe_ret_links[i])
-                                err_print("[uprobe] > FAILED ret: %s!%s\n",
-                                    bname, probe_targets[i].func_name);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Custom spec resolution (independent of -I/-i filter)
         if (custom_probe_spec_count > 0)
             apply_custom_specs_for_file(rctx, header->pid, path, -1,
                                         (unsigned long)e->start, (unsigned long)e->end);
@@ -1026,36 +927,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     }
 
 
-    // Prepare regex for pattern matching
-    for (int i = 0; i < args.mod_pattern_count; i++) {
-        mod_has_slash[i] = strchr(args.mod_patterns[i], '/') != NULL;
-        if (regcomp(&mod_re[i], args.mod_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            err_print("   [err] > invalid regex pattern: %s\n", args.mod_patterns[i]);
-            err = -1;
-            goto cleanup;
-        }
-        mod_re_count++;
-    }
-    
-    for (int i = 0; i < args.func_pattern_count; i++) {
-        if (regcomp(&func_re[i], args.func_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            err_print("   [err] > invalid regex pattern: %s\n", args.func_patterns[i]);
-            err = -1;
-            goto cleanup;
-        }
-        func_re_count++;
-    }
-
-    for (int i = 0; i < args.func_ret_pattern_count; i++) {
-        if (regcomp(&func_ret_re[i], args.func_ret_patterns[i], REG_EXTENDED | REG_NOSUB) != 0) {
-            err_print("   [err] > invalid -r regex pattern: %s\n", args.func_ret_patterns[i]);
-            err = -1;
-            goto cleanup;
-        }
-        func_ret_re_count++;
-    }
-
-
     // Parse custom probe specs from -e flags
     for (int i = 0; i < args.custom_spec_count; i++) {
         if (parse_custom_probe_spec(args.custom_specs[i], &custom_probe_specs[custom_probe_spec_count], err_print) == 0)
@@ -1123,9 +994,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // handle_event can safely dereference it after funcs_setup returns. All fields
     // point at file-scope globals that outlive the stack frame.
     g_rctx = (struct probe_resolve_ctx){
-        .mod_re = mod_re, .mod_has_slash = mod_has_slash, .mod_re_count = mod_re_count,
-        .func_re = func_re, .func_re_count = func_re_count,
-        .func_ret_re = func_ret_re, .func_ret_re_count = func_ret_re_count,
         .targets = probe_targets, .target_count = &probe_target_count,
         .targets_cap = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])),
         .custom_specs = custom_probe_specs, .custom_spec_count = custom_probe_spec_count,
@@ -1143,25 +1011,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Find and resolve symbols in PID attach mode / spawn mode, then attach uprobes
     if (args.tgt.n > 0) {
-        if (mod_re_count > 0 || func_re_count > 0) {
-            for (int i = 0; i < args.tgt.n; i++) {
-                ts_print("[probe] > resolving targets for PID %d\n", args.tgt.pids[i]);
-                int resolved = resolve_targets(
-                    &g_rctx,
-                    args.tgt.pids[i],
-                    probe_targets + probe_target_count,
-                    sizeof(probe_targets) / sizeof(probe_targets[0]) - probe_target_count
-                );
-                if (resolved > 0) probe_target_count += resolved;
-            }
-
-            if (probe_target_count == 0 && !resolve_syms && custom_probe_spec_count == 0) {
-                err_print(" [probe] > no trace targets found\n");
-                err = -1;
-                goto cleanup;
-            }
-        }
-
         __u8 one = 1;
         for (int i = 0; i < args.tgt.n; i++) {
             __u32 tgid = (__u32)args.tgt.pids[i];
@@ -1180,47 +1029,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             g_follow_fork_link = bpf_program__attach(skel->progs.ares_follow_fork);
             if (!g_follow_fork_link)
                 fprintf(stderr, "funcs: follow-fork attach failed (non-fatal)\n");
-        }
-
-        if (mod_re_count > 0 || func_re_count > 0) {
-            for (int i = 0; i < probe_target_count && !exiting; i++) {
-                const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                bname = bname ? bname + 1 : probe_targets[i].mod_path;
-
-                if (resolve_syms) {
-                    ts_print("[sym] > %s!%s @ 0x%lx\n",
-                        bname, probe_targets[i].func_name, probe_targets[i].offset);
-                } else {
-                    bool ro = probe_targets[i].ret_only;
-                    ts_print("%s > %s!%s @ 0x%lx%s\n",
-                        ro ? "[rprobe]" : "[uprobe]",
-                        bname, probe_targets[i].func_name, probe_targets[i].offset,
-                        probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
-                    struct bpf_program *entry_prog = ro
-                        ? skel->progs.uprobe_save_only
-                        : skel->progs.uprobe_open;
-                    probe_links[i] = bpf_program__attach_uprobe(
-                        entry_prog, false,
-                        probe_targets[i].pid,
-                        probe_targets[i].mod_path,
-                        probe_targets[i].offset);
-                    if (!probe_links[i]) {
-                        err_print("[uprobe] > FAILED: %s!%s\n", bname, probe_targets[i].func_name);
-                        err = -1;
-                        goto cleanup;
-                    }
-                    if (probe_targets[i].ret_type != ARG_NONE || ro) {
-                        probe_ret_links[i] = bpf_program__attach_uprobe(
-                            skel->progs.uretprobe_open, true,
-                            probe_targets[i].pid,
-                            probe_targets[i].mod_path,
-                            probe_targets[i].offset);
-                        if (!probe_ret_links[i])
-                            err_print("[uprobe] > FAILED ret: %s!%s\n",
-                                      bname, probe_targets[i].func_name);
-                    }
-                }
-            }
         }
 
         // Apply custom probe specs for each PID
@@ -1250,50 +1058,6 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             goto cleanup;
         }
         ts_print("[zygote] > scanning pre-loaded libs from PID %d\n", zygote_pid);
-
-        if (mod_re_count > 0 || func_re_count > 0 || func_ret_re_count > 0) {
-            int prev = probe_target_count;
-            int max = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])) - prev;
-            int resolved = resolve_targets(&g_rctx, zygote_pid, probe_targets + prev, max);
-            ts_print("[zygote] > resolve_targets -> %d symbols\n", resolved);
-            if (resolved > 0) {
-                probe_target_count += resolved;
-                for (int i = prev; i < probe_target_count && !exiting; i++) {
-                    const char *bname = strrchr(probe_targets[i].mod_path, '/');
-                    bname = bname ? bname + 1 : probe_targets[i].mod_path;
-                    if (resolve_syms) {
-                        ts_print("[sym] > %s!%s @ 0x%lx\\n",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset);
-                    } else {
-                        bool ro = probe_targets[i].ret_only;
-                        ts_print("%s > %s!%s @ 0x%lx%s\n",
-                            ro ? "[rprobe]" : "[uprobe]",
-                            bname, probe_targets[i].func_name, probe_targets[i].offset,
-                            probe_targets[i].ret_type != ARG_NONE ? " [+ret]" : "");
-                        struct bpf_program *entry_prog = ro
-                            ? skel->progs.uprobe_save_only
-                            : skel->progs.uprobe_open;
-                        probe_links[i] = bpf_program__attach_uprobe(
-                            entry_prog, false, -1,
-                            probe_targets[i].mod_path, probe_targets[i].offset);
-                        if (!probe_links[i])
-                            err_print("[uprobe] > FAILED: %s!%s\n",
-                                bname, probe_targets[i].func_name);
-                        if (probe_targets[i].ret_type != ARG_NONE || ro) {
-                            probe_ret_links[i] = bpf_program__attach_uprobe(
-                                skel->progs.uretprobe_open, true, -1,
-                                probe_targets[i].mod_path, probe_targets[i].offset);
-                            if (!probe_ret_links[i])
-                                err_print("[uprobe] > FAILED ret: %s!%s\n",
-                                    bname, probe_targets[i].func_name);
-                        }
-                    }
-                }
-                if (!resolve_syms)
-                    ts_print("[zygote] > attached %d uprobes for pre-loaded libs\n",
-                              probe_target_count - prev);
-            }
-        }
 
         if (custom_probe_spec_count > 0) {
             char cmaps[64];
@@ -1384,9 +1148,6 @@ void funcs_teardown(void)
         if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
     }
     if (g_follow_fork_link) { bpf_link__destroy(g_follow_fork_link); g_follow_fork_link = NULL; }
-    for (int i = 0; i < mod_re_count; i++)      regfree(&mod_re[i]);
-    for (int i = 0; i < func_re_count; i++)     regfree(&func_re[i]);
-    for (int i = 0; i < func_ret_re_count; i++) regfree(&func_ret_re[i]);
 
     if (skel) {
         // Always report the final tally, so "no message" never means "didn't

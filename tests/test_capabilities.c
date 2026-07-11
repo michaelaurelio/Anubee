@@ -35,10 +35,11 @@ int main(void)
     CHECK( ares_object_writes_target("mod:prop-read"), "mod:prop-read loud");
     CHECK(!ares_object_writes_target("mod:file-access"), "mod:file-access quiet");
     CHECK(!ares_object_writes_target("mod:ransomware-burst"), "mod:ransomware-burst quiet");
+    CHECK(!ares_object_writes_target("mod:exfil-burst"), "mod:exfil-burst quiet");
 
     int n2 = 0;
     (void)ares_bpf_objects(&n2);
-    CHECK(n2 == 11, "registry has exactly 11 entries (6 engines + 5 analyzers) after ransomware-burst lands");
+    CHECK(n2 == 12, "registry has exactly 12 entries (6 engines + 6 analyzers) after exfil-burst lands");
 
     // ares_quiet_config_ok: a quiet set passes; adding a loud object fails.
     const char *quiet_set[] = { "syscalls", "lib", "dump", "mod:proc-event" };

@@ -20,6 +20,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_FUNC:      return "func";
     case TRACE_FILE_ACCESS: return "file_access";
     case TRACE_RANSOMWARE_BURST: return "ransomware_burst";
+    case TRACE_EXFIL_BURST: return "exfil_burst";
     default:              return "unknown";
     }
 }

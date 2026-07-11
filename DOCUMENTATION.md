@@ -940,6 +940,21 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
+- **`exfil-burst`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
+  `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
+  media-subdir- or credential-shaped-filename read (reusing `file_access`'s
+  pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
+  `path_has_component`), then accumulates outbound byte volume via a
+  per-`(tgid,fd)` "is this fd a tracked non-loopback socket" map armed by
+  `connect()`. Crossing 512 KiB within 30 seconds of the arming read emits
+  an alert -- byte volume to *any* destination, not distinct-destination
+  count, since realistic exfiltration is usually one C2 endpoint receiving
+  a large payload rather than many small sends to many hosts. Known
+  limitations: contacts/SMS/call-log exfil is invisible (Binder-mediated,
+  same structural blind spot as `ransomware-burst`'s MediaStore gap);
+  byte counts are requested length at syscall entry, not kretprobe-verified
+  delivered length (a failed/blocked send still counts); threshold evadable
+  by throttling/chunking (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
@@ -956,14 +971,15 @@ longer lost from the file:
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
+- `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
 `print_summary`'s own early-return).
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, and `ransomware-burst` are
-kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
+key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, and
+`exfil-burst` are kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;

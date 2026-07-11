@@ -34,6 +34,7 @@ enum trace_event_type {
     TRACE_FUNC,       // correlate span-open (probed function entered)
     TRACE_FILE_ACCESS, // sensitive file open (mod file-access)
     TRACE_RANSOMWARE_BURST, // rename/unlink burst (mod ransomware-burst)
+    TRACE_EXFIL_BURST, // sensitive-read-then-network-burst (mod exfil-burst)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

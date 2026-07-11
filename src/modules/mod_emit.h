@@ -13,6 +13,7 @@ struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
 struct ransomware_burst_event; // modules/mod_events.h
+struct exfil_burst_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -52,5 +53,15 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 // (package unresolved, never checked) -> null.
 void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
                                 int distinct_estimate, int manage_ext_storage);
+
+// {"type":"exfil_burst","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
+//  "sample_path":"..","dest":".."|null}
+// dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
+// builder free of that logic, same pattern as ransomware_burst's
+// distinct_estimate. NULL or empty -> JSON null (no connect() observed before
+// the byte threshold tripped, e.g. all volume went via a pre-attach socket's
+// sendto).
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str);
 
 #endif /* __ARES_MOD_EMIT_H */

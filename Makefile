@@ -495,6 +495,8 @@ test:
 	$(BUILD)/test_file_access_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_ransomware_burst_classify.c src/modules/ransomware_burst_classify.c -o $(BUILD)/test_ransomware_burst_classify
 	$(BUILD)/test_ransomware_burst_classify
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_a11y_abuse_classify.c src/modules/a11y_abuse_classify.c -o $(BUILD)/test_a11y_abuse_classify
+	$(BUILD)/test_a11y_abuse_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscalls_attribution.c -o $(BUILD)/test_syscalls_attribution

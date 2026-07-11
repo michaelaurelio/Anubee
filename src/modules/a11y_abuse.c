@@ -86,6 +86,10 @@ static const char *a11y_tag(unsigned categories)
         return "[a11y-abuse]";
     if (categories & A11Y_BURST_DETECTED)
         return "[a11y-burst]";
+    // Unreachable while the BPF side only ever emits at count==A11Y_THRESHOLD
+    // (a11y_abuse.bpf.c's record_call): kept for the same defensive-gate
+    // reasoning classify_a11y() itself documents, mirrors burst_tag()'s
+    // equivalent fallback in ransomware_burst.c.
     return "[a11y-low-confidence]";
 }
 

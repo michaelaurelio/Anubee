@@ -119,7 +119,7 @@ static __always_inline void record_call(__u32 code)
     e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
     #pragma unroll
     for (int i = 0; i < A11Y_CODE_RING_LEN; i++)
-        e->code_samples[i] = st->code_samples[i];
+        e->code_samples[i] = st->code_samples[i];   // unused in v1 -- see design doc's parked transaction-code decode
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     bpf_ringbuf_submit(e, 0);
 

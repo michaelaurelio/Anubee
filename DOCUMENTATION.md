@@ -897,7 +897,7 @@ coordinator (`src/trace/trace.c`) over the engines' setup/run/teardown phases (�
   their own threads and the text interleaves — `trace` warns and `-o` is
   recommended. A first Ctrl-C stops cleanly; a second force-quits (`_exit`), matching the
   standalone engines. The `syscalls` ring drain bails on the coordinator's stop
-  flag (`g_stopp`), so shutdown is prompt even under a syscall flood.
+  flag (`g_stop`), so shutdown is prompt even under a syscall flood.
 - **Detectability:** loud by construction — it loads the `funcs` uprobe (entry
   `BRK`) alongside the `syscalls` kprobe, so it never sits on the stealthy side of
   the firewall (§9). `capabilities.c` marks `trace` as writing target memory.

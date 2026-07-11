@@ -79,6 +79,15 @@ int  parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                              void (*log)(const char *fmt, ...));
 int  resolve_custom_spec_for_path(pid_t pid, const char *path,
                                   const custom_probe_spec_t *spec, probe_target_t *out);
+// Resolves ALL symbol matches for a /regex/-delimited spec->func against path's ELF
+// symbol table (SHT_SYMTAB/SHT_DYNSYM), writing up to max_out probe_target_t entries.
+// Each entry's func_name is the ACTUAL matched symbol name, not the regex pattern.
+// Returns the match count (0 if none), or -1 on open/ELF-parse failure. Does not
+// consult spec->offset (an explicit single offset is meaningless when a regex can
+// match several symbols at different offsets).
+int  resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
+                                          const custom_probe_spec_t *spec,
+                                          probe_target_t *out, int max_out);
 bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path);
 
 // Segment descriptor for vaddr→file-offset conversion. Plain ints; no libelf

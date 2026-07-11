@@ -528,3 +528,50 @@ int resolve_custom_spec_for_path(pid_t pid, const char *path,
     close(fd);
     return found;
 }
+
+int resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
+                                          const custom_probe_spec_t *spec,
+                                          probe_target_t *out, int max_out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf) { close(fd); return -1; }
+
+    int count = 0;
+    Elf_Scn *scn = NULL;
+    while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_out) {
+        GElf_Shdr shdr;
+        if (!gelf_getshdr(scn, &shdr)) continue;
+        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+        if (shdr.sh_entsize == 0) continue;
+        Elf_Data *data = elf_getdata(scn, NULL);
+        if (!data) continue;
+        int num = shdr.sh_size / shdr.sh_entsize;
+        for (int i = 0; i < num && count < max_out; i++) {
+            GElf_Sym sym;
+            gelf_getsym(data, i, &sym);
+            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue;
+            if (sym.st_value == 0) continue;
+            const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
+            if (!name || name[0] == '\0') continue;
+            if (!pm_regex(spec->func, name)) continue;
+            unsigned long off = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+            if (off == SEG_VADDR_BAD) continue;
+            out[count].pid = pid;
+            copy_str(out[count].mod_path, path, sizeof(out[count].mod_path));
+            copy_str(out[count].func_name, name, sizeof(out[count].func_name));
+            out[count].offset = off;
+            out[count].runtime_entry_addr = 0;
+            out[count].arg_count = spec->arg_count;
+            memcpy(out[count].arg_types, spec->arg_types, sizeof(spec->arg_types));
+            out[count].ret_type = spec->ret_type;
+            out[count].ret_only = spec->ret_only;
+            count++;
+        }
+    }
+    elf_end(elf);
+    close(fd);
+    return count;
+}

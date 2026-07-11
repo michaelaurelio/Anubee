@@ -111,7 +111,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_resolve_pkg_from_pid \
                ares_launch_app ares_launch_banner \
                mod_matches is_duplicate resolve_targets resolve_targets_for_file \
-               parse_custom_probe_spec load_probe_spec_file resolve_custom_spec_for_path custom_spec_matches_path \
+               parse_custom_probe_spec load_probe_spec_file resolve_custom_spec_for_path \
+               resolve_custom_spec_matches_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
                ares_sink_open ares_sink_emit ares_sink_flush \
@@ -411,8 +412,10 @@ test:
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null; then \
 	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
 	  $(BUILD)/test_probe_spec; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_regex_resolve -lelf && \
+	  $(BUILD)/test_regex_resolve; \
 	 else \
-	  echo "skip: libelf-dev not installed, skipping test_probe_spec (apt install libelf-dev)"; \
+	  echo "skip: libelf-dev not installed, skipping test_probe_spec/test_regex_resolve (apt install libelf-dev)"; \
 	 fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pattern_match.c src/common/pattern_match.c -o $(BUILD)/test_pattern_match
 	$(BUILD)/test_pattern_match

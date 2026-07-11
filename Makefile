@@ -110,7 +110,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
                ares_resolve_pkg_from_pid \
                ares_launch_app ares_launch_banner \
-               mod_matches is_duplicate resolve_targets resolve_targets_for_file \
+               is_duplicate \
                parse_custom_probe_spec load_probe_spec_file resolve_custom_spec_for_path \
                resolve_custom_spec_matches_for_path custom_spec_matches_path \
                trace_type_name \

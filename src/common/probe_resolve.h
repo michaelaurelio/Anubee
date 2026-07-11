@@ -2,7 +2,6 @@
 #ifndef __ARES_COMMON_PROBE_RESOLVE_H
 #define __ARES_COMMON_PROBE_RESOLVE_H
 
-#include <regex.h>
 #include <sys/types.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,13 +51,6 @@ typedef struct {
 // lifted into src/common. Fields point at the existing file-scope arrays
 // — no storage is moved. Attach (skel->progs) stays in the funcs engine.
 struct probe_resolve_ctx {
-    regex_t              *mod_re;
-    bool                 *mod_has_slash;
-    int                   mod_re_count;
-    regex_t              *func_re;
-    int                   func_re_count;
-    regex_t              *func_ret_re;
-    int                   func_ret_re_count;
     probe_target_t       *targets;        // output array (base)
     int                  *target_count;   // output count (shared cursor)
     int                   targets_cap;
@@ -68,13 +60,7 @@ struct probe_resolve_ctx {
     void (*log)(const char *fmt, ...);
 };
 
-bool mod_matches(const char *full_path, regex_t *re, bool *has_slash, int count);
 bool is_duplicate(probe_target_t *targets, int count, const char *mod_path, unsigned long offset);
-int  resolve_targets(const struct probe_resolve_ctx *ctx, pid_t pid,
-                     probe_target_t *targets, int max_targets);
-int  resolve_targets_for_file(const struct probe_resolve_ctx *ctx, pid_t pid, const char *path,
-                              unsigned long map_start, unsigned long map_end,
-                              probe_target_t *targets, int max_targets);
 int  parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                              void (*log)(const char *fmt, ...));
 int  resolve_custom_spec_for_path(pid_t pid, const char *path,

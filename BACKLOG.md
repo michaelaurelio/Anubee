@@ -30,9 +30,6 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - CR4 — managed-frame naming: version treadmill (see CFI item) + nterp's own guess-path
   still primary for nterp terminals (ShadowFrame parity landed for its own terminal —
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
-- SPEC1 — unified probe-spec v2 (`KIND:` prefix: `funcs:`/`syscall:`/`lib:`/`mod:`) +
-  `funcs`/`correlate` argument consolidation; spreads spec-file selection to `syscalls`/
-  `dump`/`mod`; deprecates `funcs -I/-i/-r` in favor of `-e`/`-F`.
 
 **Minor:**
 - CR5 follow-on: `dump` coverage field.
@@ -222,7 +219,7 @@ read as "app used no Java."
 
 ### SPEC1 — unified probe-spec v2 + `funcs`/`correlate` argument consolidation (planned, 2026-07-10)
 
-**Status (2026-07-11):** H1-H11 done; H12 (hard-remove `-I`/`-i`/`-r`) deferred, tracked separately.
+**Status (2026-07-11):** H1-H12 done — EPIC H complete.
 
 `funcs` currently has two parallel, overlapping ways to select what to probe: regex-based
 (`-I` module, `-i` function, `-r` return-only function — each its own 32-entry array +
@@ -433,8 +430,16 @@ is in DOCUMENTATION.md and the referenced specs.
   `correlate`'s custom-spec attach loops that could otherwise misprocess a
   `syscall:`/`lib:` line meant for another engine. `mod_matches` (the
   precompiled-regex `-I`/`-i`/`-r` matcher) is intentionally NOT retired — kept
-  until a future hard-removal (H12) of that mechanism. Tracked in
-  `ares-project/TODO.md` EPIC H (H1-H11 done, H12 deferred).
+  until a future hard-removal (H12) of that mechanism. H12 landed the same day:
+  the func-name-regex gap was fixed (a new `resolve_custom_spec_matches_for_path`
+  in `common/probe_resolve.c` does real bulk `regexec`-based symbol matching,
+  replacing a `-e`/`-F` func-side match that had silently never worked via exact
+  `strcmp`), then `-I`/`-i`/`-r` were hard-removed from `funcs`/`correlate` with
+  zero net capability loss (verified by an exhaustive semantic audit of every old
+  regex-matching code path before removal), and the now-fully-dead `mod_matches`/
+  `resolve_targets`/`resolve_targets_for_file` were purged from
+  `common/probe_resolve.c`. EPIC H is complete. Tracked in
+  `ares-project/TODO.md` EPIC H (H1-H12 done — complete).
 
 ### 2026-07-10
 

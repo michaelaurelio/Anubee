@@ -209,8 +209,8 @@ file-backed CFI; unreachable until W3-window lands.
 # Trace functions from a spec file against a spawned app:
 ares funcs -P com.example.app -F /data/local/tmp/specs/common-file.spec
 
-# Attach to a running PID and trace functions matching a regex in a module:
-ares funcs -p 12345 -I libfoo.so -i '^encrypt'
+# Attach to a running PID and bulk-match functions by name in a module (regex):
+ares funcs -p 12345 -e 'libfoo.so!/^encrypt/'
 
 # Inline custom probe spec (S=string arg, V=value, F=fd):
 ares funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
@@ -237,11 +237,13 @@ output, making them compatible with the ares-mcp unified schema. Requires `-o
 <file>.jsonl` to be set (records go into the same JSONL sink; existing text/legacy
 wrapper is preserved).
 
-Common flags: `-p PID` / `-P package` target · `-I module` · `-i func-regex` ·
-`-r func-regex` (return-only) · `-e spec` / `-F spec-file` ·
+Common flags: `-p PID` / `-P package` target · `-e spec` / `-F spec-file`
+(module and function sides accept `/regex/` for bulk matching) ·
 `-o file` (`.jsonl`/`.csv`) · `-J` structured JSONL records (see below).
 
-Probe spec format (see `specs/`): `MODULE!FUNC[(ARGTYPES)]>[RETTYPE]`, e.g.
+Probe spec format (see `specs/`): `[KIND:]TARGET[(ARGTYPES)][>RETTYPE]` —
+`funcs:`/omitted (default) is `MODULE!FUNC[@OFFSET]`, each side exact/glob(`*?[`)/`/regex/`;
+`syscall:`/`lib:`/`mod:` select targets for the other engines from the same file, e.g.
 `libc.so!open(S)>V`.
 
 ### `ares correlate` — function→syscall tracer (loud)

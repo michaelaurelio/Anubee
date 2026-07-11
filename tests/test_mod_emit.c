@@ -20,6 +20,7 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
                                 int distinct_estimate, int manage_ext_storage);
 void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
                            const char *dest_str);
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -271,6 +272,34 @@ int main(void)
     j.len = 0;
     mod_emit_exfil_burst(&j, &eb, NULL);
     CHECK_HAS(j, "\"dest\":null", "exfil_burst dest null");
+
+    // ---- a11y_abuse: full event, service granted -----------------------------
+    struct a11y_abuse_event aa = {0};
+    aa.h.type = MOD_EV_A11Y_ABUSE;
+    aa.h.pid  = 9200;
+    aa.h.tid  = 9200;
+    strncpy(aa.comm, "fakebank", TASK_COMM_LEN - 1);
+    aa.touch_count = 50;
+    aa.window_ms   = 2100;
+
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, 1);
+    CHECK_HAS(j, "\"type\":\"a11y_abuse\"", "a11y_abuse type");
+    CHECK_HAS(j, "\"pid\":9200",            "a11y_abuse pid");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "a11y_abuse comm");
+    CHECK_HAS(j, "\"touch_count\":50",      "a11y_abuse touch_count");
+    CHECK_HAS(j, "\"window_ms\":2100",      "a11y_abuse window_ms");
+    CHECK_HAS(j, "\"granted\":true",        "a11y_abuse granted true");
+
+    // ---- a11y_abuse: checked, not granted -------------------------------------
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, 0);
+    CHECK_HAS(j, "\"granted\":false", "a11y_abuse granted false");
+
+    // ---- a11y_abuse: grant check unresolved (unknown) -------------------------
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, -1);
+    CHECK_HAS(j, "\"granted\":null", "a11y_abuse granted null");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

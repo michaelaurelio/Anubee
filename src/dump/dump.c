@@ -223,7 +223,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // ponytail: static so g_pkg/g_activity/g_pattern can alias da after setup returns.
     static struct dump_args da = { .outdir = "." };
     if (rc && rc->pkg) da.pkg = rc->pkg;
-    if (argp_parse(&dump_argp, argc, argv, 0, NULL, &da) != 0)
+    if (argp_parse(&dump_argp, argc, argv, ARGP_NO_EXIT, NULL, &da) != 0)
         return 1;
 
     g_pkg      = da.pkg;

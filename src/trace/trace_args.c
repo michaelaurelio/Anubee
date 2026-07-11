@@ -18,7 +18,7 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 		out->argv[argc++] = out->outbuf;
 	}
 	int i = start;
-	for (; i < end && argc < 63; i++)
+	for (; i < end && argc < TRACE_ARGV_CAP - 1; i++)
 		out->argv[argc++] = src_argv[i];
 	if (i < end && truncated)
 		*truncated = 1;

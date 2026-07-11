@@ -1226,7 +1226,8 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	// without needing -P in the syscalls argv section.
 	if (rc && rc->pkg)
 		copy_str(sa.package_name, rc->pkg, sizeof(sa.package_name));
-	argp_parse(&sysc_argp, argc, argv, 0, NULL, &sa);
+	if (argp_parse(&sysc_argp, argc, argv, ARGP_NO_EXIT, NULL, &sa) != 0)
+		return 1;
 
 	g_pkg      = sa.package_name;
 	g_lib      = sa.capture_all ? "" : sa.lib_sel;

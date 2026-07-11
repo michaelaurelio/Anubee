@@ -880,7 +880,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // without requiring -P in the funcs argv section.
     if (rc && rc->pkg)
         copy_str(args.package_name, rc->pkg, sizeof(args.package_name));
-    argp_parse(&argp, argc, argv, 0, NULL, &args);
+    if (argp_parse(&argp, argc, argv, ARGP_NO_EXIT, NULL, &args) != 0)
+        return 1;
     verbose = args.c.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;

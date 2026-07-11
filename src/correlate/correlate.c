@@ -696,7 +696,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // -P mode without repeating -P in the --correlate argv section.
     if (rc && rc->pkg)
         g_ca.pkg = rc->pkg;
-    if (argp_parse(&corr_argp, argc, argv, 0, NULL, &g_ca) != 0)
+    if (argp_parse(&corr_argp, argc, argv, ARGP_NO_EXIT, NULL, &g_ca) != 0)
         return 1;
 
     g_quiet   = g_ca.c.quiet || (g_ca.c.output_file != NULL);

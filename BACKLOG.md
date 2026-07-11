@@ -39,7 +39,7 @@ items lives in DOCUMENTATION.md and the referenced specs.
 - U1/U2 console style unification (not recommended — high churn, low value).
 - Pending on-device verification (`trace` combined run incl. new `--dump`/`--correlate`
   wiring and `-p` attach mode; `correlate` R3/R4/X2; CR4 parity fix; Tier 5
-  `--returns`/CR3, decode, `-I/-i` regex, `-P` poll timing; CR2 issuer-only
+  `--returns`/CR3, decode, `-P` poll timing; CR2 issuer-only
   attribution, compat hook, pre-arm window, `syscalls.skel.h` regen; lib-filter
   maps-seed fix — confirm `libc.so`-filtered runtime/JNI `openat`s now appear).
 - AA9 — managed-chain per-stack 8 KB alloc churn (double frame symbolization fixed —

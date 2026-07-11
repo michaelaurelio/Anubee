@@ -139,7 +139,8 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // without needing -P in the lib argv section.
     if (rc && rc->pkg)
         la.pkg = rc->pkg;
-    argp_parse(&lib_argp, argc, argv, 0, NULL, &la);
+    if (argp_parse(&lib_argp, argc, argv, ARGP_NO_EXIT, NULL, &la) != 0)
+        return 1;
 
     g_pkg      = la.pkg;
     g_activity = la.activity;

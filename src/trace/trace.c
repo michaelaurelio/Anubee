@@ -55,14 +55,14 @@ static void usage(const char *argv0)
 		"                  (no package/PID args — they come from -P/-p above)\n"
 		"  --funcs ...     options for the funcs engine, e.g. \"-e 'libc.so!open' -J\"\n"
 		"                  (no package/PID args — they come from -P/-p above)\n"
-		"  --lib           enable library-load tracing (takes no sub-options)\n"
+		"  --lib           enable library-load tracing (accepts shared -o/-v/-q/-J options)\n"
 		"  --dump ...      options for the dump engine, e.g. \"'libfoo*' -d /tmp/dumps\"\n"
 		"                  (no package/PID args — they come from -P/-p above; dump's\n"
 		"                  output is ELF images + an on-exit rescan, not a live stream,\n"
 		"                  so it's a batch engine riding alongside the streaming ones)\n"
 		"  --correlate ... options for the correlate engine, e.g. \"-e 'libnative.so!Java_*'\"\n"
 		"                  (no package/PID args — they come from -P/-p above; needs at\n"
-		"                  least one of -e/-F or -I/-i, same as standalone correlate)\n"
+		"                  least one of -e/-F, same as standalone correlate)\n"
 		"\n"
 		"-P/-p, -A, and -o must come before the --syscalls / --funcs / --lib / --dump /\n"
 		"--correlate sections.\n",
@@ -129,10 +129,12 @@ int cmd_trace(int argc, char **argv)
 		                            "syscalls.jsonl", argv, sys_start, sys_end, &tr);
 		if (tr) fprintf(stderr, "trace: --syscalls section truncated (too many args)\n");
 		// -p attach mode: inject "-p <pids>" so the engine arms target_pids itself.
-		if (pids && sys_argc < 62) {
+		if (pids && sys_argc < TRACE_ARGV_CAP - 2) {
 			sysv.argv[sys_argc++] = "-p";
 			sysv.argv[sys_argc++] = (char *)pids;
 			sysv.argv[sys_argc]   = NULL;
+		} else if (pids) {
+			fprintf(stderr, "trace: --syscalls section full; -p not injected (target unset)\n");
 		}
 	}
 	if (want_func) {
@@ -140,16 +142,12 @@ int cmd_trace(int argc, char **argv)
 		func_argc = trace_build_argv(&funcv, "funcs", prefix,
 		                             "funcs.jsonl", argv, func_start, func_end, &tr);
 		if (tr) fprintf(stderr, "trace: --funcs section truncated (too many args)\n");
-		if (pids && func_argc < 62) {
+		if (pids && func_argc < TRACE_ARGV_CAP - 2) {
 			funcv.argv[func_argc++] = "-p";
 			funcv.argv[func_argc++] = (char *)pids;
 			funcv.argv[func_argc]   = NULL;
-		}
-		// ponytail: -o implies quiet in syscalls; mirror that for funcs under trace
-		// so "trace -o prefix" silences both engines' consoles symmetrically.
-		if (prefix && func_argc < 63) {
-			funcv.argv[func_argc++] = "-q";
-			funcv.argv[func_argc]   = NULL;
+		} else if (pids) {
+			fprintf(stderr, "trace: --funcs section full; -p not injected (target unset)\n");
 		}
 	}
 	if (want_lib) {
@@ -157,15 +155,12 @@ int cmd_trace(int argc, char **argv)
 		lib_argc = trace_build_argv(&libv, "lib", prefix,
 		                            "lib.jsonl", argv, lib_start, lib_end, &tr);
 		if (tr) fprintf(stderr, "trace: --lib section truncated (too many args)\n");
-		if (pids && lib_argc < 62) {
+		if (pids && lib_argc < TRACE_ARGV_CAP - 2) {
 			libv.argv[lib_argc++] = "-p";
 			libv.argv[lib_argc++] = (char *)pids;
 			libv.argv[lib_argc]   = NULL;
-		}
-		// Mirror funcs: -o implies quiet for lib too.
-		if (prefix && lib_argc < 63) {
-			libv.argv[lib_argc++] = "-q";
-			libv.argv[lib_argc]   = NULL;
+		} else if (pids) {
+			fprintf(stderr, "trace: --lib section full; -p not injected (target unset)\n");
 		}
 	}
 	if (want_dump) {
@@ -176,15 +171,20 @@ int cmd_trace(int argc, char **argv)
 		// dump requires -P or -p in its own argv (unlike sys/func/lib, its ARGP_KEY_END
 		// errors without one) — rc->pkg pre-fill covers launch mode, but attach mode
 		// needs -p injected explicitly, same as the other engines above.
-		if (pids && dump_argc < 62) {
+		if (pids && dump_argc < TRACE_ARGV_CAP - 2) {
 			dumpv.argv[dump_argc++] = "-p";
 			dumpv.argv[dump_argc++] = (char *)pids;
 			dumpv.argv[dump_argc]   = NULL;
+		} else if (pids) {
+			fprintf(stderr, "trace: --dump section full; -p not injected (target unset)\n");
 		}
-		// Mirror funcs/lib: -o implies quiet for dump too.
-		if (prefix && dump_argc < 63) {
+		// dump alone doesn't derive quiet from -o (unlike syscalls/funcs/lib/correlate,
+		// which set g_quiet |= output_file!=NULL), so under -o inject -q explicitly.
+		if (prefix && dump_argc < TRACE_ARGV_CAP - 1) {
 			dumpv.argv[dump_argc++] = "-q";
 			dumpv.argv[dump_argc]   = NULL;
+		} else if (prefix) {
+			fprintf(stderr, "trace: --dump section full; -q not injected\n");
 		}
 	}
 	if (want_corr) {
@@ -195,15 +195,12 @@ int cmd_trace(int argc, char **argv)
 		// correlate requires -P or -p in its own argv (like dump) — rc->pkg pre-fill
 		// covers launch mode (correlate_setup honors it), attach mode needs -p
 		// injected explicitly, same as the other engines above.
-		if (pids && corr_argc < 62) {
+		if (pids && corr_argc < TRACE_ARGV_CAP - 2) {
 			corrv.argv[corr_argc++] = "-p";
 			corrv.argv[corr_argc++] = (char *)pids;
 			corrv.argv[corr_argc]   = NULL;
-		}
-		// Mirror the others: -o implies quiet for correlate too.
-		if (prefix && corr_argc < 63) {
-			corrv.argv[corr_argc++] = "-q";
-			corrv.argv[corr_argc]   = NULL;
+		} else if (pids) {
+			fprintf(stderr, "trace: --correlate section full; -p not injected (target unset)\n");
 		}
 	}
 

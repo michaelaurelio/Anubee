@@ -69,6 +69,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/syscall_argtypes.h"
+#include "common/human_out.h"      // SYM1 Phase 4a: shared stdout formatter
 #include "syscalls/lib_seed.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
@@ -638,14 +639,15 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
 		unsigned fdm = e->compat ? 0u : arg_fd_mask(e->nr);
 		int sockidx = e->compat ? 0 : arg_sock_index(e->nr);
-		printf("==> #%llu [%u/%u] %s(", id, e->h.pid, e->h.tid, sysname(e->nr, e->compat));
+		// SYM1 Phase 4a: shared human_out skeleton (timestamp + own "syscall"
+		// tag), args/stack as human_detail continuation lines -- was inline
+		// "==> #id [pid/tid] name(args)" + bare "      #n sym" prints.
+		ts_print("[syscall] > [CALL] #%llu PID:%u TID:%u %s\n",
+		         id, e->h.pid, e->h.tid, sysname(e->nr, e->compat));
 		for (int i = 0; i < nargs; i++) {
-			if (i)
-				printf(", ");
 			render_arg(e, i, fdm, sockidx, arg, sizeof(arg));
-			fputs(arg, stdout);
+			human_detail("syscall", "args[%d] %s\n", i, arg);
 		}
-		printf(")\n");
 
 		int n = e->stack_sz / (int)sizeof(__u64);
 		char sym[320];
@@ -653,7 +655,7 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 			if (e->stack[i] == 0)
 				break;
 			sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
-			printf("      #%-2d %s\n", i, sym);
+			human_detail("syscall", "#%d %s\n", i, sym);
 		}
 		fflush(stdout);
 	}
@@ -669,7 +671,9 @@ static void handle_return(const struct syscalls_return_event *r)
 	if (!g_quiet) {
 		char rb[160];
 		render_ret(r->retval, rb, sizeof(rb));
-		printf("<== #%llu %s = %s\n", p->id, sysname(p->ev.nr, p->ev.compat), rb);
+		// SYM1 Phase 4a: was "<== #id name = ret".
+		ts_print("[syscall] > [RET]  #%llu PID:%u %s -> %s\n",
+		         p->id, r->h.pid, sysname(p->ev.nr, p->ev.compat), rb);
 		fflush(stdout);
 	}
 	if (g_sink.f)
@@ -695,7 +699,8 @@ static void process_event(const void *data, size_t sz)
 			return;
 		const struct lib_map_event *m = data;
 		if (g_verbose)
-			printf("    map  pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
+			// SYM1 Phase 4a: was bare "    map  pid ...".
+			ts_print("[syscall] > [MAP] pid %u %s [0x%llx,0x%llx) off=0x%llx\n",
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
 		// Range is armed on the drain thread (enqueue_event, below) the moment

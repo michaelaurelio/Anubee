@@ -73,7 +73,7 @@ struct mod_args {
 static const struct argp_option mod_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity (default: auto-resolve)", 0 },
-    { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (implies -q)", 0 },
+    { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (also prints console output; -q silences that)", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
     { "specs", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
@@ -167,7 +167,7 @@ int cmd_mod(int argc, char **argv)
         return 1;
     }
 
-    int quiet = ma.c.quiet || (ma.c.output_file != NULL);
+    int quiet = ma.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
     struct ares_mod_ctx mc = {
         .sink    = ma.c.output_file ? &g_sink : NULL,
         .quiet   = quiet,

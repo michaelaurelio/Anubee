@@ -137,6 +137,15 @@ int cmd_trace(int argc, char **argv)
 		} else if (pids) {
 			fprintf(stderr, "trace: --syscalls section full; -p not injected (target unset)\n");
 		}
+		// SYM1 Phase 1: -o no longer implies -q inside the engine, so trace must
+		// inject -q itself under -o (else its 5 concurrent engines' stdout
+		// interleaves unusably, per the warning above when -o is absent).
+		if (prefix && sys_argc < TRACE_ARGV_CAP - 1) {
+			sysv.argv[sys_argc++] = "-q";
+			sysv.argv[sys_argc]   = NULL;
+		} else if (prefix) {
+			fprintf(stderr, "trace: --syscalls section full; -q not injected\n");
+		}
 	}
 	if (want_func) {
 		int tr = 0;
@@ -150,6 +159,13 @@ int cmd_trace(int argc, char **argv)
 		} else if (pids) {
 			fprintf(stderr, "trace: --funcs section full; -p not injected (target unset)\n");
 		}
+		// SYM1 Phase 1: -o no longer implies -q inside the engine (see syscalls above).
+		if (prefix && func_argc < TRACE_ARGV_CAP - 1) {
+			funcv.argv[func_argc++] = "-q";
+			funcv.argv[func_argc]   = NULL;
+		} else if (prefix) {
+			fprintf(stderr, "trace: --funcs section full; -q not injected\n");
+		}
 	}
 	if (want_lib) {
 		int tr = 0;
@@ -162,6 +178,13 @@ int cmd_trace(int argc, char **argv)
 			libv.argv[lib_argc]   = NULL;
 		} else if (pids) {
 			fprintf(stderr, "trace: --lib section full; -p not injected (target unset)\n");
+		}
+		// SYM1 Phase 1: -o no longer implies -q inside the engine (see syscalls above).
+		if (prefix && lib_argc < TRACE_ARGV_CAP - 1) {
+			libv.argv[lib_argc++] = "-q";
+			libv.argv[lib_argc]   = NULL;
+		} else if (prefix) {
+			fprintf(stderr, "trace: --lib section full; -q not injected\n");
 		}
 	}
 	if (want_dump) {
@@ -179,8 +202,9 @@ int cmd_trace(int argc, char **argv)
 		} else if (pids) {
 			fprintf(stderr, "trace: --dump section full; -p not injected (target unset)\n");
 		}
-		// dump alone doesn't derive quiet from -o (unlike syscalls/funcs/lib/correlate,
-		// which set g_quiet |= output_file!=NULL), so under -o inject -q explicitly.
+		// dump has never derived quiet from -o on its own (no g_quiet |=
+		// output_file!=NULL wiring) — same as every other engine now that SYM1
+		// Phase 1 dropped that implication elsewhere too. Inject -q explicitly.
 		if (prefix && dump_argc < TRACE_ARGV_CAP - 1) {
 			dumpv.argv[dump_argc++] = "-q";
 			dumpv.argv[dump_argc]   = NULL;
@@ -202,6 +226,13 @@ int cmd_trace(int argc, char **argv)
 			corrv.argv[corr_argc]   = NULL;
 		} else if (pids) {
 			fprintf(stderr, "trace: --correlate section full; -p not injected (target unset)\n");
+		}
+		// SYM1 Phase 1: -o no longer implies -q inside the engine (see syscalls above).
+		if (prefix && corr_argc < TRACE_ARGV_CAP - 1) {
+			corrv.argv[corr_argc++] = "-q";
+			corrv.argv[corr_argc]   = NULL;
+		} else if (prefix) {
+			fprintf(stderr, "trace: --correlate section full; -q not injected\n");
 		}
 	}
 

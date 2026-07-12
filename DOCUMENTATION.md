@@ -535,10 +535,11 @@ located the module-base bug and stays available for future CFI diagnosis.
   worker's `find_target_by_entry_addr` lookup; `g_out_lock` serializes stdout/stderr
   lines between the two threads; `g_sink_lock` serializes `g_sink` writes between
   the drain thread (lib/unlib records) and the worker thread (call/return records).
-- Output: human-readable text to stdout (unless `-o FILE` or `-q` is given, both of
-  which suppress console output). When `-o FILE` is passed, structured records for CALL
-  and RETURN events are written via the shared `ares_sink` (see §3.1 and §7) and
-  console output is suppressed (`-o` implies `-q`, consistent with all other engines).
+- Output: human-readable text to stdout unless `-q` is given (`-q` suppresses console
+  output). When `-o FILE` is passed, structured records for CALL and RETURN events are
+  written via the shared `ares_sink` (see §3.1 and §7) **in addition to** console
+  output — `-o` and stdout are independent channels (SYM1 dual-channel-always,
+  consistent with all other engines); pass `-q` alongside `-o` for file-only output.
   `-J`/`--jsonl` forces JSONL framing (one record per line, no enclosing `[...]`);
   without `-J` and when the filename doesn't end in `.jsonl`, the sink writes
   array-framed output.
@@ -1011,7 +1012,8 @@ stream:
   AOT frames are reliable; interpreted (nterp) frames inherit the documented precision/hit-rate limits (see BACKLOG). The authoritative full native+managed walk
   stays in the `.stacks` sidecar `cfi_stack` record, joinable by `stack_id`. `funcs` now also writes
   `{"type":"cfi_stack"}` records to its sidecar (parity with syscalls). The `-o` file receives structured records
-  only; human-readable console output is suppressed when `-o` is active (implied `-q`).
+  in addition to human-readable console output — `-o` and stdout are independent channels
+  (SYM1 dual-channel-always); pass `-q` alongside `-o` for file-only output.
   `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
   wrapper); the default is array framing unless the output filename ends in `.jsonl`.
   MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).

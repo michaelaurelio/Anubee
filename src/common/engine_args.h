@@ -27,7 +27,7 @@ struct common_args {
 
 // Embed in an engine's argp_option table (before the terminating { 0 }).
 #define COMMON_ARGP_OPTIONS \
-    { "output",  'o', "FILE", 0, "Export structured JSONL to FILE (implies -q)",    0 }, \
+    { "output",  'o', "FILE", 0, "Export structured JSONL to FILE (also prints to console; -q silences that)", 0 }, \
     { "verbose", 'v', NULL,   0, "Verbose debug output",                            0 }, \
     { "quiet",   'q', NULL,   0, "Suppress per-event console output",               0 }, \
     { "jsonl",   'J', NULL,   0, "Write JSON Lines (one record per line)",          0 }, \

@@ -92,7 +92,7 @@ struct lib_args {
 static const struct argp_option lib_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity component (default: auto-resolve)", 0 },
-    { "output",   'o', "FILE",     0, "Write structured JSONL ({\"type\":\"lib\",...}) (implies -q)", 0 },
+    { "output",   'o', "FILE",     0, "Write structured JSONL ({\"type\":\"lib\",...}) (also prints console; -q silences that)", 0 },
     { "verbose",  'v', NULL,       0, "Also print [unlib] unmap lines (default: [lib] only)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress human-readable [lib] console lines", 0 },
     TARGET_ARGP_OPTIONS,
@@ -144,7 +144,7 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     g_pkg      = la.pkg;
     g_activity = la.activity;
-    g_quiet    = la.c.quiet || (la.c.output_file != NULL);
+    g_quiet    = la.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
     g_verbose  = la.c.verbose;
 
     if (la.tgt.n > 0) {

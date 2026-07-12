@@ -44,7 +44,7 @@
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
 static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
     "\v"
-    "Note: -o implies quiet; console output is suppressed when writing a file.";
+    "Note: -o also prints console output (dual-channel); pass -q to suppress it.";
 static const char args_doc[] = "";
 
 static const struct argp_option options[] = {
@@ -847,7 +847,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     verbose = args.c.verbose;
     resolve_syms = args.resolve_syms;
     caller_only = args.caller_only;
-    g_quiet = args.c.quiet || (args.c.output_file != NULL);
+    g_quiet = args.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 
     if (args.c.output_file) {
         int jsonl = args.c.jsonl || ends_with(args.c.output_file, ".jsonl");

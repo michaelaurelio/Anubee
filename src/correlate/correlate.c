@@ -411,7 +411,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (argp_parse(&corr_argp, argc, argv, ARGP_NO_EXIT, NULL, &g_ca) != 0)
         return 1;
 
-    g_quiet   = g_ca.c.quiet || (g_ca.c.output_file != NULL);
+    g_quiet   = g_ca.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 
     if (g_ca.c.output_file && ares_sink_open(&g_sink, g_ca.c.output_file, "event", 1) != 0) {
         fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.c.output_file, strerror(errno));

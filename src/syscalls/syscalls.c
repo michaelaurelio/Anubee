@@ -965,7 +965,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_lib      = sa.capture_all ? "" : sa.lib_sel;
 	g_activity = sa.activity[0] ? sa.activity : NULL;
 	g_verbose  = sa.c.verbose;
-	g_quiet    = sa.c.quiet || (sa.c.output_file != NULL);
+	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 	g_jsonl    = sa.c.jsonl ||
 	             (sa.c.output_file && ends_with(sa.c.output_file, ".jsonl"));
 	int capture_all      = sa.capture_all;

@@ -112,7 +112,8 @@ static int handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct corr_func_event)) return 0;
         const struct corr_func_event *e = data;
         if (!g_quiet)
-            printf("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
+            // SYM1 Phase 4d: was printf(...).
+            ts_print("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
                    (unsigned long long)e->span, (unsigned long long)e->parent_span,
                    e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
         if (g_sink.f) {
@@ -128,7 +129,8 @@ static int handle_event(void *ctx, void *data, size_t sz)
         unsigned fdmask = arg_fd_mask(e->nr);
         int sockidx = arg_sock_index(e->nr);
         if (!g_quiet) {
-            printf("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
+            // SYM1 Phase 4d: was printf(...).
+            ts_print("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
             // Decoded args (paths/fds/sockaddrs/flag names) — same precedence
@@ -150,7 +152,8 @@ static int handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct corr_return_event)) return 0;
         const struct corr_return_event *e = data;
         if (!g_quiet)
-            printf("[return]  > span=%llu retval=0x%llx elapsed=%lluns @ 0x%llx\n",
+            // SYM1 Phase 4d: was printf(...).
+            ts_print("[return]  > span=%llu retval=0x%llx elapsed=%lluns @ 0x%llx\n",
                    (unsigned long long)e->span, (unsigned long long)e->retval,
                    (unsigned long long)e->elapsed_ns, (unsigned long long)e->entry_addr);
         if (g_sink.f) {

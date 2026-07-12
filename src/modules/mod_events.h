@@ -45,6 +45,28 @@
 // bytes) plus headroom for whatever a non-ART caller might have set.
 #define FILELESS_TAG_LEN 32
 
+// Grace window between an anon+exec mmap candidate landing in pending_map
+// and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
+// See fileless_exec.bpf.c's two-hook mmap+prctl correlate/suppress design.
+#define FILELESS_GRACE_NS (250ULL * 1000000ULL)
+
+// BPF map key/value for fileless-exec's pending-alert map: mmap-time state
+// that gets suppressed if a matching dalvik-tagged
+// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_GRACE_NS, or
+// graduates into an alert if not. Shared between fileless_exec.bpf.c
+// (writer, both hooks) and fileless_exec.c (background-thread reader).
+struct fileless_pending_key {
+    __u32 pid;
+    __u32 _pad;
+    __u64 addr;
+};
+
+struct fileless_pending_val {
+    __u64 ts_ns;
+    __u64 size;
+    char  comm[TASK_COMM_LEN];
+};
+
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
     MOD_EV_SPAWN      = 1,

@@ -26,55 +26,134 @@ struct {
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
-// Linux VMA flag for executable mappings. Same value as lib_trace.h's
-// LIBTRACE_VM_EXEC; kept as a local constant rather than pulling in
-// lib_trace.h, since this analyzer's gate is the semantic inverse (pure
-// anonymous, not file-backed) and shares no other code with it.
-#define FILELESS_VM_EXEC 0x00000004UL
+// Revision 1: kprobe/uprobe_mmap never fires for anonymous (vm_file==NULL)
+// mappings -- confirmed on-device and via kernel source, see the design
+// doc's Revision 1 section. Corrected mechanism: do_mmap entry+return
+// (fires for every mmap, file-backed or not) records a candidate into
+// pending_map; a separate __arm64_sys_prctl hook deletes (suppresses) the
+// candidate if a matching dalvik-tagged prctl(PR_SET_VMA_ANON_NAME) call
+// follows shortly after (ART's own JIT-cache naming is a distinct, later
+// syscall -- confirmed via ART source, so no single mmap-time hook could
+// ever see the name). Userspace (fileless_exec.c) polls pending_map on a
+// background thread and alerts on anything that survives the grace window
+// unsuppressed. No ringbuf event is written by either hook.
 
-SEC("kprobe/uprobe_mmap")
-int BPF_KPROBE(on_uprobe_mmap, struct vm_area_struct *vma)
+#define FILELESS_PROT_EXEC 0x4UL   // PROT_EXEC, from <sys/mman.h> -- do_mmap's
+                                   // prot arg uses the same userspace-facing bit values
+
+// PR_SET_VMA / PR_SET_VMA_ANON_NAME, from <linux/prctl.h> -- not exposed via
+// vmlinux.h (these are #define constants, not BTF-visible), so hardcoded
+// here with the header reference for provenance. Re-verify these two
+// values first if on-device suppression testing doesn't behave as expected.
+#define FILELESS_PR_SET_VMA           0x53564d41UL  // "SVMA" -- PR_SET_VMA
+#define FILELESS_PR_SET_VMA_ANON_NAME 0UL            // PR_SET_VMA_ANON_NAME
+
+// Per-tid scratch: do_mmap's real args, captured at entry and consumed at
+// return -- a kretprobe alone can't see entry args (registers are
+// clobbered by the callee), same reasoning as every other entry/exit
+// correlation map in this codebase.
+struct fileless_entry_scratch {
+    __u64 len;
+    __u32 anon;   // 1 if file == NULL at entry, else 0
+    __u32 _pad;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, __u64);                          // pid_tgid
+	__type(value, struct fileless_entry_scratch);
+} entry_scratch SEC(".maps");
+
+// Candidate anon+exec mappings awaiting either suppression (dalvik-tagged
+// prctl arrives) or graduation into an alert (userspace background thread
+// reads FILELESS_GRACE_NS-old entries that are still present). No ringbuf
+// traffic -- this map IS the signal path. At capacity (1024), a new
+// candidate is silently not inserted (BPF_MAP_TYPE_HASH has no eviction) --
+// accepted v1 gap, see design doc's Known limitations.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, struct fileless_pending_key);
+	__type(value, struct fileless_pending_val);
+} pending_map SEC(".maps");
+
+SEC("kprobe/do_mmap")
+int BPF_KPROBE(on_do_mmap_entry, struct file *file, unsigned long addr,
+               unsigned long len, unsigned long prot, unsigned long flags)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+    if (!(prot & FILELESS_PROT_EXEC))
+        return 0;
+
+    struct fileless_entry_scratch sc = {
+        .len  = len,
+        .anon = (file == NULL) ? 1u : 0u,
+    };
+    __u64 id = bpf_get_current_pid_tgid();
+    bpf_map_update_elem(&entry_scratch, &id, &sc, BPF_ANY);
+    return 0;
+}
+
+SEC("kretprobe/do_mmap")
+int BPF_KRETPROBE(on_do_mmap_exit, long ret)
+{
+    __u64 id = bpf_get_current_pid_tgid();
+    struct fileless_entry_scratch *sc = bpf_map_lookup_elem(&entry_scratch, &id);
+    if (!sc)
+        return 0;
+    struct fileless_entry_scratch local = *sc;
+    bpf_map_delete_elem(&entry_scratch, &id);   // always clear scratch, hit or miss
+
+    if (!local.anon || ret <= 0)
+        return 0;
+
+    struct fileless_pending_key k = {
+        .pid  = (__u32)(id >> 32),
+        .addr = (__u64)ret,
+    };
+    struct fileless_pending_val v = {
+        .ts_ns = bpf_ktime_get_ns(),
+        .size  = local.len,
+    };
+    bpf_get_current_comm(&v.comm, sizeof(v.comm));
+    bpf_map_update_elem(&pending_map, &k, &v, BPF_ANY);
+    return 0;
+}
+
+// prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, size, name) -- ART's own
+// JIT/zygote naming call, a distinct syscall from the mmap that created the
+// region. Syscall-entry kprobe, args from pt_regs (same idiom as
+// execve.bpf.c's on_execve: regs->regs[0..4], MTE-tag-stripped before any
+// user pointer read).
+SEC("kprobe/__arm64_sys_prctl")
+int BPF_KPROBE(on_prctl, const struct pt_regs *regs)
 {
     if (!uid_matches() && !pid_matches())
         return 0;
 
-    struct file *file = BPF_CORE_READ(vma, vm_file);
-    if (file != NULL)
-        return 0;                              // v1: pure anonymous only
-
-    __u64 vm_flags = BPF_CORE_READ(vma, vm_flags);
-    if (!(vm_flags & FILELESS_VM_EXEC))
+    unsigned long option = BPF_CORE_READ(regs, regs[0]);
+    if (option != FILELESS_PR_SET_VMA)
         return 0;
+    unsigned long subop = BPF_CORE_READ(regs, regs[1]);
+    if (subop != FILELESS_PR_SET_VMA_ANON_NAME)
+        return 0;
+
+    unsigned long addr     = BPF_CORE_READ(regs, regs[2]);
+    unsigned long name_ptr = BPF_CORE_READ(regs, regs[4]) & 0x00FFFFFFFFFFFFFFul;
 
     char tag[FILELESS_TAG_LEN] = {0};
-    struct anon_vma_name *an = BPF_CORE_READ(vma, anon_name);
-    if (an) {
-        bpf_probe_read_kernel_str(tag, sizeof(tag), an->name);
-        // ART tags its own JIT/zygote anonymous regions with a "dalvik-"
-        // prefix via prctl(PR_SET_VMA_ANON_NAME) -- every app's legitimate
-        // JIT code cache carries this tag. Byte compare (not
-        // bpf_strncmp/memcmp) to avoid a helper that may not exist on all
-        // target kernel versions.
-        if (tag[0] == 'd' && tag[1] == 'a' && tag[2] == 'l' && tag[3] == 'v'
-            && tag[4] == 'i' && tag[5] == 'k')
-            return 0;
-    }
-
-    struct fileless_exec_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e) {
-        bump_dropped();
+    bpf_probe_read_user_str(tag, sizeof(tag), (void *)name_ptr);
+    if (!(tag[0] == 'd' && tag[1] == 'a' && tag[2] == 'l' && tag[3] == 'v'
+          && tag[4] == 'i' && tag[5] == 'k'))
         return 0;
-    }
 
     __u64 id = bpf_get_current_pid_tgid();
-    e->h.type = MOD_EV_FILELESS_EXEC;
-    e->h.pid  = (__u32)(id >> 32);
-    e->h.tid  = (__u32)id;
-    e->h._pad = 0;
-    e->start  = BPF_CORE_READ(vma, vm_start);
-    e->size   = BPF_CORE_READ(vma, vm_end) - e->start;
-    bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    __builtin_memcpy(e->anon_name, tag, sizeof(tag));
-    bpf_ringbuf_submit(e, 0);
+    struct fileless_pending_key k = {
+        .pid  = (__u32)(id >> 32),
+        .addr = (__u64)addr,
+    };
+    bpf_map_delete_elem(&pending_map, &k);   // suppress: never alerted if present
     return 0;
 }

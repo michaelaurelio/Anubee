@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|ransomware-burst|exfil-burst|a11y-abuse|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|ransomware-burst|exfil-burst|a11y-abuse|fileless-exec|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -526,6 +526,54 @@ test_a11y_abuse() {
     fi
 }
 
+# mod fileless-exec: deterministic trigger via a compiled single-process
+# generator (scripts/ares_fileless_gen.c) that performs one raw
+# mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
+# of normal operation, so (like ransomware-burst/exfil-burst) this needs a
+# purpose-built native binary rather than driving a real app. Hard-fail, not
+# SKIP: we control the trigger. A second, informational-only run against an
+# ordinary app checks the dalvik- carve-out doesn't false-positive on real
+# ART JIT activity -- not a hard assertion, since JIT compilation isn't
+# guaranteed to happen within a short launch window either way, so absence
+# of output there proves nothing on its own.
+test_fileless_exec() {
+    echo "=== mod fileless-exec (anonymous executable mmap, non-ART) ==="
+    forcestop
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "fileless-exec: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/ares_fileless_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_fileless_gen.c" \
+        || fail "fileless-exec: failed to compile fileless generator"
+    local gen="/data/local/tmp/ares_fileless_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-exec: push failed"
+    adb shell "chmod 755 $gen"
+
+    local loop_pid
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
+        fail "fileless-exec: could not start fileless-generator (no pid captured)"
+    fi
+
+    local out; out="$(ares "mod fileless-exec -p $loop_pid")"
+    adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "fileless-exec: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    if grep -q '^\[fileless-exec\]' <<<"$out"; then
+        info "fileless-exec OK — $(grep -c '^\[fileless-exec\]' <<<"$out") [fileless-exec] line(s)"
+    else
+        tail -10 <<<"$out" >&2
+        fail "fileless-exec: no [fileless-exec] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
+    fi
+
+    local jit_out; jit_out="$(ares "mod fileless-exec -P $PKG")"
+    forcestop
+    local jit_lines
+    jit_lines="$(grep -c '^\[fileless-exec\]' <<<"$jit_out")"
+    info "fileless-exec dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
+}
+
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
 # stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
 # entry uprobe attaches before the target opens any files. Spec mirrors
@@ -595,9 +643,10 @@ case "$WHAT" in
     ransomware-burst)  test_ransomware_burst ;;
     exfil-burst)       test_exfil_burst ;;
     a11y-abuse)        test_a11y_abuse ;;
+    fileless-exec)     test_fileless_exec ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_a11y_abuse; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | a11y-abuse | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_a11y_abuse; test_fileless_exec; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | a11y-abuse | fileless-exec | correlate-returns | all)" ;;
 esac
 
 forcestop

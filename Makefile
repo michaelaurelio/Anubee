@@ -494,6 +494,7 @@ test:
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \
+	  python3 tools/ares-mcp/test_mcp_structured_tools.py; \
 	 else \
 	  echo "skip: python3+duckdb not available for ares-mcp ingest test"; \
 	 fi

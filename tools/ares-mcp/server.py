@@ -38,6 +38,22 @@ def load_trace(path: str) -> dict:
 
 
 @mcp.tool()
+def load_trace_structured(path: str) -> dict:
+    """Load a type-discriminated funcs/correlate trace (funcs -J / correlate -o)
+    into calls/returns/func_spans/span_syscalls/coverage tables, switching away
+    from any previously loaded trace (including one loaded via load_trace) -
+    the two loaders are mutually exclusive on the active connection. Call this
+    instead of load_trace when you want call_histogram/call_timing/spans/
+    span_tree/span_syscalls/span_timeline/coverage/summaries/correlate_spans;
+    syscall-oriented tools (overview, hot_loops, ...) need load_trace instead."""
+    path_, skipped = store.load_structured(path)
+    report = {"path": path_}
+    if skipped:
+        report["skipped"] = skipped
+    return report
+
+
+@mcp.tool()
 def overview() -> dict:
     """High-level summary of the active trace: total events, id range, per-thread
     counts, the top syscalls, distinct-file count, socket-call count, and the most
@@ -180,6 +196,14 @@ def span_timeline(pid: Optional[int] = None, tid: Optional[int] = None,
     pid, tid, entry_addr, and how many syscalls fired inside each span — the
     call-ordering view a histogram doesn't give. Optional `pid`/`tid` filters."""
     return store.span_timeline(pid=pid, tid=tid, limit=limit)
+
+
+@mcp.tool()
+def correlate_spans(top: int = 50) -> list:
+    """Join span syscalls to their enclosing function span (requires
+    load_trace_structured). One row per in-span syscall, carrying the func
+    entry_addr it ran inside."""
+    return store.correlate_spans(top=top)
 
 
 @mcp.tool()

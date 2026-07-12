@@ -40,6 +40,7 @@ map_bpf_obj() {
     mod:ransomware-burst) echo ransomware_burst.bpf.o ;;
     mod:exfil-burst) echo exfil_burst.bpf.o ;;
     mod:a11y-abuse) echo a11y_abuse.bpf.o ;;
+    mod:fileless-exec) echo fileless_exec.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
 }
@@ -94,6 +95,7 @@ owner_of() {
     $BUILD/modules/ransomware_burst.o) echo mod:ransomware-burst ;;
     $BUILD/modules/exfil_burst.o) echo mod:exfil-burst ;;
     $BUILD/modules/a11y_abuse.o) echo mod:a11y-abuse ;;
+    $BUILD/modules/fileless_exec.o) echo mod:fileless-exec ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;
     *)                          echo shared ;;

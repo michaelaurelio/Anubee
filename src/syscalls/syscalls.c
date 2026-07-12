@@ -825,12 +825,6 @@ static int attach_return_probes(struct syscalls *skel)
 	return n;
 }
 
-static int ends_with(const char *s, const char *suf)
-{
-	size_t ls = strlen(s), lf = strlen(suf);
-	return ls >= lf && !strcmp(s + ls - lf, suf);
-}
-
 static void copy_str(char *dst, const char *src, size_t n)
 {
 	size_t len = strnlen(src, n - 1);
@@ -971,8 +965,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_activity = sa.activity[0] ? sa.activity : NULL;
 	g_verbose  = sa.c.verbose;
 	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
-	g_jsonl    = sa.c.jsonl ||
-	             (sa.c.output_file && ends_with(sa.c.output_file, ".jsonl"));
+	g_jsonl    = 1; // SYM1 Phase 5a: JSONL always, matches lib/mod/correlate
 	int capture_all      = sa.capture_all;
 	int want_snap        = sa.want_snap;
 	int bufmb            = sa.c.bufmb;

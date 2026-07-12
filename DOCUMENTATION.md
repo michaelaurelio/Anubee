@@ -540,9 +540,9 @@ located the module-base bug and stays available for future CFI diagnosis.
   written via the shared `ares_sink` (see §3.1 and §7) **in addition to** console
   output — `-o` and stdout are independent channels (SYM1 dual-channel-always,
   consistent with all other engines); pass `-q` alongside `-o` for file-only output.
-  `-J`/`--jsonl` forces JSONL framing (one record per line, no enclosing `[...]`);
-  without `-J` and when the filename doesn't end in `.jsonl`, the sink writes
-  array-framed output.
+  Output is always JSONL (one record per line, no enclosing `[...]`) — SYM1
+  Phase 5a made this the uniform default across every engine; `-J`/`--jsonl`
+  is accepted but a no-op.
 - **Attach modes:** `-P PACKAGE` launches fresh under UID-filter; `-p PID[,PID...]` attaches
   to a running process (precise, TGID-gated, follow-fork on by default). `--siblings` widens
   to the target's UID; `--no-follow-fork` disables child-following. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
@@ -1014,8 +1014,9 @@ stream:
   `{"type":"cfi_stack"}` records to its sidecar (parity with syscalls). The `-o` file receives structured records
   in addition to human-readable console output — `-o` and stdout are independent channels
   (SYM1 dual-channel-always); pass `-q` alongside `-o` for file-only output.
-  `-J`/`--jsonl` forces JSONL framing (line-delimited records without a `[…]`
-  wrapper); the default is array framing unless the output filename ends in `.jsonl`.
+  Output is always JSONL (line-delimited records without a `[…]` wrapper) —
+  SYM1 Phase 5a made this the uniform default across every engine; `-J`/`--jsonl`
+  is accepted but a no-op.
   MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).
   SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 - `ares lib` and `ares dump` both emit **structured** library-load records via `-o`

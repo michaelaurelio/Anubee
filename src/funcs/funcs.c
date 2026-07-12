@@ -157,12 +157,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
 static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 
-static int ends_with(const char *s, const char *suf)
-{
-    size_t ls = strlen(s), lf = strlen(suf);
-    return ls >= lf && !strcmp(s + ls - lf, suf);
-}
-
 
 // Application UID resolver 
 // launch/UID helpers (sh_exec / resolve_uid / get_pid_uid / resolve_component)
@@ -850,7 +844,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_quiet = args.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 
     if (args.c.output_file) {
-        int jsonl = args.c.jsonl || ends_with(args.c.output_file, ".jsonl");
+        int jsonl = 1; // SYM1 Phase 5a: JSONL always, matches lib/mod/correlate
         if (ares_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
             fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;

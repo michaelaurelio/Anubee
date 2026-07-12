@@ -102,7 +102,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
-               $(SRC)/common/jsonl_merge.c
+               $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -134,6 +134,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_syscall_table ares_syscall_table_count \
                validate_pid_or_package validate_have_selector \
                pm_is_glob pm_is_regex pm_match pm_regex \
+               install_arg_types install_sock_args arg_fd_mask arg_sock_index \
+               g_fd_args g_fd_args_count g_sock_args g_sock_args_count \
                jsonl_merge
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))

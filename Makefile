@@ -101,7 +101,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c $(SRC)/common/sym_jit.c \
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
-               $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c
+               $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
+               $(SRC)/common/jsonl_merge.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -132,7 +133,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_art_naming_disabled \
                ares_syscall_table ares_syscall_table_count \
                validate_pid_or_package validate_have_selector \
-               pm_is_glob pm_is_regex pm_match pm_regex
+               pm_is_glob pm_is_regex pm_match pm_regex \
+               jsonl_merge
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -435,6 +437,8 @@ test:
 	$(BUILD)/test_capabilities
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_args.c src/trace/trace_args.c -o $(BUILD)/test_trace_args
 	$(BUILD)/test_trace_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_jsonl_merge.c src/common/jsonl_merge.c -o $(BUILD)/test_jsonl_merge
+	$(BUILD)/test_jsonl_merge
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_runtime.c src/common/runtime.c -o $(BUILD)/test_runtime
 	$(BUILD)/test_runtime
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread

@@ -16,6 +16,7 @@
 
 #include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
 #include "common/runtime.h"  // ares_install_stop_handler
+#include "common/jsonl_merge.h"  // EPIC C5: combine each engine's own -o file into one
 #include "trace/trace_args.h"
 
 // Engine driver entry points (setup/run/teardown for syscalls/funcs/lib/dump/
@@ -298,5 +299,26 @@ int cmd_trace(int argc, char **argv)
 	if (want_lib) lib_teardown();
 	if (want_func) funcs_teardown();
 	if (want_sys) syscalls_teardown();
+
+	// EPIC C5: each engine above wrote its own <prefix>.<suffix>.jsonl (per-engine
+	// files kept, unchanged - purely additive). Also merge them into one file at
+	// the literal -o value, so a caller expecting a single combined stream (e.g.
+	// ARES-Desktop's Capture UI, which already re-sorts every record by the
+	// shared `ktime` field rather than by file position - EPIC C3/C4, so a
+	// concatenation, not a true byte-interleave, is all correctness requires)
+	// gets exactly that without knowing about the per-engine suffixes. dump is
+	// excluded: its output is rebuilt .so artifacts, not a JSONL event stream.
+	if (prefix) {
+		const char *srcs[4];
+		int n = 0;
+		char sys_p[600], func_p[600], lib_p[600], corr_p[600];
+		if (want_sys)  { snprintf(sys_p,  sizeof(sys_p),  "%s.syscalls.jsonl", prefix); srcs[n++] = sys_p; }
+		if (want_func) { snprintf(func_p, sizeof(func_p), "%s.funcs.jsonl",    prefix); srcs[n++] = func_p; }
+		if (want_lib)  { snprintf(lib_p,  sizeof(lib_p),  "%s.lib.jsonl",      prefix); srcs[n++] = lib_p; }
+		if (want_corr) { snprintf(corr_p, sizeof(corr_p), "%s.event.jsonl",    prefix); srcs[n++] = corr_p; }
+		int merged = jsonl_merge(prefix, srcs, n);
+		if (merged >= 0)
+			fprintf(stderr, "trace: merged %d file(s) into %s\n", merged, prefix);
+	}
 	return 0;
 }

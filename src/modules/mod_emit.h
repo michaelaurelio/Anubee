@@ -77,13 +77,13 @@ void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int g
 
 // {"type":"fileless_exec","pid":N,"comm":"..","start":"0x..","size":N,
 //  "anon_name":".."}
-// anon_name is "" when the kernel had no tag set for the mapping at all
-// (most raw mmap(MAP_ANONYMOUS) loaders); a non-empty value is whatever tag
-// the process itself set via prctl(PR_SET_VMA_ANON_NAME) -- triage context,
-// not a filter (the dalvik- carve-out already ran in-kernel before this
-// event could exist). No burst/threshold/severity fields -- v1 has one
-// signal only, emitted as-is, same "raw fields, no baked-in verdict"
-// convention as every prior mod analyzer.
+// anon_name is always "" in this version -- the reworked detection path
+// (do_mmap entry/exit correlation + kernel-side dalvik- suppression via
+// __arm64_sys_prctl, not inline tag capture at mmap time) has no way to
+// capture/propagate a non-dalvik tag; the field is reserved in the schema
+// for a possible future version that does. No burst/threshold/severity
+// fields -- v1 has one signal only, emitted as-is, same "raw fields, no
+// baked-in verdict" convention as every prior mod analyzer.
 void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
 
 #endif /* __ARES_MOD_EMIT_H */

@@ -966,22 +966,23 @@ object — no shared skeleton with `funcs`. Available analyzers:
   it does not decode which specific privileged action fired (transaction-code decode is
   parked — see BACKLOG.md), and only gates on `system_server` as the destination
   (misses accessibility routing through OEM-specific separate framework processes).
-- **`fileless-exec`** — `kprobe/uprobe_mmap` (stealthy: zero uprobes; the kernel's own
-  uprobe-bookkeeping function, fires on every VMA creation in every process, reads
-  only — same hookpoint `lib_trace.bpf.h` already uses for file-backed library loads).
-  Gated to the inverse case: pure anonymous mappings (`vm_file == NULL`) with `VM_EXEC`
-  set, whose `anon_name` tag (if any) doesn't start with `dalvik-` — Android's ART
-  tags its own JIT/zygote anonymous regions this way via
-  `prctl(PR_SET_VMA_ANON_NAME)`, so every app's legitimate JIT code cache is carved
-  out. Detects fileless native code execution — the mechanism behind native
-  packers/unpackers and multi-stage droppers that hand off to a second-stage payload
-  without ever writing it to disk (e.g. NexusRoute's obfuscated-native-library-via-JNI
-  handoff stage) — not `DexClassLoader`/DEX loading, which executes through ART's own
-  (carved-out) JIT cache rather than a raw anonymous mapping. v1 emits every
-  qualifying mapping as its own event (no burst/threshold — a single occurrence is
-  already the signal). Known limitation: legitimate non-ART JIT engines
-  (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged anonymous
-  executable mappings and will false-positive (see BACKLOG.md).
+- **`fileless-exec`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
+  fires for every mmap, file-backed or anonymous, correlated entry/exit via a
+  per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
+  into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
+  hook suppresses (deletes) the candidate if ART's own `dalvik-`tagged JIT-cache
+  naming call — `prctl(PR_SET_VMA_ANON_NAME, ...)`, a distinct, later syscall from
+  the mmap itself — follows shortly after. A userspace background thread polls
+  `pending_map` every 100ms and alerts on any candidate that survives a 250ms grace
+  window unsuppressed. Detects fileless native code execution — the mechanism behind
+  native packers/unpackers and multi-stage droppers that hand off to a second-stage
+  payload without ever writing it to disk (e.g. NexusRoute's obfuscated-native-
+  library-via-JNI handoff stage) — not `DexClassLoader`/DEX loading, which executes
+  through ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
+  emits every qualifying mapping as its own event (no burst/threshold — a single
+  occurrence is already the signal). Known limitation: legitimate non-ART JIT
+  engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
+  anonymous executable mappings and will false-positive (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the

@@ -321,6 +321,10 @@ int main(void)
     CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_exec anon_name empty");
 
     // ---- fileless_exec: tagged (non-dalvik anon_name present) -----------------
+    // Exercises the serializer only -- nothing in the current runtime path
+    // (pending_map + dalvik- suppression) ever actually populates a
+    // non-empty anon_name; this just proves mod_emit_fileless_exec()
+    // correctly serializes whatever value it's given.
     strncpy(fe.anon_name, "v8-jit", FILELESS_TAG_LEN - 1);
     j.len = 0;
     mod_emit_fileless_exec(&j, &fe);

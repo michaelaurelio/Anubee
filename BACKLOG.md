@@ -369,7 +369,12 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
   payload-content signal (e.g. ELF-magic check) — the mapping is zero-filled at hook
   time, before the caller writes anything into it. Evadable by a loader that tags its
   own mapping `dalvik-fake` via `prctl` to dodge the carve-out (arms-race concern, not
-  addressed in v1).
+  addressed in v1). The suppression mechanism assumes ART's
+  `prctl(PR_SET_VMA_ANON_NAME, addr, ...)` call names the *exact* address `do_mmap`
+  returned; implemented faithfully per design and spot-checked on-device (0 false
+  positives across multiple runs against an ordinary app) but not exhaustively proven,
+  since JIT compilation isn't guaranteed to occur within any given short observation
+  window.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
   Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
   full-screen lock overlays + data-destruction threats rather than actual file

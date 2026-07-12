@@ -222,50 +222,12 @@ static void funcs_drops_tick(void *ctx)
     }
 }
 
-// ponytail: three independent mutexes, never nested (disjoint critical sections).
+// ponytail: two independent mutexes, never nested (disjoint critical sections).
 // g_sink_lock serializes g_sink writes across the drain thread (lib/unlib records)
 // and the worker thread (call/return records); see emit.h for the single-writer contract.
+// (stdout/stderr line serialization moved to common/human_out.c's own lock — SYM1 Phase 0.)
 static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
-static pthread_mutex_t g_out_lock     = PTHREAD_MUTEX_INITIALIZER; // stdout/stderr line serializer
 static pthread_mutex_t g_sink_lock    = PTHREAD_MUTEX_INITIALIZER; // g_sink (multi-writer: drain lib/unlib + worker call/return)
-
-void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void out_print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    pthread_mutex_lock(&g_out_lock);
-    vprintf(fmt, ap);
-    pthread_mutex_unlock(&g_out_lock);
-    va_end(ap);
-}
-
-void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void err_print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    pthread_mutex_lock(&g_out_lock);
-    vfprintf(stderr, fmt, ap);
-    pthread_mutex_unlock(&g_out_lock);
-    va_end(ap);
-}
-
-// Top-level event line, prepends "HH:MM:SS " to stdout.
-void ts_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void ts_print(const char *fmt, ...)
-{
-    time_t t; time(&t);
-    char ts_buf[16];
-    strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", localtime(&t));
-    pthread_mutex_lock(&g_out_lock);
-    printf("%s ", ts_buf);
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    pthread_mutex_unlock(&g_out_lock);
-}
 
 
 probe_target_t probe_targets[4096];
@@ -573,32 +535,32 @@ static void process_call_return(const void *data, size_t data_sz)
             for (int i = 0; i < target->arg_count; i++) {
                 if (target->arg_types[i] == ARG_STR) {
                     if (e->is_str[i])
-                        out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                        human_detail("event", "args[%d] \"%s\"\n", i, e->strings[i]);
                     else
-                        out_print("         [event]   | args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
+                        human_detail("event", "args[%d] 0x%lx (?str)\n", i, (unsigned long)e->args[i]);
                 } else if (target->arg_types[i] == ARG_FD) {
                     long fd_val = (long)e->args[i];
                     if (fd_val == -100L) {
                         char cwd[256], cwd_link[32];
                         snprintf(cwd_link, sizeof(cwd_link), "/proc/%d/cwd", (int)e->h.pid);
                         ssize_t rn = readlink(cwd_link, cwd, sizeof(cwd) - 1);
-                        if (rn > 0) { cwd[rn] = '\0'; out_print("         [event]   | args[%d] AT_FDCWD (%s)\n", i, cwd); }
-                        else         out_print("         [event]   | args[%d] AT_FDCWD\n", i);
+                        if (rn > 0) { cwd[rn] = '\0'; human_detail("event", "args[%d] AT_FDCWD (%s)\n", i, cwd); }
+                        else         human_detail("event", "args[%d] AT_FDCWD\n", i);
                     } else {
                         char fpath[256], fd_link[64];
                         snprintf(fd_link, sizeof(fd_link), "/proc/%d/fd/%ld", (int)e->h.pid, fd_val);
                         ssize_t rn = readlink(fd_link, fpath, sizeof(fpath) - 1);
-                        if (rn > 0) { fpath[rn] = '\0'; out_print("         [event]   | args[%d] %ld -> \"%s\"\n", i, fd_val, fpath); }
-                        else         out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)fd_val);
+                        if (rn > 0) { fpath[rn] = '\0'; human_detail("event", "args[%d] %ld -> \"%s\"\n", i, fd_val, fpath); }
+                        else         human_detail("event", "args[%d] 0x%lx\n", i, (unsigned long)fd_val);
                     }
                 } else if (target->arg_types[i] == ARG_SOCKADDR) {
                     char sbuf[128];
                     if (decode_sockaddr(e->sock[i], SOCK_ADDR_MAX, sbuf, sizeof(sbuf)))
-                        out_print("         [event]   | args[%d] %s\n", i, sbuf);
+                        human_detail("event", "args[%d] %s\n", i, sbuf);
                     else
-                        out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                        human_detail("event", "args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
                 } else {
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                    human_detail("event", "args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
                 }
             }
             for (int i = 0; i + 1 < target->arg_count; i++) {
@@ -615,23 +577,23 @@ static void process_call_return(const void *data, size_t data_sz)
                     ssize_t rn = readlink(link_path, dir, sizeof(dir) - 1);
                     if (rn > 0) {
                         dir[rn] = '\0';
-                        out_print("         [event]   | full path: \"%s/%s\"\n", dir, e->strings[i + 1]);
+                        human_detail("event", "full path: \"%s/%s\"\n", dir, e->strings[i + 1]);
                     }
                 }
             }
         } else if (!g_quiet) {
             for (int i = 0; i < NUM_ARGS; i++) {
                 if (e->is_str[i])
-                    out_print("         [event]   | args[%d] \"%s\"\n", i, e->strings[i]);
+                    human_detail("event", "args[%d] \"%s\"\n", i, e->strings[i]);
                 else
-                    out_print("         [event]   | args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
+                    human_detail("event", "args[%d] 0x%lx\n", i, (unsigned long)e->args[i]);
             }
         }
 
         if (!g_quiet && e->caller_addr) {
             char caller_sym[320];
             sym_resolve(header->pid, e->caller_addr, caller_sym, sizeof(caller_sym));
-            out_print("         [event]   | caller: %s\n", caller_sym);
+            human_detail("event", "caller: %s\n", caller_sym);
         }
 
         if (!g_quiet && !caller_only) {
@@ -639,7 +601,7 @@ static void process_call_return(const void *data, size_t data_sz)
                 if (!e->call_stack[i]) break;
                 char frame_sym[320];
                 sym_resolve(header->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
-                out_print("         [event]   | #%u %s\n", i, frame_sym);
+                human_detail("event", "#%u %s\n", i, frame_sym);
             }
         }
         return;
@@ -713,7 +675,7 @@ static void process_call_return(const void *data, size_t data_sz)
         if (!g_quiet && arg_count >= 0) {
             for (int i = 0; i < arg_count && i < NUM_ARGS - 1; i++) {
                 if (arg_types[i] == ARG_STR && e->is_str[i + 1])
-                    out_print("         [event]   | args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
+                    human_detail("event", "args[%d] (out) \"%s\"\n", i, e->strings[i + 1]);
             }
         }
 
@@ -724,9 +686,9 @@ static void process_call_return(const void *data, size_t data_sz)
             char frame_sym[320];
             sym_resolve(header->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
             if (i == 1)
-                out_print("         [event]   | caller: %s\n", frame_sym);
+                human_detail("event", "caller: %s\n", frame_sym);
             else
-                out_print("         [event]   | #%u %s\n", i, frame_sym);
+                human_detail("event", "#%u %s\n", i, frame_sym);
         }
     }
 

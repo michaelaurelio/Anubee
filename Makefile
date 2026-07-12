@@ -102,7 +102,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
-               $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c
+               $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
+               $(SRC)/common/human_out.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -136,7 +137,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                pm_is_glob pm_is_regex pm_match pm_regex \
                install_arg_types install_sock_args arg_fd_mask arg_sock_index \
                g_fd_args g_fd_args_count g_sock_args g_sock_args_count \
-               jsonl_merge
+               jsonl_merge \
+               out_print err_print ts_print human_detail
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -491,6 +493,8 @@ test:
 	$(BUILD)/test_lib_seed
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
 	$(BUILD)/test_coverage
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_human_out.c src/common/human_out.c -o $(BUILD)/test_human_out -lpthread
+	$(BUILD)/test_human_out
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \

@@ -20,10 +20,9 @@ extern bool resolve_syms;
 // Declared in common/engine_driver.h (AA3) so trace.c and this definition can't drift.
 #include "common/engine_driver.h"
 
-// Functions defined in funcs.c, shared with modules
-void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2)));
+// out_print/err_print/ts_print moved to common/human_out.{c,h} (SYM1 Phase 0):
+// generalized so other engines can share the same thread-safe line printers.
+#include "common/human_out.h"
 #include "common/symbolize.h"   // sym_resolve / sym_flush_pid (shared call-stack resolver)
 
 // Structured-record builders defined in funcs_emit.c (pure, no libbpf deps).

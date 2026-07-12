@@ -15,6 +15,7 @@
 #include "common/emit.h"
 #include "common/runtime.h"
 #include "common/symbolize.h"
+#include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 
@@ -100,7 +101,12 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         }
         snprintf(argv_buf + off, sizeof(argv_buf) - off, "]");
 
-        printf("[exec]  > [EXEC]  PID:%d (%s) %s%s%s\n",
+        // SYM1 Phase 4c: was printf(...); the caller/frame lines already
+        // hand-rolled human_out's "         [tag]   | " prefix (pre-dating
+        // human_out.c) but with a stale "[event]" tag mismatched against this
+        // file's own "[exec]" header -- now unified through human_detail with
+        // the correct "exec" tag.
+        ts_print("[exec]  > [EXEC]  PID:%d (%s) %s%s%s\n",
                e->h.pid, e->comm, e->filename,
                e->argc ? " " : "",
                e->argc ? argv_buf : "");
@@ -110,14 +116,14 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
             if (start < e->stack_depth && e->call_stack[start]) {
                 char caller_sym[320];
                 sym_resolve(hdr->pid, e->call_stack[start], caller_sym, sizeof(caller_sym));
-                printf("         [event]   | caller: %s\n", caller_sym);
+                human_detail("exec", "caller: %s\n", caller_sym);
             }
             if (mc->verbose) {
                 for (__u32 i = start + 1; i < e->stack_depth; i++) {
                     if (!e->call_stack[i]) break;
                     char frame_sym[320];
                     sym_resolve(hdr->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
-                    printf("         [event]   | #%u %s\n", i, frame_sym);
+                    human_detail("exec", "#%u %s\n", i, frame_sym);
                 }
             }
         }

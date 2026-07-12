@@ -17,6 +17,7 @@
 #include "common/emit.h"
 #include "common/launch.h"
 #include "common/runtime.h"
+#include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/ransomware_burst_classify.h"
@@ -108,7 +109,8 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
     rb_stat_add(e->h.pid, e->comm, (int)e->touch_count, distinct);
 
     if (!mc->quiet) {
-        printf("[burst] %-26s PID:%-6d (%s) %u touches, %d distinct, %ums window, e.g. %s\n",
+        // SYM1 Phase 4c: was printf(...).
+        ts_print("[burst] %-26s PID:%-6d (%s) %u touches, %d distinct, %ums window, e.g. %s\n",
                burst_tag(categories), e->h.pid, e->comm, e->touch_count, distinct,
                e->window_ms, e->sample_path);
     }

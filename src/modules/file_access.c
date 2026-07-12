@@ -15,6 +15,7 @@
 #include "common/engine_args.h"
 #include "common/emit.h"
 #include "common/runtime.h"
+#include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/file_access_classify.h"
@@ -89,7 +90,8 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
     int n_flags = file_access_decode_flags(e->flags, flag_strs, 8);
 
     if (!mc->quiet) {
-        printf("[file] %-9s PID:%-6d (%s) %s\n",
+        // SYM1 Phase 4c: was printf(...).
+        ts_print("[file] %-9s PID:%-6d (%s) %s\n",
                cat_tag(categories), e->h.pid, e->comm, e->path);
     }
 

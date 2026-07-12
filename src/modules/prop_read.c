@@ -19,6 +19,7 @@
 #include "common/emit.h"
 #include "common/runtime.h"
 #include "common/probe_resolve.h"
+#include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 
@@ -270,37 +271,38 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
     if (!mc->quiet) {
         switch (e->h.type) {
 
+        // SYM1 Phase 4c: printf -> ts_print (adds the shared "HH:MM:SS " prefix).
         case MOD_EV_PROP_GET:
             if (!e->is_ret) {
-                printf("[prop]  GET   CALL  PID:%-6d (%s)  %s\n",
+                ts_print("[prop]  GET   CALL  PID:%-6d (%s)  %s\n",
                     e->h.pid, e->comm, e->name);
             } else {
                 const char *val = e->value[0] ? e->value : "(empty)";
-                printf("[prop]  GET   RET   PID:%-6d (%s)  %s = %s\n",
+                ts_print("[prop]  GET   RET   PID:%-6d (%s)  %s = %s\n",
                     e->h.pid, e->comm, e->name, val);
             }
             break;
 
         case MOD_EV_PROP_FIND:
             if (!e->is_ret) {
-                printf("[prop]  FIND  CALL  PID:%-6d (%s)  %s\n",
+                ts_print("[prop]  FIND  CALL  PID:%-6d (%s)  %s\n",
                     e->h.pid, e->comm, e->name);
             } else if (e->found) {
-                printf("[prop]  FIND  RET   PID:%-6d (%s)  %s = %s\n",
+                ts_print("[prop]  FIND  RET   PID:%-6d (%s)  %s = %s\n",
                     e->h.pid, e->comm, e->name, e->value);
             } else {
-                printf("[prop]  FIND  RET   PID:%-6d (%s)  %s = (not found)\n",
+                ts_print("[prop]  FIND  RET   PID:%-6d (%s)  %s = (not found)\n",
                     e->h.pid, e->comm, e->name);
             }
             break;
 
         case MOD_EV_PROP_SCAN:
-            printf("[prop]  SCAN  CALL  PID:%-6d (%s)\n",
+            ts_print("[prop]  SCAN  CALL  PID:%-6d (%s)\n",
                 e->h.pid, e->comm);
             break;
 
         case MOD_EV_PROP_READ:
-            printf("[prop]  READCB      PID:%-6d (%s)  %s = %s\n",
+            ts_print("[prop]  READCB      PID:%-6d (%s)  %s = %s\n",
                 e->h.pid, e->comm, e->name, e->value);
             break;
 

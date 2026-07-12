@@ -12,6 +12,7 @@
 #include "common/emit.h"
 #include "common/runtime.h"
 #include "common/symbolize.h"
+#include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 
@@ -39,7 +40,8 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         const struct spawn_event *e = data;
         g_forks++;
         if (!mc->quiet)
-            printf("[proc]  > [FORK]  PID:%u (%s) -> child PID:%u\n",
+            // SYM1 Phase 4c: was printf(...).
+            ts_print("[proc]  > [FORK]  PID:%u (%s) -> child PID:%u\n",
                    e->h.pid, e->comm, e->child_pid);
         if (mc->sink != NULL) {
             mod_emit_spawn(&mc->sink->jb, e);
@@ -56,11 +58,12 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         g_exits++;
         if (sig) g_sig_exits++;
         if (!mc->quiet) {
+            // SYM1 Phase 4c: was printf(...).
             if (sig)
-                printf("[proc]  > [EXIT]  PID:%u (%s) killed by signal %d\n",
+                ts_print("[proc]  > [EXIT]  PID:%u (%s) killed by signal %d\n",
                        e->h.pid, e->comm, sig);
             else
-                printf("[proc]  > [EXIT]  PID:%u (%s) exit status %d\n",
+                ts_print("[proc]  > [EXIT]  PID:%u (%s) exit status %d\n",
                        e->h.pid, e->comm, status);
         }
         if (mc->sink != NULL) {

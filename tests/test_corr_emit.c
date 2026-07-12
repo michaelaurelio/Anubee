@@ -18,6 +18,8 @@ void corr_emit_func(struct jbuf *j, const struct corr_func_event *e);
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e, const char *syscall_name,
                        unsigned fdmask, int sockidx);
 void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
+int corr_decode_arg(const struct corr_syscall_event *e, int i,
+                    unsigned fdmask, int sockidx, char *dec, unsigned long decsz);
 
 static int checks = 0, failures = 0;
 #define HAS(j, sub, msg) do {                                        \
@@ -88,6 +90,42 @@ int main(void)
     j.len = 0; corr_emit_syscall(&j, &sc, "connect", 0, 1);
     HAS(j, "127.0.0.1:8080", "connect decoded sockaddr");
 #endif
+
+    // SYM1 Phase 2: corr_decode_arg exercised directly (not just indirectly via
+    // corr_emit_syscall above) — same 3 fixtures, pins the shared decode
+    // function correlate.c's stdout rendering now also calls.
+#ifdef __NR_openat
+    { char dec[300];
+      int have = corr_decode_arg(&s, 1, 0, -1, dec, sizeof(dec));
+      checks++; if (!have || strcmp(dec, "/data/test") != 0) { failures++;
+          printf("  FAIL: corr_decode_arg openat str arg: have=%d dec=%s\n", have, dec); }
+    }
+#endif
+#ifdef __NR_read
+    { char dec[300];
+      int have = corr_decode_arg(&sfd, 0, 1u << 0, -1, dec, sizeof(dec));
+      checks++; if (!have || !strstr(dec, "fd=3")) { failures++;
+          printf("  FAIL: corr_decode_arg read fd arg: have=%d dec=%s\n", have, dec); }
+    }
+#endif
+#ifdef __NR_connect
+    { char dec[300];
+      int have = corr_decode_arg(&sc, 1, 0, 1, dec, sizeof(dec));
+      checks++; if (!have || strcmp(dec, "127.0.0.1:8080") != 0) { failures++;
+          printf("  FAIL: corr_decode_arg connect sockaddr arg: have=%d dec=%s\n", have, dec); }
+    }
+#endif
+    // raw-hex-fallback: no string/fd/sockaddr/flags decoder applies for an
+    // unknown syscall nr -> corr_decode_arg returns 0, caller prints raw hex.
+    {
+        struct corr_syscall_event raw = {0};
+        raw.h.type = TRACE_SYSCALL; raw.h.pid = 100; raw.h.tid = 101;
+        raw.span = 5; raw.nr = 999999; raw.args[3] = 0x2a;
+        char dec[300];
+        int have = corr_decode_arg(&raw, 3, 0, -1, dec, sizeof(dec));
+        checks++; if (have) { failures++;
+            printf("  FAIL: corr_decode_arg raw-fallback should return 0, got %d (%s)\n", have, dec); }
+    }
 
     struct corr_return_event r = {0};
     r.h.type = TRACE_RETURN; r.h.pid = 100; r.h.tid = 101;

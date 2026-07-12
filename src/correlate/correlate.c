@@ -39,6 +39,7 @@
 #include "common/syscall_table.h"
 #include "common/engine_driver.h"  // correlate_setup/_run/_teardown (AA3)
 #include "common/coverage.h"
+#include "common/human_out.h"      // SYM1 Phase 2: shared stdout detail-line printer
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
@@ -122,13 +123,26 @@ static int handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct corr_syscall_event)) return 0;
         const struct corr_syscall_event *e = data;
         const char *name = syscall_name((long)e->nr);
-        if (!g_quiet)
+        // SYM1 Phase 2: hoisted above the stdout/file split — both channels may
+        // be live under dual-channel (Phase 1), and both want the same decode.
+        unsigned fdmask = arg_fd_mask(e->nr);
+        int sockidx = arg_sock_index(e->nr);
+        if (!g_quiet) {
             printf("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
                    (unsigned long long)e->span, e->h.pid, e->h.tid, name,
                    (unsigned long long)e->nr);
+            // Decoded args (paths/fds/sockaddrs/flag names) — same precedence
+            // corr_emit_syscall's "decoded":[...] JSON array already had,
+            // closing the sharpest stdout/file content gap (§3.3).
+            for (int i = 0; i < CORR_SYS_ARGS; i++) {
+                char dec[300];
+                if (corr_decode_arg(e, i, fdmask, sockidx, dec, sizeof(dec)))
+                    human_detail("syscall", "args[%d] %s\n", i, dec);
+                else
+                    human_detail("syscall", "args[%d] 0x%llx\n", i, (unsigned long long)e->args[i]);
+            }
+        }
         if (g_sink.f) {
-            unsigned fdmask = arg_fd_mask(e->nr);
-            int sockidx = arg_sock_index(e->nr);
             corr_emit_syscall(&g_sink.jb, e, name, fdmask, sockidx);
             ares_sink_emit(&g_sink);
         }

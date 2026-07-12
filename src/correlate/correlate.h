@@ -69,4 +69,13 @@ void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
                        const char *syscall_name, unsigned fdmask, int sockidx);
 void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
 
+// SYM1 Phase 2: single-arg decode shared by corr_emit_syscall's "decoded":[...]
+// JSON array and correlate.c's stdout rendering, so both channels use the same
+// string > fd > sockaddr > flags/enum precedence. Returns 1 and fills dec on a
+// decoded hit, 0 if the caller should fall back to raw hex (e->args[i]).
+// decsz is "unsigned long" not "size_t" -- this header is #include'd by
+// correlate.bpf.c (see file comment) and must not pull in <stddef.h>.
+int corr_decode_arg(const struct corr_syscall_event *e, int i,
+                    unsigned fdmask, int sockidx, char *dec, unsigned long decsz);
+
 #endif /* __ARES_CORRELATE_H */

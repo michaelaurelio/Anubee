@@ -33,6 +33,28 @@ void corr_emit_func(struct jbuf *j, const struct corr_func_event *e)
     jb_c(j, '}');
 }
 
+// SYM1 Phase 2: extracted out of this function's own decode loop so
+// correlate.c's stdout rendering can share the exact same precedence instead
+// of duplicating it. Behavior unchanged — see declaration comment (correlate.h).
+int corr_decode_arg(const struct corr_syscall_event *e, int i,
+                    unsigned fdmask, int sockidx, char *dec, unsigned long decsz)
+{
+    if (i < CORR_STR_SLOTS && (e->str_present & (1u << i))) {
+        snprintf(dec, decsz, "%.*s", (int)(decsz - 1), e->str[i]);
+        return 1;
+    }
+    if (fdmask & (1u << i)) {
+        render_fd((int)e->h.pid, e->args[i], dec, decsz);
+        return 1;
+    }
+    if (i == sockidx && e->sock_len > 0 &&
+        decode_sockaddr(e->sock, e->sock_len, dec, decsz))
+        return 1;
+    if (flags_decode_arg((long)e->nr, i, e->args[i], dec, decsz))
+        return 1;
+    return 0;
+}
+
 void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
                        const char *syscall_name, unsigned fdmask, int sockidx)
 {
@@ -52,21 +74,11 @@ void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
     for (int i = 0; i < CORR_SYS_ARGS; i++) {
         if (i) jb_c(j, ',');
         char dec[300];
-        int have = 0;
-        if (i < CORR_STR_SLOTS && (e->str_present & (1u << i))) {
-            snprintf(dec, sizeof(dec), "%.*s", (int)(sizeof(dec) - 1), e->str[i]);
-            have = 1;
-        } else if (fdmask & (1u << i)) {
-            render_fd((int)e->h.pid, e->args[i], dec, sizeof(dec));
-            have = 1;
-        } else if (i == sockidx && e->sock_len > 0 &&
-                   decode_sockaddr(e->sock, e->sock_len, dec, sizeof(dec))) {
-            have = 1;
-        } else if (flags_decode_arg((long)e->nr, i, e->args[i], dec, sizeof(dec))) {
-            have = 1;
+        if (corr_decode_arg(e, i, fdmask, sockidx, dec, sizeof(dec))) {
+            jb_c(j, '"'); jb_esc(j, dec); jb_c(j, '"');
+        } else {
+            jb_s(j, "\"\"");
         }
-        if (have) { jb_c(j, '"'); jb_esc(j, dec); jb_c(j, '"'); }
-        else jb_s(j, "\"\"");
     }
     jb_c(j, ']');
     jb_c(j, '}');

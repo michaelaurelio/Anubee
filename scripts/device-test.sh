@@ -560,8 +560,15 @@ test_fileless_exec() {
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "fileless-exec: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[fileless-exec\]' <<<"$out"; then
-        info "fileless-exec OK — $(grep -c '^\[fileless-exec\]' <<<"$out") [fileless-exec] line(s)"
+    # Match only the per-event alert line ("[fileless-exec] PID:...") -- NOT
+    # fileless_print_summary()'s own [fileless-exec]-prefixed header/column-
+    # header/table-row/footer lines, which share the same tag prefix and would
+    # otherwise inflate any non-zero count by 4 (confirmed via manual -o/JSONL
+    # cross-check: a single real detection always produces exactly one
+    # {"type":"fileless_exec"} record, but the old '^\[fileless-exec\]' pattern
+    # counted 5 console lines for it -- 1 real alert + 4 summary-table lines).
+    if grep -q '^\[fileless-exec\] PID:' <<<"$out"; then
+        info "fileless-exec OK — $(grep -c '^\[fileless-exec\] PID:' <<<"$out") [fileless-exec] line(s)"
     else
         tail -10 <<<"$out" >&2
         fail "fileless-exec: no [fileless-exec] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
@@ -570,7 +577,7 @@ test_fileless_exec() {
     local jit_out; jit_out="$(ares "mod fileless-exec -P $PKG")"
     forcestop
     local jit_lines
-    jit_lines="$(grep -c '^\[fileless-exec\]' <<<"$jit_out")"
+    jit_lines="$(grep -c '^\[fileless-exec\] PID:' <<<"$jit_out")"
     info "fileless-exec dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
 }
 

@@ -35,6 +35,7 @@
 #include "common/engine_driver.h"  // dump_setup/_run/_teardown (AA3)
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
+#include "common/emit.h"           // SYM1 Phase 3: struct ares_sink, ares_sink_open/close/report
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -45,6 +46,11 @@ static const char *g_pattern = NULL;   // module pattern to dump (glob/substring
 static const char *g_outdir  = ".";    // -d: output directory
 static int g_on_map  = 0;              // --on-map: dump at map time, not on exit
 static int g_quiet   = 0;              // -q: suppress progress chatter
+
+// SYM1 Phase 3: machine channel — a {"type":"dump",...} manifest record per
+// dumped module, mirroring every other engine's g_sink. Independent of
+// g_quiet (dump never had an -o-implies-quiet coupling, unchanged by Phase 1).
+static struct ares_sink g_sink;
 
 // ---- dump-on-exit: record every app pid that maps anything ----------------
 static __u32 *g_pids;
@@ -119,7 +125,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	if (!g_quiet)
 		printf("[dump] on-map: pid %u %s @0x%llx\n",
 		       h->pid, full, (unsigned long long)e->start);
-	dump_one_at((int)h->pid, e->start, full, g_outdir);
+	dump_one_at((int)h->pid, e->start, full, g_outdir, &g_sink);
 	return 0;
 }
 
@@ -140,6 +146,7 @@ struct dump_args {
     const char *pattern;
     const char *activity;
     const char *outdir;
+    const char *output_file;  // -o: SYM1 Phase 3 manifest JSONL path (NULL = none)
     int on_map;
     int raw;
     int quiet;
@@ -156,6 +163,7 @@ static const struct argp_option dump_options[] = {
     { "package",  'P',        "PACKAGE",  0, "App package to launch and dump", 0 },
     { "activity", 'A',        "ACTIVITY", 0, "Override launch activity component (default: auto-resolve)", 0 },
     { "dump-dir", 'd',        "DIR",      0, "Output directory (default: current dir)", 0 },
+    { "output",   'o',        "FILE",     0, "Export a {\"type\":\"dump\",...} manifest JSONL record per dumped module (also prints console; -q silences that)", 0 },
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
@@ -171,6 +179,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg;  break;
     case 'A': a->activity = arg;  break;
     case 'd': a->outdir   = arg;  break;
+    case 'o': a->output_file = arg; break;
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;
@@ -233,6 +242,14 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     g_on_map   = da.on_map;
     g_quiet    = da.quiet;
     if (da.raw) dump_set_raw(1);
+
+    // SYM1 Phase 3: dump's machine channel. Always JSONL (noun "module") --
+    // a brand-new sink with no legacy array-framing consumers, so there's no
+    // -J flag to plumb.
+    if (da.output_file && ares_sink_open(&g_sink, da.output_file, "module", 1) != 0) {
+        fprintf(stderr, "dump: cannot open output file '%s'\n", da.output_file);
+        return 1;
+    }
 
     if (da.tgt.n > 0) {
         g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
@@ -323,7 +340,7 @@ int dump_run(volatile sig_atomic_t *stop)
             fprintf(stderr, "[dump] no app process mapped anything\n");
         int total = 0;
         for (size_t i = 0; i < g_pids_n; i++) {
-            int d = dump_pid_modules((int)g_pids[i], g_pattern, g_outdir);
+            int d = dump_pid_modules((int)g_pids[i], g_pattern, g_outdir, &g_sink);
             if (d > 0)
                 total += d;
         }
@@ -349,6 +366,12 @@ void dump_teardown(void)
     }
     free(g_pids); g_pids = NULL; g_pids_n = g_pids_cap = 0;
     free(g_seen); g_seen = NULL; g_seen_n = g_seen_cap = 0;
+
+    // SYM1 Phase 3: close + report the manifest sink, mirroring every other engine.
+    if (g_sink.f) {
+        ares_sink_close(&g_sink);
+        ares_sink_report(&g_sink);
+    }
 }
 
 // ---- entry point (thin standalone wrapper) --------------------------------

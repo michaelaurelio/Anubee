@@ -27,6 +27,8 @@
 #include "common/proc_mem.h"
 #include "common/maps.h"
 #include "common/pattern_match.h"
+#include "common/emit.h"        // SYM1 Phase 3: struct ares_sink, ares_sink_emit
+#include "dump/dump_emit.h"     // dump_emit_module
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -519,7 +521,7 @@ static int write_file(const char *outpath, const uint8_t *buf, size_t sz)
 }
 
 static int dump_one(int pid, int memfd, uint64_t base, const char *name, const char *outdir,
-		    uint64_t *covered_end)
+		    uint64_t *covered_end, struct ares_sink *sink)
 {
 	Elf64_Ehdr eh;
 	if (proc_mem_read(memfd, base, &eh, sizeof(eh)) != sizeof(eh) ||
@@ -662,10 +664,18 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	printf("[dump] %s (pid %d) -> %s  (%llu bytes, %llu from memory, %s)\n",
 	       bn, pid, outpath, (unsigned long long)total, (unsigned long long)got,
 	       g_raw ? "raw image" : "rebuilt");
+
+	// SYM1 Phase 3: dump's machine channel — one manifest record per module
+	// actually written, right where the file itself was just written.
+	if (sink && sink->f) {
+		sink->jb.len = 0;
+		dump_emit_module(&sink->jb, bn, outpath, (unsigned long long)base, pid, g_raw);
+		ares_sink_emit(sink);
+	}
 	return 0;
 }
 
-int dump_pid_modules(int pid, const char *substr, const char *outdir)
+int dump_pid_modules(int pid, const char *substr, const char *outdir, struct ares_sink *sink)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -710,7 +720,7 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 			done_bases[ndone++] = base;
 
 		uint64_t end = 0;
-		if (dump_one(pid, memfd, base, m[i].path, outdir, &end) == 0) {
+		if (dump_one(pid, memfd, base, m[i].path, outdir, &end, sink) == 0) {
 			dumped++;
 			if (end > base && ncov < (int)(sizeof(cov) / sizeof(cov[0]))) {
 				cov[ncov].s = base;
@@ -725,7 +735,7 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir)
 	return dumped;
 }
 
-int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir)
+int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct ares_sink *sink)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -745,7 +755,7 @@ int dump_one_at(int pid, unsigned long long addr, const char *name, const char *
 		return -1;
 
 	uint64_t covered_end = 0;
-	int rc = dump_one(pid, memfd, base, name, outdir, &covered_end);
+	int rc = dump_one(pid, memfd, base, name, outdir, &covered_end, sink);
 	close(memfd);
 	return rc;
 }

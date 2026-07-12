@@ -150,7 +150,7 @@ CORR_CSRC := $(SRC)/correlate/correlate.c $(SRC)/correlate/corr_emit.c
 CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
 CORR_PART := $(BUILD)/correlate.part.o
 
-DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c
+DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c $(SRC)/dump/dump_emit.c
 DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
 DUMP_PART := $(BUILD)/dump.part.o
 
@@ -481,6 +481,8 @@ test:
 	$(BUILD)/test_target_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
 	$(BUILD)/test_mod_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_emit.c src/dump/dump_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_dump_emit
+	$(BUILD)/test_dump_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
 	$(BUILD)/test_file_access_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_ransomware_burst_classify.c src/modules/ransomware_burst_classify.c -o $(BUILD)/test_ransomware_burst_classify

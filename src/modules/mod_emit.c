@@ -184,3 +184,15 @@ void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int g
         jb_s(j, granted ? "true" : "false");
     jb_c(j, '}');
 }
+
+void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_EXEC)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"start\":\"");     jb_hex(j, e->start); jb_c(j, '"');
+    jb_s(j, ",\"size\":");        jb_u64(j, e->size);
+    jb_s(j, ",\"anon_name\":\""); jb_esc(j, e->anon_name); jb_c(j, '"');
+    jb_c(j, '}');
+}

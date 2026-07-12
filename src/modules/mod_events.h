@@ -38,6 +38,35 @@
 #define A11Y_CODE_RING_LEN 64
 #define A11Y_THRESHOLD     50
 
+// Truncated capture buffer for the fileless-exec analyzer's anon_name field
+// (see fileless_exec.bpf.c). Not a ring/threshold pair like the burst
+// analyzers above -- this is a single fixed-size string buffer, sized to
+// comfortably hold ART's own tags (e.g. "dalvik-jit-code-cache" is 22
+// bytes) plus headroom for whatever a non-ART caller might have set.
+#define FILELESS_TAG_LEN 32
+
+// Grace window between an anon+exec mmap candidate landing in pending_map
+// and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
+// See fileless_exec.bpf.c's two-hook mmap+prctl correlate/suppress design.
+#define FILELESS_GRACE_NS (250ULL * 1000000ULL)
+
+// BPF map key/value for fileless-exec's pending-alert map: mmap-time state
+// that gets suppressed if a matching dalvik-tagged
+// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_GRACE_NS, or
+// graduates into an alert if not. Shared between fileless_exec.bpf.c
+// (writer, both hooks) and fileless_exec.c (background-thread reader).
+struct fileless_pending_key {
+    __u32 pid;
+    __u32 _pad;
+    __u64 addr;
+};
+
+struct fileless_pending_val {
+    __u64 ts_ns;
+    __u64 size;
+    char  comm[TASK_COMM_LEN];
+};
+
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
     MOD_EV_SPAWN      = 1,
@@ -51,6 +80,7 @@ enum {
     MOD_EV_RANSOMWARE_BURST = 9,
     MOD_EV_EXFIL_BURST = 10,
     MOD_EV_A11Y_ABUSE = 11,
+    MOD_EV_FILELESS_EXEC = 12,
 };
 
 struct spawn_event {
@@ -118,6 +148,14 @@ struct a11y_abuse_event {
     __u32  touch_count;
     __u32  window_ms;
     __u32  code_samples[A11Y_CODE_RING_LEN];
+};
+
+struct fileless_exec_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u64  start;
+    __u64  size;
+    char   anon_name[FILELESS_TAG_LEN];
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

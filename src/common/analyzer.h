@@ -55,5 +55,6 @@ extern const ares_analyzer_t analyzer_file_access;
 extern const ares_analyzer_t analyzer_ransomware_burst;
 extern const ares_analyzer_t analyzer_exfil_burst;
 extern const ares_analyzer_t analyzer_a11y_abuse;
+extern const ares_analyzer_t analyzer_fileless_exec;
 
 #endif /* __ARES_ANALYZER_H */

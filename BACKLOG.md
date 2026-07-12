@@ -357,6 +357,24 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
   5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
   `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
   matching.
+- `mod fileless-exec` known v1 limitations (shipped 2026-07-12): false positives from
+  legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
+  Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
+  will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
+  known-benign JIT engines yet (parked as a follow-up in the design doc). `mprotect`-
+  based W^X evasion (allocate RW, write payload, flip to RX afterward) is invisible to
+  the `mmap`-only v1 hook. `memfd_create`-backed "fileless" loaders bypass the gate
+  entirely — they have a `vm_file` (tmpfs-backed), so `vm_file == NULL` never matches;
+  this is a real technique the analyzer is named for but does not yet catch. No
+  payload-content signal (e.g. ELF-magic check) — the mapping is zero-filled at hook
+  time, before the caller writes anything into it. Evadable by a loader that tags its
+  own mapping `dalvik-fake` via `prctl` to dodge the carve-out (arms-race concern, not
+  addressed in v1). The suppression mechanism assumes ART's
+  `prctl(PR_SET_VMA_ANON_NAME, addr, ...)` call names the *exact* address `do_mmap`
+  returned; implemented faithfully per design and spot-checked on-device (0 false
+  positives across multiple runs against an ordinary app) but not exhaustively proven,
+  since JIT compilation isn't guaranteed to occur within any given short observation
+  window.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
   Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
   full-screen lock overlays + data-destruction threats rather than actual file

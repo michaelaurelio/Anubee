@@ -244,6 +244,10 @@ static void fileless_teardown(void)
 }
 
 // ---- summary ----------------------------------------------------------------
+// Lock-free reads of fileless_stats/fileless_stat_count are safe here
+// only because mod.c always calls teardown() (joining the poll thread)
+// before print_summary() or emit_summary(); changing that call order would
+// require adding lock protection to these functions.
 
 static void fileless_print_summary(void)
 {

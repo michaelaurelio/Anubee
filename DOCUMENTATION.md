@@ -966,6 +966,22 @@ object — no shared skeleton with `funcs`. Available analyzers:
   it does not decode which specific privileged action fired (transaction-code decode is
   parked — see BACKLOG.md), and only gates on `system_server` as the destination
   (misses accessibility routing through OEM-specific separate framework processes).
+- **`fileless-exec`** — `kprobe/uprobe_mmap` (stealthy: zero uprobes; the kernel's own
+  uprobe-bookkeeping function, fires on every VMA creation in every process, reads
+  only — same hookpoint `lib_trace.bpf.h` already uses for file-backed library loads).
+  Gated to the inverse case: pure anonymous mappings (`vm_file == NULL`) with `VM_EXEC`
+  set, whose `anon_name` tag (if any) doesn't start with `dalvik-` — Android's ART
+  tags its own JIT/zygote anonymous regions this way via
+  `prctl(PR_SET_VMA_ANON_NAME)`, so every app's legitimate JIT code cache is carved
+  out. Detects fileless native code execution — the mechanism behind native
+  packers/unpackers and multi-stage droppers that hand off to a second-stage payload
+  without ever writing it to disk (e.g. NexusRoute's obfuscated-native-library-via-JNI
+  handoff stage) — not `DexClassLoader`/DEX loading, which executes through ART's own
+  (carved-out) JIT cache rather than a raw anonymous mapping. v1 emits every
+  qualifying mapping as its own event (no burst/threshold — a single occurrence is
+  already the signal). Known limitation: legitimate non-ART JIT engines
+  (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged anonymous
+  executable mappings and will false-positive (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
@@ -984,6 +1000,7 @@ longer lost from the file:
 - `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
+- `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -991,7 +1008,8 @@ Omitted entirely when the analyzer saw no relevant events (mirrors
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
-and `a11y-abuse` are kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
+`a11y-abuse`, and `fileless-exec` are kprobe/tracepoint — stealthy; `prop-read` is a
+libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
@@ -1109,9 +1127,9 @@ on non-`--returns` runs.
 `lib` and `dump` are **exempt in v1**: `lib` has no drop map or snapshot path, and
 `dump` is a single-shot read (no run-long coverage to accumulate). `mod` has a
 minimal variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`ransomware-burst`/`a11y-abuse`) reports its own `drops.ring` count the same way, but
-has no snapshot/CFI/managed-naming/decode surface to report — every other field always
-reads clean.
+`ransomware-burst`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring` count the
+same way, but has no snapshot/CFI/managed-naming/decode surface to report — every
+other field always reads clean.
 
 The rationale generalizes the older `ares_drops_report` contract: **silence
 never means "didn't check"** - every run states its own coverage explicitly,

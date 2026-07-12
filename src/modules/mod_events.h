@@ -38,6 +38,13 @@
 #define A11Y_CODE_RING_LEN 64
 #define A11Y_THRESHOLD     50
 
+// Truncated capture buffer for the fileless-exec analyzer's anon_name field
+// (see fileless_exec.bpf.c). Not a ring/threshold pair like the burst
+// analyzers above -- this is a single fixed-size string buffer, sized to
+// comfortably hold ART's own tags (e.g. "dalvik-jit-code-cache" is 22
+// bytes) plus headroom for whatever a non-ART caller might have set.
+#define FILELESS_TAG_LEN 32
+
 // BPF-side event type discriminators (set in h.type by each .bpf.c program).
 enum {
     MOD_EV_SPAWN      = 1,
@@ -51,6 +58,7 @@ enum {
     MOD_EV_RANSOMWARE_BURST = 9,
     MOD_EV_EXFIL_BURST = 10,
     MOD_EV_A11Y_ABUSE = 11,
+    MOD_EV_FILELESS_EXEC = 12,
 };
 
 struct spawn_event {
@@ -118,6 +126,14 @@ struct a11y_abuse_event {
     __u32  touch_count;
     __u32  window_ms;
     __u32  code_samples[A11Y_CODE_RING_LEN];
+};
+
+struct fileless_exec_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u64  start;
+    __u64  size;
+    char   anon_name[FILELESS_TAG_LEN];
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

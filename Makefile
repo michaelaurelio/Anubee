@@ -435,7 +435,7 @@ test:
 	$(BUILD)/test_funcs_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
 	$(BUILD)/test_corr_emit
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_trace_emit.c src/common/lib_trace.c src/common/emit.c src/common/maps.c -o $(BUILD)/test_lib_trace_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lib_trace_emit.c src/common/lib_trace.c src/common/emit.c src/common/maps.c src/common/human_out.c -o $(BUILD)/test_lib_trace_emit -lpthread
 	$(BUILD)/test_lib_trace_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_capabilities.c src/common/capabilities.c -o $(BUILD)/test_capabilities
 	$(BUILD)/test_capabilities

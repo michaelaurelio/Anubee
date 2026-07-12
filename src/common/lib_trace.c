@@ -5,6 +5,7 @@
 #include "common/lib_trace.h"
 #include "common/emit.h"
 #include "common/maps.h"
+#include "common/human_out.h"      // SYM1 Phase 4b: shared stdout formatter
 
 #include <stdio.h>
 #include <string.h>
@@ -133,7 +134,7 @@ void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_
 	if (!quiet) {
 		char line[512];
 		ares_libtrace_format_lib(line, sizeof(line), e, fullpath, soname);
-		printf("%s\n", line);
+		ts_print("%s\n", line);  // SYM1 Phase 4b: was printf("%s\n", line)
 	}
 	if (sink && sink->f) {
 		struct jbuf *j = &sink->jb;
@@ -157,7 +158,8 @@ void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_
 void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e)
 {
 	if (!quiet)
-		printf("[unlib] pid %u [0x%llx, 0x%llx)\n",
+		// SYM1 Phase 4b: was printf(...).
+		ts_print("[unlib] pid %u [0x%llx, 0x%llx)\n",
 		       e->h.pid, (unsigned long long)e->start, (unsigned long long)e->end);
 	if (sink && sink->f) {
 		struct jbuf *j = &sink->jb;

@@ -736,6 +736,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	jb_s(j, ",\"tid\":");      jb_u64(j, e->h.tid);
 	jb_s(j, ",\"syscall_nr\":"); jb_u64(j, e->nr);
 	jb_s(j, ",\"syscall\":\""); jb_s(j, sysname(e->nr, e->compat)); jb_c(j, '"');
+	jb_s(j, ",\"ktime\":");     jb_u64(j, e->ktime); // EPIC C3: boot-monotonic entry time
 
 	// compat: e->nr is an EABI number, so arg_count/arg_fd_mask/flags_decode_arg
 	// (all arm64-nr-keyed) would be a namespace mismatch (CR2) — show every raw

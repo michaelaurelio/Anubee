@@ -36,6 +36,9 @@ struct event {
     __u64 entry_addr;
     __u64 caller_addr;    // x30 (LR) at function entry; unused in RETURN events
     __u64 elapsed_ns;     // time from entry to return (RETURN only; 0 in CALL)
+    __u64 ktime;          // boot-monotonic ns at this event (bpf_ktime_get_ns) - entry
+                           // time for CALL, return time for RETURN; the cross-engine
+                           // chronological join key (EPIC C3)
     __u64 retval;         // return value register (RETURN only)
     int ppid;
     bool exit_event;      // true for RETURN events

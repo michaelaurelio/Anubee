@@ -29,6 +29,7 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
     jb_s(j, ",\"module\":\"");   jb_esc(j, module); jb_c(j, '"');
     jb_s(j, ",\"symbol\":\"");   jb_esc(j, symbol); jb_c(j, '"');
     jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
+    jb_s(j, ",\"ktime\":");      jb_u64(j, e->ktime); // EPIC C3: boot-monotonic entry time
     if (target) {
         jb_s(j, ",\"offset\":"); jb_u64(j, target->offset);
     }
@@ -115,6 +116,7 @@ void funcs_emit_return(struct jbuf *j, const struct event *e,
     }
     jb_s(j, ",\"retval\":");     jb_i64(j, (long long)e->retval); // retval is ABI-signed; render signed so small negative error codes read naturally
     jb_s(j, ",\"elapsed_ns\":"); jb_u64(j, e->elapsed_ns);
+    jb_s(j, ",\"ktime\":");      jb_u64(j, e->ktime); // EPIC C3: boot-monotonic return time
 
     // backtrace: mirrors the call record's frame builder (console already prints
     // this on return, e.g. "caller: ..." — the file previously had no backtrace).

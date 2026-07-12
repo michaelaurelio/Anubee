@@ -210,6 +210,11 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		}
 	}
 
+	// EPIC C3: this kprobe captures no clock today - the cross-engine
+	// chronological join key. Read here, right before the reserve, same
+	// placement as correlate's mirror of this same probe (corr_on_svc).
+	__u64 ktime = bpf_ktime_get_ns();
+
 	struct syscalls_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		bump_dropped();
@@ -222,6 +227,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h._pad = 0;
 
 	e->nr      = nr;
+	e->ktime   = ktime;
 	e->compat  = 0;
 	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
 	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
@@ -348,6 +354,9 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 		}
 	}
 
+	// EPIC C3: same new capture as the 64-bit path above (on_svc_enter).
+	__u64 ktime = bpf_ktime_get_ns();
+
 	struct syscalls_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		bump_dropped();
@@ -360,6 +369,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 	e->h._pad = 0;
 
 	e->nr      = nr;
+	e->ktime   = ktime;
 	e->compat  = 1;
 	e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
 	e->args[1] = BPF_CORE_READ(user_regs, regs[1]);

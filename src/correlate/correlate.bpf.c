@@ -71,8 +71,9 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
     long raw[NUM_ARGS] = { a1, a2, a3, a4, a5, a6, a7, a8 };
     __u64 entry_sp = (__u64)PT_REGS_SP(ctx);
     span_stack_reconcile(tid, entry_sp);
+    __u64 entry_ktime = bpf_ktime_get_ns();
     __u64 sid = span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
-                                bpf_ktime_get_ns(), raw);
+                                entry_ktime, raw);
     if (!sid)
         return 0;
 
@@ -97,6 +98,7 @@ int BPF_KPROBE(corr_uprobe_entry, long a1, long a2, long a3, long a4,
     e->span        = sid;
     e->parent_span = parent;
     e->entry_addr  = (__u64)PT_REGS_IP(ctx);
+    e->ktime       = entry_ktime;   // same value pushed into span_frame.timestamp above (EPIC C3)
     #pragma unroll
     for (int i = 0; i < NUM_ARGS; i++)
         e->args[i] = (__u64)raw[i];
@@ -119,6 +121,10 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
     __u64 span = span_stack_top_id(tid, sp);
     if (!span)
         return 0;
+    // EPIC C3: this kprobe captures no clock today - the one genuinely new
+    // BPF-side ktime read this engine needed (func/return already read it for
+    // span timing; this syscall path never did).
+    __u64 ktime = bpf_ktime_get_ns();
 
     struct corr_syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
@@ -130,6 +136,7 @@ int BPF_KPROBE(corr_on_svc, struct pt_regs *user_regs)
     e->h.tid  = tid;
     e->h._pad = 0;
     e->span    = span;
+    e->ktime   = ktime;
     e->nr      = BPF_CORE_READ(user_regs, regs[8]);
     e->args[0] = BPF_CORE_READ(user_regs, regs[0]);
     e->args[1] = BPF_CORE_READ(user_regs, regs[1]);
@@ -223,6 +230,7 @@ int BPF_KRETPROBE(corr_uretprobe_ret)
     e->entry_addr = saved->entry_addr;
     e->retval     = (__u64)PT_REGS_RC(ctx);
     e->elapsed_ns = now - saved->timestamp;
+    e->ktime      = now;   // return-side ktime (EPIC C3); already computed above for elapsed_ns
     bpf_ringbuf_submit(e, 0);
     cov_bump(COV_URET_FIRED);   // a return value was captured
 

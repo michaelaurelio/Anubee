@@ -28,6 +28,7 @@ void corr_emit_func(struct jbuf *j, const struct corr_func_event *e)
     jb_s(j, ",\"pid\":");          jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");          jb_u64(j, e->h.tid);
     jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
+    jb_s(j, ",\"ktime\":");        jb_u64(j, e->ktime); // EPIC C3: boot-monotonic span-open time
     emit_hex_args(j, e->args, CORR_NUM_ARGS);
     jb_c(j, '}');
 }
@@ -40,6 +41,7 @@ void corr_emit_syscall(struct jbuf *j, const struct corr_syscall_event *e,
     jb_s(j, ",\"span\":");    jb_u64(j, e->span);
     jb_s(j, ",\"pid\":");     jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");     jb_u64(j, e->h.tid);
+    jb_s(j, ",\"ktime\":");   jb_u64(j, e->ktime); // EPIC C3: boot-monotonic issue time
     jb_s(j, ",\"nr\":");      jb_u64(j, e->nr);
     jb_s(j, ",\"syscall\":\""); jb_esc(j, syscall_name); jb_c(j, '"');
     emit_hex_args(j, e->args, CORR_SYS_ARGS);
@@ -80,5 +82,6 @@ void corr_emit_return(struct jbuf *j, const struct corr_return_event *e)
     jb_s(j, ",\"entry_addr\":\""); jb_hex(j, e->entry_addr); jb_c(j, '"');
     jb_s(j, ",\"retval\":\"");     jb_hex(j, e->retval); jb_c(j, '"');
     jb_s(j, ",\"elapsed_ns\":");   jb_u64(j, e->elapsed_ns);
+    jb_s(j, ",\"ktime\":");        jb_u64(j, e->ktime); // EPIC C3: boot-monotonic span-close time
     jb_c(j, '}');
 }

@@ -40,6 +40,7 @@ int main(void)
     e.h.pid = 1234;
     e.h.tid = 1240;
     e.entry_addr = 0xabc000;
+    e.ktime = 555;
     e.args[0] = 0x10; e.args[1] = 0x20;
 
     j.len = 0;
@@ -51,6 +52,7 @@ int main(void)
     CHECK_HAS(j, "\"module\":\"libc.so\"", "call module");
     CHECK_HAS(j, "\"symbol\":\"open\"", "call symbol");
     CHECK_HAS(j, "\"entry_addr\":\"0xabc000\"", "call entry_addr");
+    CHECK_HAS(j, "\"ktime\":555", "call ktime");
 
     // backtrace array emitted from call_stack (always-on, independent of --snapshot);
     // syms=NULL (host tests / no resolver) → per-frame "symbol" omitted, addr-only.
@@ -190,12 +192,14 @@ int main(void)
     r.exit_event = true;
     r.retval = 7;
     r.elapsed_ns = 4096;
+    r.ktime = 999888;
 
     j.len = 0;
     funcs_emit_return(&j, &r, "libc.so", "open", NULL, NULL);
     CHECK_HAS(j, "\"type\":\"return\"", "return type");
     CHECK_HAS(j, "\"retval\":7", "return retval");
     CHECK_HAS(j, "\"elapsed_ns\":4096", "return elapsed");
+    CHECK_HAS(j, "\"ktime\":999888", "return ktime");
     { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
       checks++;
       if (!strstr(tmp, "\"backtrace\":[]")) { failures++; printf("  FAIL: return backtrace key (empty)\n    in: %s\n", tmp); }

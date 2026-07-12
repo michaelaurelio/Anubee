@@ -72,8 +72,9 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     // the ringbuf reserve so the uretprobe always has its entry context.
     __u64 entry_sp = (__u64)PT_REGS_SP(ctx);
     span_stack_reconcile(tid, entry_sp);
+    __u64 entry_ktime = bpf_ktime_get_ns();
     span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
-                    bpf_ktime_get_ns(), raw);
+                    entry_ktime, raw);
 
     // Reserve space in ring buffer for event
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
@@ -92,6 +93,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
 	e->h._pad = 0;
     e->entry_addr  = (__u64)PT_REGS_IP(ctx);
     e->caller_addr = (__u64)ctx->regs[30];
+    e->ktime = entry_ktime;   // same value pushed into span_frame.timestamp above (EPIC C3)
     e->ppid = BPF_CORE_READ(task, real_parent, tgid);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     e->exit_event = false;
@@ -189,6 +191,7 @@ int BPF_KRETPROBE(uretprobe_open)
     e->entry_addr = saved->entry_addr;
     e->caller_addr = 0;
     e->elapsed_ns = now - saved->timestamp;
+    e->ktime = now;   // return-side ktime (EPIC C3); already computed above for elapsed_ns
     e->ppid       = 0;
     e->args[0]    = 0;
     e->exit_event = true;

@@ -41,6 +41,9 @@ enum syscalls_event_type {
 struct syscalls_syscall_event {
 	struct trace_event_header h;
 	__u64 nr;
+	__u64 ktime;                                  /* boot-monotonic ns at syscall entry
+							 * (bpf_ktime_get_ns) - the cross-engine
+							 * chronological join key (EPIC C3) */
 	__u64 args[SYSC_SYSCALL_NARGS];
 	__s32 stack_sz;                              /* bytes valid in stack[] */
 	__u32 str_present;                           /* bit i set => str[i] is valid */

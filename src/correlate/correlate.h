@@ -32,6 +32,8 @@ struct corr_func_event {
     __u64 span;
     __u64 parent_span;
     __u64 entry_addr;
+    __u64 ktime;    // boot-monotonic ns at span open (bpf_ktime_get_ns) - the
+                     // cross-engine chronological join key (EPIC C3)
     __u64 args[CORR_NUM_ARGS];
 };
 
@@ -40,6 +42,7 @@ struct corr_syscall_event {
     struct trace_event_header h;
     __u64 span;
     __u64 nr;
+    __u64 ktime;    // boot-monotonic ns when the syscall was issued (EPIC C3)
     __u64 args[CORR_SYS_ARGS];
     __u32 str_present;                       // bit i set => str[i] is valid
     char  str[CORR_STR_SLOTS][CORR_STR_MAX]; // string value of args[i]
@@ -57,6 +60,7 @@ struct corr_return_event {
     __u64 entry_addr;
     __u64 retval;
     __u64 elapsed_ns;
+    __u64 ktime;    // boot-monotonic ns at span close (EPIC C3)
 };
 
 struct jbuf;  /* common/emit.h */

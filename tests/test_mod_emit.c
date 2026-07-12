@@ -21,6 +21,7 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
 void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
                            const char *dest_str);
 void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
+void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -300,6 +301,30 @@ int main(void)
     j.len = 0;
     mod_emit_a11y_abuse(&j, &aa, -1);
     CHECK_HAS(j, "\"granted\":null", "a11y_abuse granted null");
+
+    // ---- fileless_exec: untagged (no anon_name) -------------------------------
+    struct fileless_exec_event fe = {0};
+    fe.h.type = MOD_EV_FILELESS_EXEC;
+    fe.h.pid  = 9300;
+    fe.h.tid  = 9300;
+    strncpy(fe.comm, "droploader", TASK_COMM_LEN - 1);
+    fe.start = 0x7f0000000000ULL;
+    fe.size  = 4096;
+
+    j.len = 0;
+    mod_emit_fileless_exec(&j, &fe);
+    CHECK_HAS(j, "\"type\":\"fileless_exec\"",     "fileless_exec type");
+    CHECK_HAS(j, "\"pid\":9300",                    "fileless_exec pid");
+    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_exec comm");
+    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_exec start hex");
+    CHECK_HAS(j, "\"size\":4096",                   "fileless_exec size");
+    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_exec anon_name empty");
+
+    // ---- fileless_exec: tagged (non-dalvik anon_name present) -----------------
+    strncpy(fe.anon_name, "v8-jit", FILELESS_TAG_LEN - 1);
+    j.len = 0;
+    mod_emit_fileless_exec(&j, &fe);
+    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_exec anon_name tagged");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

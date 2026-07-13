@@ -13,6 +13,9 @@ struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
 struct ransomware_burst_event; // modules/mod_events.h
+struct exfil_burst_event; // modules/mod_events.h
+struct a11y_abuse_event; // modules/mod_events.h
+struct fileless_exec_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -52,5 +55,35 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 // (package unresolved, never checked) -> null.
 void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
                                 int distinct_estimate, int manage_ext_storage);
+
+// {"type":"exfil_burst","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
+//  "sample_path":"..","dest":".."|null}
+// dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
+// builder free of that logic, same pattern as ransomware_burst's
+// distinct_estimate. NULL or empty -> JSON null (no connect() observed before
+// the byte threshold tripped, e.g. all volume went via a pre-attach socket's
+// sendto).
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str);
+
+// {"type":"a11y_abuse","pid":N,"comm":"..","touch_count":N,"window_ms":N,
+//  "granted":true|false|null}
+// granted mirrors ransomware_burst's manage_ext_storage tri-state: 1 -> true,
+// 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
+// consumers derive it from touch_count/granted the same way classify_a11y()
+// does, matching ransomware_burst/exfil_burst's convention of exposing raw
+// fields rather than a baked-in classification string.
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
+
+// {"type":"fileless_exec","pid":N,"comm":"..","start":"0x..","size":N,
+//  "anon_name":".."}
+// anon_name is always "" in this version -- the reworked detection path
+// (do_mmap entry/exit correlation + kernel-side dalvik- suppression via
+// __arm64_sys_prctl, not inline tag capture at mmap time) has no way to
+// capture/propagate a non-dalvik tag; the field is reserved in the schema
+// for a possible future version that does. No burst/threshold/severity
+// fields -- v1 has one signal only, emitted as-is, same "raw fields, no
+// baked-in verdict" convention as every prior mod analyzer.
+void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
 
 #endif /* __ARES_MOD_EMIT_H */

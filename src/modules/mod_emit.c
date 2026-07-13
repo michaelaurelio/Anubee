@@ -149,3 +149,50 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
         jb_s(j, manage_ext_storage ? "true" : "false");
     jb_c(j, '}');
 }
+
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_BURST)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"bytes_sent\":");    jb_u64(j, e->bytes_sent);
+    jb_s(j, ",\"window_ms\":");     jb_u64(j, e->window_ms);
+    jb_s(j, ",\"sample_path\":\""); jb_esc(j, e->sample_path); jb_c(j, '"');
+    jb_s(j, ",\"dest\":");
+    if (dest_str && dest_str[0]) {
+        jb_c(j, '"'); jb_esc(j, dest_str); jb_c(j, '"');
+    } else {
+        jb_s(j, "null");
+    }
+    jb_c(j, '}');
+}
+
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_A11Y_ABUSE)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"touch_count\":"); jb_u64(j, e->touch_count);
+    jb_s(j, ",\"window_ms\":");   jb_u64(j, e->window_ms);
+    jb_s(j, ",\"granted\":");
+    if (granted < 0)
+        jb_s(j, "null");
+    else
+        jb_s(j, granted ? "true" : "false");
+    jb_c(j, '}');
+}
+
+void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_EXEC)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"start\":\"");     jb_hex(j, e->start); jb_c(j, '"');
+    jb_s(j, ",\"size\":");        jb_u64(j, e->size);
+    jb_s(j, ",\"anon_name\":\""); jb_esc(j, e->anon_name); jb_c(j, '"');
+    jb_c(j, '}');
+}

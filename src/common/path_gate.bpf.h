@@ -22,4 +22,29 @@ static __always_inline int path_has_prefix(const char *path, const char *prefix,
     return 1;
 }
 
+// Bounded substring search: does `path` contain `needle` (length `nlen`,
+// max 16) anywhere within its first 48 bytes? Double loop, both bounds
+// fixed/unrolled -- same verifier-provable shape as the FNV hash loop in
+// ransomware_burst.bpf.c. path is always a fixed 256-byte buffer
+// (FILE_PATH_LEN), so indexing up to 48+16=64 is always safe. The 48-byte
+// window is a deliberate bound (mirrors path_hash's own 64-byte bound) --
+// a needle only appearing later in an unusually long path is a documented,
+// accepted miss, not a correctness bug (see mod exfil-burst design doc).
+static __always_inline int path_has_component(const char *path, const char *needle, int nlen)
+{
+    #pragma unroll
+    for (int start = 0; start < 48; start++) {
+        int match = 1;
+        #pragma unroll
+        for (int i = 0; i < 16; i++) {
+            if (i >= nlen)
+                break;
+            if (path[start + i] != needle[i]) { match = 0; break; }
+        }
+        if (match)
+            return 1;
+    }
+    return 0;
+}
+
 #endif /* __ARES_PATH_GATE_BPF_H */

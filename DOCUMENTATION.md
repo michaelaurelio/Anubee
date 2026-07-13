@@ -981,6 +981,49 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
+- **`exfil-burst`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
+  `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
+  media-subdir- or credential-shaped-filename read (reusing `file_access`'s
+  pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
+  `path_has_component`), then accumulates outbound byte volume via a
+  per-`(tgid,fd)` "is this fd a tracked non-loopback socket" map armed by
+  `connect()`. Crossing 512 KiB within 30 seconds of the arming read emits
+  an alert -- byte volume to *any* destination, not distinct-destination
+  count, since realistic exfiltration is usually one C2 endpoint receiving
+  a large payload rather than many small sends to many hosts. Known
+  limitations: contacts/SMS/call-log exfil is invisible (Binder-mediated,
+  same structural blind spot as `ransomware-burst`'s MediaStore gap);
+  byte counts are requested length at syscall entry, not kretprobe-verified
+  delivered length (a failed/blocked send still counts); threshold evadable
+  by throttling/chunking (see BACKLOG.md).
+- **`a11y-abuse`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
+  `ares` code to touch Binder). Gated to outbound calls (not replies) addressed to
+  `system_server`; per-process sliding-window counter flags a burst of 50 calls within
+  5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
+  see whether the traced app holds a granted Accessibility Service — the dominant
+  technique behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda,
+  RatOn, TrickMo), used for overlay-credential harvesting, automated-transfer-system
+  fraud, screen reading, and security-prompt bypass. v1 is a coarse volume signal only:
+  it does not decode which specific privileged action fired (transaction-code decode is
+  parked — see BACKLOG.md), and only gates on `system_server` as the destination
+  (misses accessibility routing through OEM-specific separate framework processes).
+- **`fileless-exec`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
+  fires for every mmap, file-backed or anonymous, correlated entry/exit via a
+  per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
+  into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
+  hook suppresses (deletes) the candidate if ART's own `dalvik-`tagged JIT-cache
+  naming call — `prctl(PR_SET_VMA_ANON_NAME, ...)`, a distinct, later syscall from
+  the mmap itself — follows shortly after. A userspace background thread polls
+  `pending_map` every 100ms and alerts on any candidate that survives a 250ms grace
+  window unsuppressed. Detects fileless native code execution — the mechanism behind
+  native packers/unpackers and multi-stage droppers that hand off to a second-stage
+  payload without ever writing it to disk (e.g. NexusRoute's obfuscated-native-
+  library-via-JNI handoff stage) — not `DexClassLoader`/DEX loading, which executes
+  through ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
+  emits every qualifying mapping as its own event (no burst/threshold — a single
+  occurrence is already the signal). Known limitation: legitimate non-ART JIT
+  engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
+  anonymous executable mappings and will false-positive (see BACKLOG.md).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
@@ -997,6 +1040,9 @@ longer lost from the file:
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
+- `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
+- `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
+- `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -1012,8 +1058,9 @@ Both orderings are harmless (the sink stays open for both calls either way)
 but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, and `ransomware-burst` are
-kprobe/tracepoint — stealthy; `prop-read` is a libc uprobe — loud.
+key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
+`a11y-abuse`, and `fileless-exec` are kprobe/tracepoint — stealthy; `prop-read` is a
+libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
@@ -1162,9 +1209,9 @@ sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
 distinct shape from both other cases. `mod` has a minimal (not exempt)
 variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`ransomware-burst`) reports its own `drops.ring` count the same way, but has
-no snapshot/CFI/managed-naming/decode surface to report — every other field
-always reads clean.
+`ransomware-burst`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring`
+count the same way, but has no snapshot/CFI/managed-naming/decode surface to
+report — every other field always reads clean.
 
 The rationale generalizes the older `ares_drops_report` contract: **silence
 never means "didn't check"** - every run states its own coverage explicitly,

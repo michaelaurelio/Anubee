@@ -18,6 +18,10 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
                                 int distinct_estimate, int manage_ext_storage);
+void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+                           const char *dest_str);
+void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
+void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -244,6 +248,87 @@ int main(void)
     j.len = 0;
     mod_emit_ransomware_burst(&j, &rb, 15, -1);
     CHECK_HAS(j, "\"manage_external_storage\":null", "ransomware_burst manage_external_storage null");
+
+    // ---- exfil_burst: full event, destination known -------------------------
+    struct exfil_burst_event eb = {0};
+    eb.h.type = MOD_EV_EXFIL_BURST;
+    eb.h.pid  = 9100;
+    eb.h.tid  = 9100;
+    strncpy(eb.comm, "spyware", TASK_COMM_LEN - 1);
+    eb.bytes_sent = 600000;
+    eb.window_ms  = 4200;
+    strncpy(eb.sample_path, "/sdcard/DCIM/photo1.jpg", sizeof(eb.sample_path) - 1);
+
+    j.len = 0;
+    mod_emit_exfil_burst(&j, &eb, "203.0.113.1:443");
+    CHECK_HAS(j, "\"type\":\"exfil_burst\"",       "exfil_burst type");
+    CHECK_HAS(j, "\"pid\":9100",                   "exfil_burst pid");
+    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_burst comm");
+    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_burst bytes_sent");
+    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_burst window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_burst sample_path");
+    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_burst dest known");
+
+    // ---- exfil_burst: no destination observed --------------------------------
+    j.len = 0;
+    mod_emit_exfil_burst(&j, &eb, NULL);
+    CHECK_HAS(j, "\"dest\":null", "exfil_burst dest null");
+
+    // ---- a11y_abuse: full event, service granted -----------------------------
+    struct a11y_abuse_event aa = {0};
+    aa.h.type = MOD_EV_A11Y_ABUSE;
+    aa.h.pid  = 9200;
+    aa.h.tid  = 9200;
+    strncpy(aa.comm, "fakebank", TASK_COMM_LEN - 1);
+    aa.touch_count = 50;
+    aa.window_ms   = 2100;
+
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, 1);
+    CHECK_HAS(j, "\"type\":\"a11y_abuse\"", "a11y_abuse type");
+    CHECK_HAS(j, "\"pid\":9200",            "a11y_abuse pid");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "a11y_abuse comm");
+    CHECK_HAS(j, "\"touch_count\":50",      "a11y_abuse touch_count");
+    CHECK_HAS(j, "\"window_ms\":2100",      "a11y_abuse window_ms");
+    CHECK_HAS(j, "\"granted\":true",        "a11y_abuse granted true");
+
+    // ---- a11y_abuse: checked, not granted -------------------------------------
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, 0);
+    CHECK_HAS(j, "\"granted\":false", "a11y_abuse granted false");
+
+    // ---- a11y_abuse: grant check unresolved (unknown) -------------------------
+    j.len = 0;
+    mod_emit_a11y_abuse(&j, &aa, -1);
+    CHECK_HAS(j, "\"granted\":null", "a11y_abuse granted null");
+
+    // ---- fileless_exec: untagged (no anon_name) -------------------------------
+    struct fileless_exec_event fe = {0};
+    fe.h.type = MOD_EV_FILELESS_EXEC;
+    fe.h.pid  = 9300;
+    fe.h.tid  = 9300;
+    strncpy(fe.comm, "droploader", TASK_COMM_LEN - 1);
+    fe.start = 0x7f0000000000ULL;
+    fe.size  = 4096;
+
+    j.len = 0;
+    mod_emit_fileless_exec(&j, &fe);
+    CHECK_HAS(j, "\"type\":\"fileless_exec\"",     "fileless_exec type");
+    CHECK_HAS(j, "\"pid\":9300",                    "fileless_exec pid");
+    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_exec comm");
+    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_exec start hex");
+    CHECK_HAS(j, "\"size\":4096",                   "fileless_exec size");
+    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_exec anon_name empty");
+
+    // ---- fileless_exec: tagged (non-dalvik anon_name present) -----------------
+    // Exercises the serializer only -- nothing in the current runtime path
+    // (pending_map + dalvik- suppression) ever actually populates a
+    // non-empty anon_name; this just proves mod_emit_fileless_exec()
+    // correctly serializes whatever value it's given.
+    strncpy(fe.anon_name, "v8-jit", FILELESS_TAG_LEN - 1);
+    j.len = 0;
+    mod_emit_fileless_exec(&j, &fe);
+    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_exec anon_name tagged");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

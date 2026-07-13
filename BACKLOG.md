@@ -363,12 +363,67 @@ scope all map to SPEC1's `lib:`/`mod:` kinds and cross-engine `-F`. See MT4/MT7 
   see it. Real-app-driven verification (as opposed to a synthetic PID
   trigger) is now `scripts/burstapp/build.sh install` — see
   DOCUMENTATION.md §"Testing tiers".
-- Screen-lock/overlay extortion detector — separate `mod` analyzer, candidate
-  future work per the ransomware-burst design's research: current Android
-  "ransomware" (DroidLock, HOOK, 2024-2025) trends toward full-screen lock
-  overlays + data-destruction threats rather than actual file encryption.
-  Different mechanism entirely (likely Window Manager /
-  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse), not file syscalls.
+- `mod exfil-burst` known v1 limitations (shipped 2026-07-11): contacts/
+  SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,
+  same structural blind spot as `ransomware-burst`'s MediaStore gap) —
+  scoped deliberately to media/credential-file reads, which are visible as
+  real `openat` calls. Byte counts are requested length at syscall entry
+  (`write`/`writev`/`sendto`'s argument), not a kretprobe-verified
+  delivered length — a failed or blocked send still counts toward the
+  threshold; accepted since a real exfiltrating sample needs its sends to
+  actually succeed to be worth anything. Threshold (512 KiB/30s) is
+  evadable by a sample that throttles/chunks below it. Credential-pattern
+  matching in the BPF-side gate checks the pattern anywhere in the path,
+  not just the basename (`file_access_classify.c`'s stricter check) — a
+  documented precision simplification, acceptable since it only affects
+  arming (a soft precondition), not the byte-threshold detection itself.
+  `writev()` calls with more than 8 iovecs undercount past the 8th entry
+  (bounded-loop limit for verifier provability).
+- `mod a11y-abuse` known v1 limitations (shipped 2026-07-12): no transaction-code
+  decode — the analyzer proves "high Binder call volume to `system_server` while
+  Accessibility-granted," not *which* privileged action fired (parked, same version-
+  treadmill risk shape as ART's `k_table`/`ARES_ART_OFFSETS`). Only gates on
+  `system_server` as the destination — misses accessibility routing through any
+  OEM-specific separate framework process. Grant check
+  (`enabled_accessibility_services`) is a package-substring match against a
+  colon-separated settings string, not a structured parse — a package name that
+  happens to be a substring of another entry could false-match. Threshold (50 calls/
+  5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
+  `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
+  matching.
+- `mod fileless-exec` known v1 limitations (shipped 2026-07-12): false positives from
+  legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
+  Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
+  will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
+  known-benign JIT engines yet (parked as a follow-up in the design doc). `mprotect`-
+  based W^X evasion (allocate RW, write payload, flip to RX afterward) is invisible to
+  the `mmap`-only v1 hook. `memfd_create`-backed "fileless" loaders bypass the gate
+  entirely — they have a `vm_file` (tmpfs-backed), so `vm_file == NULL` never matches;
+  this is a real technique the analyzer is named for but does not yet catch. No
+  payload-content signal (e.g. ELF-magic check) — the mapping is zero-filled at hook
+  time, before the caller writes anything into it. Evadable by a loader that tags its
+  own mapping `dalvik-fake` via `prctl` to dodge the carve-out (arms-race concern, not
+  addressed in v1). The suppression mechanism assumes ART's
+  `prctl(PR_SET_VMA_ANON_NAME, addr, ...)` call names the *exact* address `do_mmap`
+  returned; implemented faithfully per design and spot-checked on-device (0 false
+  positives across multiple runs against an ordinary app) but not exhaustively proven,
+  since JIT compilation isn't guaranteed to occur within any given short observation
+  window.
+- Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
+  Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
+  full-screen lock overlays + data-destruction threats rather than actual file
+  encryption. This item previously assumed the whole category (Window Manager /
+  `SYSTEM_ALERT_WINDOW` / accessibility-service abuse) was "not file syscalls" and
+  therefore out of `ares`'s reach — that premise no longer holds for the
+  accessibility-service-abuse slice: `mod a11y-abuse` (shipped 2026-07-12) proves
+  Binder-mediated behavior is kernel-observable via the `binder_transaction`
+  tracepoint. What remains genuinely open is the Window-Manager/overlay-specific
+  mechanism itself (`SYSTEM_ALERT_WINDOW` window creation, screen-lock detection) —
+  `a11y-abuse` v1 only signals "Binder-chatty with `system_server` while
+  Accessibility-granted," not "created a full-screen overlay." A follow-on
+  analyzer targeting `IWindowManager` binder traffic specifically (same
+  `system_server`-destination-gating approach) is the natural next step — see
+  `mod a11y-abuse`'s design doc Follow-up ideas.
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser

@@ -31,6 +31,9 @@ static const ares_analyzer_t *const registry[] = {
     &analyzer_prop_read,
     &analyzer_file_access,
     &analyzer_ransomware_burst,
+    &analyzer_exfil_burst,
+    &analyzer_a11y_abuse,
+    &analyzer_fileless_exec,
     NULL,
 };
 

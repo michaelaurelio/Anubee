@@ -71,7 +71,8 @@ int on_binder_transaction(struct trace_event_raw_binder_transaction *ctx)
         __sync_fetch_and_add(count, 1);
     } else {
         __u64 one = 1;
-        bpf_map_update_elem(&binder_count_map, &pid, &one, BPF_ANY);
+        if (bpf_map_update_elem(&binder_count_map, &pid, &one, BPF_NOEXIST) != 0)
+            return 0;
     }
     return 0;
 }

@@ -186,6 +186,71 @@ static struct ares_sink g_sink;
 // running - no lock needed (same reasoning as syscalls.c's g_cov).
 static struct ares_coverage g_cov = { .engine = "funcs" };
 
+// SYM1 Phase 5c: per-symbol ("module!func") tally, mirrors mod execve.c's
+// exec_stats[] -- tallied unconditionally so the summary survives -q. Only
+// touched from the worker thread's CALL handling (same single-writer
+// reasoning as g_cov above), so no lock needed.
+#define FUNCS_STAT_MAX 256
+typedef struct { char name[256]; unsigned long long count; } funcs_stat_t;
+static funcs_stat_t g_funcs_stats[FUNCS_STAT_MAX];
+static int          g_funcs_stat_count;
+
+static void funcs_stat_add(const char *module, const char *symbol)
+{
+    char name[256];
+    snprintf(name, sizeof(name), "%s!%s", module, symbol);
+    for (int i = 0; i < g_funcs_stat_count; i++)
+        if (!strcmp(g_funcs_stats[i].name, name)) { g_funcs_stats[i].count++; return; }
+    if (g_funcs_stat_count >= FUNCS_STAT_MAX) return;
+    snprintf(g_funcs_stats[g_funcs_stat_count].name, sizeof(g_funcs_stats[0].name), "%s", name);
+    g_funcs_stats[g_funcs_stat_count].count = 1;
+    g_funcs_stat_count++;
+}
+
+static int funcs_stat_cmp_desc(const void *a, const void *b)
+{
+    unsigned long long ca = ((const funcs_stat_t *)a)->count;
+    unsigned long long cb = ((const funcs_stat_t *)b)->count;
+    return (cb > ca) - (cb < ca);
+}
+
+// Console twin of funcs_emit_summary (below). Plain text, no box-drawing/color.
+static void funcs_print_summary(void)
+{
+    if (g_funcs_stat_count == 0) return;
+    qsort(g_funcs_stats, (size_t)g_funcs_stat_count, sizeof(g_funcs_stats[0]), funcs_stat_cmp_desc);
+    unsigned long long total = 0;
+    for (int i = 0; i < g_funcs_stat_count; i++) total += g_funcs_stats[i].count;
+    printf("-- Func Summary --\n");
+    printf("      Count  Symbol\n");
+    for (int i = 0; i < g_funcs_stat_count; i++)
+        printf("  %8llu  %s\n", g_funcs_stats[i].count, g_funcs_stats[i].name);
+    printf("  %llu total call%s across %d unique symbol%s\n",
+           total, total == 1 ? "" : "s", g_funcs_stat_count, g_funcs_stat_count == 1 ? "" : "s");
+}
+
+static void funcs_emit_summary(struct ares_sink *s)
+{
+    if (g_funcs_stat_count == 0 || !s->f) return;
+    unsigned long long total = 0;
+    for (int i = 0; i < g_funcs_stat_count; i++) total += g_funcs_stats[i].count;
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"funcs_summary\"");
+    jb_s(j, ",\"total_calls\":");    jb_u64(j, total);
+    jb_s(j, ",\"unique_symbols\":"); jb_u64(j, (unsigned long long)g_funcs_stat_count);
+    jb_s(j, ",\"symbols\":[");
+    for (int i = 0; i < g_funcs_stat_count; i++) {
+        if (i) jb_c(j, ',');
+        jb_s(j, "{\"name\":\""); jb_esc(j, g_funcs_stats[i].name); jb_c(j, '"');
+        jb_s(j, ",\"count\":");  jb_u64(j, g_funcs_stats[i].count);
+        jb_c(j, '}');
+    }
+    jb_s(j, "]}");
+    ares_sink_emit(s);
+}
+
 // Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
 static FILE               *g_stacks;
 static unsigned long long  g_stack_count;
@@ -495,6 +560,8 @@ static void process_call_return(const void *data, size_t data_sz)
         if (target) {
             const char *bname = strrchr(target->mod_path, '/');
             bname = bname ? bname + 1 : target->mod_path;
+            // SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
+            funcs_stat_add(bname, target->func_name);
             if (!g_quiet)
                 ts_print("[event] > [CALL] PID:%d PPID:%d %s!%s @ 0x%lx%s\n",
                     e->h.pid, e->ppid, bname, target->func_name, target->offset,
@@ -1119,6 +1186,10 @@ void funcs_teardown(void)
         g_cov.queue_drops     = g_q.dropped;
         g_cov.managed_naming_off = ares_art_naming_disabled();
         ares_coverage_report(&g_sink, &g_cov);
+        // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
+        // (sink must still be open for emit_summary's JSON line).
+        funcs_print_summary();
+        funcs_emit_summary(&g_sink);
         funcs_bpf__destroy(skel);
         skel = NULL;
     }

@@ -64,6 +64,42 @@ static struct ares_sink g_sink;
 static int              g_quiet = 0;
 static int              g_returns = 0;  // --returns: attach a uretprobe per target too
 
+// SYM1 Phase 5c: end-of-run summary counters -- plain counts, no per-name
+// tally (unlike syscalls/funcs). Not the same as the BPF-map-read
+// cov.spans_opened/cov.returns_captured at teardown (those are only
+// populated under --returns; these are simple userspace counters,
+// unconditionally correct regardless of mode). Tallied unconditionally so
+// the summary survives -q.
+static unsigned long long g_sum_spans_opened;
+static unsigned long long g_sum_syscalls_captured;
+static unsigned long long g_sum_returns_captured;
+
+// Console twin of corr_emit_summary (below). Plain text, no box-drawing/color.
+static void corr_print_summary(void)
+{
+    if (!g_sum_spans_opened && !g_sum_syscalls_captured && !g_sum_returns_captured) return;
+    printf("-- Correlate Summary --\n");
+    printf("  %llu span%s opened, %llu syscall%s captured, %llu return%s captured\n",
+           g_sum_spans_opened, g_sum_spans_opened == 1 ? "" : "s",
+           g_sum_syscalls_captured, g_sum_syscalls_captured == 1 ? "" : "s",
+           g_sum_returns_captured, g_sum_returns_captured == 1 ? "" : "s");
+}
+
+static void corr_emit_summary(struct ares_sink *s)
+{
+    if (!s->f) return;
+    if (!g_sum_spans_opened && !g_sum_syscalls_captured && !g_sum_returns_captured) return;
+    struct jbuf *j = &s->jb;
+    j->len = 0;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"correlate_summary\"");
+    jb_s(j, ",\"spans_opened\":");      jb_u64(j, g_sum_spans_opened);
+    jb_s(j, ",\"syscalls_captured\":"); jb_u64(j, g_sum_syscalls_captured);
+    jb_s(j, ",\"returns_captured\":");  jb_u64(j, g_sum_returns_captured);
+    jb_c(j, '}');
+    ares_sink_emit(s);
+}
+
 // Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
 // kprobe is tracked separately via g_kp). Grown on demand; on OOM we drop
 // tracking for the new link — it stays attached and is reaped at process exit.
@@ -111,6 +147,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (h->type == CORR_EV_FUNC) {
         if (sz < sizeof(struct corr_func_event)) return 0;
         const struct corr_func_event *e = data;
+        g_sum_spans_opened++; // SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
         if (!g_quiet)
             // SYM1 Phase 4d: was printf(...).
             ts_print("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
@@ -124,6 +161,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct corr_syscall_event)) return 0;
         const struct corr_syscall_event *e = data;
         const char *name = syscall_name((long)e->nr);
+        g_sum_syscalls_captured++; // SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
         // SYM1 Phase 2: hoisted above the stdout/file split — both channels may
         // be live under dual-channel (Phase 1), and both want the same decode.
         unsigned fdmask = arg_fd_mask(e->nr);
@@ -151,6 +189,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     } else if (h->type == CORR_EV_RETURN) {
         if (sz < sizeof(struct corr_return_event)) return 0;
         const struct corr_return_event *e = data;
+        g_sum_returns_captured++; // SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
         if (!g_quiet)
             // SYM1 Phase 4d: was printf(...).
             ts_print("[return]  > span=%llu retval=0x%llx elapsed=%lluns @ 0x%llx\n",
@@ -588,6 +627,10 @@ void correlate_teardown(void)
             cov.returns_captured  = ares_coverage_read(covfd, COV_URET_FIRED);
         }
         ares_coverage_report(&g_sink, &cov);
+        // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
+        // (sink must still be open for emit_summary's JSON line).
+        corr_print_summary();
+        corr_emit_summary(&g_sink);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;
     }

@@ -178,6 +178,70 @@ static struct ares_sink g_sink;                 // output file sink (inactive wh
 static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
 static unsigned long long g_stack_count;        // snapshots written so far
 
+// SYM1 Phase 5c: per-syscall-name tally, mirrors mod execve.c's exec_stats[]
+// (same bound, same linear scan) -- tallied unconditionally so the summary
+// survives -q, matching execve's own convention.
+#define SYSC_STAT_MAX 256
+typedef struct { char name[64]; unsigned long long count; } sysc_stat_t;
+static sysc_stat_t g_sysc_stats[SYSC_STAT_MAX];
+static int         g_sysc_stat_count;
+
+static void sysc_stat_add(const char *name)
+{
+	for (int i = 0; i < g_sysc_stat_count; i++)
+		if (!strcmp(g_sysc_stats[i].name, name)) { g_sysc_stats[i].count++; return; }
+	if (g_sysc_stat_count >= SYSC_STAT_MAX) return;
+	snprintf(g_sysc_stats[g_sysc_stat_count].name, sizeof(g_sysc_stats[0].name), "%s", name);
+	g_sysc_stats[g_sysc_stat_count].count = 1;
+	g_sysc_stat_count++;
+}
+
+static int sysc_stat_cmp_desc(const void *a, const void *b)
+{
+	unsigned long long ca = ((const sysc_stat_t *)a)->count;
+	unsigned long long cb = ((const sysc_stat_t *)b)->count;
+	return (cb > ca) - (cb < ca);
+}
+
+// Console twin of sysc_emit_summary (below). Plain text, no box-drawing/color
+// (unlike mod's summaries) -- this engine never had that styling to begin
+// with; the print/emit split and omit-if-empty rule are what's asked for.
+static void sysc_print_summary(void)
+{
+	if (g_sysc_stat_count == 0) return;
+	qsort(g_sysc_stats, (size_t)g_sysc_stat_count, sizeof(g_sysc_stats[0]), sysc_stat_cmp_desc);
+	unsigned long long total = 0;
+	for (int i = 0; i < g_sysc_stat_count; i++) total += g_sysc_stats[i].count;
+	printf("-- Syscall Summary --\n");
+	printf("      Count  Syscall\n");
+	for (int i = 0; i < g_sysc_stat_count; i++)
+		printf("  %8llu  %s\n", g_sysc_stats[i].count, g_sysc_stats[i].name);
+	printf("  %llu total call%s across %d unique syscall%s\n",
+	       total, total == 1 ? "" : "s", g_sysc_stat_count, g_sysc_stat_count == 1 ? "" : "s");
+}
+
+static void sysc_emit_summary(struct ares_sink *s)
+{
+	if (g_sysc_stat_count == 0 || !s->f) return;
+	unsigned long long total = 0;
+	for (int i = 0; i < g_sysc_stat_count; i++) total += g_sysc_stats[i].count;
+	struct jbuf *j = &s->jb;
+	j->len = 0;
+	jb_c(j, '{');
+	jb_s(j, "\"type\":\"syscalls_summary\"");
+	jb_s(j, ",\"total_calls\":");     jb_u64(j, total);
+	jb_s(j, ",\"unique_syscalls\":"); jb_u64(j, (unsigned long long)g_sysc_stat_count);
+	jb_s(j, ",\"syscalls\":[");
+	for (int i = 0; i < g_sysc_stat_count; i++) {
+		if (i) jb_c(j, ',');
+		jb_s(j, "{\"name\":\""); jb_esc(j, g_sysc_stats[i].name); jb_c(j, '"');
+		jb_s(j, ",\"count\":");  jb_u64(j, g_sysc_stats[i].count);
+		jb_c(j, '}');
+	}
+	jb_s(j, "]}");
+	ares_sink_emit(s);
+}
+
 // Coverage-health record (CR5). Mutated only from process_event() / the CFI
 // walk it drives, which run exclusively on the worker thread (see the comment
 // on process_event); read at teardown only after pthread_join(g_worker, ...)
@@ -627,6 +691,8 @@ static void pend_flush_all(void)
 static void handle_syscall(const struct syscalls_syscall_event *e)
 {
 	unsigned long long id = g_next_id++;
+	// SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
+	sysc_stat_add(sysname(e->nr, e->compat));
 
 	// In quiet mode skip all console rendering (printing + symbolization + fd
 	// readlinks): the heavy work that limits drain throughput. The JSON record
@@ -1240,6 +1306,10 @@ void syscalls_teardown(void)
 		g_cov.queue_drops     = g_q.dropped;
 		g_cov.managed_naming_off = ares_art_naming_disabled();
 		ares_coverage_report(&g_sink, &g_cov);
+		// SYM1 Phase 5c: end-of-run content summary, same slot as coverage
+		// (sink must still be open for emit_summary's JSON line).
+		sysc_print_summary();
+		sysc_emit_summary(&g_sink);
 		ares_evq_destroy(&g_q);
 	}
 

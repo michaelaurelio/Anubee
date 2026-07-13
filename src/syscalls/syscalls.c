@@ -362,7 +362,7 @@ static const char *arg_string(const struct syscalls_syscall_event *e, int i)
 // fast path (AA7), falling back past ARG_TBL_CAP to the shared table via
 // g_fd_args_count (an extern array of unknown bound is an incomplete type,
 // so sizeof(g_fd_args) no longer compiles in this TU).
-static unsigned arg_fd_mask(unsigned long long nr)
+static unsigned arg_fd_mask_cached(unsigned long long nr)
 {
 	if (nr < ARG_TBL_CAP) return g_fdmask_by_nr[nr];
 	for (size_t i = 0; i < g_fd_args_count; i++)
@@ -376,7 +376,7 @@ static unsigned arg_fd_mask(unsigned long long nr)
 // g_sock_args[] now lives in common/syscall_argtypes.{h,c} (EPIC I2) - shared
 // verbatim with correlate.c. Same dense-cache-then-shared-fallback shape as
 // arg_fd_mask() above.
-static int arg_sock_index(unsigned long long nr)
+static int arg_sock_index_cached(unsigned long long nr)
 {
 	if (nr < ARG_TBL_CAP) return g_sockidx_by_nr[nr];
 	for (size_t i = 0; i < g_sock_args_count; i++)
@@ -556,7 +556,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 		jb_c(j, '"'); jb_u64(j, i); jb_s(j, "\":\""); jb_esc(j, s); jb_c(j, '"');
 	}
 	jb_s(j, "},\"fd_args\":{");
-	unsigned fdm = e->compat ? 0u : arg_fd_mask(e->nr);
+	unsigned fdm = e->compat ? 0u : arg_fd_mask_cached(e->nr);
 	for (int i = 0, first = 1; i < SYSC_SYSCALL_NARGS; i++) {
 		if (!(fdm & (1u << i))) continue;
 		char fdbuf[320];
@@ -703,8 +703,8 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		// tables, a namespace mismatch for EABI numbers (CR2) — show all raw
 		// argument slots instead of guessing counts/fds/sockaddr from them.
 		int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
-		unsigned fdm = e->compat ? 0u : arg_fd_mask(e->nr);
-		int sockidx = e->compat ? 0 : arg_sock_index(e->nr);
+		unsigned fdm = e->compat ? 0u : arg_fd_mask_cached(e->nr);
+		int sockidx = e->compat ? 0 : arg_sock_index_cached(e->nr);
 		// SYM1 Phase 4a: shared human_out skeleton (timestamp + own "syscall"
 		// tag), args/stack as human_detail continuation lines -- was inline
 		// "==> #id [pid/tid] name(args)" + bare "      #n sym" prints.

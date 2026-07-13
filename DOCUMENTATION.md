@@ -1057,6 +1057,18 @@ object — no shared skeleton with `funcs`. Available analyzers:
   proves a capture session was active, not that data left the device (no
   frame-content or exfil-volume corroboration).
 
+**Event timestamps.** Every mod analyzer event JSON record carries a `ts_ns`
+field — nanoseconds since boot (`bpf_ktime_get_ns()`'s clock base), captured
+at the moment the underlying kernel hook fired. Two exceptions: `mediaproj-
+abuse`'s event is built entirely in userspace (a `dumpsys`-polling thread,
+not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
+call at detection time, accurate only to the analyzer's 1s poll interval;
+`fileless-exec`'s alert event reuses the timestamp already captured at the
+original `do_mmap` return (not the later moment the alert graduates past its
+grace window), since that's the more accurate instant. `ts_ns` is
+boot-relative only — comparable within one run/device-boot, not across
+separate runs or as wall-clock time.
+
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
 other engines (see §7).

@@ -124,6 +124,13 @@ static const struct argp mod_argp = { mod_options, mod_parse_opt, mod_args_doc, 
 
 int cmd_mod(int argc, char **argv)
 {
+    // MT2: bare `ares mod` and `ares mod --help` used to give no indication of
+    // what NAME can be (main.c's usage text claims --help lists analyzers, but
+    // argp has no visibility into registry[] to do that itself). List up front;
+    // for --help, argp still runs afterward and prints its own usage/options.
+    if (argc < 2) { list_analyzers(); return 0; }
+    if (ares_wants_help(argc, argv)) list_analyzers();
+
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
 

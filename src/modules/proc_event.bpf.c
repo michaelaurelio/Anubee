@@ -36,6 +36,7 @@ int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 	e->h.pid     = (__u32)(id >> 32);
 	e->h.tid     = (__u32)id;
 	e->h._pad    = 0;
+	e->ts_ns     = bpf_ktime_get_ns();
 	e->child_pid = (__u32)ctx->child_pid;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
@@ -73,6 +74,7 @@ int on_proc_exit(struct trace_event_raw_sched_process_exit *ctx)
 	e->h.pid     = pid;
 	e->h.tid     = tid;
 	e->h._pad    = 0;
+	e->ts_ns     = bpf_ktime_get_ns();
 	e->exit_code = raw_exit;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 

@@ -135,6 +135,7 @@ static __always_inline void record_touch(const char *path)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = now;
     e->touch_count = st->count;
     e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
     #pragma unroll

@@ -173,6 +173,7 @@ static __always_inline void record_bytes(__u64 n)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = now;
     e->bytes_sent = st->bytes_sent;
     e->window_ms  = (__u32)((now - st->window_start_ns) / 1000000ULL);
     __builtin_memcpy(e->sample_path, st->sample_path, FILE_PATH_LEN);

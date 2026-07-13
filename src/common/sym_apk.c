@@ -3,6 +3,7 @@
 // symbolize_internal.h. Parses the ZIP central directory once per APK path.
 #include <sys/types.h>
 #include "symbolize_internal.h"
+#include "common/sym_apk.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,4 +148,26 @@ const char *apk_so_name(const char *path, uint64_t elf_off)
 		if (c->entries[i].data_start == elf_off)
 			return c->entries[i].name;
 	return NULL;
+}
+
+// MT3: enumerate every packed lib/*/*.so in an APK, not just the one loaded at
+// a given offset — surfaces natives packed with extractNativeLibs=false even
+// before/without a real mmap of them.
+// ponytail: only stored (method==0) entries are ever recorded by apk_parse()
+// above — a compressed .so needs extraction, which is the normal on-disk
+// mapping path already covers; add deflate support here if a real APK ships
+// compressed natives and this silently misses them.
+int apk_list_sos(const char *apk_path, struct apk_so_ref *out, int max)
+{
+	struct apk_cache *c = apk_get(apk_path);
+	if (!c)
+		return 0;
+	int n = 0;
+	for (int i = 0; i < c->count && n < max; i++) {
+		snprintf(out[n].name, sizeof(out[n].name), "%s", c->entries[i].name);
+		out[n].data_start = c->entries[i].data_start;
+		out[n].size       = c->entries[i].size;
+		n++;
+	}
+	return n;
 }

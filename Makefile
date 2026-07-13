@@ -116,6 +116,7 @@ COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_libtrace_emit_lib ares_libtrace_emit_unlib \
+               apk_list_sos \
                proc_mem_open proc_mem_read nterp_name \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
                ares_resolve_pkg_from_pid \
@@ -463,6 +464,8 @@ test:
 	$(BUILD)/test_pattern_match
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c -o $(BUILD)/test_engine_args
 	$(BUILD)/test_engine_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_apk.c src/common/sym_apk.c -o $(BUILD)/test_sym_apk
+	$(BUILD)/test_sym_apk
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

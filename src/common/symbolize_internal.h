@@ -11,6 +11,7 @@
 #include <elf.h>
 #include "common/maps.h"        // struct ares_map_line
 #include "common/cfi_unwind.h"  // struct cfi_section
+#include "common/sym_apk.h"     // apk_so_name/apk_list_sos (public; also used by lib.c)
 
 #define MAX_PATH_LEN 256
 #define REFRESH_MS   250
@@ -70,6 +71,6 @@ void jit_reset_pid(int pid);                                          // sym_jit
 int  vdso_resolve(int pid, uint64_t addr, uint64_t base, uint64_t end,
                   char *out, size_t outsz);                           // sym_vdso.c
 void vdso_reset_pid(int pid);                                         // sym_vdso.c
-const char *apk_so_name(const char *path, uint64_t elf_off);         // sym_apk.c
+// apk_so_name/apk_list_sos: see common/sym_apk.h (public, included above).
 
 #endif /* ARES_SYMBOLIZE_INTERNAL_H */

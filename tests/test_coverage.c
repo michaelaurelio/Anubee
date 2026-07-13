@@ -116,6 +116,20 @@ int main(void)
 	CHECK(strstr(j, "\"returns\":{\"spans\":10,\"captured\":7}"));
 	CHECK(!strstr(j, "\"clean\""));       // gap -> degraded
 
+	// 9. SYM1 Phase 5b: exempt record (lib/dump) -- distinct from "clean", not
+	// a zeroed degraded record. Non-exempt fields present but must be ignored.
+	struct ares_coverage ex = {0};
+	ex.engine = "lib"; ex.exempt = 1;
+	ex.exempt_reason = "no drop map or snapshot path for this engine";
+	ex.ring_drops = 999; // would read as degraded if exempt were ignored
+	emit_json(&ex, j, sizeof(j));
+	CHECK(strstr(j, "\"type\":\"coverage\""));
+	CHECK(strstr(j, "\"engine\":\"lib\""));
+	CHECK(strstr(j, "\"exempt\":true"));
+	CHECK(strstr(j, "no drop map or snapshot path for this engine"));
+	CHECK(!strstr(j, "\"clean\""));      // not the clean shape
+	CHECK(!strstr(j, "\"ring\""));       // degraded fields never rendered
+
 	printf("test_coverage: %d checks passed\n", checks);
 	return 0;
 }

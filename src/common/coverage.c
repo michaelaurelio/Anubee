@@ -134,6 +134,26 @@ static void cov_banner(const struct ares_coverage *c, int degraded)
 
 void ares_coverage_report(struct ares_sink *sink, const struct ares_coverage *cov)
 {
+	// SYM1 Phase 5b: exempt is a distinct record shape, not a variant of
+	// "clean" -- an engine with no coverage surface (lib/dump) says so
+	// explicitly instead of either staying silent or misrendering as
+	// "full coverage" (which would falsely imply signals were checked).
+	if (cov->exempt) {
+		const char *reason = cov->exempt_reason ? cov->exempt_reason : "no coverage surface";
+		fprintf(stderr, "[coverage] %s: not applicable (%s)\n",
+			cov->engine ? cov->engine : "?", reason);
+		if (sink && sink->f) {
+			struct jbuf *j = &sink->jb;
+			j->len = 0;
+			jb_s(j, "{\"type\":\"coverage\",\"engine\":\"");
+			jb_esc(j, cov->engine ? cov->engine : "?");
+			jb_s(j, "\",\"exempt\":true,\"reason\":\"");
+			jb_esc(j, reason);
+			jb_s(j, "\"}\n");
+			ares_sink_emit(sink);
+		}
+		return;
+	}
 	int degraded = cov_degraded(cov);
 	cov_banner(cov, degraded);
 	if (sink && sink->f) {          // JSON line only when -o is active

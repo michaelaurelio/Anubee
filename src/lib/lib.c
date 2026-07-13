@@ -29,6 +29,7 @@
 #include "common/engine_args.h"
 #include "common/runtime.h"
 #include "common/engine_driver.h"  // lib_setup/_run/_teardown (AA3)
+#include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
 
 static volatile sig_atomic_t exiting = 0;
 
@@ -255,6 +256,13 @@ void lib_teardown(void)
         ares_lib__destroy(g_skel);
         g_skel = NULL;
     }
+    // SYM1 Phase 5b: explicit "not applicable" record instead of silence --
+    // lib has no drop map or snapshot path to report on. Must run before the
+    // sink closes below (matches every other engine's ares_coverage_report
+    // call, always before its own ares_sink_close).
+    struct ares_coverage cov = { .engine = "lib", .exempt = 1,
+        .exempt_reason = "no drop map or snapshot path for this engine" };
+    ares_coverage_report(&g_sink, &cov);
     if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
 }
 

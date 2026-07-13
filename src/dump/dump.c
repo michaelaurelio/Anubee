@@ -36,6 +36,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/emit.h"           // SYM1 Phase 3: struct ares_sink, ares_sink_open/close/report
+#include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -366,6 +367,13 @@ void dump_teardown(void)
     }
     free(g_pids); g_pids = NULL; g_pids_n = g_pids_cap = 0;
     free(g_seen); g_seen = NULL; g_seen_n = g_seen_cap = 0;
+
+    // SYM1 Phase 5b: explicit "not applicable" record instead of silence --
+    // dump is a single-shot read, no run-long coverage to accumulate. Must
+    // run before the sink closes below (matches every other engine).
+    struct ares_coverage cov = { .engine = "dump", .exempt = 1,
+        .exempt_reason = "single-shot read, no run-long coverage to accumulate" };
+    ares_coverage_report(&g_sink, &cov);
 
     // SYM1 Phase 3: close + report the manifest sink, mirroring every other engine.
     if (g_sink.f) {

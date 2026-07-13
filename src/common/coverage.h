@@ -16,7 +16,14 @@ struct ares_sink;   // fwd; full def in common/emit.h
 #define ARES_CFI_STOP_N  (CFI_SNAP_CFI_GET_NULL + 1)
 
 struct ares_coverage {
-	const char *engine;                 // "syscalls" | "funcs" | "correlate"
+	const char *engine;                 // "syscalls" | "funcs" | "correlate" | "lib" | "dump"
+	// SYM1 Phase 5b: set exempt=1 for an engine with no run-long coverage
+	// surface to report (lib/dump) instead of leaving it silently uncalled --
+	// a zeroed record would misrender as "clean"/"full coverage", falsely
+	// implying signals were checked and found zero. exempt_reason is only
+	// read when exempt is set; every other field below is ignored.
+	int exempt;
+	const char *exempt_reason;
 	// Tier 1: signals already computed, previously discarded
 	unsigned long long snaps_total, snaps_truncated;
 	unsigned long long cfi_walks;

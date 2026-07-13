@@ -83,12 +83,13 @@ static pthread_t g_poll_thread;
 static volatile int g_poll_stop = 0;
 static int g_poll_thread_running = 0;
 
-static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, const char *comm)
+static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, const char *comm)
 {
     struct fileless_exec_event e = {0};
     e.h.type = MOD_EV_FILELESS_EXEC;
     e.h.pid  = pid;
     e.h.tid  = pid;
+    e.ts_ns  = ts_ns;
     e.start  = addr;
     e.size   = size;
     snprintf(e.comm, TASK_COMM_LEN, "%s", comm);
@@ -125,7 +126,7 @@ static void *fileless_poll_loop(void *arg)
             struct fileless_pending_val val;
             if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
                 fileless_now_ns() - val.ts_ns >= FILELESS_GRACE_NS) {
-                fileless_emit_one(next_key.pid, next_key.addr, val.size, val.comm);
+                fileless_emit_one(next_key.pid, next_key.addr, val.size, val.ts_ns, val.comm);
                 bpf_map_delete_elem(map_fd, &next_key);
                 // A delete mutates the map's iteration order; restart the
                 // walk from the beginning rather than continuing from a

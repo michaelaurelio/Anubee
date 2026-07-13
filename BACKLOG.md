@@ -277,9 +277,43 @@ Tracked with concrete tasks in `ares-project/TODO.md` EPIC H. `tests/test_probe_
 is the grammar regression guard and must gain KIND/glob/regex cases while every existing
 case (including the 6 malformed-input rejections) keeps passing unchanged.
 
+**Status (2026-07-13):** Manual test reconfirms the consolidation need: `dump` positional
+lib PATTERN, `mod` positional analyzer NAME + no-multi-analyzer, and `funcs` "spec only"
+scope all map to SPEC1's `lib:`/`mod:` kinds and cross-engine `-F`. See MT4/MT7 (Minor).
+
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
+
+### Manual CLI test findings — 2026-07-13
+
+- **MT1 (correctness) — `--help`/`--usage`/bad args print then run instead of aborting.**
+  `funcs`, `dump`, `lib`, `syscalls`, `correlate` all call
+  `argp_parse(..., ARGP_NO_EXIT, ...)` (`funcs.c:906`, `dump.c:236`, `lib.c:143`,
+  `syscalls.c:1026`, `correlate.c:467`), so argp prints help/usage/parse-error and
+  *returns* — control falls through into attach/run. `mod` (flags `0`, `mod.c:124`)
+  aborts correctly and is the reference. Fix: treat help/usage/parse-error as abort
+  (handle `-h`/`--help` before parse, or check for the help/usage request and return
+  nonzero). Repro: `ares funcs -P dev.ares.detector --help` still attaches.
+- **MT2 — `mod` analyzer listing gap.** `list_analyzers()` only fires on an *unknown*
+  name (`mod.c:90`); bare `ares mod` and `ares mod --help` don't list analyzers, though
+  `main.c` usage claims `--help` does. Wire `list_analyzers()` into `--help` / no-arg.
+- **MT3 — `lib` misses in-APK natives (e.g. `libsentinel.so`).** With
+  `extractNativeLibs=false` the lib maps as a `base.apk` region, not a standalone `.so`;
+  lib enumerates maps only. Add APK(zip) enumeration of `lib/*/*.so` so packed natives
+  surface.
+- **MT4 — `trace` output file carries only funcs-side events** (call/return/lib/unlib);
+  syscall events aren't merged in. Consolidate multi-source output into one file. The
+  nested `--syscalls -a -s NAME --funcs -F FILE` sub-flag grammar (hand-rolled
+  `trace_args.c`) is also awkward — ties SPEC1 argument consolidation.
+- **MT5 — `correlate` output undocumented.** stdout grammar unspecified; confirm whether
+  backtraces are captured (cross-check CR3). Add an output-format doc.
+- **MT6 — stdout↔file "parity" (funcs, lib).** Post-SYM1 the console and `-o` file are
+  independent channels; decide + document whether they must emit identical content
+  (relates to U1/U2 console-style unification).
+- **MT7 — `specs/common-file.spec` refresh + scope note.** Spec file needs updating;
+  document that spec files are funcs/correlate-only today (SPEC1 makes them cross-engine,
+  incl. syscalls/dump/mod).
 
 - **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
   (no drop map, single-shot read). `dump`'s live-memory read
@@ -411,6 +445,10 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-13
+
+- Manual test confirms `syscalls -o` no longer silences the run — SYM1 decoupled `-q`
+  from `-o`; `g_quiet` is set only by `-q` (`syscalls.c:168,700`). `funcs`/`lib`/`dump`/
+  `correlate` `-o` likewise print + write independently, as intended.
 
 - **SYM1 — file/stdout output symmetry across all engines.** File output now
   matches `syscalls`' rich record schema and stdout matches `funcs`' grammar,

@@ -34,6 +34,7 @@ static const ares_analyzer_t *const registry[] = {
     &analyzer_exfil_burst,
     &analyzer_a11y_abuse,
     &analyzer_fileless_exec,
+    &analyzer_mediaproj_abuse,
     NULL,
 };
 

@@ -129,6 +129,14 @@ int dump_name_matches(const char *pattern, const char *path)
 	return pm_match(pattern, path, false) ? 1 : 0;
 }
 
+int dump_name_matches_any(const char *const *pats, int npat, const char *path)
+{
+	for (int i = 0; i < npat; i++)
+		if (dump_name_matches(pats[i], path))
+			return 1;
+	return 0;
+}
+
 // ---- dynamic info extracted from PT_DYNAMIC -------------------------------
 //
 // All addresses are stored as file-relative virtual offsets (== file offset in
@@ -675,7 +683,8 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	return 0;
 }
 
-int dump_pid_modules(int pid, const char *substr, const char *outdir, struct ares_sink *sink)
+int dump_pid_modules(int pid, const char *const *pats, int npat,
+                     const char *outdir, struct ares_sink *sink)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -702,7 +711,7 @@ int dump_pid_modules(int pid, const char *substr, const char *outdir, struct are
 	// from its program headers). Skip any candidate inside a dumped range so we
 	// neither re-dump it nor warn about its (header-less) middle.
 	for (int i = 0; i < n; i++) {
-		if (!m[i].path[0] || !dump_name_matches(substr, m[i].path))
+		if (!m[i].path[0] || !dump_name_matches_any(pats, npat, m[i].path))
 			continue;
 		uint64_t base = load_base_of(m, i);
 

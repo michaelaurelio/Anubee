@@ -17,14 +17,15 @@ struct ares_sink;  /* common/emit.h */
  * whose dynamic info confuses the rebuilder. */
 void dump_set_raw(int on);
 
-/* Dump every currently-mapped module of `pid` whose mapped path matches
- * `pattern` (glob on basename, else substring of full path) into `outdir`. Each
+/* Dump every currently-mapped module of `pid` whose mapped path matches ANY of
+ * `pats` (glob on basename, else substring of full path) into `outdir`. Each
  * distinct module (load base) is dumped once. Returns the number of files
  * written, or -1 if the process maps could not be read. (Dump-on-exit path.)
  * sink: SYM1 Phase 3 machine channel — a {"type":"dump",...} manifest record is
  * emitted per module written when sink is non-NULL and open (sink->f); pass
  * NULL when -o wasn't given. */
-int dump_pid_modules(int pid, const char *pattern, const char *outdir, struct ares_sink *sink);
+int dump_pid_modules(int pid, const char *const *pats, int npat,
+                     const char *outdir, struct ares_sink *sink);
 
 /* Dump the single module whose load range contains virtual address `addr` (the
  * start of a just-mapped executable segment) into `outdir`, labelling the output
@@ -35,5 +36,8 @@ int dump_one_at(int pid, unsigned long long addr, const char *name, const char *
 /* Does `path` match `pattern`? Glob (fnmatch on basename, " (deleted)" stripped)
  * when `pattern` has glob metacharacters, else substring-of-full-path. */
 int dump_name_matches(const char *pattern, const char *path);
+
+/* Does `path` match ANY of the npat patterns? (OR of dump_name_matches.) */
+int dump_name_matches_any(const char *const *pats, int npat, const char *path);
 
 #endif /* ARES_DUMP_REBUILD_H */

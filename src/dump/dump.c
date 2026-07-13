@@ -43,7 +43,8 @@ const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static volatile sig_atomic_t exiting = 0;
 
-static const char *g_pattern = NULL;   // module pattern to dump (glob/substring)
+static const char **g_patterns = NULL; // module patterns to dump (glob/substring); OR'd
+static int g_npat = 0;
 static const char *g_outdir  = ".";    // -d: output directory
 static int g_on_map  = 0;              // --on-map: dump at map time, not on exit
 static int g_quiet   = 0;              // -q: suppress progress chatter
@@ -119,7 +120,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	const char *full = path;
 	if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 		full = e->name;
-	if (!dump_name_matches(g_pattern, full))
+	if (!dump_name_matches_any(g_patterns, g_npat, full))
 		return 0;
 	if (!seen_add(h->pid, e->start))
 		return 0;
@@ -144,7 +145,9 @@ static const char dump_args_doc[] = "[PACKAGE PATTERN [ACTIVITY]]";
 
 struct dump_args {
     const char *pkg;
-    const char *pattern;
+    const char *patterns[64];  // -l (repeatable) + legacy positional
+    int npat;
+    const char *pat_pos;       // legacy single positional pattern, folded into patterns[] at END
     const char *activity;
     const char *outdir;
     const char *output_file;  // -o: SYM1 Phase 3 manifest JSONL path (NULL = none)
@@ -165,6 +168,7 @@ static const struct argp_option dump_options[] = {
     { "activity", 'A',        "ACTIVITY", 0, "Override launch activity component (default: auto-resolve)", 0 },
     { "dump-dir", 'd',        "DIR",      0, "Output directory (default: current dir)", 0 },
     { "output",   'o',        "FILE",     0, "Export a {\"type\":\"dump\",...} manifest JSONL record per dumped module (also prints console; -q silences that)", 0 },
+    { "lib",      'l',        "PATTERN",  0, "Library basename pattern to dump (glob/substring); repeat for OR", 0 },
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
@@ -181,6 +185,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'A': a->activity = arg;  break;
     case 'd': a->outdir   = arg;  break;
     case 'o': a->output_file = arg; break;
+    case 'l': if (a->npat < 64) a->patterns[a->npat++] = arg; break;
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;
@@ -191,21 +196,22 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
-        if      (!a->pkg && a->tgt.n == 0)  a->pkg     = arg;
-        else if (!a->pattern) a->pattern = arg;
-        else if (!a->activity) a->activity = arg;
+        if      (!a->pkg && a->tgt.n == 0)  a->pkg      = arg;
+        else if (!a->pat_pos)               a->pat_pos  = arg;
+        else if (!a->activity)              a->activity = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
-        if (!a->pattern)
-            for (int i = 0; i < a->nspec; i++)
-                if (a->specs[i].kind == SPEC_KIND_LIB) { a->pattern = a->specs[i].mod; break; }
+        if (a->pat_pos && a->npat < 64) a->patterns[a->npat++] = a->pat_pos;
+        if (a->npat == 0)               // pull ALL lib: specs, not just the first
+            for (int i = 0; i < a->nspec && a->npat < 64; i++)
+                if (a->specs[i].kind == SPEC_KIND_LIB) a->patterns[a->npat++] = a->specs[i].mod;
         if (a->tgt.n > 0 && a->pkg)
             argp_error(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)
             argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
-        if (!a->pattern)
-            argp_error(state, "pattern is required");
+        if (a->npat == 0)
+            argp_error(state, "at least one library pattern is required (-l or positional)");
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -230,7 +236,7 @@ static struct bpf_link    *g_ff;
 
 int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
-    // ponytail: static so g_pkg/g_activity/g_pattern can alias da after setup returns.
+    // ponytail: static so g_pkg/g_activity/g_patterns can alias da after setup returns.
     static struct dump_args da = { .outdir = "." };
     if (rc && rc->pkg) da.pkg = rc->pkg;
     if (argp_parse(&dump_argp, argc, argv, ARGP_NO_EXIT, NULL, &da) != 0)
@@ -238,7 +244,8 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     g_pkg      = da.pkg;
     g_activity = da.activity;
-    g_pattern  = da.pattern;
+    g_patterns = da.patterns;
+    g_npat     = da.npat;
     g_outdir   = da.outdir;
     g_on_map   = da.on_map;
     g_quiet    = da.quiet;
@@ -328,10 +335,21 @@ err_skel:
     return 1;
 }
 
+// "libA*" or "libA* (+2 more)" for banners when multiple -l patterns are given.
+static char g_pat_banner[128];
+static const char *pat_banner(void)
+{
+    if (g_npat > 1)
+        snprintf(g_pat_banner, sizeof(g_pat_banner), "%s (+%d more)", g_patterns[0], g_npat - 1);
+    else
+        snprintf(g_pat_banner, sizeof(g_pat_banner), "%s", g_npat ? g_patterns[0] : "");
+    return g_pat_banner;
+}
+
 int dump_run(volatile sig_atomic_t *stop)
 {
     printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
-           g_uid, g_pattern, g_on_map ? "on map" : "on exit");
+           g_uid, pat_banner(), g_on_map ? "on map" : "on exit");
 
     ares_rb_poll_until(g_rb, stop);
 
@@ -341,12 +359,12 @@ int dump_run(volatile sig_atomic_t *stop)
             fprintf(stderr, "[dump] no app process mapped anything\n");
         int total = 0;
         for (size_t i = 0; i < g_pids_n; i++) {
-            int d = dump_pid_modules((int)g_pids[i], g_pattern, g_outdir, &g_sink);
+            int d = dump_pid_modules((int)g_pids[i], g_patterns, g_npat, g_outdir, &g_sink);
             if (d > 0)
                 total += d;
         }
         fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
-            total, total == 1 ? "" : "s", g_pattern, g_outdir);
+            total, total == 1 ? "" : "s", pat_banner(), g_outdir);
     }
     return 0;
 }

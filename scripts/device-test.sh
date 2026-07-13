@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|ransomware-burst|exfil-burst|a11y-abuse|fileless-exec|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|ransomware-burst|exfil-burst|a11y-abuse|fileless-exec|mediaproj-abuse|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -581,6 +581,66 @@ test_fileless_exec() {
     info "fileless-exec dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
 }
 
+# mod mediaproj-abuse: real trigger via com.transsion.screenrecorder
+# (pre-installed OEM screen-recorder app, confirmed installed on the test
+# device), whose exported RecordingService legitimately requests a
+# MediaProjection-typed foreground service (types=0x000000A0 =
+# MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
+# installed APK). Unlike ransomware-burst/fileless-exec's synthetic
+# code-free generators, and like a11y-abuse's use of TalkBack, this drives a
+# real app's real service directly via its exported intent-filter action --
+# no UI/consent-dialog automation needed (the exported Service bypasses the
+# in-app "Start now" consent flow entirely, since am start-foreground-service
+# talks to the service directly).
+#
+# Trigger order is service-first, then attach via -p <pid> (NOT -P <pkg>):
+# this package has a MAIN-action activity but no LAUNCHER category, so `cmd
+# package resolve-activity --brief` returns "No activity found" on this
+# device and -P's ares_launch_app() (src/common/launch.c) hard-fails before
+# the dumpsys poll thread ever starts polling -- confirmed on-device, not a
+# timing issue. -p <pid> against the already-running service process skips
+# that resolve-activity step entirely, same precedent as a11y-abuse's
+# already-running-process attach. The ares() call below is synchronous
+# (blocking, like a11y-abuse/fileless-exec), not backgrounded: this file's
+# own header note applies here too -- ares's stdio is fully buffered once
+# it isn't a tty, so killing it early from the host side (pkill on the local
+# adb shell client doesn't even reach the remote process -- see
+# testing-ares-on-device gotchas) loses whatever hadn't flushed yet.
+# Blocking for the device-side `timeout -s INT $TIMEOUT` window lets ares
+# exit cleanly and flush before the capture completes.
+test_mediaproj_abuse() {
+    echo "=== mod mediaproj-abuse (active MediaProjection session via dumpsys poll) ==="
+    local pkg="com.transsion.screenrecorder"
+    local svc="$pkg/.service.RecordingService"
+
+    adb shell "pm path $pkg" >/dev/null 2>&1 \
+        || fail "mediaproj-abuse: $pkg not installed on this device"
+
+    adb shell am start-foreground-service \
+        -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
+        || fail "mediaproj-abuse: could not start $svc (adb/root/service export changed?)"
+
+    local svc_pid
+    svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+    if [ -z "$svc_pid" ] || ! [ "$svc_pid" -gt 0 ] 2>/dev/null; then
+        adb shell am stopservice -n "$svc" >/dev/null 2>&1
+        fail "mediaproj-abuse: $svc did not start (no pid) after start-foreground-service"
+    fi
+
+    local out; out="$(ares "mod mediaproj-abuse -p $svc_pid")"
+    adb shell am stopservice -n "$svc" >/dev/null 2>&1
+
+    if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "mediaproj-abuse: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    if grep -q '^\[mediaproj-abuse\] PID:' <<<"$out"; then
+        info "mediaproj-abuse OK — $(grep -c '^\[mediaproj-abuse\] PID:' <<<"$out") [mediaproj-abuse] line(s)"
+    else
+        tail -10 <<<"$out" >&2
+        fail "mediaproj-abuse: no [mediaproj-abuse] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
+    fi
+}
+
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
 # stack trampoline on top of the entry BRK). Needs a fresh launch (-P) so the
 # entry uprobe attaches before the target opens any files. Spec mirrors
@@ -651,9 +711,10 @@ case "$WHAT" in
     exfil-burst)       test_exfil_burst ;;
     a11y-abuse)        test_a11y_abuse ;;
     fileless-exec)     test_fileless_exec ;;
+    mediaproj-abuse)   test_mediaproj_abuse ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_a11y_abuse; test_fileless_exec; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | a11y-abuse | fileless-exec | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_a11y_abuse; test_fileless_exec; test_mediaproj_abuse; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | a11y-abuse | fileless-exec | mediaproj-abuse | correlate-returns | all)" ;;
 esac
 
 forcestop

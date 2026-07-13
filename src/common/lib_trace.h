@@ -60,6 +60,7 @@ struct lib_unmap_event {
 #ifndef __bpf__
 #include <stdio.h>
 #include <sys/types.h>
+#include "common/sym_apk.h"  // struct apk_so_ref (MT3: packed-native enumeration)
 
 // Resolve the full on-disk path of a just-mapped region. Reads /proc/<pid>/maps
 // by start address and caches basename->path; on an unreadable maps file, falls
@@ -84,6 +85,13 @@ void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_
 // Emit one unmap record: "[unlib] pid <N> [0x<start>, 0x<end>)" unless `quiet`;
 // {"type":"unlib",...} if `sink->f` != NULL.
 void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e);
+
+// MT3: emit one packed-in-APK native record — a lib/*/*.so entry apk_list_sos
+// found inside apk_path, whether or not it's actually been mapped this run.
+// "[lib-packed] <apk> -> <soname> @0x<offset> (<size> b)" unless `quiet`;
+// {"type":"lib_packed",...} if `sink->f` != NULL.
+void ares_libtrace_emit_packed(struct ares_sink *sink, int quiet, const char *apk_path,
+                               const struct apk_so_ref *ref);
 #endif /* __bpf__ */
 
 #endif /* ARES_COMMON_LIB_TRACE_H */

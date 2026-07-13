@@ -116,7 +116,7 @@ COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_libtrace_emit_lib ares_libtrace_emit_unlib \
-               apk_list_sos \
+               ares_libtrace_emit_packed apk_list_sos \
                proc_mem_open proc_mem_read nterp_name \
                ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
                ares_resolve_pkg_from_pid \

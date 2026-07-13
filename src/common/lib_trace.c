@@ -172,3 +172,21 @@ void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct li
 		ares_sink_emit(sink);
 	}
 }
+
+void ares_libtrace_emit_packed(struct ares_sink *sink, int quiet, const char *apk_path,
+                               const struct apk_so_ref *ref)
+{
+	if (!quiet)
+		ts_print("[lib-packed] %s -> %s @0x%llx (%llu b)\n", apk_path, ref->name,
+		       (unsigned long long)ref->data_start, (unsigned long long)ref->size);
+	if (sink && sink->f) {
+		struct jbuf *j = &sink->jb;
+		j->len = 0;
+		jb_s(j, "{\"type\":\"lib_packed\",\"apk\":\""); jb_esc(j, apk_path); jb_c(j, '"');
+		jb_s(j, ",\"soname\":\"");                       jb_esc(j, ref->name); jb_c(j, '"');
+		jb_s(j, ",\"offset\":");                         jb_u64(j, ref->data_start);
+		jb_s(j, ",\"size\":");                           jb_u64(j, ref->size);
+		jb_c(j, '}');
+		ares_sink_emit(sink);
+	}
+}

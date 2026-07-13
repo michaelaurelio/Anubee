@@ -64,6 +64,13 @@ int main(void)
     u.start = 0xc0000000; u.end = 0xc0002000;
     ares_libtrace_emit_unlib(&sink, /*quiet=*/1, &u);
 
+    // MT3: packed-in-APK enumeration record
+    struct apk_so_ref ref = {0};
+    snprintf(ref.name, sizeof(ref.name), "libsentinel.so");
+    ref.data_start = 12345;
+    ref.size       = 6789;
+    ares_libtrace_emit_packed(&sink, /*quiet=*/1, "/data/app/base.apk", &ref);
+
     ares_sink_close(&sink);
     free(sink.jb.b);
 
@@ -82,6 +89,11 @@ int main(void)
     CHECK_HAS(out, "\"pid\":5678",                        "unlib pid");
     CHECK_HAS(out, "\"start\":\"0xc0000000\"",            "unlib start hex");
     CHECK_HAS(out, "\"end\":\"0xc0002000\"",              "unlib end hex");
+    CHECK_HAS(out, "\"type\":\"lib_packed\"",             "lib_packed type field");
+    CHECK_HAS(out, "\"apk\":\"/data/app/base.apk\"",      "lib_packed apk path");
+    CHECK_HAS(out, "\"soname\":\"libsentinel.so\"",       "lib_packed soname");
+    CHECK_HAS(out, "\"offset\":12345",                    "lib_packed offset");
+    CHECK_HAS(out, "\"size\":6789",                       "lib_packed size");
 
     free(out);
     printf("%d checks, %d failures\n", checks, failures);

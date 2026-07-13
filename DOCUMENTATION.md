@@ -1033,6 +1033,29 @@ object — no shared skeleton with `funcs`. Available analyzers:
   occurrence is already the signal). Known limitation: legitimate non-ART JIT
   engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
   anonymous executable mappings and will false-positive (see BACKLOG.md).
+- **`mediaproj-abuse`** — detects an active Android `MediaProjection`
+  screen-capture session (stealthy: zero uprobes). Detection is a userspace
+  thread polling `dumpsys activity services <pkg>` once a second for a
+  `ServiceRecord` block matching the launched/attached package with
+  `isForeground=true` and a `types=0x..` hex mask that has the
+  `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed
+  against real device output (`src/modules/mediaproj_abuse_parse.c`). A
+  `tp/binder/binder_transaction` tracepoint gated on outbound calls to
+  `system_server` keeps a passive per-pid counter reported as supporting
+  context on each alert, not as the trigger itself — a burst-threshold
+  design (mirroring `a11y-abuse`) was tried first and rejected: MediaProjection
+  setup is 1-2 discrete Binder calls, not a sustained burst, and ongoing frame
+  delivery goes to `SurfaceFlinger`, not `system_server`. Targets the
+  live-screen-streaming-to-C2 technique behind OverlayPhantom and other
+  current (2026) Android banking trojans — an escalation beyond the overlay/
+  accessibility abuse `a11y-abuse` already covers. Known limitations: the
+  1s poll interval bounds detection latency (a session that starts and stops
+  within one window is missed); no transaction-code decode, so the Binder-call
+  context is coarse, not proof of which `system_server` interface was called;
+  legitimate screen-share/remote-support apps false-positive (same accepted
+  category as `a11y-abuse`'s legitimate-accessibility-tool false positives);
+  proves a capture session was active, not that data left the device (no
+  frame-content or exfil-volume corroboration).
 
 **Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
@@ -1052,6 +1075,7 @@ longer lost from the file:
 - `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -1068,8 +1092,8 @@ but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
-`a11y-abuse`, and `fileless-exec` are kprobe/tracepoint — stealthy; `prop-read` is a
-libc uprobe — loud.
+`a11y-abuse`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
+`prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;

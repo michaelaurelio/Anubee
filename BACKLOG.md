@@ -513,6 +513,19 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-13
 
+- **mediaproj-abuse analyzer (shipped 2026-07-13).** New `mod` analyzer
+  detecting active `MediaProjection` screen-capture sessions — see
+  DOCUMENTATION.md's `mod` analyzer list for the full design (including two
+  design corrections made during development: the interface's
+  ring-buffer-stub requirement turned out already precedented by
+  `fileless-exec`, and the initially-planned burst-threshold Binder signal
+  was rejected once the concrete event flow showed it doesn't transfer from
+  `a11y-abuse`'s technique to this one). Known v1 limitations: 1s poll
+  interval bounds detection latency; no transaction-code decode; legitimate
+  screen-share/remote-support apps false-positive; no frame-content or
+  exfil-volume corroboration (proves a session was active, not that data
+  left the device).
+
 - Manual test confirms `syscalls -o` no longer silences the run — SYM1 decoupled `-q`
   from `-o`; `g_quiet` is set only by `-q` (`syscalls.c:168,700`). `funcs`/`lib`/`dump`/
   `correlate` `-o` likewise print + write independently, as intended.

@@ -505,6 +505,24 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   `system_server`-destination-gating approach) is the natural next step — see
   `mod a11y-abuse`'s design doc Follow-up ideas.
 
+- **`mod` cross-analyzer incident correlator — open, now unblocked.** Every
+  mod analyzer event carries a real `ts_ns` timestamp as of the
+  2026-07-13 event-timestamps change (see
+  `docs/superpowers/specs/2026-07-13-mod-event-timestamps-design.md`), which
+  was the prerequisite blocker for this. Next step: a tool (likely
+  host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
+  groups events by `(pid, time window)` using `ts_ns`, and fuses matches
+  against a small hardcoded rule table (e.g. `a11y-abuse` + `mediaproj-abuse`
+  + `exfil-burst` on one pid within N seconds) into a higher-confidence
+  incident record. Before building: check whether ARES-Desktop or
+  `tools/ares-mcp` already does something equivalent client-side —
+  `ares-mcp`'s `TraceStore` doesn't currently ingest mod analyzer event
+  types into a queryable table at all (only `*_summary` records, via a
+  `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
+  missing `a11y_abuse_summary`, `exfil_burst_summary`,
+  `fileless_exec_summary`, `mediaproj_abuse_summary` — worth fixing
+  regardless of which venue the correlator lands in).
+
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser
   hardening (`shentsize < 0x28` guard) landed 2026-07-08 — see Resolved/Done. Remaining

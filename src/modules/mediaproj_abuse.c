@@ -13,6 +13,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -106,6 +107,9 @@ static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls)
     e.h.type = MOD_EV_MEDIAPROJ_ABUSE;
     e.h.pid  = pid;
     e.h.tid  = pid;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    e.ts_ns = (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
     e.binder_calls_context = binder_calls;
     snprintf(e.comm, TASK_COMM_LEN, "%s", comm);
 

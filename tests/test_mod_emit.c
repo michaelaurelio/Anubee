@@ -42,6 +42,7 @@ int main(void)
     se.h.pid = 1000;
     se.h.tid = 1000;
     se.child_pid = 1500;
+    se.ts_ns = 100000000001ULL;
     strncpy(se.comm, "zygote", TASK_COMM_LEN - 1);
 
     j.len = 0;
@@ -49,12 +50,14 @@ int main(void)
     CHECK_HAS(j, "\"type\":\"spawn\"",   "spawn type");
     CHECK_HAS(j, "\"pid\":1000",         "spawn pid");
     CHECK_HAS(j, "\"child_pid\":1500",   "spawn child_pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000001", "spawn ts_ns");
     CHECK_HAS(j, "\"comm\":\"zygote\"",  "spawn comm");
 
     // ---- proc_exit via exit status (exit_code = 42 << 8) --------------------
     struct proc_exit_event pe_status = {0};
     pe_status.h.pid = 2000;
     pe_status.h.tid = 2000;
+    pe_status.ts_ns = 100000000002ULL;
     strncpy(pe_status.comm, "app", TASK_COMM_LEN - 1);
     pe_status.exit_code = 42 << 8;
 
@@ -62,6 +65,7 @@ int main(void)
     mod_emit_proc_exit(&j, &pe_status);
     CHECK_HAS(j, "\"type\":\"proc_exit\"", "proc_exit type");
     CHECK_HAS(j, "\"pid\":2000",           "proc_exit pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000002", "proc_exit ts_ns");
     CHECK_HAS(j, "\"exit_status\":42",     "proc_exit exit_status");
     { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
       checks++;
@@ -90,6 +94,7 @@ int main(void)
     ex.h.tid       = 5000;
     ex.argc        = 2;
     ex.stack_depth = 2;
+    ex.ts_ns       = 100000000003ULL;
     strncpy(ex.comm,     "sh",      TASK_COMM_LEN - 1);
     strncpy(ex.filename, "/bin/sh", sizeof(ex.filename) - 1);
     strncpy(ex.argv[0],  "-c",      MAX_ARGV_STR - 1);
@@ -102,6 +107,7 @@ int main(void)
     mod_emit_execve(&j, &ex, NULL);
     CHECK_HAS(j, "\"type\":\"execve\"",  "execve type");
     CHECK_HAS(j, "\"pid\":5000",          "execve pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000003", "execve ts_ns");
     CHECK_HAS(j, "\"/bin/sh\"",           "execve filename");
     CHECK_HAS(j, "\"argc\":2",            "execve argc");
     CHECK_HAS(j, "\"-c\"",               "execve argv[0]");
@@ -126,6 +132,7 @@ int main(void)
     pg.h.tid   = 6000;
     pg.is_ret  = 0;
     pg.found   = 0;
+    pg.ts_ns   = 100000000004ULL;
     strncpy(pg.comm,  "app",           TASK_COMM_LEN - 1);
     strncpy(pg.name,  "ro.debuggable", PROP_NAME_LEN - 1);
 
@@ -134,6 +141,7 @@ int main(void)
     CHECK_HAS(j, "\"type\":\"prop\"",  "prop type");
     CHECK_HAS(j, "\"op\":\"get\"",     "prop op get");
     CHECK_HAS(j, "\"pid\":6000",       "prop pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000004", "prop ts_ns");
     CHECK_HAS(j, "\"ro.debuggable\"",  "prop name");
     CHECK_HAS(j, "\"is_ret\":0",       "prop is_ret 0");
 
@@ -180,6 +188,7 @@ int main(void)
     fa.h.type = MOD_EV_FILE_ACCESS;
     fa.h.pid  = 8000;
     fa.h.tid  = 8000;
+    fa.ts_ns  = 100000000005ULL;
     strncpy(fa.comm, "app", TASK_COMM_LEN - 1);
     strncpy(fa.path, "/storage/emulated/0/DCIM/Camera/img.jpg", sizeof(fa.path) - 1);
     fa.flags = 0; // O_RDONLY
@@ -189,6 +198,7 @@ int main(void)
     mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE | FA_MEDIA_SUBDIR, flags1, 1);
     CHECK_HAS(j, "\"type\":\"file_access\"",      "file_access type");
     CHECK_HAS(j, "\"pid\":8000",                  "file_access pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000005",        "file_access ts_ns");
     CHECK_HAS(j, "\"path\":\"/storage/emulated/0/DCIM/Camera/img.jpg\"", "file_access path");
     CHECK_HAS(j, "\"flags\":[\"O_RDONLY\"]",      "file_access flags array");
     CHECK_HAS(j, "\"external_storage\"",          "file_access external_storage category");
@@ -224,6 +234,7 @@ int main(void)
     rb.h.type = MOD_EV_RANSOMWARE_BURST;
     rb.h.pid  = 9000;
     rb.h.tid  = 9000;
+    rb.ts_ns  = 100000000006ULL;
     strncpy(rb.comm, "malware", TASK_COMM_LEN - 1);
     rb.touch_count = 20;
     rb.window_ms   = 3500;
@@ -233,6 +244,7 @@ int main(void)
     mod_emit_ransomware_burst(&j, &rb, 15, 1);
     CHECK_HAS(j, "\"type\":\"ransomware_burst\"",  "ransomware_burst type");
     CHECK_HAS(j, "\"pid\":9000",                   "ransomware_burst pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000006",         "ransomware_burst ts_ns");
     CHECK_HAS(j, "\"comm\":\"malware\"",           "ransomware_burst comm");
     CHECK_HAS(j, "\"touch_count\":20",             "ransomware_burst touch_count");
     CHECK_HAS(j, "\"distinct_estimate\":15",       "ransomware_burst distinct_estimate");
@@ -255,6 +267,7 @@ int main(void)
     eb.h.type = MOD_EV_EXFIL_BURST;
     eb.h.pid  = 9100;
     eb.h.tid  = 9100;
+    eb.ts_ns  = 100000000007ULL;
     strncpy(eb.comm, "spyware", TASK_COMM_LEN - 1);
     eb.bytes_sent = 600000;
     eb.window_ms  = 4200;
@@ -264,6 +277,7 @@ int main(void)
     mod_emit_exfil_burst(&j, &eb, "203.0.113.1:443");
     CHECK_HAS(j, "\"type\":\"exfil_burst\"",       "exfil_burst type");
     CHECK_HAS(j, "\"pid\":9100",                   "exfil_burst pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_burst ts_ns");
     CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_burst comm");
     CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_burst bytes_sent");
     CHECK_HAS(j, "\"window_ms\":4200",             "exfil_burst window_ms");
@@ -280,6 +294,7 @@ int main(void)
     aa.h.type = MOD_EV_A11Y_ABUSE;
     aa.h.pid  = 9200;
     aa.h.tid  = 9200;
+    aa.ts_ns  = 100000000008ULL;
     strncpy(aa.comm, "fakebank", TASK_COMM_LEN - 1);
     aa.touch_count = 50;
     aa.window_ms   = 2100;
@@ -288,6 +303,7 @@ int main(void)
     mod_emit_a11y_abuse(&j, &aa, 1);
     CHECK_HAS(j, "\"type\":\"a11y_abuse\"", "a11y_abuse type");
     CHECK_HAS(j, "\"pid\":9200",            "a11y_abuse pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000008",  "a11y_abuse ts_ns");
     CHECK_HAS(j, "\"comm\":\"fakebank\"",   "a11y_abuse comm");
     CHECK_HAS(j, "\"touch_count\":50",      "a11y_abuse touch_count");
     CHECK_HAS(j, "\"window_ms\":2100",      "a11y_abuse window_ms");
@@ -308,6 +324,7 @@ int main(void)
     fe.h.type = MOD_EV_FILELESS_EXEC;
     fe.h.pid  = 9300;
     fe.h.tid  = 9300;
+    fe.ts_ns  = 100000000009ULL;
     strncpy(fe.comm, "droploader", TASK_COMM_LEN - 1);
     fe.start = 0x7f0000000000ULL;
     fe.size  = 4096;
@@ -316,6 +333,7 @@ int main(void)
     mod_emit_fileless_exec(&j, &fe);
     CHECK_HAS(j, "\"type\":\"fileless_exec\"",     "fileless_exec type");
     CHECK_HAS(j, "\"pid\":9300",                    "fileless_exec pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_exec ts_ns");
     CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_exec comm");
     CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_exec start hex");
     CHECK_HAS(j, "\"size\":4096",                   "fileless_exec size");
@@ -336,6 +354,7 @@ int main(void)
     mp.h.type = MOD_EV_MEDIAPROJ_ABUSE;
     mp.h.pid  = 9400;
     mp.h.tid  = 9400;
+    mp.ts_ns  = 100000000010ULL;
     strncpy(mp.comm, "fakebank", TASK_COMM_LEN - 1);
     mp.binder_calls_context = 7;
 
@@ -343,6 +362,7 @@ int main(void)
     mod_emit_mediaproj_abuse(&j, &mp);
     CHECK_HAS(j, "\"type\":\"mediaproj_abuse\"",   "mediaproj_abuse type");
     CHECK_HAS(j, "\"pid\":9400",                    "mediaproj_abuse pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000010",          "mediaproj_abuse ts_ns");
     CHECK_HAS(j, "\"comm\":\"fakebank\"",           "mediaproj_abuse comm");
     CHECK_HAS(j, "\"binder_calls_context\":7",      "mediaproj_abuse binder_calls_context");
 

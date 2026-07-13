@@ -39,6 +39,7 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     // Strip top byte: Android heap tagging sets bits 56-63 on dynamic allocations.
@@ -93,6 +94,7 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     unsigned long filename_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
@@ -144,6 +146,7 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     e->argc       = 0;
     e->stack_depth = 0;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));

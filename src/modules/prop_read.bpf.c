@@ -68,6 +68,7 @@ static __always_inline struct prop_event *reserve_prop_event(__u32 type)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     e->name[0]  = '\0';
     e->value[0] = '\0';

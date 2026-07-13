@@ -280,6 +280,12 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
 **Status (2026-07-13):** Manual test reconfirms the consolidation need: `dump` positional
 lib PATTERN, `mod` positional analyzer NAME + no-multi-analyzer, and `funcs` "spec only"
 scope all map to SPEC1's `lib:`/`mod:` kinds and cross-engine `-F`. See MT4/MT7 (Minor).
+**2026-07-13 reconciliation:** MT1/MT2/MT3 (Minor) landed as real fixes; MT4/MT5/MT6/MT7 were
+mostly already covered by `docs: updated backlog and documentation to current state`
+(`5aeeba1`), which landed 20 minutes before this manual-test pass filed them — see each
+item's Minor entry below for what was genuinely still open vs. reconciled as already-done.
+The line-222 "H1-H12 done — EPIC H complete" status is unaffected by any of this — it
+describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ---
 
@@ -307,25 +313,87 @@ scope all map to SPEC1's `lib:`/`mod:` kinds and cross-engine `-F`. See MT4/MT7 
   aborts correctly and is the reference. Fix: treat help/usage/parse-error as abort
   (handle `-h`/`--help` before parse, or check for the help/usage request and return
   nonzero). Repro: `ares funcs -P dev.ares.detector --help` still attaches.
+  **Fixed 2026-07-13** (commit `0eb21b5`): bad args already aborted (`argp_parse`'s
+  `!= 0` check catches them) — only help/usage leaked, since argp prints and returns
+  `0` under `ARGP_NO_EXIT`. New shared `ares_wants_help()` (`common/engine_args.h`)
+  detects `-h`/`--help`/`-?`/`--usage` before each standalone `cmd_*` calls `*_setup`,
+  and calls `argp_help()` + returns 0 itself. Deliberately *not* switched to `mod`-style
+  `flags 0` — the five `*_setup` functions are also called directly by the `trace`
+  coordinator (`trace.c:241-263`), which relies on a nonzero return (not `exit()`) to
+  tear down already-armed sibling engines on a parse failure.
 - **MT2 — `mod` analyzer listing gap.** `list_analyzers()` only fires on an *unknown*
   name (`mod.c:90`); bare `ares mod` and `ares mod --help` don't list analyzers, though
   `main.c` usage claims `--help` does. Wire `list_analyzers()` into `--help` / no-arg.
+  **Fixed 2026-07-13** (commit `c5b8a16`): `cmd_mod` now calls `list_analyzers()` on
+  bare `ares mod` (`argc < 2`, returns 0) and augments `--help` with it (via the MT1
+  `ares_wants_help()`) before argp prints its own usage — makes `main.c:44`'s claim true.
 - **MT3 — `lib` misses in-APK natives (e.g. `libsentinel.so`).** With
   `extractNativeLibs=false` the lib maps as a `base.apk` region, not a standalone `.so`;
   lib enumerates maps only. Add APK(zip) enumeration of `lib/*/*.so` so packed natives
   surface.
+  **Fixed 2026-07-13** (commits `a5841e0`/`af753f0`/`c93fdee`): new `apk_list_sos()`
+  (`common/sym_apk.{h,c}`) enumerates every packed `lib/*/*.so` in an APK, reusing the
+  existing ZIP central-directory parser (`apk_parse`/`apk_get`, previously only exposed
+  the single-offset `apk_so_name` reverse lookup). `lib.c` emits the full packed list
+  once per APK (new `lib_packed` record/`ares_libtrace_emit_packed`) and range-matches
+  `[data_start, data_start+size)` — not exact-offset — to label the actually-loaded
+  segment's `soname` on the existing `lib` record. Offset derived as
+  `e->pgoff * sysconf(_SC_PAGESIZE)` (correct on 4K *and* 16K-page devices; `vm_pgoff`
+  is in kernel-PAGE_SIZE units, not bytes — `pgoff << 12` would be wrong on 16K
+  devices). Compressed (non-`method==0`) packed `.so` — the `extractNativeLibs=true`
+  default — is unaffected, already handled by the normal on-disk mapping path.
 - **MT4 — `trace` output file carries only funcs-side events** (call/return/lib/unlib);
   syscall events aren't merged in. Consolidate multi-source output into one file. The
   nested `--syscalls -a -s NAME --funcs -F FILE` sub-flag grammar (hand-rolled
   `trace_args.c`) is also awkward — ties SPEC1 argument consolidation.
+  **Reconciled 2026-07-13 — stale finding, merge half already done.** `trace.c:334-353`
+  already builds a `srcs[]` array from every requested engine
+  (`syscalls`/`funcs`/`lib`/`correlate`) and calls the shared `jsonl_merge()`
+  (`common/jsonl_merge.c`) into the literal `-o` path — landed as EPIC C3 (commit
+  `986935b`, 2026-07-12 22:11), a confirmed git ancestor of the commit that filed this
+  finding (`600e14e`, 2026-07-13 09:13, ~11 hours later). All four suffixes
+  (`.syscalls/.funcs/.lib/.event.jsonl`) verified to match what each engine actually
+  writes. Most likely cause: the on-device binary used for the manual test wasn't
+  rebuilt/repushed after EPIC C3 landed — **re-verify on a freshly rebuilt/pushed
+  binary** before assuming this is still open. Real remaining residual: the nested
+  `--syscalls .../--funcs ...` sub-flag grammar is still hand-rolled and awkward — a
+  SPEC1-tied UX nit, not a data-merge bug.
 - **MT5 — `correlate` output undocumented.** stdout grammar unspecified; confirm whether
   backtraces are captured (cross-check CR3). Add an output-format doc.
+  **Reconciled 2026-07-13 — mostly stale, one real gap closed.** §6
+  (`DOCUMENTATION.md:774-851`) already documented `correlate`'s stdout line shapes and
+  JSONL record fields in detail, landed by `5aeeba1` (2026-07-13 08:53) 20 minutes
+  before this finding was filed (`600e14e`, 09:13) — same staleness pattern as MT4. The
+  one genuine gap: §7 "Unified trace schema" (the systematic per-record-type reference)
+  had bullets for `syscalls`/`funcs`/`lib`/`dump` but none for `correlate`, and nowhere
+  stated the backtrace answer. Closed: added a `correlate` bullet to §7 and the direct
+  answer to the cross-check — **no**, `correlate` captures no backtraces (verified
+  against `corr_func_event`/`corr_syscall_event`/`corr_return_event`,
+  `src/correlate/correlate.h:28-61` — no stack/backtrace field in any of the three,
+  unlike `syscalls`/`funcs`); it tracks call/return via a per-tid span stack
+  (`span`/`parent_span` IDs), not a captured stack snapshot.
 - **MT6 — stdout↔file "parity" (funcs, lib).** Post-SYM1 the console and `-o` file are
   independent channels; decide + document whether they must emit identical content
   (relates to U1/U2 console-style unification).
+  **Resolved 2026-07-13 — decision: independent by design, doc-only.** The `-o` file is
+  the complete, authoritative JSONL; stdout is a human-readable convenience gated by
+  `-q`/`-v`; the two are **not required to match** (file = source of truth). This was
+  already the de facto behavior (stated piecemeal at 6+ places across
+  `DOCUMENTATION.md`); ratified as one explicit paragraph at the top of §7. Distinct
+  from U1/U2 (console *styling* unification, still not recommended, unchanged) —
+  this is about content parity, not cosmetic format.
 - **MT7 — `specs/common-file.spec` refresh + scope note.** Spec file needs updating;
   document that spec files are funcs/correlate-only today (SPEC1 makes them cross-engine,
   incl. syscalls/dump/mod).
+  **Reconciled 2026-07-13 — doc already existed, spec file now points at it.** The
+  cross-engine fact was already stated in prose at `DOCUMENTATION.md:522-524` (§3,
+  landed by the same `5aeeba1`, predating this finding). None of the 8 `specs/*.spec`
+  files had a header comment (checked all); added one to `common-file.spec` noting the
+  file is cross-engine post-SPEC1 and pointing at §3 for the full grammar. Listed
+  `libc.so!` symbols light-verified — unchanged, already correct since H11's
+  `syscall:openat` migration. Lockstep test (`tests/test_probe_spec.c`, reads
+  `specs/*.spec` directly, skips `#`/blank lines identically to the loader) reconfirmed
+  green (111/111) with the new comment lines present.
 
 - **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
   (no drop map, single-shot read). `dump`'s live-memory read

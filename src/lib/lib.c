@@ -30,6 +30,7 @@
 #include "common/runtime.h"
 #include "common/engine_driver.h"  // lib_setup/_run/_teardown (AA3)
 #include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
+#include "common/sym_apk.h"        // MT3: apk_list_sos, packed-native enumeration
 
 static volatile sig_atomic_t exiting = 0;
 
@@ -47,6 +48,26 @@ static struct bpf_link    *g_ff;
 
 // ---- ring-buffer event handling ------------------------------------------
 
+// MT3: which base.apk paths we've already enumerated+emitted the packed
+// native list for this run (once per APK, not once per mapped segment).
+#define APK_SEEN_MAX 8
+static char apk_seen[APK_SEEN_MAX][256];
+static int  apk_seen_count;
+
+static bool mark_apk_seen(const char *path)
+{
+	for (int i = 0; i < apk_seen_count; i++)
+		if (strcmp(apk_seen[i], path) == 0)
+			return false;
+	if (apk_seen_count < APK_SEEN_MAX)
+		snprintf(apk_seen[apk_seen_count++], sizeof(apk_seen[0]), "%s", path);
+	// ponytail: beyond APK_SEEN_MAX distinct APKs in one run (unusual — an
+	// app plus a handful of split APKs), re-enumeration just repeats output
+	// (apk_get()'s own per-path cache keeps the ZIP parse itself cheap);
+	// widen APK_SEEN_MAX if a real target needs more.
+	return true;
+}
+
 static int handle_event(void *ctx, void *data, size_t sz)
 {
 	(void)ctx;
@@ -62,7 +83,37 @@ static int handle_event(void *ctx, void *data, size_t sz)
 		const char *full = path;
 		if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 			full = e->name;     // fall back to the BPF-supplied basename
-		ares_libtrace_emit_lib(&g_sink, g_quiet, e, full, NULL);
+
+		// MT3: extractNativeLibs=false apps map a stored .so straight out of
+		// base.apk instead of a standalone file — recover the inner .so name
+		// via the ZIP central directory (already parsed for symbolization,
+		// common/sym_apk.c) and surface every packed native up front, not
+		// just the one segment this particular event happens to be.
+		const char *soname = NULL;
+		size_t fl = strlen(full);
+		if (fl >= 4 && !strcmp(full + fl - 4, ".apk")) {
+			// e->pgoff is vm_pgoff: kernel-PAGE_SIZE units, not bytes, and
+			// not necessarily 4K (16K-page devices exist) — multiply by the
+			// runtime page size to get the byte offset the ZIP central
+			// directory records as data_start. NOT `pgoff << 12`.
+			unsigned long long off = (unsigned long long)e->pgoff *
+			                         (unsigned long long)sysconf(_SC_PAGESIZE);
+			struct apk_so_ref refs[32];
+			int n = apk_list_sos(full, refs, 32);
+			if (mark_apk_seen(full))
+				for (int i = 0; i < n; i++)
+					ares_libtrace_emit_packed(&g_sink, g_quiet, full, &refs[i]);
+			// This mmap event covers one ELF segment, whose file offset is
+			// generally not the .so's own data_start (e.g. the exec segment
+			// starts partway in) — range-match instead of exact-match.
+			for (int i = 0; i < n; i++) {
+				if (off >= refs[i].data_start && off < refs[i].data_start + refs[i].size) {
+					soname = refs[i].name;
+					break;
+				}
+			}
+		}
+		ares_libtrace_emit_lib(&g_sink, g_quiet, e, full, soname);
 	} else if (h->type == LIB_EV_UNMAP) {
 		if (sz < sizeof(struct lib_unmap_event))
 			return 0;

@@ -86,6 +86,8 @@ A11Y_ABUSE_BPF_OBJ := $(BUILD)/a11y_abuse.bpf.o
 A11Y_ABUSE_SKEL    := $(BUILD)/a11y_abuse.skel.h
 FILELESS_EXEC_BPF_OBJ := $(BUILD)/fileless_exec.bpf.o
 FILELESS_EXEC_SKEL    := $(BUILD)/fileless_exec.skel.h
+MEDIAPROJ_ABUSE_BPF_OBJ := $(BUILD)/mediaproj_abuse.bpf.o
+MEDIAPROJ_ABUSE_SKEL    := $(BUILD)/mediaproj_abuse.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I. $(DEPFLAGS)
 
@@ -307,6 +309,13 @@ $(FILELESS_EXEC_BPF_OBJ): $(SRC)/modules/fileless_exec.bpf.c vmlinux.h $(LIBBPF_
 $(FILELESS_EXEC_SKEL): $(FILELESS_EXEC_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name fileless_exec_bpf > $@
 
+$(MEDIAPROJ_ABUSE_BPF_OBJ): $(SRC)/modules/mediaproj_abuse.bpf.c vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(MEDIAPROJ_ABUSE_SKEL): $(MEDIAPROJ_ABUSE_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name mediaproj_abuse_bpf > $@
+
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
 	mkdir -p $(BUILD)
@@ -353,7 +362,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(RANSOMWARE_BURST_SKEL) $(EXFIL_BURST_SKEL) $(A11Y_ABUSE_SKEL) $(FILELESS_EXEC_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(RANSOMWARE_BURST_SKEL) $(EXFIL_BURST_SKEL) $(A11Y_ABUSE_SKEL) $(FILELESS_EXEC_SKEL) $(MEDIAPROJ_ABUSE_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
@@ -550,5 +559,5 @@ ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
 ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
                 $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ) \
                 $(FILE_ACCESS_BPF_OBJ) $(RANSOMWARE_BURST_BPF_OBJ) $(EXFIL_BURST_BPF_OBJ) \
-                $(A11Y_ABUSE_BPF_OBJ) $(FILELESS_EXEC_BPF_OBJ)
+                $(A11Y_ABUSE_BPF_OBJ) $(FILELESS_EXEC_BPF_OBJ) $(MEDIAPROJ_ABUSE_BPF_OBJ)
 -include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

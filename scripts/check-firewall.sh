@@ -41,6 +41,7 @@ map_bpf_obj() {
     mod:exfil-burst) echo exfil_burst.bpf.o ;;
     mod:a11y-abuse) echo a11y_abuse.bpf.o ;;
     mod:fileless-exec) echo fileless_exec.bpf.o ;;
+    mod:mediaproj-abuse) echo mediaproj_abuse.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
 }
@@ -96,6 +97,7 @@ owner_of() {
     $BUILD/modules/exfil_burst.o) echo mod:exfil-burst ;;
     $BUILD/modules/a11y_abuse.o) echo mod:a11y-abuse ;;
     $BUILD/modules/fileless_exec.o) echo mod:fileless-exec ;;
+    $BUILD/modules/mediaproj_abuse.o) echo mod:mediaproj-abuse ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;
     *)                          echo shared ;;

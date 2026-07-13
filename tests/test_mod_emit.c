@@ -22,6 +22,7 @@ void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
                            const char *dest_str);
 void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
+void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -329,6 +330,27 @@ int main(void)
     j.len = 0;
     mod_emit_fileless_exec(&j, &fe);
     CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_exec anon_name tagged");
+
+    // ---- mediaproj_abuse: full event with Binder-call context -----------------
+    struct mediaproj_abuse_event mp = {0};
+    mp.h.type = MOD_EV_MEDIAPROJ_ABUSE;
+    mp.h.pid  = 9400;
+    mp.h.tid  = 9400;
+    strncpy(mp.comm, "fakebank", TASK_COMM_LEN - 1);
+    mp.binder_calls_context = 7;
+
+    j.len = 0;
+    mod_emit_mediaproj_abuse(&j, &mp);
+    CHECK_HAS(j, "\"type\":\"mediaproj_abuse\"",   "mediaproj_abuse type");
+    CHECK_HAS(j, "\"pid\":9400",                    "mediaproj_abuse pid");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",           "mediaproj_abuse comm");
+    CHECK_HAS(j, "\"binder_calls_context\":7",      "mediaproj_abuse binder_calls_context");
+
+    // ---- mediaproj_abuse: zero Binder-call context (pid unresolved case) ------
+    mp.binder_calls_context = 0;
+    j.len = 0;
+    mod_emit_mediaproj_abuse(&j, &mp);
+    CHECK_HAS(j, "\"binder_calls_context\":0", "mediaproj_abuse binder_calls_context zero");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

@@ -16,6 +16,7 @@ struct ransomware_burst_event; // modules/mod_events.h
 struct exfil_burst_event; // modules/mod_events.h
 struct a11y_abuse_event; // modules/mod_events.h
 struct fileless_exec_event; // modules/mod_events.h
+struct mediaproj_abuse_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -85,5 +86,13 @@ void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int g
 // fields -- v1 has one signal only, emitted as-is, same "raw fields, no
 // baked-in verdict" convention as every prior mod analyzer.
 void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
+
+// {"type":"mediaproj_abuse","pid":N,"comm":"..","binder_calls_context":N}
+// binder_calls_context is the passive system_server Binder-call count
+// observed since the last alert for this pid (coarse/cumulative, not
+// windowed -- see design doc's Known limitations). No burst/threshold/
+// severity fields, same "raw fields, no baked-in verdict" convention as
+// every prior mod analyzer.
+void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
 
 #endif /* __ARES_MOD_EMIT_H */

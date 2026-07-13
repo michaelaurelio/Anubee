@@ -24,6 +24,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_EXFIL_BURST: return "exfil_burst";
     case TRACE_A11Y_ABUSE:        return "a11y_abuse";
     case TRACE_FILELESS_EXEC:     return "fileless_exec";
+    case TRACE_MEDIAPROJ_ABUSE:   return "mediaproj_abuse";
     default:              return "unknown";
     }
 }

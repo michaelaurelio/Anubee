@@ -81,6 +81,7 @@ enum {
     MOD_EV_EXFIL_BURST = 10,
     MOD_EV_A11Y_ABUSE = 11,
     MOD_EV_FILELESS_EXEC = 12,
+    MOD_EV_MEDIAPROJ_ABUSE = 13,
 };
 
 struct spawn_event {
@@ -156,6 +157,12 @@ struct fileless_exec_event {
     __u64  start;
     __u64  size;
     char   anon_name[FILELESS_TAG_LEN];
+};
+
+struct mediaproj_abuse_event {
+    struct trace_event_header h;
+    char   comm[TASK_COMM_LEN];
+    __u64  binder_calls_context;
 };
 
 #endif /* __ARES_MOD_EVENTS_H */

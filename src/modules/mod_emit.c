@@ -196,3 +196,13 @@ void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
     jb_s(j, ",\"anon_name\":\""); jb_esc(j, e->anon_name); jb_c(j, '"');
     jb_c(j, '}');
 }
+
+void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_MEDIAPROJ_ABUSE)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"binder_calls_context\":"); jb_u64(j, e->binder_calls_context);
+    jb_c(j, '}');
+}

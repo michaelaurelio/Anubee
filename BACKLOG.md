@@ -410,6 +410,50 @@ case (including the 6 malformed-input rejections) keeps passing unchanged.
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
+### 2026-07-13
+
+- **SYM1 — file/stdout output symmetry across all engines.** File output now
+  matches `syscalls`' rich record schema and stdout matches `funcs`' grammar,
+  uniformly across `syscalls`/`funcs`/`lib`/`correlate`/`dump`/`mod`. Phased,
+  15 commits (Phase 0 through 5c), each independently gated and buildable —
+  see `workspace/ares-output-asymmetry.md` for the original gap analysis this
+  closes, and `ares-project/TODO.md` for phase-by-phase notes.
+  - **Dual-channel-always** (Phase 1): dropped the old `-o` ⇒ `-q` coupling —
+    `-o FILE` now writes JSON *and* prints stdout simultaneously; `-q` is the
+    sole, independent stdout silencer. `trace`'s 5 concurrent child engines
+    stay file-only under `-o` via an explicit `-q` injection (mirrors `dump`'s
+    pre-existing pattern), preventing unusable interleaved stdout.
+  - **Content parity** (Phase 2): `correlate`'s live console syscall line
+    gained the same decoded paths/fds/sockaddrs/flag names the file already
+    had (`corr_decode_arg`, shared by both channels — the sharpest single gap
+    in the original analysis).
+  - **`dump`'s total machine-channel gap closed** (Phase 3): new `-o` support
+    + `dump_emit.c` manifest (`{"type":"dump",...}` per rebuilt module),
+    making `trace`'s long-dead `-o <prefix>.dump.jsonl` fan-out real.
+  - **Full stdout grammar unification** (Phase 4a-4d): every engine's live
+    event lines now share one skeleton — `common/human_out.{c,h}`'s
+    `ts_print`/`human_detail`, timestamp-prefixed, indented continuation
+    lines — while keeping each engine's own bracket tag (`[syscall]`, `[lib]`,
+    `[exec]`, …) rather than forcing funcs' literal wording everywhere.
+    `lib_trace.c`'s shared emitter fix alone covers `lib`/`funcs`/`correlate`'s
+    `[lib]`/`[unlib]` lines in one file.
+  - **Surface consistency** (Phase 5a-5c): JSONL is now the uniform default
+    framing (was array-by-default for `syscalls`/`funcs` only); `lib`/`dump`
+    emit an explicit `{"exempt":true,...}` coverage record instead of silent
+    "no message" (previously indistinguishable from "checked, all clean");
+    `syscalls`/`funcs`/`correlate` gained end-of-run content summaries
+    (per-syscall-name / per-symbol tallies, span/syscall/return counts),
+    mirroring `mod`'s existing `print_summary`/`emit_summary` split and its
+    omit-if-nothing-happened rule.
+  - Verified throughout via the host `tests/test_*_emit.c` suite (JSON schema
+    regression oracle — byte-identical except where a phase intentionally
+    added a field/record type) plus balance/grep checks on the engine `.c`
+    files the BPF-skeleton gate keeps un-host-compilable. Cross-repo: 341/341
+    ARES-Desktop tests pass unmodified — the new record types land as
+    retained-but-unhandled rows (EPIC A3's design), no ingest change needed.
+    On-device capture confirming the real stdout/file shapes is the
+    remaining open step (same standing gate as every BPF-touching change).
+
 ### 2026-07-11
 
 - **SPEC1 / EPIC H — unified probe-spec v2.** One spec grammar

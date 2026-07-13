@@ -41,11 +41,13 @@ int main(void)
     e.h.tid = 1240;
     e.entry_addr = 0xabc000;
     e.ktime = 555;
+    e.span_id = 42;   // emitted as "id"; the paired RETURN below reuses it
     e.args[0] = 0x10; e.args[1] = 0x20;
 
     j.len = 0;
     funcs_emit_call(&j, &e, "libc.so", "open", NULL, NULL, NULL);
     CHECK_HAS(j, "\"type\":\"call\"", "call type");
+    CHECK_HAS(j, "\"id\":42", "call id (span_id)");
     CHECK_HAS(j, "\"pid\":1234", "call pid");
     CHECK_HAS(j, "\"tid\":1240", "call tid");
     CHECK_HAS(j, "\"ppid\":0", "call ppid");
@@ -193,10 +195,12 @@ int main(void)
     r.retval = 7;
     r.elapsed_ns = 4096;
     r.ktime = 999888;
+    r.span_id = 42;   // same id as the paired CALL above
 
     j.len = 0;
     funcs_emit_return(&j, &r, "libc.so", "open", NULL, NULL);
     CHECK_HAS(j, "\"type\":\"return\"", "return type");
+    CHECK_HAS(j, "\"id\":42", "return id pairs with the call");
     CHECK_HAS(j, "\"retval\":7", "return retval");
     CHECK_HAS(j, "\"elapsed_ns\":4096", "return elapsed");
     CHECK_HAS(j, "\"ktime\":999888", "return ktime");

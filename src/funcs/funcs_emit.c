@@ -23,6 +23,7 @@ void funcs_emit_call(struct jbuf *j, const struct event *e,
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_CALL)); jb_c(j, '"');
+    jb_s(j, ",\"id\":");         jb_u64(j, e->span_id); // pairs with the RETURN record; orders the stream (parity with syscalls)
     jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
     jb_s(j, ",\"ppid\":");       jb_i64(j, e->ppid);
@@ -107,6 +108,7 @@ void funcs_emit_return(struct jbuf *j, const struct event *e,
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_RETURN)); jb_c(j, '"');
+    jb_s(j, ",\"id\":");         jb_u64(j, e->span_id); // same id as the matching CALL record
     jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
     jb_s(j, ",\"tid\":");        jb_u64(j, e->h.tid);
     jb_s(j, ",\"module\":\"");   jb_esc(j, module); jb_c(j, '"');

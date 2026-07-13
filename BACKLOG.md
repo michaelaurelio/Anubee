@@ -285,6 +285,18 @@ scope all map to SPEC1's `lib:`/`mod:` kinds and cross-engine `-F`. See MT4/MT7 
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+### Cross-engine JSONL schema consistency — 2026-07-13
+
+- **SC1 — `id` field naming overlap (funcs vs correlate).** `funcs` now emits `"id"`
+  for its per-call span (surfaced `span_id`, pairs CALL↔RETURN — matches `syscalls`'
+  `"id"`). But `correlate` emits the *same* underlying quantity as `"span"`
+  (`corr_emit_*`). One value, two field names across engines. Unify on one key
+  (likely `"id"` since two of three engines use it) when the schema is next
+  consolidated — folds into the broader §7 "unified schema" cleanup.
+- **SC2 — entry-event `type` discriminator differs.** `funcs` uses
+  `{"type":"call"}`; `correlate` uses `{"type":"func"}` for the same uprobe-entry
+  event. Consumers must special-case both. Reconcile alongside SC1.
+
 ### Manual CLI test findings — 2026-07-13
 
 - **MT1 (correctness) — `--help`/`--usage`/bad args print then run instead of aborting.**

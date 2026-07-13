@@ -73,8 +73,11 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     __u64 entry_sp = (__u64)PT_REGS_SP(ctx);
     span_stack_reconcile(tid, entry_sp);
     __u64 entry_ktime = bpf_ktime_get_ns();
-    span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
-                    entry_ktime, raw);
+    // Capture the assigned span id (0 = depth cap hit -> untracked call). The
+    // matching uretprobe echoes the same value from the popped frame, so the
+    // CALL and its RETURN records share one "id" (parity with syscalls).
+    __u64 span_id = span_stack_push(tid, (__u64)PT_REGS_IP(ctx), entry_sp,
+                                    entry_ktime, raw);
 
     // Reserve space in ring buffer for event
     e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
@@ -97,6 +100,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     e->ppid = BPF_CORE_READ(task, real_parent, tgid);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     e->exit_event = false;
+    e->span_id = span_id;
 
     #pragma unroll
     for (int i = 0; i < NUM_ARGS; i++) {
@@ -190,6 +194,7 @@ int BPF_KRETPROBE(uretprobe_open)
     e->h._pad     = 0;
     e->entry_addr = saved->entry_addr;
     e->caller_addr = 0;
+    e->span_id = saved->span_id;   // same id as the matching CALL record (pairs the two)
     e->elapsed_ns = now - saved->timestamp;
     e->ktime = now;   // return-side ktime (EPIC C3); already computed above for elapsed_ns
     e->ppid       = 0;

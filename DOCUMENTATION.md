@@ -576,14 +576,23 @@ Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 `trace_schema.h`):
 
 ```json
-{"type":"call",   "pid":N,"tid":N,"ppid":N,"module":"libc.so","symbol":"open",
+{"type":"call",   "id":42,"pid":N,"tid":N,"ppid":N,"module":"libc.so","symbol":"open",
                   "entry_addr":"0xABCDEF","offset":"0x1234","args":["0x1","0x2","0x0","0x0","0x0","0x0","0x0","0x0"],
                   "backtrace":[{"frame":0,"addr":"0x...","symbol":"libc.so\`caller+0x10"},{"frame":1,"addr":"0x..."}]}
 
-{"type":"return", "pid":N,"tid":N,"module":"libc.so","symbol":"open","offset":"0x1234",
+{"type":"return", "id":42,"pid":N,"tid":N,"module":"libc.so","symbol":"open","offset":"0x1234",
                   "retval":7,"elapsed_ns":4096,
                   "backtrace":[{"frame":0,"addr":"0x...","symbol":"libc.so\`caller+0x10"}]}
 ```
+
+`id` is a monotonic per-call span id (parity with the `syscalls` engine's `id`): a
+CALL and its matching RETURN carry the **same** `id`, so the two records pair up
+and the stream is ordered by call entry. It is the funcs frame's `span_id`
+(`span_stack.bpf.h`), surfaced from the per-tid span stack — so it is
+recursion-correct where the old single-slot entry map was not. `id` is `0` on the
+rare CALL that hit the `MAX_SPAN_DEPTH` (32) nesting cap at entry: that call is
+untracked, its RETURN isn't paired, and `0` is the honest "unpaired" sentinel
+(the `syscalls` `id` is always ≥ 1; funcs reuses `0` for this one degraded case).
 
 `backtrace` is present on both CALL and RETURN records (as long as `bpf_get_stack`
 returned frames), built from `e->call_stack`/`e->stack_depth` — orthogonal to
@@ -1096,10 +1105,12 @@ stream:
   `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
   `cfi_step` runtime driver can consume either.
 - `ares funcs` emits **structured** records into the `-o` sink:
-  `{"type":"call","pid":..,"tid":..,"ppid":..,"module":..,"symbol":..,"entry_addr":..,
+  `{"type":"call","id":..,"pid":..,"tid":..,"ppid":..,"module":..,"symbol":..,"entry_addr":..,
   "offset":..,"args":[..],"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..],
-  "java_stack":[...]}` and `{"type":"return","pid":..,"tid":..,"module":..,"symbol":..,
-  "offset":..,"retval":..,"elapsed_ns":..,"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..]}`
+  "java_stack":[...]}` and `{"type":"return","id":..,"pid":..,"tid":..,"module":..,"symbol":..,
+  "offset":..,"retval":..,"elapsed_ns":..,"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..]}`.
+  `id` is the per-call span id shared by a CALL and its matching RETURN (parity with
+  `syscalls`' `id`; `0` = span-depth cap hit, call untracked/unpaired — see §3.1)
   (see §3.1). Both CALL and RETURN carry a `backtrace` array with resolved `symbol`
   per frame (caller-resolved via `sym_resolve`, same as the console — see §3.1).
   `java_stack` (optional, `--snapshot` + `-o`):

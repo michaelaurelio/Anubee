@@ -50,6 +50,9 @@ struct event {
     __u64 call_stack[STACK_DEPTH];
     __u32 stack_depth;
     __u64 stack_id;   /* FNV-1a hash of call_stack; 0 = none. Links to ARES_EVENT_STACK sidecar. */
+    __u64 span_id;    /* monotonic per-call span id; emitted as "id". A CALL and its RETURN share it
+                         (pairs the two records + orders the stream, like syscalls' "id"). 0 = the
+                         span-depth cap was hit at entry, so this call is untracked/unpaired. */
 };
 
 

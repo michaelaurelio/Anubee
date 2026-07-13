@@ -11,6 +11,7 @@
 #define __ARES_ENGINE_ARGS_H
 
 #include <argp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -128,6 +129,19 @@ static inline error_t parse_target_arg(int key, char *arg,
         case ARES_KEY_NO_FOLLOW:  t->no_follow  = 1; return 0;
     }
     return ARGP_ERR_UNKNOWN;
+}
+
+// True if argv requests help/usage — argp prints these but (under ARGP_NO_EXIT)
+// returns 0, so callers must detect + abort themselves. See MT1.
+static inline bool ares_wants_help(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strcmp(a, "-h") || !strcmp(a, "--help") ||
+            !strcmp(a, "-?") || !strcmp(a, "--usage"))
+            return true;
+    }
+    return false;
 }
 
 #endif /* __ARES_ENGINE_ARGS_H */

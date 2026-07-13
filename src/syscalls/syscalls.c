@@ -1345,6 +1345,14 @@ void syscalls_teardown(void)
 
 int cmd_syscalls(int argc, char **argv)
 {
+	// MT1: argp_parse(ARGP_NO_EXIT) inside syscalls_setup returns 0 on --help/
+	// --usage (it only prints), so control would otherwise fall through into
+	// attach/run.
+	if (ares_wants_help(argc, argv)) {
+		argp_help(&sysc_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
+		return 0;
+	}
+
 	if (syscalls_setup(argc, argv, NULL) != 0)
 		return 1;
 

@@ -1207,6 +1207,13 @@ void funcs_teardown(void)
 
 int cmd_funcs(int argc, char **argv)
 {
+    // MT1: argp_parse(ARGP_NO_EXIT) inside funcs_setup returns 0 on --help/--usage
+    // (it only prints), so control would otherwise fall through into attach/run.
+    if (ares_wants_help(argc, argv)) {
+        argp_help(&argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
+        return 0;
+    }
+
     ares_install_stop_handler(&exiting);
 
     int ret = funcs_setup(argc, argv, NULL);

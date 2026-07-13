@@ -270,6 +270,13 @@ void lib_teardown(void)
 
 int cmd_lib(int argc, char **argv)
 {
+    // MT1: argp_parse(ARGP_NO_EXIT) inside lib_setup returns 0 on --help/--usage
+    // (it only prints), so control would otherwise fall through into attach/run.
+    if (ares_wants_help(argc, argv)) {
+        argp_help(&lib_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
+        return 0;
+    }
+
     if (lib_setup(argc, argv, NULL) != 0)
         return 1;
 

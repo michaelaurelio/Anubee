@@ -461,6 +461,8 @@ test:
 	 fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pattern_match.c src/common/pattern_match.c -o $(BUILD)/test_pattern_match
 	$(BUILD)/test_pattern_match
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c -o $(BUILD)/test_engine_args
+	$(BUILD)/test_engine_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

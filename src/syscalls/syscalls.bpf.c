@@ -202,7 +202,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// (snapshot_enabled is never set in capture-all).
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
-		stack_id = ares_hash_stack(stack, n, tgid);
+		stack_id = ares_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
@@ -346,7 +346,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
-		stack_id = ares_hash_stack(stack, n, tgid);
+		stack_id = ares_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);

@@ -23,18 +23,21 @@
 #include "common/stack_snapshot.h"
 #include "common/coverage.bpf.h"
 
-/* Maximum stack depth the hash function iterates over. Both engines fit:
- * syscalls uses SYSC_MAX_STACK_DEPTH=32, funcs uses STACK_DEPTH=16. */
-#define ARES_HASH_MAX_DEPTH 32
-
 /* FNV-1a over the captured return addresses, seeded with the tgid so the same
  * call path in different processes gets distinct ids and one process's snapshot
- * never suppresses another's. Never returns 0 (0 = "no stack id"). */
-static __always_inline __u64 ares_hash_stack(__u64 *stack, int n, __u32 tgid)
+ * never suppresses another's. Never returns 0 (0 = "no stack id").
+ *
+ * `cap` is the caller's array capacity and MUST be a compile-time constant equal
+ * to the real length of `stack[]` (syscalls: SYSC_MAX_STACK_DEPTH=32, funcs:
+ * STACK_DEPTH=16). The loop is fully unrolled, so the verifier proves exactly
+ * `cap` in-bounds reads; the runtime `if (i < n)` guard alone can't bound them
+ * (n is not known at load time). Passing a `cap` larger than the array reads out
+ * of bounds and the program fails to load. */
+static __always_inline __u64 ares_hash_stack(__u64 *stack, int n, __u32 tgid, int cap)
 {
 	__u64 h = 0xcbf29ce484222325ULL ^ ((__u64)tgid << 32);
 	#pragma clang loop unroll(full)
-	for (int i = 0; i < ARES_HASH_MAX_DEPTH; i++) {
+	for (int i = 0; i < cap; i++) {
 		if (i < n) {
 			h ^= stack[i];
 			h *= 0x100000001b3ULL;

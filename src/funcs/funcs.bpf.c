@@ -120,7 +120,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     // stack_id so the consumer can join. CALL-entry only (returns share the stack).
     e->stack_id = 0;
     if (snapshot_enabled && e->stack_depth > 0) {
-        __u64 sid = ares_hash_stack(e->call_stack, e->stack_depth, pid);
+        __u64 sid = ares_hash_stack(e->call_stack, e->stack_depth, pid, STACK_DEPTH);
         if (!bpf_map_lookup_elem(&stack_seen, &sid)) {
             __u8 one = 1;
             bpf_map_update_elem(&stack_seen, &sid, &one, BPF_ANY);

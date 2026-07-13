@@ -415,7 +415,7 @@ is in DOCUMENTATION.md and the referenced specs.
 - **SYM1 — file/stdout output symmetry across all engines.** File output now
   matches `syscalls`' rich record schema and stdout matches `funcs`' grammar,
   uniformly across `syscalls`/`funcs`/`lib`/`correlate`/`dump`/`mod`. Phased,
-  15 commits (Phase 0 through 5c), each independently gated and buildable —
+  11 commits (Phase 0 through 5c), each independently gated and buildable —
   see `workspace/ares-output-asymmetry.md` for the original gap analysis this
   closes, and `ares-project/TODO.md` for phase-by-phase notes.
   - **Dual-channel-always** (Phase 1): dropped the old `-o` ⇒ `-q` coupling —
@@ -453,6 +453,17 @@ is in DOCUMENTATION.md and the referenced specs.
     retained-but-unhandled rows (EPIC A3's design), no ingest change needed.
     On-device capture confirming the real stdout/file shapes is the
     remaining open step (same standing gate as every BPF-touching change).
+  - **Real cross-compile caught one bug, same day, unrelated to SYM1 itself:**
+    `syscalls.c`'s own dense-cache `arg_fd_mask`/`arg_sock_index` wrappers
+    (EPIC I2's fast path, `syscalls.c:365,379`) had the exact same names as
+    the plain linear-scan forms `common/syscall_argtypes.h` declares —
+    latent since I2 landed, invisible in the sandbox this whole plan was
+    built in (no `bpftool`/aarch64 toolchain there to compile `syscalls.c`
+    at all). A real `make` on a full toolchain hit it as a static-declaration
+    conflict; fixed by renaming the local wrappers to
+    `arg_fd_mask_cached`/`arg_sock_index_cached` (commit `b398781`). Confirms
+    the standing "needs a real toolchain" caveat repeated throughout this
+    plan was not just boilerplate.
 
 ### 2026-07-11
 

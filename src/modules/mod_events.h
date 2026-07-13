@@ -86,18 +86,21 @@ enum {
 
 struct spawn_event {
     struct trace_event_header h;
+    __u64 ts_ns;
     __u32 child_pid;
     char  comm[TASK_COMM_LEN];
 };
 
 struct proc_exit_event {
     struct trace_event_header h;
+    __u64 ts_ns;
     char comm[TASK_COMM_LEN];
     int  exit_code;
 };
 
 struct execve_event {
     struct trace_event_header h;
+    __u64 ts_ns;
     __u32 argc;
     __u32 stack_depth;
     char  comm[TASK_COMM_LEN];
@@ -108,6 +111,7 @@ struct execve_event {
 
 struct prop_event {
     struct trace_event_header h;
+    __u64 ts_ns;
     char comm[TASK_COMM_LEN];
     char name[PROP_NAME_LEN];
     char value[PROP_VALUE_LEN];
@@ -118,6 +122,7 @@ struct prop_event {
 
 struct file_access_event {
     struct trace_event_header h;
+    __u64 ts_ns;
     char  comm[TASK_COMM_LEN];
     char  path[FILE_PATH_LEN];
     __u32 flags;
@@ -126,6 +131,7 @@ struct file_access_event {
 
 struct ransomware_burst_event {
     struct trace_event_header h;
+    __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
@@ -135,6 +141,7 @@ struct ransomware_burst_event {
 
 struct exfil_burst_event {
     struct trace_event_header h;
+    __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  bytes_sent;
     __u32  window_ms;
@@ -145,6 +152,7 @@ struct exfil_burst_event {
 
 struct a11y_abuse_event {
     struct trace_event_header h;
+    __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
@@ -153,6 +161,7 @@ struct a11y_abuse_event {
 
 struct fileless_exec_event {
     struct trace_event_header h;
+    __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  start;
     __u64  size;
@@ -161,6 +170,7 @@ struct fileless_exec_event {
 
 struct mediaproj_abuse_event {
     struct trace_event_header h;
+    __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  binder_calls_context;
 };

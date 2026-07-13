@@ -33,6 +33,7 @@ unsigned long ares_round_pow2(unsigned long v);
 #include <linux/types.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
 // ARES_DEBUG-gated libbpf print callback. Pass to libbpf_set_print().
 // ponytail: trivial 4-line helper; static inline avoids a cross-compilation-unit
@@ -70,6 +71,28 @@ static inline void ares_rb_poll_until(struct ring_buffer *rb,
                                       volatile sig_atomic_t *stop)
 {
 	(void)ares_rb_poll_until_cb(rb, stop, NULL, NULL);
+}
+
+// Drain N independent ring buffers from one thread until *stop. Non-blocking
+// consume across all rbs; sleep 100ms only when a full pass drained nothing, so
+// a steady event stream never sleeps. Single writer => callers share one sink
+// with no locking.
+// ponytail: 100ms idle ceiling bounds Ctrl-C latency; swap to a merged epoll over
+// ring_buffer__epoll_fd() if sub-100ms first-event latency ever matters.
+static inline void ares_rb_poll_multi(struct ring_buffer **rbs, int n,
+                                      volatile sig_atomic_t *stop)
+{
+	while (!*stop) {
+		int total = 0;
+		for (int i = 0; i < n; i++) {
+			int c = ring_buffer__consume(rbs[i]);   // non-blocking
+			if (c > 0) total += c;
+		}
+		if (total == 0) {
+			struct timespec ts = { 0, 100 * 1000 * 1000 };
+			nanosleep(&ts, NULL);                    // wakes early on SIGINT (EINTR)
+		}
+	}
 }
 
 // Sum per-CPU dropped-event counters from a BPF PERCPU_ARRAY at key 0.

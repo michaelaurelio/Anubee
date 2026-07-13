@@ -62,7 +62,8 @@ static const char mod_doc[] =
 static const char mod_args_doc[] = "NAME [options]";
 
 struct mod_args {
-    const char *name;
+    const char *names[16]; // -m (repeatable) + positional; only 8 analyzers exist, 16 is headroom
+    int nname;
     const char *pkg;
     const char *activity;
     struct common_args c;
@@ -78,6 +79,7 @@ static const struct argp_option mod_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity (default: auto-resolve)", 0 },
     { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (also prints console output; -q silences that)", 0 },
+    { "module",   'm', "NAME",     0, "Analyzer to run; repeat to run several concurrently", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
     { "specs", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
@@ -91,22 +93,23 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
+    case 'm': if (a->nname < 16) a->names[a->nname++] = arg; break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
             argp_error(state, "cannot open spec file '%s'", arg);
         break;
     case ARGP_KEY_ARG:
-        if (!a->name) a->name = arg;
+        if (a->nname < 16) a->names[a->nname++] = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_END:
-        if (!a->name)
-            for (int i = 0; i < a->nspec; i++)
-                if (a->specs[i].kind == SPEC_KIND_MOD) { a->name = a->specs[i].mod; break; }
-        if (!a->name)
-            argp_error(state, "analyzer name is required (first positional)");
+        if (a->nname == 0)               // pull ALL mod: specs, not just the first
+            for (int i = 0; i < a->nspec && a->nname < 16; i++)
+                if (a->specs[i].kind == SPEC_KIND_MOD) a->names[a->nname++] = a->specs[i].mod;
+        if (a->nname == 0)
+            argp_error(state, "analyzer name is required (positional or -m)");
         if (a->tgt.n > 0 && a->pkg)
             argp_error(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)
@@ -134,11 +137,15 @@ int cmd_mod(int argc, char **argv)
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
 
-    const ares_analyzer_t *an = find_analyzer(ma.name);
-    if (!an) {
-        fprintf(stderr, "mod: unknown analyzer '%s'\n", ma.name);
-        list_analyzers();
-        return 1;
+    const ares_analyzer_t *ans[16];
+    int nan = ma.nname;
+    for (int i = 0; i < nan; i++) {
+        ans[i] = find_analyzer(ma.names[i]);
+        if (!ans[i]) {
+            fprintf(stderr, "mod: unknown analyzer '%s'\n", ma.names[i]);
+            list_analyzers();
+            return 1;
+        }
     }
 
     // AA2 fix: classify + print loudness here, before anything below can load or
@@ -146,13 +153,15 @@ int cmd_mod(int argc, char **argv)
     // operator sees the warning. ares_quiet_config_ok (not the direct
     // ares_object_writes_target call) so the one runtime-assertion helper in
     // capabilities.h has a real caller.
-    char mod_key[64];
-    snprintf(mod_key, sizeof(mod_key), "mod:%s", ma.name);
-    const char *loaded[1] = { mod_key };
-    if (!ares_quiet_config_ok(loaded, 1))
-        printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ma.name);
-    else
-        printf("[mod]   > stealthy: %s uses kernel-only probes\n", ma.name);
+    for (int i = 0; i < nan; i++) {
+        char mod_key[64];
+        snprintf(mod_key, sizeof(mod_key), "mod:%s", ans[i]->name);
+        const char *loaded[1] = { mod_key };
+        if (!ares_quiet_config_ok(loaded, 1))
+            printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ans[i]->name);
+        else
+            printf("[mod]   > stealthy: %s uses kernel-only probes\n", ans[i]->name);
+    }
 
     int uid;
     if (ma.tgt.n > 0) {
@@ -189,14 +198,21 @@ int cmd_mod(int argc, char **argv)
 
     libbpf_set_print(ares_libbpf_quiet);
 
-    struct ring_buffer *rb = an->setup(uid, &mc);
-    if (!rb) {
-        fprintf(stderr, "mod: analyzer '%s' setup failed\n", ma.name);
-        if (ma.c.output_file) {
-            ares_sink_close(&g_sink);
-            ares_sink_report(&g_sink);
+    struct ring_buffer *rbs[16];
+    int nrb = 0;
+    for (int i = 0; i < nan; i++) {
+        rbs[nrb] = ans[i]->setup(uid, &mc);
+        if (!rbs[nrb]) {
+            fprintf(stderr, "mod: analyzer '%s' setup failed\n", ans[i]->name);
+            for (int j = nrb - 1; j >= 0; j--)
+                ans[j]->teardown();
+            if (ma.c.output_file) {
+                ares_sink_close(&g_sink);
+                ares_sink_report(&g_sink);
+            }
+            return 1;
         }
-        return 1;
+        nrb++;
     }
 
     ares_install_stop_handler(&exiting);
@@ -204,7 +220,8 @@ int cmd_mod(int argc, char **argv)
         ares_launch_banner(ma.pkg, uid);
         if (ares_launch_app(ma.pkg, ma.activity, NULL) != 0) {
             fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
-            an->teardown();
+            for (int j = nrb - 1; j >= 0; j--)
+                ans[j]->teardown();
             if (ma.c.output_file) {
                 ares_sink_close(&g_sink);
                 ares_sink_report(&g_sink);
@@ -213,20 +230,23 @@ int cmd_mod(int argc, char **argv)
         }
     }
 
-    printf("tracing uid %d (%s) ... Ctrl-C to stop\n", uid, ma.name);
-    ares_rb_poll_until(rb, &exiting);
+    printf("tracing uid %d (%d analyzer%s) ... Ctrl-C to stop\n",
+           uid, nan, nan == 1 ? "" : "s");
+    ares_rb_poll_multi(rbs, nrb, &exiting);
 
-    // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE
-    // teardown() destroys the skeleton (fd goes with it).
-    unsigned long long drops = an->drops ? an->drops() : 0;
+    for (int i = nan - 1; i >= 0; i--) {
+        // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE
+        // teardown() destroys the skeleton (fd goes with it).
+        unsigned long long drops = ans[i]->drops ? ans[i]->drops() : 0;
 
-    an->teardown();
-    if (an->print_summary) an->print_summary();
-    if (an->emit_summary && g_sink.f) an->emit_summary(&g_sink);
+        ans[i]->teardown();
+        if (ans[i]->print_summary) ans[i]->print_summary();
+        if (ans[i]->emit_summary && g_sink.f) ans[i]->emit_summary(&g_sink);
 
-    struct ares_coverage cov = { .engine = ma.name };
-    cov.ring_drops = drops;
-    ares_coverage_report(&g_sink, &cov);
+        struct ares_coverage cov = { .engine = ans[i]->name };
+        cov.ring_drops = drops;
+        ares_coverage_report(&g_sink, &cov);
+    }
 
     if (ma.c.output_file) {
         ares_sink_close(&g_sink);

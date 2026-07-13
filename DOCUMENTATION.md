@@ -1150,6 +1150,24 @@ stream:
   is accepted but a no-op.
   MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).
   SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
+- `ares correlate` emits **structured** records into the `-o` sink (full prose description,
+  including the console-line grammar, in §6): a `func` record per span opened —
+  `{"type":"func","span":..,"parent_span":..,"pid":..,"tid":..,"entry_addr":"0x..",
+  "ktime":..,"args":["0x..",...]}`; a `syscall` record per syscall attributed to the
+  innermost open span on its thread —
+  `{"type":"syscall","span":..,"pid":..,"tid":..,"ktime":..,"nr":..,"syscall":..,
+  "args":["0x..",...],"decoded":["..",...]}` (`decoded` mirrors `syscalls`' `render_arg`
+  precedence: string/fd/sockaddr/flags, `""` otherwise, one entry per `args[i]`); and,
+  only when run with `-R`/`--returns`, a `return` record per span closed —
+  `{"type":"return","span":..,"pid":..,"tid":..,"entry_addr":"0x..","retval":"0x..",
+  "elapsed_ns":..,"ktime":..}`. **No `correlate` record type carries a `backtrace`
+  array** (verified against `corr_func_event`/`corr_syscall_event`/`corr_return_event`,
+  `src/correlate/correlate.h`) — unlike `syscalls`/`funcs` above, `correlate` tracks
+  call/return via a per-tid span stack (`span`/`parent_span` IDs, §6), not a captured
+  stack snapshot; a consumer wanting the call chain joins `span`→`parent_span` across
+  `func` records instead. MAP/UNMAP records are the same shared `{"type":"lib",...}` /
+  `{"type":"unlib",...}` as `lib`/`funcs` (see §3.1). The end-of-run
+  `{"type":"correlate_summary",...}` record is covered in the shared summary bullet below.
 - `ares lib` emits **structured** library-load records via `-o` (from the
   shared emitter, also used by `funcs`/`correlate` for their own MAP/UNMAP
   events):

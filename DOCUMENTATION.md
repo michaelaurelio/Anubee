@@ -1104,6 +1104,18 @@ output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app 
 Every record carries a **`type` discriminator** so one consumer can ingest a mixed
 stream:
 
+**stdout vs. `-o` file — decided contract:** the two channels are intentionally
+independent (SYM1 dual-channel-always, noted per-engine below and at §3.1) and are
+**not required to carry the same content**. The `-o` file is the complete,
+authoritative record of a run — every field this section documents, always JSONL,
+regardless of `-q`/`-v`. stdout is a human-readable convenience: `-q` silences it,
+`-v` widens it on some engines (e.g. `lib` adding `[unlib]` lines), and it's free to
+show less than the file (e.g. `syscall` args print undecoded on the console in
+places the file carries the full `decoded` array). Treat the file as ground truth;
+don't assume "what printed" equals "what's in the file." (See BACKLOG.md U1/U2 for
+the separate, explicitly-not-recommended idea of also unifying console *styling*
+across engines — a cosmetic concern, distinct from this content-parity question.)
+
 - `ares syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,

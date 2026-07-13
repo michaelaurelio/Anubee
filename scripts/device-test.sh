@@ -619,6 +619,8 @@ test_mediaproj_abuse() {
     adb shell am start-foreground-service \
         -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
         || fail "mediaproj-abuse: could not start $svc (adb/root/service export changed?)"
+    # Settle delay for cold-start pid resolution race (same as a11y-abuse).
+    sleep 2
 
     local svc_pid
     svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"

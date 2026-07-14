@@ -1,5 +1,4 @@
 build/
-docs/
 vmlinux.btf
 vmlinux-*.btf
 .ares-image-stamp

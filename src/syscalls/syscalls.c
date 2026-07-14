@@ -150,9 +150,16 @@ static int install_syscall_filter(int fd, const char *list)
 			continue;
 		}
 		__u32 k = (__u32)nr;
-		__u8 v = 1;
+		__u8 v = 1, cur;
+		// This function is called once per source (-s/-x list, then once per
+		// syscall: spec), each starting its own count at 0 -- check the map
+		// itself, not just this call's local tokens, so the same syscall
+		// named twice (via a duplicate token, or via both -s and a syscall:
+		// spec) is counted once, not once per source.
+		bool already_set = bpf_map_lookup_elem(fd, &k, &cur) == 0;
 		bpf_map_update_elem(fd, &k, &v, BPF_ANY);
-		count++;
+		if (!already_set)
+			count++;
 	}
 	return count;
 }
@@ -350,6 +357,50 @@ static void print_defaulted_kind_warning(void)
 	fprintf(stderr, "\n");
 }
 
+// Multi-kind spec files (EPIC H11) may carry funcs:/mod: lines meant for
+// other engines -- this engine only ever reads SPEC_KIND_SYSCALL/_LIB
+// (see ARGP_KEY_END's lib_sels pull and the syscall_filter install loop).
+// Rendered descriptions are captured at setup time (see syscalls_setup)
+// since sa is a setup-local static, not visible from teardown by name --
+// same reason g_defaulted_names above exists as its own file-scope array.
+// Printed both before the run and again at end-of-run, same idiom as
+// print_defaulted_kind_warning just above.
+static char g_ignored_kind_desc[64][400];
+static int  g_nignored_kind;
+
+static void print_ignored_kind_warning(void)
+{
+	if (!g_nignored_kind)
+		return;
+	fprintf(stderr, "syscalls: warning — ignoring %d spec(s) not applicable to this engine "
+	                 "(syscall:/lib: only):", g_nignored_kind);
+	for (int i = 0; i < g_nignored_kind; i++)
+		fprintf(stderr, " %s", g_ignored_kind_desc[i]);
+	fprintf(stderr, "\n");
+}
+
+// Per-selector "did this -l/lib: selector ever arm a range this run" tracking,
+// index-aligned with g_libs[]/g_nlib. Set in seed_lib_ranges_from_maps below.
+// A selector that never matches anything currently mapped is silently inert
+// today; report it at teardown so "no message" never means "didn't check".
+static bool g_lib_sel_matched[64];
+
+static void print_never_matched_lib_report(void)
+{
+	int n = 0;
+	for (int i = 0; i < g_nlib && i < 64; i++)
+		if (!g_lib_sel_matched[i])
+			n++;
+	if (!n)
+		return;
+	fprintf(stderr, "syscalls: warning — %d library selector(s) never matched any mapped "
+	                 "library this run:", n);
+	for (int i = 0; i < g_nlib && i < 64; i++)
+		if (!g_lib_sel_matched[i])
+			fprintf(stderr, " %s", g_libs[i]);
+	fprintf(stderr, "\n");
+}
+
 static void seed_lib_ranges_from_maps(__u32 tgid)
 {
 	if (!g_nlib || g_lib_ranges_fd < 0)
@@ -368,6 +419,12 @@ static void seed_lib_ranges_from_maps(__u32 tgid)
 			continue;
 		if (!lib_seed_line_arms_any(&ml, g_libs, g_nlib))
 			continue;
+		// Which selector(s) matched this line -- tracked separately from the
+		// OR'd check above so print_never_matched_lib_report can name the
+		// selectors that matched nothing all run, not just whether any did.
+		for (int i = 0; i < g_nlib && i < 64; i++)
+			if (lib_seed_line_arms(&ml, g_libs[i]))
+				g_lib_sel_matched[i] = true;
 		const char *base = strrchr(ml.path, '/');
 		base = base ? base + 1 : ml.path;
 		push_lib_range(tgid, ml.start, ml.end, base);
@@ -1028,7 +1085,7 @@ struct sysc_args {
 	char activity[256];          // -A: optional launch activity override
 	int  capture_all;            // -a
 	int  want_snap;              // --snapshot
-	const char *syscall_list;    // value of -s or -x
+	char syscall_list[1024];     // accumulated, comma-separated values of every -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
 	struct target_args tgt;      // -p / --siblings / --no-follow-fork
 	custom_probe_spec_t specs[64]; // -e / -F: syscall:/lib: kind lines (funcs:/mod: ignored)
@@ -1076,11 +1133,19 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case  2 : a->want_snap = 0;   break;
 	case 's':
 		if (a->syscall_mode == 2) argp_error(state, "use either -s or -x, not both");
-		a->syscall_list = arg; a->syscall_mode = 1;
+		// Repeatable: accumulate into one comma-separated list rather than the
+		// last -s silently overwriting every prior one.
+		if (a->syscall_list[0])
+			strncat(a->syscall_list, ",", sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
+		strncat(a->syscall_list, arg, sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
+		a->syscall_mode = 1;
 		break;
 	case 'x':
 		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
-		a->syscall_list = arg; a->syscall_mode = 2;
+		if (a->syscall_list[0])
+			strncat(a->syscall_list, ",", sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
+		strncat(a->syscall_list, arg, sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
+		a->syscall_mode = 2;
 		break;
 	case 'e':
 		if (a->nspec >= 64)
@@ -1153,7 +1218,9 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 					    !strchr(a->specs[j].mod, '!') && !strcmp(a->specs[j].mod, name))
 						argp_error(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
 						           name, a->specs[i].mod);
-				if (a->syscall_list && sysc_list_contains(a->syscall_list, name))
+				// syscall_list is now a fixed buffer (always non-NULL); sysc_list_contains
+				// already treats "" as no-match, so no separate emptiness guard is needed.
+				if (sysc_list_contains(a->syscall_list, name))
 					argp_error(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
 					           name, a->specs[i].mod);
 			}
@@ -1254,6 +1321,12 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	for (int i = 0; i < sa.nspec && g_ndefaulted < 64; i++)
 		if (sa.spec_defaulted[i])
 			g_defaulted_names[g_ndefaulted++] = sa.specs[i].mod;
+	g_nignored_kind = 0;
+	for (int i = 0; i < sa.nspec && g_nignored_kind < 64; i++)
+		if (sa.specs[i].kind != SPEC_KIND_SYSCALL && sa.specs[i].kind != SPEC_KIND_LIB)
+			spec_describe(&sa.specs[i], g_ignored_kind_desc[g_nignored_kind++],
+			              sizeof g_ignored_kind_desc[0]);
+	memset(g_lib_sel_matched, 0, sizeof g_lib_sel_matched);
 	g_activity = sa.activity[0] ? sa.activity : NULL;
 	g_verbose  = sa.c.verbose;
 	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
@@ -1285,6 +1358,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, lib_banner());
 	print_defaulted_kind_warning(); // "before run"
+	print_ignored_kind_warning();   // "before run"
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement). Uses the same helper as funcs.
@@ -1324,11 +1398,21 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 	if (syscall_mode) {
 		int nf = 0;
-		if (syscall_list)
+		if (syscall_list[0])
 			nf += install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), syscall_list);
 		for (int i = 0; i < sa.nspec; i++)
 			if (sa.specs[i].kind == SPEC_KIND_SYSCALL)
 				nf += install_syscall_filter(bpf_map__fd(skel->maps.syscall_filter), sa.specs[i].mod);
+		// An allowlist that resolved to zero valid syscalls would silently
+		// capture nothing (empty -s, all-misspelled names, ...) -- that's
+		// never useful, so fail loudly instead. A denylist of nothing is
+		// harmless (== capture-all) and stays allowed.
+		if (syscall_mode == 1 && nf == 0) {
+			fprintf(stderr, "syscalls: error — -s allowlist has no valid syscalls; "
+			                 "nothing would be captured\n");
+			syscalls__destroy(skel);
+			return 1;
+		}
 		printf("syscall filter: %s %d syscall(s)\n",
 		       syscall_mode == 1 ? "only" : "excluding", nf);
 	}
@@ -1539,6 +1623,8 @@ void syscalls_teardown(void)
 		sysc_print_summary();
 		sysc_emit_summary(&g_sink);
 		print_defaulted_kind_warning(); // "after run" repeat, see setup()'s "before run" call
+		print_ignored_kind_warning();   // "after run" repeat, see setup()'s "before run" call
+		print_never_matched_lib_report();
 		ares_evq_destroy(&g_q);
 	}
 

@@ -324,7 +324,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // a brand-new sink with no legacy array-framing consumers, so there's no
     // -J flag to plumb.
     if (da.output_file && ares_sink_open(&g_sink, da.output_file, "module", 1) != 0) {
-        fprintf(stderr, "dump: cannot open output file '%s'\n", da.output_file);
+        fprintf(stderr, "dump: cannot open output file '%s': %s\n", da.output_file, strerror(errno));
         return 1;
     }
 

@@ -52,7 +52,7 @@ static const struct argp_option options[] = {
     { "package",        'P', "PACKAGE",      0, "Package to spawn",                                                                   0 },
     { "activity",       'A', "ACTIVITY",    0, "Override launch activity component (default: auto-resolve)",                          0 },
     { "resolve-syms",   'S', NULL,           0, "Symbol resolution mode: resolve and print symbols, no uprobe attachment",           0 },
-    { "entry",          'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]; MODULE/FUNC accept /regex/ for bulk matching", 0 },
+    { "spec",           'e', "SPEC",         0, "Custom probe: MODULE!FUNC[@OFFSET][(S|V,...)] or MODULE@OFFSET[(S|V,...)]; MODULE/FUNC accept /regex/ for bulk matching", 0 },
     { "spec-file",      'F', "FILE",         0, "Load custom probe specs from file (one spec per line, # for comments)",            0 },
     { "caller-only",    'c', NULL,           0, "Print only the direct caller, suppress the rest of the call stack",                0 },
     { "snapshot",       1,   NULL,           0, "Capture stack snapshots for off-device DWARF unwinding (requires -o)",             0 },

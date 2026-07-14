@@ -82,7 +82,7 @@ static const struct argp_option mod_options[] = {
     { "module",   'm', "NAME",     0, "Analyzer to run; repeat to run several concurrently", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
-    { "specs", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
+    { "spec-file", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
     TARGET_ARGP_OPTIONS,
     { 0 }
 };

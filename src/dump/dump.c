@@ -172,7 +172,7 @@ static const struct argp_option dump_options[] = {
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
-    { "specs",    'F',        "FILE",     0, "Load probe specs from a file (one per line, # = comment); a lib: line supplies PATTERN when none is given positionally", 0 },
+    { "spec-file", 'F',       "FILE",     0, "Load probe specs from a file (one per line, # = comment); a lib: line supplies PATTERN when none is given positionally", 0 },
     TARGET_ARGP_OPTIONS,
     { 0 }
 };

@@ -409,7 +409,7 @@ static const struct argp_option corr_options[] = {
     TARGET_ARGP_OPTIONS,
     { "package", 'P', "PACKAGE",   0, "Launch a package fresh and attach to it", 0 },
     { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable); MODULE/FUNC accept /regex/ for bulk matching", 0 },
-    { "specs",   'F', "FILE",      0, "Load probe specs from a file (one per line, # = comment)", 0 },
+    { "spec-file", 'F', "FILE",    0, "Load probe specs from a file (one per line, # = comment)", 0 },
     COMMON_ARGP_OPTIONS,
     { "returns", ARES_KEY_RETURNS, NULL, 0,
       "Also attach uretprobes: return value + exact span timing (LOUD: adds a "

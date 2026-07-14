@@ -38,4 +38,25 @@ static inline int lib_seed_line_arms(const struct ares_map_line *ml, const char 
     return lib_selector_matches_name(base, sel);
 }
 
+// OR of lib_selector_matches_name()/lib_seed_line_arms() across a list of
+// selectors, mirroring dump.c's multi-pattern model (dump_name_matches_any)
+// so `-l`/`lib:` selection on syscalls behaves the same as `-l`/`lib:` on dump:
+// several selectors are additive (OR'd), not last/first-wins.
+static inline int lib_selector_matches_any(const char *base, const char *const *sels, int n)
+{
+    for (int i = 0; i < n; i++)
+        if (lib_selector_matches_name(base, sels[i]))
+            return 1;
+    return 0;
+}
+
+static inline int lib_seed_line_arms_any(const struct ares_map_line *ml,
+                                          const char *const *sels, int n)
+{
+    for (int i = 0; i < n; i++)
+        if (lib_seed_line_arms(ml, sels[i]))
+            return 1;
+    return 0;
+}
+
 #endif // ARES_SYSCALLS_LIB_SEED_H

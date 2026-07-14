@@ -48,6 +48,30 @@ int main(void)
     l = line("/system/lib64/libc.so", 1);
     CHECK(lib_seed_line_arms(&l, "") == 0);
 
+    // _any: OR across multiple selectors (multi -l / lib: support).
+    {
+        const char *sels2[] = { "libfoo.so", "libbar.so" };
+
+        // Matches the second selector only.
+        l = line("/system/lib64/libbar.so", 1);
+        CHECK(lib_seed_line_arms_any(&l, sels2, 2) == 1);
+        CHECK(lib_selector_matches_any("libbar.so", sels2, 2) == 1);
+
+        // Matches the first selector only.
+        l = line("/system/lib64/libfoo.so", 1);
+        CHECK(lib_seed_line_arms_any(&l, sels2, 2) == 1);
+        CHECK(lib_selector_matches_any("libfoo.so", sels2, 2) == 1);
+
+        // Matches neither.
+        l = line("/system/lib64/libc.so", 1);
+        CHECK(lib_seed_line_arms_any(&l, sels2, 2) == 0);
+        CHECK(lib_selector_matches_any("libc.so", sels2, 2) == 0);
+
+        // Empty selector list -> never arms, regardless of the mapping.
+        CHECK(lib_seed_line_arms_any(&l, sels2, 0) == 0);
+        CHECK(lib_selector_matches_any("libc.so", sels2, 0) == 0);
+    }
+
     if (failures) { printf("FAILED: %d check(s)\n", failures); return 1; }
     printf("test_lib_seed: all checks passed\n");
     return 0;

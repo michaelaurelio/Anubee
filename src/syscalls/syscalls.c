@@ -158,7 +158,8 @@ static int install_syscall_filter(int fd, const char *list)
 // ---- globals -------------------------------------------------------------
 
 static const char *g_pkg;
-static const char *g_lib;
+static const char **g_libs;            // -l / lib: selectors, OR'd (mirrors dump.c's g_patterns)
+static int g_nlib;
 static int g_lib_ranges_fd = -1;
 static int g_verbose;
 static int g_quiet;                             // suppress per-event console output
@@ -268,15 +269,16 @@ static const char *g_activity;                  // optional launcher activity
 
 // ---- target library -> BPF filter ----------------------------------------
 
-// Does a mapped library's basename match the target-library selector g_lib? A
-// selector containing glob metacharacters (* ? [) is matched with fnmatch;
-// otherwise it's a substring match (backward compatible). This mirrors dump.c's
-// name_matches so the same pattern (e.g. 'e_*' / 'e_[0-9]*' for a protector
-// payload loaded under a randomized per-run name) selects the library for both
-// syscall tracing and dumping.
+// Does a mapped library's basename match any of the target-library selectors
+// g_libs (OR'd, mirrors dump.c's multi-pattern model)? A selector containing
+// glob metacharacters (* ? [) is matched with fnmatch; otherwise it's a
+// substring match (backward compatible). This mirrors dump.c's name_matches so
+// the same pattern (e.g. 'e_*' / 'e_[0-9]*' for a protector payload loaded
+// under a randomized per-run name) selects the library for both syscall
+// tracing and dumping.
 static int lib_name_matches(const char *name)
 {
-	return lib_selector_matches_name(name, g_lib);
+	return lib_selector_matches_any(name, g_libs, g_nlib);
 }
 
 // Push a newly seen executable range of the target library into lib_ranges[tgid]
@@ -314,9 +316,21 @@ static void push_lib_range(__u32 tgid, __u64 start, __u64 end, const char *name)
 // known (attach or just-launched), before the event loop starts, so already-
 // mapped matches are armed immediately; later live mmaps still arm anything
 // mapped after this scan. Best-effort: silent if maps is unreadable.
+// "libA" or "libA (+2 more)" for banners when multiple -l/lib: selectors are
+// given. Mirrors dump.c's pat_banner().
+static char g_lib_banner[128];
+static const char *lib_banner(void)
+{
+	if (g_nlib > 1)
+		snprintf(g_lib_banner, sizeof(g_lib_banner), "%s (+%d more)", g_libs[0], g_nlib - 1);
+	else
+		snprintf(g_lib_banner, sizeof(g_lib_banner), "%s", g_nlib ? g_libs[0] : "");
+	return g_lib_banner;
+}
+
 static void seed_lib_ranges_from_maps(__u32 tgid)
 {
-	if (!g_lib[0] || g_lib_ranges_fd < 0)
+	if (!g_nlib || g_lib_ranges_fd < 0)
 		return;
 
 	char path[64];
@@ -330,7 +344,7 @@ static void seed_lib_ranges_from_maps(__u32 tgid)
 		struct ares_map_line ml;
 		if (!ares_parse_maps_line(line, &ml))
 			continue;
-		if (!lib_seed_line_arms(&ml, g_lib))
+		if (!lib_seed_line_arms_any(&ml, g_libs, g_nlib))
 			continue;
 		const char *base = strrchr(ml.path, '/');
 		base = base ? base + 1 : ml.path;
@@ -899,7 +913,8 @@ static void copy_str(char *dst, const char *src, size_t n)
 struct sysc_args {
 	struct common_args c;        // -o -v -q -J -b -Q (shared with funcs)
 	char package_name[256];      // -P
-	char lib_sel[256];           // -l: library selector (substring or glob)
+	const char *lib_sels[64];    // -l / lib: (repeatable) library selectors, OR'd
+	int  nlib;
 	char activity[256];          // -A: optional launch activity override
 	int  capture_all;            // -a
 	int  want_snap;              // --snapshot
@@ -914,7 +929,7 @@ const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 static const struct argp_option sysc_options[] = {
 	{ "package",     'P', "PACKAGE",  0, "App package to trace (required in standalone mode)", 0 },
-	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*')",  0 },
+	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*'); repeat for OR", 0 },
 	{ "activity",    'A', "ACTIVITY", 0, "Override launch activity component",                 0 },
 	COMMON_ARGP_OPTIONS,
 	{ "all",         'a', NULL,       0, "Capture all syscalls (no library filter)",           0 },
@@ -923,7 +938,7 @@ static const struct argp_option sysc_options[] = {
 	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
 	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names",            0 },
 	{ "spec",        'e', "SPEC",     0, "Probe spec: syscall:[!]NAME or lib:[!]PATTERN (repeatable)", 0 },
-	{ "specs",       'F', "FILE",     0, "Load probe specs from a file (one per line, # = comment)", 0 },
+	{ "spec-file",   'F', "FILE",     0, "Load probe specs from a file (one per line, # = comment)", 0 },
 	TARGET_ARGP_OPTIONS,
 	{ 0 }
 };
@@ -933,7 +948,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	struct sysc_args *a = state->input;
 	switch (key) {
 	case 'P': copy_str(a->package_name, arg, sizeof(a->package_name)); break;
-	case 'l': copy_str(a->lib_sel,      arg, sizeof(a->lib_sel));      break;
+	case 'l': if (a->nlib < 64) a->lib_sels[a->nlib++] = arg; break;
 	case 'A': copy_str(a->activity,     arg, sizeof(a->activity));     break;
 	case 'a': a->capture_all = 1; break;
 	case  1 : a->want_snap = 1;   break;
@@ -979,14 +994,12 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				if (spec_deny) a->syscall_mode = 2;
 				else if (spec_allow) a->syscall_mode = 1;
 			}
-			if (!a->lib_sel[0])
-				for (int i = 0; i < a->nspec; i++)
-					if (a->specs[i].kind == SPEC_KIND_LIB) {
-						copy_str(a->lib_sel, a->specs[i].mod, sizeof(a->lib_sel));
-						break;
-					}
+			if (a->nlib == 0)   // no -l given: pull ALL lib: specs, not just the first
+				for (int i = 0; i < a->nspec && a->nlib < 64; i++)
+					if (a->specs[i].kind == SPEC_KIND_LIB)
+						a->lib_sels[a->nlib++] = a->specs[i].mod;
 		}
-		if (!a->capture_all && a->lib_sel[0] == '\0')
+		if (!a->capture_all && a->nlib == 0)
 			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
 		break;
 	default:
@@ -1012,7 +1025,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
 	ares_sysindex_build(&g_sysidx, ares_syscall_table, ares_syscall_table_count);
 	build_arg_tables();
-	// ponytail: g_pkg/g_lib/g_activity alias into sa; static so they stay valid
+	// ponytail: g_pkg/g_libs/g_activity alias into sa; static so they stay valid
 	// through the run/launch phases after setup returns. setup runs once per process.
 	static struct sysc_args sa = { .c = COMMON_ARGS_INIT };
 	// Pre-fill package from coordinator so ARGP_KEY_END validation passes
@@ -1023,7 +1036,8 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		return 1;
 
 	g_pkg      = sa.package_name;
-	g_lib      = sa.capture_all ? "" : sa.lib_sel;
+	g_libs     = sa.lib_sels;
+	g_nlib     = sa.capture_all ? 0 : sa.nlib;
 	g_activity = sa.activity[0] ? sa.activity : NULL;
 	g_verbose  = sa.c.verbose;
 	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
@@ -1049,11 +1063,11 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_uid = uid;
 	g_capture_all = capture_all;
 	if (sa.tgt.n > 0)
-		printf("pid mode: %d pid(s), capturing %s\n", sa.tgt.n, capture_all ? "ALL syscalls" : g_lib);
+		printf("pid mode: %d pid(s), capturing %s\n", sa.tgt.n, capture_all ? "ALL syscalls" : lib_banner());
 	else if (capture_all)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
-		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, g_lib);
+		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, lib_banner());
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement). Uses the same helper as funcs.
@@ -1273,7 +1287,7 @@ int syscalls_run(volatile sig_atomic_t *stop)
 	if (g_capture_all)
 		printf("tracing uid %d (all syscalls) ... Ctrl-C to stop\n", g_uid);
 	else
-		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", g_uid, g_lib);
+		printf("tracing uid %d (waiting for '%s' to load) ... Ctrl-C to stop\n", g_uid, lib_banner());
 
 	g_drop_ticks = 0;
 	g_last_drops = 0;

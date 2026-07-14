@@ -174,7 +174,7 @@ static unsigned long long pe_drops(void)
 
 const ares_analyzer_t analyzer_proc_event = {
     .name          = "proc-event",
-    .description   = "Trace process fork and exit events (stealthy — kernel tracepoints, zero uprobes)",
+    .description   = "Trace process fork and exit events",
     .setup         = pe_setup,
     .teardown      = pe_teardown,
     .print_summary = pe_print_summary,

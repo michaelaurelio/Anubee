@@ -47,11 +47,22 @@ static const ares_analyzer_t *find_analyzer(const char *name)
     return NULL;
 }
 
-static void list_analyzers(void)
+// MT3: out to `out` so callers can choose stdout (explicit discovery: bare
+// `ares mod`, --list, --help) vs stderr (error paths, e.g. unknown analyzer
+// name). Loudness reuses the same capabilities.c lookup the dispatcher itself
+// consults before running an analyzer (see the LOUD/stealthy print below) —
+// one source of truth, not a second copy of the loud/quiet table.
+static void list_analyzers(FILE *out)
 {
-    fprintf(stderr, "available analyzers:\n");
-    for (int i = 0; registry[i]; i++)
-        fprintf(stderr, "  %-16s %s\n", registry[i]->name, registry[i]->description);
+    fprintf(out, "available analyzers — run 'ares mod <name>' "
+                  "('ares mod <name> --help' for flags):\n\n");
+    for (int i = 0; registry[i]; i++) {
+        char mod_key[64];
+        snprintf(mod_key, sizeof(mod_key), "mod:%s", registry[i]->name);
+        fprintf(out, "  %-16s %s\n    %s\n\n", registry[i]->name,
+                ares_object_writes_target(mod_key) ? "[LOUD]" : "[stealth]",
+                registry[i]->description);
+    }
 }
 
 // ---- argp parser -------------------------------------------------------------
@@ -84,6 +95,7 @@ static const struct argp_option mod_options[] = {
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
     { "spec-file", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
+    { "list",     'l', NULL,       0, "List available analyzers and exit", 0 },
     TARGET_ARGP_OPTIONS,
     { 0 }
 };
@@ -95,6 +107,7 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
     case 'm': if (a->nname < 16) a->names[a->nname++] = arg; break;
+    case 'l': break; // handled by the argc pre-scan in cmd_mod, before argp runs
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
             argp_error(state, "cannot open spec file '%s'", arg);
@@ -148,16 +161,30 @@ static void print_ignored_kind_warning(const custom_probe_spec_t *specs, int nsp
     fprintf(stderr, "\n");
 }
 
+// MT3: -l/--list needs to short-circuit before argp_parse, same reason
+// ares_wants_help (engine_args.h) is pre-scanned rather than handled purely
+// via argp's own dispatch — ARGP_KEY_END below rejects a run with no analyzer
+// name, which --list-alone would otherwise trip.
+static bool mod_wants_list(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list"))
+            return true;
+    return false;
+}
+
 // ---- entry point -------------------------------------------------------------
 
 int cmd_mod(int argc, char **argv)
 {
-    // MT2: bare `ares mod` and `ares mod --help` used to give no indication of
-    // what NAME can be (main.c's usage text claims --help lists analyzers, but
-    // argp has no visibility into registry[] to do that itself). List up front;
-    // for --help, argp still runs afterward and prints its own usage/options.
-    if (argc < 2) { list_analyzers(); return 0; }
-    if (ares_wants_help(argc, argv)) list_analyzers();
+    // MT2/MT3: bare `ares mod`, `ares mod --list`, and `ares mod --help` used
+    // to give no reliable indication of what NAME can be (main.c's usage text
+    // claims --help lists analyzers, but argp has no visibility into
+    // registry[] to do that itself). List up front, to stdout since this is
+    // explicit discovery, not an error path. For --help, argp still runs
+    // afterward and prints its own usage/options.
+    if (argc < 2 || mod_wants_list(argc, argv)) { list_analyzers(stdout); return 0; }
+    if (ares_wants_help(argc, argv)) list_analyzers(stdout);
 
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
@@ -169,7 +196,7 @@ int cmd_mod(int argc, char **argv)
         ans[i] = find_analyzer(ma.names[i]);
         if (!ans[i]) {
             fprintf(stderr, "mod: unknown analyzer '%s'\n", ma.names[i]);
-            list_analyzers();
+            list_analyzers(stderr);
             return 1;
         }
     }

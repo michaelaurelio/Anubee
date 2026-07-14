@@ -317,7 +317,7 @@ static unsigned long long ex_drops(void)
 
 const ares_analyzer_t analyzer_execve = {
     .name          = "execve",
-    .description   = "Trace execve syscalls with full argv and call stack (stealthy — kprobes, zero uprobes)",
+    .description   = "Trace execve syscalls with full argv and call stack",
     .setup         = ex_setup,
     .teardown      = ex_teardown,
     .print_summary = ex_print_summary,

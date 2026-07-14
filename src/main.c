@@ -41,7 +41,7 @@ static void usage(const char *argv0)
 		"                  streams, no correlation.\n"
 		"  mod             run a named analyzer: specialized tracing package with its own\n"
 		"                  BPF object. Stealthy or loud depending on the analyzer.\n"
-		"                  `ares mod --help` lists available analyzers.\n"
+		"                  `ares mod --list` lists available analyzers.\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);

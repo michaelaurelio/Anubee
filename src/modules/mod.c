@@ -106,8 +106,10 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
-    case 'm': if (a->nname < 16) a->names[a->nname++] = arg;
-              else argp_error(state, "analyzer name cap (16) reached, '%s' rejected", arg); break;
+    case 'm':
+        if (a->nname < 16) a->names[a->nname++] = arg;
+        else argp_error(state, "analyzer name cap (16) reached, '%s' rejected", arg);
+        break;
     case 'l': break; // handled by the argc pre-scan in cmd_mod, before argp runs
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)

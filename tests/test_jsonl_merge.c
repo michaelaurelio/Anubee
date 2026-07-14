@@ -75,6 +75,18 @@ int main(void)
         CHECK(n == -1, "merge: unwritable dst returns -1");
     }
 
+    // A source missing its trailing newline must not fuse with the next source's line.
+    {
+        write_file("/tmp/test_merge_nonl_a.jsonl", "{\"a\":1}");   // no trailing \n
+        write_file("/tmp/test_merge_nonl_b.jsonl", "{\"b\":1}\n");
+        const char *srcs[] = { "/tmp/test_merge_nonl_a.jsonl", "/tmp/test_merge_nonl_b.jsonl" };
+        int n = jsonl_merge("/tmp/test_merge_nonl_out.jsonl", srcs, 2);
+        CHECK(n == 2, "merge: newline-insertion doesn't affect merged count");
+        char *got = slurp("/tmp/test_merge_nonl_out.jsonl");
+        CHECK(got && strcmp(got, "{\"a\":1}\n{\"b\":1}\n") == 0, "merge: missing trailing newline no longer fuses records");
+        free(got);
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -944,8 +944,17 @@ static void process_event(const void *data, size_t sz)
 			       m->h.pid, m->name, (unsigned long long)m->start,
 			       (unsigned long long)m->end, (unsigned long long)m->pgoff);
 		// Range is armed on the drain thread (enqueue_event, below) the moment
-		// the event arrives — this worker-side case only handles the verbose
-		// print, to close as much of the pre-arm window (CR2) as possible.
+		// the event arrives — this worker-side case handles the verbose print
+		// and the {"type":"lib"} sink record (symmetric with funcs). quiet=1
+		// keeps the shared emitter's own [lib] console line off — the verbose
+		// [MAP] line above is our console channel — while still writing the
+		// jsonl record whenever -o is set. Single-writer (worker thread), no lock.
+		if (g_sink.f) {
+			char path[256];
+			if (ares_libtrace_resolve_path(m->h.pid, m->start, m->name,
+			                               path, sizeof(path)) == 0)
+				ares_libtrace_emit_lib(&g_sink, 1, m, path, NULL);
+		}
 		break;
 	}
 	case SYSC_EV_UNMAP: {
@@ -953,6 +962,8 @@ static void process_event(const void *data, size_t sz)
 			return;
 		const struct lib_unmap_event *u = data;
 		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
+		if (g_sink.f)                     // {"type":"unlib"} sink record (symmetric with funcs)
+			ares_libtrace_emit_unlib(&g_sink, 1, u);
 		break;
 	}
 	case SYSC_EV_SYSCALL:

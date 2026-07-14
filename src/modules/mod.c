@@ -124,6 +124,30 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
 
 static const struct argp mod_argp = { mod_options, mod_parse_opt, mod_args_doc, mod_doc, 0, 0, 0 };
 
+// AA2-follow-up: a shared -F spec file may carry funcs:/syscall:/lib: lines
+// alongside mod: lines; those are silently dropped by the ARGP_KEY_END filter
+// above (it only populates a->names[] from SPEC_KIND_MOD entries). Warn once
+// so the operator sees what mod ignored. Printed twice (before + after run,
+// see call sites below) so a long-scrolling console doesn't lose the note.
+// Same idiom as funcs.c's print_ignored_kind_warning().
+static void print_ignored_kind_warning(const custom_probe_spec_t *specs, int nspec)
+{
+    int n = 0;
+    for (int i = 0; i < nspec; i++)
+        if (specs[i].kind != SPEC_KIND_MOD)
+            n++;
+    if (!n) return;
+    fprintf(stderr, "mod: warning — ignoring %d spec(s) not applicable to this engine "
+                     "(mod: only):", n);
+    for (int i = 0; i < nspec; i++) {
+        if (specs[i].kind == SPEC_KIND_MOD) continue;
+        char desc[400];
+        spec_describe(&specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
+}
+
 // ---- entry point -------------------------------------------------------------
 
 int cmd_mod(int argc, char **argv)
@@ -137,6 +161,7 @@ int cmd_mod(int argc, char **argv)
 
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
+    print_ignored_kind_warning(ma.specs, ma.nspec); // "before run"
 
     const ares_analyzer_t *ans[16];
     int nan = ma.nname;
@@ -248,6 +273,7 @@ int cmd_mod(int argc, char **argv)
         cov.ring_drops = drops;
         ares_coverage_report(&g_sink, &cov);
     }
+    print_ignored_kind_warning(ma.specs, ma.nspec); // "after run" repeat, see the "before run" call above
 
     if (ma.c.output_file) {
         ares_sink_close(&g_sink);

@@ -50,6 +50,19 @@ static const char *g_outdir  = ".";    // -d: output directory
 static int g_on_map  = 0;              // --on-map: dump at map time, not on exit
 static int g_quiet   = 0;              // -q: suppress progress chatter
 
+// Raw parsed specs (from -F), copied out of dump_setup's local `da` so both
+// the before-run and after-run "ignoring non-lib: spec" warnings can read
+// them (see print_ignored_kind_warning below).
+static custom_probe_spec_t g_specs[64];
+static int g_nspec;
+
+// Per-pattern "did this lib: pattern ever match a module" tracking, index-
+// aligned with g_patterns[]. Set at match time (handle_event's dump-on-map
+// path and dump_pid_modules's dump-on-exit rescan); reported at end of run
+// so a typo'd pattern that dumped nothing isn't silent (see
+// print_never_matched_report below).
+static int g_pat_hit[64];
+
 // SYM1 Phase 3: machine channel — a {"type":"dump",...} manifest record per
 // dumped module, mirroring every other engine's g_sink. Independent of
 // g_quiet (dump never had an -o-implies-quiet coupling, unchanged by Phase 1).
@@ -121,7 +134,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	const char *full = path;
 	if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 		full = e->name;
-	if (!dump_name_matches_any(g_patterns, g_npat, full))
+	if (!dump_name_matches_any_track(g_patterns, g_npat, full, g_pat_hit))
 		return 0;
 	if (!seen_add(h->pid, e->start))
 		return 0;
@@ -235,6 +248,54 @@ static const char         *g_pkg;
 static const char         *g_activity;
 static struct bpf_link    *g_ff;
 
+// Multi-kind spec files (EPIC H11) may carry funcs:/syscall:/mod: lines meant
+// for other engines; dump only ever consumes SPEC_KIND_LIB specs (folded into
+// g_patterns at dump_parse_opt's ARGP_KEY_END). Warn once so silence isn't
+// mistaken for "the spec was applied" -- printed both before the run
+// (dump_setup) and again at teardown (dump_teardown), matching funcs.c's
+// print_ignored_kind_warning / syscalls.c's print_defaulted_kind_warning idiom.
+static void print_ignored_kind_warning(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_nspec; i++)
+        if (g_specs[i].kind != SPEC_KIND_LIB)
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "dump: warning — ignoring %d spec(s) not applicable to this engine "
+                     "(lib: only):", n);
+    for (int i = 0; i < g_nspec; i++) {
+        if (g_specs[i].kind == SPEC_KIND_LIB)
+            continue;
+        char desc[400];
+        spec_describe(&g_specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
+}
+
+// End-of-run: lib: patterns (-l / positional / spec-file lib: lines) that
+// never matched a module anywhere this run. Previously silent -- a typo'd
+// pattern just produced an empty (or partial) dump directory with no
+// explanation. Printed both after the run (dump_run) and again at teardown
+// (dump_teardown), same "don't lose the note" reasoning as the warning above.
+static void print_never_matched_report(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_npat && i < 64; i++)
+        if (!g_pat_hit[i])
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "dump: warning — %d pattern(s) never matched any module this run:", n);
+    for (int i = 0; i < g_npat && i < 64; i++) {
+        if (g_pat_hit[i])
+            continue;
+        fprintf(stderr, " %s", g_patterns[i]);
+    }
+    fprintf(stderr, "\n");
+}
+
 int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 {
     // ponytail: static so g_pkg/g_activity/g_patterns can alias da after setup returns.
@@ -242,6 +303,10 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (rc && rc->pkg) da.pkg = rc->pkg;
     if (argp_parse(&dump_argp, argc, argv, ARGP_NO_EXIT, NULL, &da) != 0)
         return 1;
+
+    memcpy(g_specs, da.specs, sizeof g_specs);
+    g_nspec = da.nspec;
+    print_ignored_kind_warning(); // "before run"
 
     g_pkg      = da.pkg;
     g_activity = da.activity;
@@ -360,13 +425,14 @@ int dump_run(volatile sig_atomic_t *stop)
             fprintf(stderr, "[dump] no app process mapped anything\n");
         int total = 0;
         for (size_t i = 0; i < g_pids_n; i++) {
-            int d = dump_pid_modules((int)g_pids[i], g_patterns, g_npat, g_outdir, &g_sink);
+            int d = dump_pid_modules((int)g_pids[i], g_patterns, g_npat, g_outdir, &g_sink, g_pat_hit);
             if (d > 0)
                 total += d;
         }
         fprintf(stderr, "[dump] wrote %d module image%s matching '%s' to %s\n",
             total, total == 1 ? "" : "s", pat_banner(), g_outdir);
     }
+    print_never_matched_report(); // "after run"
     return 0;
 }
 
@@ -386,6 +452,13 @@ void dump_teardown(void)
     }
     free(g_pids); g_pids = NULL; g_pids_n = g_pids_cap = 0;
     free(g_seen); g_seen = NULL; g_seen_n = g_seen_cap = 0;
+
+    // Repeat both warnings so a long-scrolling console doesn't lose the note
+    // (mirrors funcs.c's print_ignored_kind_warning / syscalls.c's
+    // print_defaulted_kind_warning idiom -- printed once before/after the run
+    // already, in dump_setup and dump_run respectively; this is the teardown repeat).
+    print_never_matched_report();
+    print_ignored_kind_warning();
 
     // SYM1 Phase 5b: explicit "not applicable" record instead of silence --
     // dump is a single-shot read, no run-long coverage to accumulate. Must

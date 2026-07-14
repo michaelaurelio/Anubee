@@ -294,6 +294,12 @@ static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
     }
 }
 
+// Per-spec "did this FUNCS spec ever resolve" tracking, index-aligned with
+// g_ca.specs[]. Set true in attach_uprobes_for_pid below. Reported at
+// teardown so "no message" never means "didn't check" (mirrors funcs.c's
+// g_custom_spec_resolved).
+static bool g_corr_spec_resolved[64];
+
 static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                                   const custom_probe_spec_t *specs, int nspec,
                                   int returns)
@@ -333,6 +339,8 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
                     fprintf(stderr, "correlate: warning — regex match cap (256) reached for %s!%s "
                                     "in %s; additional matches may exist and were ignored\n",
                             specs[s].mod, specs[s].func, path);
+                if (n > 0 && s < 64)
+                    g_corr_spec_resolved[s] = true;
                 for (int m = 0; m < n; m++)
                     attach_custom_spec_target(skel, pid, path, matches[m], returns,
                                                done, &ndone, &attached, &warned);
@@ -342,6 +350,8 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
             probe_target_t tgt;
             if (resolve_custom_spec_for_path(pid, path, &specs[s], &tgt) != 0)
                 continue;
+            if (s < 64)
+                g_corr_spec_resolved[s] = true;
             attach_custom_spec_target(skel, pid, path, tgt, returns,
                                        done, &ndone, &attached, &warned);
         }
@@ -476,6 +486,56 @@ static int                      g_uid;      // resolved UID, valid when g_pkg is
 // correlate_attach can reach the same specs/tgt state after setup returns.
 static struct corr_args         g_ca = { .c = COMMON_ARGS_INIT };
 
+// Multi-kind spec files (EPIC H11) may carry syscall:/lib:/mod: lines meant
+// for other engines; attach_uprobes_for_pid already silently skips those
+// (kind != SPEC_KIND_FUNCS). Warn once so that silence isn't mistaken for
+// "the spec was applied" -- printed both before the run and again at
+// teardown (see correlate_teardown), matching funcs.c's
+// print_ignored_kind_warning idiom.
+static void print_ignored_kind_warning(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_ca.nspec; i++)
+        if (g_ca.specs[i].kind != SPEC_KIND_FUNCS)
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "correlate: warning — ignoring %d spec(s) not applicable to this engine "
+                     "(funcs: only):", n);
+    for (int i = 0; i < g_ca.nspec; i++) {
+        if (g_ca.specs[i].kind == SPEC_KIND_FUNCS)
+            continue;
+        char desc[400];
+        spec_describe(&g_ca.specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
+}
+
+// End-of-run: FUNCS specs that never resolved+attached anywhere across the
+// whole run. Previously this was totally silent (no verbose gate even, see
+// attach_uprobes_for_pid); this is the always-on summary so "no message"
+// never means "didn't check".
+static void print_never_resolved_report(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_ca.nspec && i < 64; i++)
+        if (g_ca.specs[i].kind == SPEC_KIND_FUNCS && !g_corr_spec_resolved[i])
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "correlate: warning — %d spec(s) never resolved to a symbol in any mapped "
+                     "library/process this run:", n);
+    for (int i = 0; i < g_ca.nspec && i < 64; i++) {
+        if (g_ca.specs[i].kind != SPEC_KIND_FUNCS || g_corr_spec_resolved[i])
+            continue;
+        char desc[400];
+        spec_describe(&g_ca.specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
+}
+
 // Attach the shared lib_trace kprobes (uprobe_mmap / uprobe_munmap) that emit the
 // {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
 // the UID install) so the target's startup library maps are captured, not just
@@ -498,6 +558,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         g_ca.pkg = rc->pkg;
     if (argp_parse(&corr_argp, argc, argv, ARGP_NO_EXIT, NULL, &g_ca) != 0)
         return 1;
+    print_ignored_kind_warning(); // "before run"
 
     g_quiet   = g_ca.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 
@@ -662,6 +723,8 @@ void correlate_teardown(void)
         // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
         // (sink must still be open for emit_summary's JSON line).
         corr_print_summary();
+        print_never_resolved_report();
+        print_ignored_kind_warning(); // "after run" repeat, see correlate_setup's "before run" call
         corr_emit_summary(&g_sink);
         ares_correlate__destroy(g_skel);
         g_skel = NULL;

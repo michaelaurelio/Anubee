@@ -23,9 +23,12 @@ void dump_set_raw(int on);
  * written, or -1 if the process maps could not be read. (Dump-on-exit path.)
  * sink: SYM1 Phase 3 machine channel — a {"type":"dump",...} manifest record is
  * emitted per module written when sink is non-NULL and open (sink->f); pass
- * NULL when -o wasn't given. */
+ * NULL when -o wasn't given.
+ * hit: optional per-pattern "did this pattern match anything" tracking array
+ * (must have npat elements if non-NULL); see dump_name_matches_any_track.
+ * Pass NULL if the caller doesn't need it. */
 int dump_pid_modules(int pid, const char *const *pats, int npat,
-                     const char *outdir, struct ares_sink *sink);
+                     const char *outdir, struct ares_sink *sink, int *hit);
 
 /* Dump the single module whose load range contains virtual address `addr` (the
  * start of a just-mapped executable segment) into `outdir`, labelling the output
@@ -39,5 +42,11 @@ int dump_name_matches(const char *pattern, const char *path);
 
 /* Does `path` match ANY of the npat patterns? (OR of dump_name_matches.) */
 int dump_name_matches_any(const char *const *pats, int npat, const char *path);
+
+/* Like dump_name_matches_any, but also records into hit[i] (if hit != NULL,
+ * must have npat elements) whether pats[i] matched -- lets callers track
+ * "this pattern never matched anything" across a run without duplicating
+ * the match loop. */
+int dump_name_matches_any_track(const char *const *pats, int npat, const char *path, int *hit);
 
 #endif /* ARES_DUMP_REBUILD_H */

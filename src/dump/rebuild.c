@@ -129,12 +129,20 @@ int dump_name_matches(const char *pattern, const char *path)
 	return pm_match(pattern, path, false) ? 1 : 0;
 }
 
+int dump_name_matches_any_track(const char *const *pats, int npat, const char *path, int *hit)
+{
+	int matched = 0;
+	for (int i = 0; i < npat; i++)
+		if (dump_name_matches(pats[i], path)) {
+			matched = 1;
+			if (hit) hit[i] = 1;
+		}
+	return matched;
+}
+
 int dump_name_matches_any(const char *const *pats, int npat, const char *path)
 {
-	for (int i = 0; i < npat; i++)
-		if (dump_name_matches(pats[i], path))
-			return 1;
-	return 0;
+	return dump_name_matches_any_track(pats, npat, path, NULL);
 }
 
 // ---- dynamic info extracted from PT_DYNAMIC -------------------------------
@@ -684,7 +692,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 }
 
 int dump_pid_modules(int pid, const char *const *pats, int npat,
-                     const char *outdir, struct ares_sink *sink)
+                     const char *outdir, struct ares_sink *sink, int *hit)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -711,7 +719,7 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 	// from its program headers). Skip any candidate inside a dumped range so we
 	// neither re-dump it nor warn about its (header-less) middle.
 	for (int i = 0; i < n; i++) {
-		if (!m[i].path[0] || !dump_name_matches_any(pats, npat, m[i].path))
+		if (!m[i].path[0] || !dump_name_matches_any_track(pats, npat, m[i].path, hit))
 			continue;
 		uint64_t base = load_base_of(m, i);
 

@@ -3,10 +3,13 @@
 // grammar (MOD!FUNC(S,V,F)>V, @offset, and malformed inputs). Pure logic, no
 // device and no cross-toolchain: built and run on the host via `make test`.
 #include "common/probe_resolve.h"
+#include "common/probe_spec_loader.h"
 #include "common/pattern_match.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 static int checks = 0, failures = 0;
 
@@ -149,6 +152,19 @@ int main(void)
     CHECK(parse("lib:") == -1,                   "err: lib: empty pattern");
     CHECK(parse("mod:") == -1,                   "err: mod: empty name");
 
+    // Unknown/mistyped KIND prefix: rejected outright rather than silently
+    // mis-parsed as a MODULE!FUNC spec or (under a non-FUNCS default_kind)
+    // as a literal pattern with the colon baked in.
+    CHECK(parse("sycall:openat") == -1,          "err: unknown kind (typo)");
+    CHECK(parse("foo:bar") == -1,                "err: unknown kind");
+    CHECK(parse_ex("sycall:openat", SPEC_KIND_SYSCALL) == -1,
+                                                  "err: unknown kind, even under syscall default");
+    // Guard the heuristic against false positives: /regex/ modules and
+    // MODULE!FUNC specs never contain an identifier-then-':' before '!'/'@'/
+    // '/', so they must keep parsing as before.
+    CHECK(parse("/lib.*/!open") == 0,            "regex mod still parses (no false unknown-kind)");
+    CHECK(parse("libc.so!open") == 0,            "plain funcs spec still parses (no false unknown-kind)");
+
     // parse_custom_probe_spec_ex: engine-specific default kind for unprefixed
     // input (syscalls' -e defaulting to syscall:, see probe_resolve.h). -F
     // file loading never calls this with a non-FUNCS default — only single
@@ -251,6 +267,50 @@ int main(void)
             fclose(f);
         }
         CHECK(total_lines > 0, "lockstep: at least one spec line was checked");
+    }
+
+    // --- load_probe_spec_file: reject-and-abort on a bad line, leading-ws
+    // trim, line numbers. Writes small temp spec files rather than depending
+    // on repo fixtures, so these run regardless of cwd. ---
+    {
+        char path[] = "/tmp/ares_test_probe_spec_loader.XXXXXX";
+        int fd = mkstemp(path);
+        CHECK(fd >= 0, "loader: mkstemp");
+        if (fd >= 0) {
+            custom_probe_spec_t specs[8];
+            int count = 0;
+
+            // Not found.
+            CHECK(load_probe_spec_file("/nonexistent/path.spec", specs, 8, &count, noop_log) == -1,
+                  "loader: file not found -> -1");
+
+            // Blank lines, an indented comment, and an indented valid line
+            // all load cleanly (leading-whitespace trim fixes the indented
+            // '#'/spec cases; they must not be handed to the parser as-is).
+            FILE *f = fdopen(fd, "w");
+            fputs("\n  # indented comment\n  libc.so!open\nsyscall:openat\n", f);
+            fclose(f); // also closes fd
+
+            count = 0;
+            CHECK(load_probe_spec_file(path, specs, 8, &count, noop_log) == 0,
+                  "loader: blank/indented-comment/indented-spec file -> 0");
+            CHECK(count == 2, "loader: two real lines counted");
+
+            // A malformed line aborts the whole file: valid lines before it
+            // are NOT rolled back (matches the documented "*count already
+            // reflects prior successes" cursor semantics), but the call
+            // reports failure and nothing after the bad line is read.
+            f = fopen(path, "w");
+            fputs("libc.so!open\nnoseparator\nsyscall:openat\n", f);
+            fclose(f);
+
+            count = 0;
+            CHECK(load_probe_spec_file(path, specs, 8, &count, noop_log) == -1,
+                  "loader: malformed line -> -1 (reject, not skip)");
+            CHECK(count == 1, "loader: only the line before the bad one was counted");
+
+            unlink(path);
+        }
     }
 
     // --- custom_spec_matches_path: behavior preserved for non-'[' patterns,

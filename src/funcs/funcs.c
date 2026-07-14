@@ -839,8 +839,11 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Parse custom probe specs from -e flags
     for (int i = 0; i < args.custom_spec_count; i++) {
-        if (parse_custom_probe_spec(args.custom_specs[i], &custom_probe_specs[custom_probe_spec_count], err_print) == 0)
-            custom_probe_spec_count++;
+        if (parse_custom_probe_spec(args.custom_specs[i], &custom_probe_specs[custom_probe_spec_count], err_print) != 0) {
+            err = -1;
+            goto cleanup;
+        }
+        custom_probe_spec_count++;
     }
 
     // Parse custom probe specs from -F spec files

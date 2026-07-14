@@ -1088,14 +1088,14 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		else {
 			bool used_default = false;
 			if (parse_custom_probe_spec_ex(arg, &a->specs[a->nspec], SPEC_KIND_SYSCALL,
-			                                &used_default, NULL) == 0) {
-				a->spec_defaulted[a->nspec] = used_default;
-				a->nspec++;
-			}
+			                                &used_default, err_print) != 0)
+				argp_error(state, "invalid spec '%s'", arg);
+			a->spec_defaulted[a->nspec] = used_default;
+			a->nspec++;
 		}
 		break;
 	case 'F':
-		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
 			argp_error(state, "cannot open spec file '%s'", arg);
 		break;
 	case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:

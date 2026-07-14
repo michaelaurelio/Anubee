@@ -455,7 +455,7 @@ $(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilit
 test:
 	@mkdir -p $(BUILD)
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null; then \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/probe_spec_loader.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
 	  $(BUILD)/test_probe_spec; \
 	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_regex_resolve -lelf && \
 	  $(BUILD)/test_regex_resolve; \

@@ -35,6 +35,7 @@
 #include "common/engine_driver.h"  // dump_setup/_run/_teardown (AA3)
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
+#include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
 #include "common/emit.h"           // SYM1 Phase 3: struct ares_sink, ares_sink_open/close/report
 #include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
 #include "rebuild.h"
@@ -190,7 +191,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;
     case 'F':
-        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
             argp_error(state, "cannot open spec file '%s'", arg);
         break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:

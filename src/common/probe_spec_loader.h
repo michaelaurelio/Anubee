@@ -7,18 +7,22 @@
 // Reads probe specs from `path`, one per line, into `out[0..cap)`, starting at
 // whatever is already in `*count` (caller-owned cursor — lets multiple files/
 // -e entries accumulate into one array) and incrementing `*count` for each
-// successfully parsed line. Malformed lines are skipped (parse_custom_probe_spec
-// returns nonzero) — a bad line does not abort the whole file, matching existing
-// funcs.c/correlate.c behavior. Trims trailing '\n', '\r', ' ', '\t' from each
-// line before parsing. Skips blank lines and lines whose first non-removed
-// character is '#'. Stops appending once *count reaches cap, and if EOF has not
-// been reached at that point, prints one warning to stderr naming `path` and the
-// cap value (match the style of the existing warnings you find in funcs.c/correlate.c
-// for their own cap-reached cases — same tone, same stream).
+// successfully parsed line. A malformed line (parse_custom_probe_spec returns
+// nonzero) ABORTS the whole file: an error naming `path` and the 1-based line
+// number is printed, and the function returns -1 immediately (a typo in a
+// shared spec file must never be silently dropped). Trims leading AND
+// trailing whitespace ('\n', '\r', ' ', '\t') from each line before parsing
+// — so an indented comment or spec line is recognized as such. Skips blank
+// lines and lines whose first non-removed character is '#'. Stops appending
+// once *count reaches cap, and if EOF has not been reached at that point,
+// prints one warning to stderr naming `path` and the cap value.
 //
-// Returns 0 if the file was opened and read (even if 0 lines parsed).
-// Returns -1 if the file could not be opened, after printing an error via `log`
-// (or stderr if `log` is NULL) naming `path` and strerror(errno).
+// Returns 0 if the whole file was opened and every non-comment/blank line
+// parsed successfully (even if 0 such lines were present).
+// Returns -1 if the file could not be opened, or if any line failed to
+// parse, after printing an error via `log` (or stderr if `log` is NULL)
+// naming `path` and either strerror(errno) (open failure) or the line
+// number (parse failure).
 //
 // `log` is a printf-style logger, same signature as parse_custom_probe_spec's
 // `log` parameter (see probe_resolve.h) — pass it straight through to

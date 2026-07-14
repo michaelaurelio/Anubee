@@ -19,6 +19,7 @@
 #include "common/engine_args.h"
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
+#include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
 
 static volatile sig_atomic_t exiting = 0;
 static struct ares_sink g_sink;
@@ -95,7 +96,7 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     case 'A': a->activity = arg; break;
     case 'm': if (a->nname < 16) a->names[a->nname++] = arg; break;
     case 'F':
-        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
+        if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
             argp_error(state, "cannot open spec file '%s'", arg);
         break;
     case ARGP_KEY_ARG:

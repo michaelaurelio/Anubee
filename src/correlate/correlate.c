@@ -430,8 +430,11 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'e':
         if (a->nspec >= 64)
             fprintf(stderr, "correlate: warning — spec cap (64) reached; '%s' ignored\n", arg);
-        else if (parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) == 0)
+        else {
+            if (parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) != 0)
+                argp_error(state, "invalid spec '%s'", arg);
             a->nspec++;
+        }
         break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, log_stderr) != 0)

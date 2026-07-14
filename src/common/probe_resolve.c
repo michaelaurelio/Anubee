@@ -133,14 +133,31 @@ int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
                 break;
             }
         }
-        // No explicit prefix: let a caller-supplied default_kind (e.g.
-        // syscalls' -e defaulting to syscall:) apply, but only when the bare
-        // text isn't already funcs-shaped ('!' or '@' *after* skipping a
-        // leading '!', which is the syscall:/lib: deny marker, not a
-        // MODULE!FUNC separator — "!ptrace" must still default, "libc.so!fn"
-        // must not) — so a funcs-style value pasted into a non-funcs engine's
-        // -e still parses as funcs: (and is correctly, silently ignored by
-        // that engine's own kind filter) instead of being force-fit into a
+        // No explicit prefix: catch a typo'd/unrecognized kind attempt (e.g.
+        // "sycall:openat") before it gets misread as a MODULE!FUNC spec or a
+        // literal pattern. An identifier immediately followed by ':' — before
+        // any of the chars that start the funcs grammar or a /regex/ — reads
+        // as "someone meant a KIND: prefix"; reject it outright rather than
+        // silently mis-parsing.
+        if (!matched && buf[0] != '/') {
+            const char *p = buf;
+            while ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')
+                p++;
+            if (p != buf && *p == ':') {
+                log("   [err] > unknown spec kind in '%s' (expected funcs:/syscall:/lib:/mod:)\n",
+                    input);
+                return -1;
+            }
+        }
+
+        // Otherwise let a caller-supplied default_kind (e.g. syscalls' -e
+        // defaulting to syscall:) apply, but only when the bare text isn't
+        // already funcs-shaped ('!' or '@' *after* skipping a leading '!',
+        // which is the syscall:/lib: deny marker, not a MODULE!FUNC
+        // separator — "!ptrace" must still default, "libc.so!fn" must not)
+        // — so a funcs-style value pasted into a non-funcs engine's -e still
+        // parses as funcs: (and is correctly, silently ignored by that
+        // engine's own kind filter) instead of being force-fit into a
         // nonsensical syscall/lib/mod pattern.
         const char *scan = (*buf == '!') ? buf + 1 : buf;
         bool funcs_shaped = strchr(scan, '!') || strchr(scan, '@');

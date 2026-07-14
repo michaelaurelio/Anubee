@@ -19,7 +19,6 @@ struct common_args {
     const char *output_file;  // -o: JSONL output path (NULL = none)
     int         verbose;      // -v
     int         quiet;        // -q: suppress per-event console output
-    int         jsonl;        // -J: force JSON Lines framing
     int         bufmb;        // -b: kernel ring buffer MB (default 4)
     int         queue_mb;     // -Q: userspace worker queue MB (default 256)
 };
@@ -31,7 +30,6 @@ struct common_args {
     { "output",  'o', "FILE", 0, "Export structured JSONL to FILE (also prints to console; -q silences that)", 0 }, \
     { "verbose", 'v', NULL,   0, "Verbose debug output",                            0 }, \
     { "quiet",   'q', NULL,   0, "Suppress per-event console output",               0 }, \
-    { "jsonl",   'J', NULL,   0, "Write JSON Lines (one record per line)",          0 }, \
     { "bufsize", 'b', "MB",   0, "Kernel ring buffer size in MB (default 4)",       0 }, \
     { "queue",   'Q', "MB",   0, "Userspace worker queue size in MB (default 256)", 0 }
 
@@ -46,7 +44,6 @@ static inline error_t parse_common_arg(int key, char *arg,
         case 'o': c->output_file = arg;  return 0;
         case 'v': c->verbose = 1;        return 0;
         case 'q': c->quiet = 1;          return 0;
-        case 'J': c->jsonl = 1;          return 0;
         case 'b':
             c->bufmb = atoi(arg);
             if (c->bufmb < 1 || c->bufmb > 4096)

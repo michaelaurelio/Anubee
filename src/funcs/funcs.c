@@ -101,7 +101,6 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
         case 'o':
         case 'q':
         case 'Q':
-        case 'J':
         case 'b':
             return parse_common_arg(key, arg, state, &args->c);
 

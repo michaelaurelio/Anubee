@@ -432,7 +432,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     struct corr_args *a = state->input;
     switch (key) {
     case 'P': a->pkg = arg; break;
-    case 'o': case 'v': case 'q': case 'J': case 'b': case 'Q':
+    case 'o': case 'v': case 'q': case 'b': case 'Q':
         return parse_common_arg(key, arg, state, &a->c);
     case ARES_KEY_RETURNS: a->returns = 1; break;
     case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:

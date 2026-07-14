@@ -212,8 +212,8 @@ static void ingest_embedded(struct dynsym *ds, const uint8_t *buf, size_t len)
 		return;
 	if (eh.e_shoff == 0 || eh.e_shnum == 0 || eh.e_shentsize < sizeof(Elf64_Shdr))
 		return;
-	if (eh.e_shoff + (uint64_t)eh.e_shnum * eh.e_shentsize > len)
-		return;
+	if (!elf_shtab_in_bounds(eh.e_shoff, eh.e_shnum, eh.e_shentsize, len))
+		return;   // AUDIT.md C2: was a direct overflow-prone add; now overflow-safe
 
 	for (int i = 0; i < eh.e_shnum; i++) {
 		Elf64_Shdr sec;
@@ -453,6 +453,21 @@ const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta)
 // then falls back to .debug_frame inside the xz-compressed .gnu_debugdata.
 // Mirrors dynsym_get's grow/append pattern exactly.
 
+// Bounds-check an ELF section-header table (e_shnum entries of e_shentsize
+// bytes starting at e_shoff) against a buffer of length `len`. Overflow-safe:
+// e_shoff/e_shnum/e_shentsize are untrusted (attacker-controlled via a
+// crafted ELF or .gnu_debugdata) and must never be added directly to a
+// pointer without first checking they can't wrap mod 2^64. Returns 1 if the
+// whole table fits in-bounds, 0 otherwise.
+int elf_shtab_in_bounds(uint64_t e_shoff, uint32_t e_shnum, uint32_t e_shentsize, size_t len)
+{
+	if (e_shoff > len)
+		return 0;
+	if ((uint64_t)e_shnum > (len - e_shoff) / e_shentsize)
+		return 0;
+	return 1;
+}
+
 /* Locate the .gnu_debugdata section in an in-memory ELF64 image.
  * Returns 0 and fills *off and *size (byte offsets into buf) on success,
  * -1 if absent or malformed. Every offset is bounds-checked against len. */
@@ -469,12 +484,8 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
 		return -1;
 	if (eh.e_shoff == 0 || eh.e_shnum == 0 || eh.e_shentsize < sizeof(Elf64_Shdr))
 		return -1;
-	if (eh.e_shoff > len)            /* else (len - e_shoff) underflows below */
-		return -1;
-
-	/* Overflow-safe: (e_shnum * e_shentsize) must not exceed (len - e_shoff). */
-	if (eh.e_shnum > (len - eh.e_shoff) / eh.e_shentsize)
-		return -1;
+	if (!elf_shtab_in_bounds(eh.e_shoff, eh.e_shnum, eh.e_shentsize, len))
+		return -1;   // same overflow-safe check, now shared with ingest_embedded (AUDIT.md C2)
 
 	/* Validate shstrndx before use. */
 	if (eh.e_shstrndx == SHN_UNDEF || eh.e_shstrndx >= eh.e_shnum)

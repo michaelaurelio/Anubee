@@ -60,6 +60,13 @@ void dynsym_finalize(struct dynsym *ds);
 struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
                           int pid, uint64_t vstart, uint64_t vend);
 const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta);
+// Bounds-check an ELF section-header table (e_shnum entries of e_shentsize
+// bytes starting at e_shoff) against a buffer of length `len`. Overflow-safe:
+// e_shoff/e_shnum/e_shentsize are untrusted (attacker-controlled via a
+// crafted ELF or .gnu_debugdata) and must never be added directly to a
+// pointer without first checking they can't wrap mod 2^64. Returns 1 if the
+// whole table fits in-bounds, 0 otherwise.
+int elf_shtab_in_bounds(uint64_t e_shoff, uint32_t e_shnum, uint32_t e_shentsize, size_t len);
 
 // ---- per-module CFI cache (sym_elf.c) -------------------------------------
 struct cfi_section *cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,

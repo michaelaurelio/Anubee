@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host-compilable unit tests for common/sym_elf.c's add_symbols() NUL-termination
-// check over the untrusted ELF string table (AUDIT.md C1).
+// Host-compilable unit tests for common/sym_elf.c's ELF bounds-checking fixes
+// (AUDIT.md C1, C2): the shared elf_shtab_in_bounds() helper, and add_symbols()'s
+// NUL-termination check over the untrusted ELF string table.
 #include <sys/types.h>
 #include "common/symbolize_internal.h"
 
@@ -17,6 +18,12 @@ static int checks = 0, failures = 0;
 
 int main(void)
 {
+    // --- elf_shtab_in_bounds (AUDIT.md C2) ---
+    CHECK(elf_shtab_in_bounds(64, 10, sizeof(Elf64_Shdr), 4096) == 1,
+          "shtab_in_bounds: normal in-bounds table");
+    CHECK(elf_shtab_in_bounds((uint64_t)-4, 10, sizeof(Elf64_Shdr), 4096) == 0,
+          "shtab_in_bounds: e_shoff near UINT64_MAX rejected (no overflow wrap)");
+
     // --- add_symbols (AUDIT.md C1): unterminated name near end of strtab ---
     {
         struct dynsym ds;

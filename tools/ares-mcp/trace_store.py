@@ -370,28 +370,34 @@ class TraceStore:
         stores; the active trace is untouched."""
         top = _clamp(top)
         a, b = TraceStore(), TraceStore()
-        a.load_structured(baseline)
-        b.load_structured(compare)
+        try:
+            a.load_structured(baseline)
+            b.load_structured(compare)
 
-        # Untruncated, mirroring base_syscalls below — call_histogram's top-N
-        # display cap must not leak into the "is this new?" check. (AUDIT.md M3)
-        base_calls = {(r[0], r[1]) for r in a.con.execute(
-            "SELECT DISTINCT module, symbol FROM calls").fetchall()}
-        new_calls = [r for r in b.call_histogram(top=MAX_ROWS)
-                     if (r["module"], r["symbol"]) not in base_calls]
-        new_calls.sort(key=lambda r: r["n"], reverse=True)
+            # Untruncated, mirroring base_syscalls below — call_histogram's top-N
+            # display cap must not leak into the "is this new?" check. (AUDIT.md M3)
+            base_calls = {(r[0], r[1]) for r in a.con.execute(
+                "SELECT DISTINCT module, symbol FROM calls").fetchall()}
+            new_calls = [r for r in b.call_histogram(top=MAX_ROWS)
+                         if (r["module"], r["symbol"]) not in base_calls]
+            new_calls.sort(key=lambda r: r["n"], reverse=True)
 
-        base_syscalls = {r[0] for r in a.con.execute("SELECT DISTINCT syscall FROM span_syscalls").fetchall()}
-        compare_syscalls = b._rows(
-            "SELECT syscall, count(*) AS count FROM span_syscalls "
-            "GROUP BY syscall ORDER BY count DESC")
-        new_span_syscalls = [r for r in compare_syscalls if r["syscall"] not in base_syscalls]
+            base_syscalls = {r[0] for r in a.con.execute("SELECT DISTINCT syscall FROM span_syscalls").fetchall()}
+            compare_syscalls = b._rows(
+                "SELECT syscall, count(*) AS count FROM span_syscalls "
+                "GROUP BY syscall ORDER BY count DESC")
+            new_span_syscalls = [r for r in compare_syscalls if r["syscall"] not in base_syscalls]
 
-        return {
-            "baseline": a.path, "compare": b.path,
-            "new_calls": new_calls[:top],
-            "new_span_syscalls": new_span_syscalls[:top],
-        }
+            return {
+                "baseline": a.path, "compare": b.path,
+                "new_calls": new_calls[:top],
+                "new_span_syscalls": new_span_syscalls[:top],
+            }
+        finally:                                    # AUDIT.md M9
+            if a.con is not None:
+                a.con.close()
+            if b.con is not None:
+                b.con.close()
 
     # ---- funcs analysis (calls/returns) -----------------------------------
 

@@ -392,6 +392,13 @@ static void attach_one_custom_target(const struct probe_resolve_ctx *ctx, const 
     }
 }
 
+// Per-spec "did this FUNCS spec ever resolve" tracking, index-aligned with
+// custom_probe_specs[]. Set true in apply_custom_specs_for_file below.
+// Reported at teardown so "no message" never means "didn't check" -- promotes
+// the old verbose-only "could not resolve" line (below) into an always-on
+// end-of-run summary.
+static bool g_custom_spec_resolved[64];
+
 static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                                          pid_t pid, const char *path, pid_t uprobe_pid,
                                          unsigned long map_start, unsigned long map_end)
@@ -416,6 +423,8 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                 err_print("   [err] > custom spec: regex match cap (%d) reached for %s!%s in %s; "
                           "additional matches may exist and were ignored\n",
                           cap, spec->mod, spec->func, path);
+            if (n > 0 && s < 64)
+                g_custom_spec_resolved[s] = true;
             for (int m = 0; m < n && *ctx->target_count < max; m++)
                 attach_one_custom_target(ctx, path, uprobe_pid, map_start, map_end, matches[m]);
             continue;
@@ -427,8 +436,60 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                 spec->mod, spec->func[0] ? spec->func : "?", path);
             continue;
         }
+        if (s < 64)
+            g_custom_spec_resolved[s] = true;
         attach_one_custom_target(ctx, path, uprobe_pid, map_start, map_end, tgt);
     }
+}
+
+// Multi-kind spec files (EPIC H11) may carry syscall:/lib:/mod: lines meant
+// for other engines; apply_custom_specs_for_file already silently skips
+// those (kind != SPEC_KIND_FUNCS). Warn once so that silence isn't mistaken
+// for "the spec was applied" -- printed both before the run and again at
+// teardown (see funcs_teardown), matching syscalls.c's
+// print_defaulted_kind_warning idiom.
+static void print_ignored_kind_warning(void)
+{
+    int n = 0;
+    for (int i = 0; i < custom_probe_spec_count; i++)
+        if (custom_probe_specs[i].kind != SPEC_KIND_FUNCS)
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "funcs: warning — ignoring %d spec(s) not applicable to this engine "
+                     "(funcs: only):", n);
+    for (int i = 0; i < custom_probe_spec_count; i++) {
+        if (custom_probe_specs[i].kind == SPEC_KIND_FUNCS)
+            continue;
+        char desc[400];
+        spec_describe(&custom_probe_specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
+}
+
+// End-of-run: FUNCS specs that never resolved+attached anywhere across the
+// whole run. Previously this was silent unless -v was passed (see the
+// verbose-gated "could not resolve" line in apply_custom_specs_for_file);
+// this is the always-on summary so "no message" never means "didn't check".
+static void print_never_resolved_report(void)
+{
+    int n = 0;
+    for (int i = 0; i < custom_probe_spec_count && i < 64; i++)
+        if (custom_probe_specs[i].kind == SPEC_KIND_FUNCS && !g_custom_spec_resolved[i])
+            n++;
+    if (!n)
+        return;
+    fprintf(stderr, "funcs: warning — %d spec(s) never resolved to a symbol in any mapped "
+                     "library/process this run:", n);
+    for (int i = 0; i < custom_probe_spec_count && i < 64; i++) {
+        if (custom_probe_specs[i].kind != SPEC_KIND_FUNCS || g_custom_spec_resolved[i])
+            continue;
+        char desc[400];
+        spec_describe(&custom_probe_specs[i], desc, sizeof desc);
+        fprintf(stderr, " %s", desc);
+    }
+    fprintf(stderr, "\n");
 }
 
 // Worker thread: pop CALL/RETURN records and process them off the poll thread.
@@ -854,6 +915,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             goto cleanup;
         }
     }
+    print_ignored_kind_warning(); // "before run"
 
 
     // Open, configure, load, attach BPF skeleton.
@@ -1078,6 +1140,8 @@ void funcs_teardown(void)
         // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
         // (sink must still be open for emit_summary's JSON line).
         funcs_print_summary();
+        print_never_resolved_report();
+        print_ignored_kind_warning(); // "after run" repeat, see funcs_setup's "before run" call
         funcs_emit_summary(&g_sink);
         funcs_bpf__destroy(skel);
         skel = NULL;

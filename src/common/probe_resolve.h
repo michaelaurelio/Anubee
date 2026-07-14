@@ -89,6 +89,12 @@ int  resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
                                           probe_target_t *out, int max_out);
 bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path);
 
+// Render a parsed spec back to its display form, e.g. "syscall:!ptrace",
+// "mod:execve", "libc.so!open", "libc.so@0x10" -- for warning/report messages
+// that need to name a spec (before-run "ignoring this spec", after-run
+// "this spec never matched"). buf is always NUL-terminated.
+void spec_describe(const custom_probe_spec_t *s, char *buf, size_t len);
+
 // Segment descriptor for vaddr→file-offset conversion. Plain ints; no libelf
 // types so it can be used in host tests without pulling in gelf.h.
 struct load_seg { unsigned long vaddr, offset, filesz; };

@@ -231,9 +231,8 @@ int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
         *close = '\0';
         out->arg_count = 0;
         char *save = NULL;
-        for (char *tok = strtok_r(paren + 1, ",", &save);
-             tok && out->arg_count < 8;
-             tok = strtok_r(NULL, ",", &save)) {
+        char *tok = strtok_r(paren + 1, ",", &save);
+        for (; tok && out->arg_count < 8; tok = strtok_r(NULL, ",", &save)) {
             while (*tok == ' ') tok++;
             if (*tok == 'S' || *tok == 's')
                 out->arg_types[out->arg_count++] = ARG_STR;
@@ -248,6 +247,11 @@ int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
                 return -1;
             }
         }
+        // Loop stopped at the 8-arg cap with a pending token still fetched:
+        // warn, but this is not fatal -- the spec still parses with its
+        // first 8 args.
+        if (tok)
+            log("   [err] > spec '%s' has >8 args; extra ignored\n", input);
     }
 
     char *bang = strchr(buf, '!');
@@ -299,6 +303,27 @@ int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
     // '()>rettype' or '(args)>rettype': paired (CALL + RET)
     out->ret_only = (out->ret_type != ARG_NONE && out->arg_count == -1);
     return 0;
+}
+
+void spec_describe(const custom_probe_spec_t *s, char *buf, size_t len)
+{
+    const char *prefix = "";
+    switch (s->kind) {
+    case SPEC_KIND_SYSCALL: prefix = "syscall:"; break;
+    case SPEC_KIND_LIB:     prefix = "lib:";     break;
+    case SPEC_KIND_MOD:     prefix = "mod:";     break;
+    case SPEC_KIND_FUNCS:   default: prefix = ""; break;
+    }
+    if (s->func[0]) {
+        if (s->offset)
+            snprintf(buf, len, "%s%s%s!%s@0x%lx", prefix, s->deny ? "!" : "", s->mod, s->func, s->offset);
+        else
+            snprintf(buf, len, "%s%s%s!%s", prefix, s->deny ? "!" : "", s->mod, s->func);
+    } else if (s->offset) {
+        snprintf(buf, len, "%s%s%s@0x%lx", prefix, s->deny ? "!" : "", s->mod, s->offset);
+    } else {
+        snprintf(buf, len, "%s%s%s", prefix, s->deny ? "!" : "", s->mod);
+    }
 }
 
 int resolve_custom_spec_for_path(pid_t pid, const char *path,

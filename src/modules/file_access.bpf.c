@@ -64,6 +64,7 @@ int BPF_KPROBE(on_openat, const struct pt_regs *regs)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     e->_pad[0] = e->_pad[1] = e->_pad[2] = e->_pad[3] = 0;
     e->flags  = (__u32)BPF_CORE_READ(regs, regs[2]);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
@@ -105,6 +106,7 @@ int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
+    e->ts_ns  = bpf_ktime_get_ns();
     e->_pad[0] = e->_pad[1] = e->_pad[2] = e->_pad[3] = 0;
     e->flags  = (__u32)flags64;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));

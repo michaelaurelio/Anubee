@@ -155,8 +155,12 @@ static int install_syscall_filter(int fd, const char *list)
 		// syscall: spec), each starting its own count at 0 -- check the map
 		// itself, not just this call's local tokens, so the same syscall
 		// named twice (via a duplicate token, or via both -s and a syscall:
-		// spec) is counted once, not once per source.
-		bool already_set = bpf_map_lookup_elem(fd, &k, &cur) == 0;
+		// spec) is counted once, not once per source. syscall_filter is a
+		// BPF_MAP_TYPE_ARRAY, so lookup succeeds for every in-range key --
+		// "already flagged" means the stored value is non-zero, not merely
+		// that the key exists (else every syscall reads as pre-set and the
+		// count stays 0, wrongly tripping the empty-allowlist guard).
+		bool already_set = bpf_map_lookup_elem(fd, &k, &cur) == 0 && cur != 0;
 		bpf_map_update_elem(fd, &k, &v, BPF_ANY);
 		if (!already_set)
 			count++;

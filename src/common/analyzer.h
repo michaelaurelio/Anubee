@@ -55,7 +55,7 @@ extern const ares_analyzer_t analyzer_file_access;
 extern const ares_analyzer_t analyzer_massdelete_detect;
 extern const ares_analyzer_t analyzer_exfil_detect;
 extern const ares_analyzer_t analyzer_accessibility_detect;
-extern const ares_analyzer_t analyzer_fileless_exec;
+extern const ares_analyzer_t analyzer_fileless_detect;
 extern const ares_analyzer_t analyzer_mediaproj_abuse;
 
 #endif /* __ARES_ANALYZER_H */

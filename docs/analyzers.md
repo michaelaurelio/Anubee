@@ -32,7 +32,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
-| `fileless-exec` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
+| `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `mediaproj-abuse` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
 
 `prop-read` is the only analyzer that writes a `BRK` into the target; every

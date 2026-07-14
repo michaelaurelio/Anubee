@@ -6,7 +6,7 @@
 // counter only -- see design doc for why a burst-threshold signal doesn't
 // transfer to this technique). Detection is a background thread polling
 // `dumpsys activity services <pkg>` for an active mediaProjection
-// foreground service, same stub-ring-buffer precedent as fileless-exec.
+// foreground service, same stub-ring-buffer precedent as fileless-detect.
 // Parsing: src/modules/mediaproj_abuse_parse.c.
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,7 +179,7 @@ static void *mediaproj_poll_loop(void *arg)
 // Unused: detection flows through the poll thread above, not events_rb.
 // Kept only because ring_buffer__new() requires a non-NULL sample callback
 // and ares_analyzer_t.setup() must return a non-NULL ring_buffer* for the
-// dispatcher's poll loop -- same precedent as fileless-exec's
+// dispatcher's poll loop -- same precedent as fileless-detect's
 // fileless_handle_event.
 
 static int mediaproj_handle_event(void *ctx, void *data, size_t sz)
@@ -276,7 +276,7 @@ static void mediaproj_teardown(void)
 // ---- summary ----------------------------------------------------------------
 // Lock-free reads of mediaproj_stats/mediaproj_stat_count are safe here only
 // because mod.c always calls teardown() (joining the poll thread) before
-// print_summary()/emit_summary() -- same invariant fileless-exec documents.
+// print_summary()/emit_summary() -- same invariant fileless-detect documents.
 
 static void mediaproj_print_summary(void)
 {

@@ -37,7 +37,7 @@ int main(void)
     CHECK(!ares_object_writes_target("mod:massdelete-detect"), "mod:massdelete-detect quiet");
     CHECK(!ares_object_writes_target("mod:exfil-detect"), "mod:exfil-detect quiet");
     CHECK(!ares_object_writes_target("mod:accessibility-detect"), "mod:accessibility-detect quiet");
-    CHECK(!ares_object_writes_target("mod:fileless-exec"), "mod:fileless-exec quiet");
+    CHECK(!ares_object_writes_target("mod:fileless-detect"), "mod:fileless-detect quiet");
     CHECK(!ares_object_writes_target("mod:mediaproj-abuse"), "mod:mediaproj-abuse quiet");
 
     int n2 = 0;

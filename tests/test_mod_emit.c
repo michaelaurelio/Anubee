@@ -21,7 +21,7 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
-void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
 
 static int checks = 0, failures = 0;
@@ -319,9 +319,9 @@ int main(void)
     mod_emit_accessibility_detect(&j, &aa, -1);
     CHECK_HAS(j, "\"granted\":null", "accessibility_detect granted null");
 
-    // ---- fileless_exec: untagged (no anon_name) -------------------------------
-    struct fileless_exec_event fe = {0};
-    fe.h.type = MOD_EV_FILELESS_EXEC;
+    // ---- fileless_detect: untagged (no anon_name) -------------------------------
+    struct fileless_detect_event fe = {0};
+    fe.h.type = MOD_EV_FILELESS_DETECT;
     fe.h.pid  = 9300;
     fe.h.tid  = 9300;
     fe.ts_ns  = 100000000009ULL;
@@ -330,24 +330,24 @@ int main(void)
     fe.size  = 4096;
 
     j.len = 0;
-    mod_emit_fileless_exec(&j, &fe);
-    CHECK_HAS(j, "\"type\":\"fileless_exec\"",     "fileless_exec type");
-    CHECK_HAS(j, "\"pid\":9300",                    "fileless_exec pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_exec ts_ns");
-    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_exec comm");
-    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_exec start hex");
-    CHECK_HAS(j, "\"size\":4096",                   "fileless_exec size");
-    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_exec anon_name empty");
+    mod_emit_fileless_detect(&j, &fe);
+    CHECK_HAS(j, "\"type\":\"fileless_detect\"",     "fileless_detect type");
+    CHECK_HAS(j, "\"pid\":9300",                    "fileless_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_detect comm");
+    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_detect start hex");
+    CHECK_HAS(j, "\"size\":4096",                   "fileless_detect size");
+    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_detect anon_name empty");
 
-    // ---- fileless_exec: tagged (non-dalvik anon_name present) -----------------
+    // ---- fileless_detect: tagged (non-dalvik anon_name present) -----------------
     // Exercises the serializer only -- nothing in the current runtime path
     // (pending_map + dalvik- suppression) ever actually populates a
-    // non-empty anon_name; this just proves mod_emit_fileless_exec()
+    // non-empty anon_name; this just proves mod_emit_fileless_detect()
     // correctly serializes whatever value it's given.
-    strncpy(fe.anon_name, "v8-jit", FILELESS_TAG_LEN - 1);
+    strncpy(fe.anon_name, "v8-jit", FILELESS_DETECT_TAG_LEN - 1);
     j.len = 0;
-    mod_emit_fileless_exec(&j, &fe);
-    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_exec anon_name tagged");
+    mod_emit_fileless_detect(&j, &fe);
+    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_detect anon_name tagged");
 
     // ---- mediaproj_abuse: full event with Binder-call context -----------------
     struct mediaproj_abuse_event mp = {0};

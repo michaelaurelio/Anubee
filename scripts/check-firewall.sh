@@ -40,7 +40,7 @@ map_bpf_obj() {
     mod:massdelete-detect) echo massdelete_detect.bpf.o ;;
     mod:exfil-detect) echo exfil_detect.bpf.o ;;
     mod:accessibility-detect) echo accessibility_detect.bpf.o ;;
-    mod:fileless-exec) echo fileless_exec.bpf.o ;;
+    mod:fileless-detect) echo fileless_detect.bpf.o ;;
     mod:mediaproj-abuse) echo mediaproj_abuse.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
@@ -96,7 +96,7 @@ owner_of() {
     $BUILD/modules/massdelete_detect.o) echo mod:massdelete-detect ;;
     $BUILD/modules/exfil_detect.o) echo mod:exfil-detect ;;
     $BUILD/modules/accessibility_detect.o) echo mod:accessibility-detect ;;
-    $BUILD/modules/fileless_exec.o) echo mod:fileless-exec ;;
+    $BUILD/modules/fileless_detect.o) echo mod:fileless-detect ;;
     $BUILD/modules/mediaproj_abuse.o) echo mod:mediaproj-abuse ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;

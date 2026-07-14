@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-exec|mediaproj-abuse|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|mediaproj-abuse|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -526,7 +526,7 @@ test_accessibility_detect() {
     fi
 }
 
-# mod fileless-exec: deterministic trigger via a compiled single-process
+# mod fileless-detect: deterministic trigger via a compiled single-process
 # generator (scripts/ares_fileless_gen.c) that performs one raw
 # mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
 # of normal operation, so (like massdelete-detect/exfil-detect) this needs a
@@ -536,49 +536,49 @@ test_accessibility_detect() {
 # ART JIT activity -- not a hard assertion, since JIT compilation isn't
 # guaranteed to happen within a short launch window either way, so absence
 # of output there proves nothing on its own.
-test_fileless_exec() {
-    echo "=== mod fileless-exec (anonymous executable mmap, non-ART) ==="
+test_fileless_detect() {
+    echo "=== mod fileless-detect (anonymous executable mmap, non-ART) ==="
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
-        || fail "fileless-exec: aarch64-linux-gnu-gcc not found (see README prereqs)"
+        || fail "fileless-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
     local gen_bin="$ROOT/build/ares_fileless_gen"
     aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_fileless_gen.c" \
-        || fail "fileless-exec: failed to compile fileless generator"
+        || fail "fileless-detect: failed to compile fileless generator"
     local gen="/data/local/tmp/ares_fileless_gen"
-    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-exec: push failed"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
     loop_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
-        fail "fileless-exec: could not start fileless-generator (no pid captured)"
+        fail "fileless-detect: could not start fileless-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod fileless-exec -p $loop_pid")"
+    local out; out="$(ares "mod fileless-detect -p $loop_pid")"
     adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "fileless-exec: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    # Match only the per-event alert line ("[fileless-exec] PID:...") -- NOT
-    # fileless_print_summary()'s own [fileless-exec]-prefixed header/column-
+    # Match only the per-event alert line ("[fileless-detect] PID:...") -- NOT
+    # fileless_print_summary()'s own [fileless-detect]-prefixed header/column-
     # header/table-row/footer lines, which share the same tag prefix and would
     # otherwise inflate any non-zero count by 4 (confirmed via manual -o/JSONL
     # cross-check: a single real detection always produces exactly one
-    # {"type":"fileless_exec"} record, but the old '^\[fileless-exec\]' pattern
+    # {"type":"fileless_detect"} record, but the old '^\[fileless-detect\]' pattern
     # counted 5 console lines for it -- 1 real alert + 4 summary-table lines).
-    if grep -q '^\[fileless-exec\] PID:' <<<"$out"; then
-        info "fileless-exec OK — $(grep -c '^\[fileless-exec\] PID:' <<<"$out") [fileless-exec] line(s)"
+    if grep -q '^\[fileless-detect\] PID:' <<<"$out"; then
+        info "fileless-detect OK — $(grep -c '^\[fileless-detect\] PID:' <<<"$out") [fileless-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "fileless-exec: no [fileless-exec] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
+        fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
     fi
 
-    local jit_out; jit_out="$(ares "mod fileless-exec -P $PKG")"
+    local jit_out; jit_out="$(ares "mod fileless-detect -P $PKG")"
     forcestop
     local jit_lines
-    jit_lines="$(grep -c '^\[fileless-exec\] PID:' <<<"$jit_out")"
-    info "fileless-exec dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
+    jit_lines="$(grep -c '^\[fileless-detect\] PID:' <<<"$jit_out")"
+    info "fileless-detect dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
 }
 
 # mod mediaproj-abuse: real trigger via com.transsion.screenrecorder
@@ -586,7 +586,7 @@ test_fileless_exec() {
 # device), whose exported RecordingService legitimately requests a
 # MediaProjection-typed foreground service (types=0x000000A0 =
 # MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
-# installed APK). Unlike massdelete-detect/fileless-exec's synthetic
+# installed APK). Unlike massdelete-detect/fileless-detect's synthetic
 # code-free generators, and like accessibility-detect's use of TalkBack, this drives a
 # real app's real service directly via its exported intent-filter action --
 # no UI/consent-dialog automation needed (the exported Service bypasses the
@@ -601,7 +601,7 @@ test_fileless_exec() {
 # timing issue. -p <pid> against the already-running service process skips
 # that resolve-activity step entirely, same precedent as accessibility-detect's
 # already-running-process attach. The ares() call below is synchronous
-# (blocking, like accessibility-detect/fileless-exec), not backgrounded: this file's
+# (blocking, like accessibility-detect/fileless-detect), not backgrounded: this file's
 # own header note applies here too -- ares's stdio is fully buffered once
 # it isn't a tty, so killing it early from the host side (pkill on the local
 # adb shell client doesn't even reach the remote process -- see
@@ -712,11 +712,11 @@ case "$WHAT" in
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
-    fileless-exec)     test_fileless_exec ;;
+    fileless-detect)     test_fileless_detect ;;
     mediaproj-abuse)   test_mediaproj_abuse ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_exec; test_mediaproj_abuse; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-exec | mediaproj-abuse | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_mediaproj_abuse; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | mediaproj-abuse | correlate-returns | all)" ;;
 esac
 
 forcestop

@@ -1061,7 +1061,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   it does not decode which specific privileged action fired (transaction-code decode is
   parked — see BACKLOG.md), and only gates on `system_server` as the destination
   (misses accessibility routing through OEM-specific separate framework processes).
-- **`fileless-exec`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
+- **`fileless-detect`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
   fires for every mmap, file-backed or anonymous, correlated entry/exit via a
   per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
   into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
@@ -1108,7 +1108,7 @@ at the moment the underlying kernel hook fired. Two exceptions: `mediaproj-
 abuse`'s event is built entirely in userspace (a `dumpsys`-polling thread,
 not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
 call at detection time, accurate only to the analyzer's 1s poll interval;
-`fileless-exec`'s alert event reuses the timestamp already captured at the
+`fileless-detect`'s alert event reuses the timestamp already captured at the
 original `do_mmap` return (not the later moment the alert graduates past its
 grace window), since that's the more accurate instant. `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
@@ -1131,7 +1131,7 @@ longer lost from the file:
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
-- `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
@@ -1149,7 +1149,7 @@ but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-detect`,
-`accessibility-detect`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
+`accessibility-detect`, `fileless-detect`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
@@ -1345,7 +1345,7 @@ sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
 distinct shape from both other cases. `mod` has a minimal (not exempt)
 variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`massdelete-detect`/`accessibility-detect`/`fileless-exec`) reports its own `drops.ring`
+`massdelete-detect`/`accessibility-detect`/`fileless-detect`) reports its own `drops.ring`
 count the same way, but has no snapshot/CFI/managed-naming/decode surface to
 report — every other field always reads clean.
 

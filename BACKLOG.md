@@ -472,7 +472,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
   `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
   matching.
-- `mod fileless-exec` known v1 limitations (shipped 2026-07-12): false positives from
+- `mod fileless-detect` known v1 limitations (shipped 2026-07-12): false positives from
   legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
   Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
   will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
@@ -521,7 +521,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   types into a queryable table at all (only `*_summary` records, via a
   `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
   missing `accessibility_detect_summary`, `exfil_detect_summary`,
-  `fileless_exec_summary`, `mediaproj_abuse_summary` — worth fixing
+  `fileless_detect_summary`, `mediaproj_abuse_summary` — worth fixing
   regardless of which venue the correlator lands in).
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
@@ -687,7 +687,7 @@ is in DOCUMENTATION.md and the referenced specs.
   DOCUMENTATION.md's `mod` analyzer list for the full design (including two
   design corrections made during development: the interface's
   ring-buffer-stub requirement turned out already precedented by
-  `fileless-exec`, and the initially-planned burst-threshold Binder signal
+  `fileless-detect`, and the initially-planned burst-threshold Binder signal
   was rejected once the concrete event flow showed it doesn't transfer from
   `accessibility-detect`'s technique to this one). Known v1 limitations: 1s poll
   interval bounds detection latency; no transaction-code decode; legitimate

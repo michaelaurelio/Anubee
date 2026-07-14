@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Single-process anonymous-executable-mapping trigger for the `mod
-// fileless-exec` device smoke test (scripts/device-test.sh). No installed
+// fileless-detect` device smoke test (scripts/device-test.sh). No installed
 // app does a raw anonymous PROT_EXEC mmap as part of normal operation --
 // that's the whole point of the signal -- so this needs a purpose-built
 // native binary, same rationale as massdelete-detect's/exfil-detect's own

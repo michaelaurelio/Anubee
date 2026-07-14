@@ -34,7 +34,7 @@ static const ares_analyzer_t *const registry[] = {
     &analyzer_massdelete_detect,
     &analyzer_exfil_detect,
     &analyzer_accessibility_detect,
-    &analyzer_fileless_exec,
+    &analyzer_fileless_detect,
     &analyzer_mediaproj_abuse,
     NULL,
 };

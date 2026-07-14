@@ -15,7 +15,7 @@ struct file_access_event; // modules/mod_events.h
 struct massdelete_detect_event; // modules/mod_events.h
 struct exfil_detect_event; // modules/mod_events.h
 struct accessibility_detect_event; // modules/mod_events.h
-struct fileless_exec_event; // modules/mod_events.h
+struct fileless_detect_event; // modules/mod_events.h
 struct mediaproj_abuse_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
@@ -76,7 +76,7 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
 // fields rather than a baked-in classification string.
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 
-// {"type":"fileless_exec","pid":N,"comm":"..","start":"0x..","size":N,
+// {"type":"fileless_detect","pid":N,"comm":"..","start":"0x..","size":N,
 //  "anon_name":".."}
 // anon_name is always "" in this version -- the reworked detection path
 // (do_mmap entry/exit correlation + kernel-side dalvik- suppression via
@@ -85,7 +85,7 @@ void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_de
 // for a possible future version that does. No burst/threshold/severity
 // fields -- v1 has one signal only, emitted as-is, same "raw fields, no
 // baked-in verdict" convention as every prior mod analyzer.
-void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 
 // {"type":"mediaproj_abuse","pid":N,"comm":"..","binder_calls_context":N}
 // binder_calls_context is the passive system_server Binder-call count

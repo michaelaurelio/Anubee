@@ -193,10 +193,10 @@ void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_de
     jb_c(j, '}');
 }
 
-void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_EXEC)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');

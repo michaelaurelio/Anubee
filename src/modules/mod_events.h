@@ -38,23 +38,23 @@
 #define ACCESSIBILITY_DETECT_CODE_RING_LEN 64
 #define ACCESSIBILITY_DETECT_THRESHOLD     50
 
-// Truncated capture buffer for the fileless-exec analyzer's anon_name field
-// (see fileless_exec.bpf.c). Not a ring/threshold pair like the burst
+// Truncated capture buffer for the fileless-detect analyzer's anon_name field
+// (see fileless_detect.bpf.c). Not a ring/threshold pair like the burst
 // analyzers above -- this is a single fixed-size string buffer, sized to
 // comfortably hold ART's own tags (e.g. "dalvik-jit-code-cache" is 22
 // bytes) plus headroom for whatever a non-ART caller might have set.
-#define FILELESS_TAG_LEN 32
+#define FILELESS_DETECT_TAG_LEN 32
 
 // Grace window between an anon+exec mmap candidate landing in pending_map
 // and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
-// See fileless_exec.bpf.c's two-hook mmap+prctl correlate/suppress design.
-#define FILELESS_GRACE_NS (250ULL * 1000000ULL)
+// See fileless_detect.bpf.c's two-hook mmap+prctl correlate/suppress design.
+#define FILELESS_DETECT_GRACE_NS (250ULL * 1000000ULL)
 
-// BPF map key/value for fileless-exec's pending-alert map: mmap-time state
+// BPF map key/value for fileless-detect's pending-alert map: mmap-time state
 // that gets suppressed if a matching dalvik-tagged
-// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_GRACE_NS, or
-// graduates into an alert if not. Shared between fileless_exec.bpf.c
-// (writer, both hooks) and fileless_exec.c (background-thread reader).
+// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_DETECT_GRACE_NS, or
+// graduates into an alert if not. Shared between fileless_detect.bpf.c
+// (writer, both hooks) and fileless_detect.c (background-thread reader).
 struct fileless_pending_key {
     __u32 pid;
     __u32 _pad;
@@ -80,7 +80,7 @@ enum {
     MOD_EV_MASSDELETE_DETECT = 9,
     MOD_EV_EXFIL_DETECT = 10,
     MOD_EV_ACCESSIBILITY_DETECT = 11,
-    MOD_EV_FILELESS_EXEC = 12,
+    MOD_EV_FILELESS_DETECT = 12,
     MOD_EV_MEDIAPROJ_ABUSE = 13,
 };
 
@@ -159,13 +159,13 @@ struct accessibility_detect_event {
     __u32  code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
 };
 
-struct fileless_exec_event {
+struct fileless_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  start;
     __u64  size;
-    char   anon_name[FILELESS_TAG_LEN];
+    char   anon_name[FILELESS_DETECT_TAG_LEN];
 };
 
 struct mediaproj_abuse_event {

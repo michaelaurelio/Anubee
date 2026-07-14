@@ -94,7 +94,15 @@ static void default_log(const char *fmt, ...)
 int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                             void (*log)(const char *fmt, ...))
 {
+    return parse_custom_probe_spec_ex(input, out, SPEC_KIND_FUNCS, NULL, log);
+}
+
+int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
+                               spec_kind_t default_kind, bool *used_default,
+                               void (*log)(const char *fmt, ...))
+{
     if (!log) log = default_log;
+    if (used_default) *used_default = false;
 
     memset(out, 0, sizeof(*out));
     out->arg_count = -1;
@@ -106,7 +114,8 @@ int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
     // Strip an optional "KIND:" prefix. Unrecognized text before ':' is NOT a
     // kind (e.g. "libc.so!open" has no such prefix, and MODULE!FUNC can't
     // collide with these tokens) — out->kind stays SPEC_KIND_FUNCS (0, from
-    // the memset above) when no prefix matches, preserving today's semantics.
+    // the memset above) when no prefix matches, preserving today's semantics,
+    // unless default_kind says otherwise (see below).
     {
         static const struct { const char *p; spec_kind_t k; } KINDS[] = {
             { "funcs:",   SPEC_KIND_FUNCS },
@@ -114,13 +123,30 @@ int parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
             { "lib:",     SPEC_KIND_LIB },
             { "mod:",     SPEC_KIND_MOD },
         };
+        bool matched = false;
         for (size_t i = 0; i < sizeof(KINDS) / sizeof(KINDS[0]); i++) {
             size_t n = strlen(KINDS[i].p);
             if (strncmp(buf, KINDS[i].p, n) == 0) {
                 out->kind = KINDS[i].k;
                 memmove(buf, buf + n, strlen(buf + n) + 1);
+                matched = true;
                 break;
             }
+        }
+        // No explicit prefix: let a caller-supplied default_kind (e.g.
+        // syscalls' -e defaulting to syscall:) apply, but only when the bare
+        // text isn't already funcs-shaped ('!' or '@' *after* skipping a
+        // leading '!', which is the syscall:/lib: deny marker, not a
+        // MODULE!FUNC separator — "!ptrace" must still default, "libc.so!fn"
+        // must not) — so a funcs-style value pasted into a non-funcs engine's
+        // -e still parses as funcs: (and is correctly, silently ignored by
+        // that engine's own kind filter) instead of being force-fit into a
+        // nonsensical syscall/lib/mod pattern.
+        const char *scan = (*buf == '!') ? buf + 1 : buf;
+        bool funcs_shaped = strchr(scan, '!') || strchr(scan, '@');
+        if (!matched && default_kind != SPEC_KIND_FUNCS && !funcs_shaped) {
+            out->kind = default_kind;
+            if (used_default) *used_default = true;
         }
     }
 

@@ -328,6 +328,26 @@ static const char *lib_banner(void)
 	return g_lib_banner;
 }
 
+// -e values with no explicit KIND: prefix are assumed syscall: (this engine's
+// natural -e kind, unlike -F files which always keep the shared funcs:
+// default so multi-engine spec files, e.g. specs/common-network.spec, keep
+// working unmodified). Printed both before the run starts and again at
+// end-of-run (next to the existing syscall summary) so a long capture
+// scrolling the console doesn't carry the note off-screen.
+static const char *g_defaulted_names[64];
+static int         g_ndefaulted;
+
+static void print_defaulted_kind_warning(void)
+{
+	if (!g_ndefaulted)
+		return;
+	fprintf(stderr, "syscalls: warning — %d -e spec(s) had no explicit kind prefix; "
+	                 "assumed syscall: (this engine's -e default):", g_ndefaulted);
+	for (int i = 0; i < g_ndefaulted; i++)
+		fprintf(stderr, " %s", g_defaulted_names[i]);
+	fprintf(stderr, "\n");
+}
+
 static void seed_lib_ranges_from_maps(__u32 tgid)
 {
 	if (!g_nlib || g_lib_ranges_fd < 0)
@@ -923,6 +943,9 @@ struct sysc_args {
 	struct target_args tgt;      // -p / --siblings / --no-follow-fork
 	custom_probe_spec_t specs[64]; // -e / -F: syscall:/lib: kind lines (funcs:/mod: ignored)
 	int  nspec;
+	bool spec_defaulted[64];     // -e only: true if specs[i] had no KIND: prefix and was
+	                             // assumed syscall: (this engine's -e default); index-aligned
+	                             // with specs[]. -F-loaded entries always leave this false.
 };
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -964,8 +987,14 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case 'e':
 		if (a->nspec >= 64)
 			fprintf(stderr, "syscalls: warning — spec cap (64) reached; '%s' ignored\n", arg);
-		else if (parse_custom_probe_spec(arg, &a->specs[a->nspec], NULL) == 0)
-			a->nspec++;
+		else {
+			bool used_default = false;
+			if (parse_custom_probe_spec_ex(arg, &a->specs[a->nspec], SPEC_KIND_SYSCALL,
+			                                &used_default, NULL) == 0) {
+				a->spec_defaulted[a->nspec] = used_default;
+				a->nspec++;
+			}
+		}
 		break;
 	case 'F':
 		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, NULL) != 0)
@@ -1038,6 +1067,10 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_pkg      = sa.package_name;
 	g_libs     = sa.lib_sels;
 	g_nlib     = sa.capture_all ? 0 : sa.nlib;
+	g_ndefaulted = 0;
+	for (int i = 0; i < sa.nspec && g_ndefaulted < 64; i++)
+		if (sa.spec_defaulted[i])
+			g_defaulted_names[g_ndefaulted++] = sa.specs[i].mod;
 	g_activity = sa.activity[0] ? sa.activity : NULL;
 	g_verbose  = sa.c.verbose;
 	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
@@ -1068,6 +1101,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 		printf("package %s -> uid %d, capturing ALL syscalls\n", g_pkg, uid);
 	else
 		printf("package %s -> uid %d, target lib '%s'\n", g_pkg, uid, lib_banner());
+	print_defaulted_kind_warning(); // "before run"
 
 	// Round the requested ring buffer size up to a power of two (a ringbuf
 	// requirement). Uses the same helper as funcs.
@@ -1320,6 +1354,7 @@ void syscalls_teardown(void)
 		// (sink must still be open for emit_summary's JSON line).
 		sysc_print_summary();
 		sysc_emit_summary(&g_sink);
+		print_defaulted_kind_warning(); // "after run" repeat, see setup()'s "before run" call
 		ares_evq_destroy(&g_q);
 	}
 

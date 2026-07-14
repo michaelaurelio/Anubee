@@ -17,6 +17,14 @@ static void noop_log(const char *fmt, ...) { (void)fmt; }
 static custom_probe_spec_t S;
 static int parse(const char *in) { return parse_custom_probe_spec(in, &S, noop_log); }
 
+// parse_custom_probe_spec_ex: same grammar, plus a caller-supplied default
+// kind for unprefixed input (used by syscalls' -e; see probe_resolve.h).
+static bool used_default;
+static int parse_ex(const char *in, spec_kind_t default_kind)
+{
+    return parse_custom_probe_spec_ex(in, &S, default_kind, &used_default, noop_log);
+}
+
 #define CHECK(cond, msg) do {                         \
     checks++;                                         \
     if (!(cond)) { failures++; printf("  FAIL: %s\n", msg); } \
@@ -140,6 +148,58 @@ int main(void)
     CHECK(parse("syscall:") == -1,               "err: syscall: empty pattern");
     CHECK(parse("lib:") == -1,                   "err: lib: empty pattern");
     CHECK(parse("mod:") == -1,                   "err: mod: empty name");
+
+    // parse_custom_probe_spec_ex: engine-specific default kind for unprefixed
+    // input (syscalls' -e defaulting to syscall:, see probe_resolve.h). -F
+    // file loading never calls this with a non-FUNCS default — only single
+    // -e values do — so these cases are the whole surface of the feature.
+    CHECK(parse_ex("openat", SPEC_KIND_SYSCALL) == 0,
+                                                  "ex bare default: rc 0");
+    CHECK(S.kind == SPEC_KIND_SYSCALL && S.deny == false &&
+          strcmp(S.mod, "openat") == 0,          "ex bare default: fields");
+    CHECK(used_default == true,                  "ex bare default: used_default true");
+
+    // Explicit prefix still wins; used_default must report false even though
+    // the resulting kind happens to match default_kind.
+    CHECK(parse_ex("syscall:openat", SPEC_KIND_SYSCALL) == 0,
+                                                  "ex explicit prefix: rc 0");
+    CHECK(S.kind == SPEC_KIND_SYSCALL &&
+          strcmp(S.mod, "openat") == 0,          "ex explicit prefix: fields");
+    CHECK(used_default == false,                 "ex explicit prefix: used_default false");
+
+    // Deny form still works through the default path.
+    CHECK(parse_ex("!ptrace", SPEC_KIND_SYSCALL) == 0,
+                                                  "ex bare deny default: rc 0");
+    CHECK(S.kind == SPEC_KIND_SYSCALL && S.deny == true &&
+          strcmp(S.mod, "ptrace") == 0,          "ex bare deny default: fields");
+    CHECK(used_default == true,                  "ex bare deny default: used_default true");
+
+    // Safety property: a funcs-shaped bare value ('!' or '@') is NOT forced
+    // into default_kind, even with one supplied — it still parses as funcs:
+    // (and used_default stays false), so a funcs-style value accidentally
+    // passed to e.g. syscalls' -e is silently ignored by that engine's own
+    // kind filter instead of being mangled into a nonsensical syscall name.
+    CHECK(parse_ex("libc.so!openat", SPEC_KIND_SYSCALL) == 0,
+                                                  "ex funcs-shaped '!' wins: rc 0");
+    CHECK(S.kind == SPEC_KIND_FUNCS &&
+          strcmp(S.mod, "libc.so") == 0 &&
+          strcmp(S.func, "openat") == 0,         "ex funcs-shaped '!' wins: fields");
+    CHECK(used_default == false,                 "ex funcs-shaped '!' wins: used_default false");
+
+    CHECK(parse_ex("libfoo.so@0x100", SPEC_KIND_SYSCALL) == 0,
+                                                  "ex funcs-shaped '@' wins: rc 0");
+    CHECK(S.kind == SPEC_KIND_FUNCS &&
+          strcmp(S.mod, "libfoo.so") == 0,       "ex funcs-shaped '@' wins: fields");
+    CHECK(used_default == false,                 "ex funcs-shaped '@' wins: used_default false");
+
+    // default_kind == SPEC_KIND_FUNCS (funcs/correlate's own case, and the
+    // plain parse_custom_probe_spec wrapper) never sets used_default, and
+    // behaves byte-identically to plain parse() on the same input.
+    CHECK(parse_ex("libc.so!open", SPEC_KIND_FUNCS) == 0,
+                                                  "ex funcs default: rc 0");
+    CHECK(used_default == false,                 "ex funcs default: used_default false");
+    CHECK(parse("libc.so!open") == 0 &&
+          S.kind == SPEC_KIND_FUNCS,             "plain wrapper: unaffected by _ex existing");
 
     // --- lockstep: every specs/*.spec line parses as its intended kind.
     // Originally (Phase 1) every line was plain FUNCS, proving the KIND-prefix

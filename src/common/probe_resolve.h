@@ -63,6 +63,19 @@ struct probe_resolve_ctx {
 bool is_duplicate(probe_target_t *targets, int count, const char *mod_path, unsigned long offset);
 int  parse_custom_probe_spec(const char *input, custom_probe_spec_t *out,
                              void (*log)(const char *fmt, ...));
+// Same grammar as parse_custom_probe_spec, but callers can pick what an
+// unprefixed (no "funcs:"/"syscall:"/"lib:"/"mod:") line means for them,
+// instead of always SPEC_KIND_FUNCS. Only meant for single -e values on
+// engines whose natural kind isn't funcs: (e.g. syscalls' -e defaulting to
+// syscall:) -- -F file loading intentionally keeps the plain wrapper above,
+// so multi-kind spec files shared across engines are unaffected.
+// *used_default (if non-NULL) is set to whether default_kind was applied,
+// i.e. `input` had no explicit KIND: prefix and didn't already parse as
+// funcs: grammar (a bare "libc.so!fn" still parses as funcs: regardless of
+// default_kind, since it has a '!').
+int  parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
+                                spec_kind_t default_kind, bool *used_default,
+                                void (*log)(const char *fmt, ...));
 int  resolve_custom_spec_for_path(pid_t pid, const char *path,
                                   const custom_probe_spec_t *spec, probe_target_t *out);
 // Resolves ALL symbol matches for a /regex/-delimited spec->func against path's ELF

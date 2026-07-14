@@ -18,6 +18,7 @@
 
 struct ares_arg_mask_entry { long nr; unsigned char mask; };
 struct ares_arg_sock_entry { long nr; int arg; };
+struct ares_arg_count_entry { long nr; int count; };
 
 // Which arg holds a sockaddr* (connect/bind at arg1, sendto at arg4).
 // Exported (not static) so syscalls.c's build_arg_tables() can scatter this
@@ -41,5 +42,17 @@ void install_sock_args(int fd);
 // syscalls.c keeps its own dense-cache versions instead of calling these.
 unsigned arg_fd_mask(unsigned long long nr);
 int arg_sock_index(unsigned long long nr);
+
+// Per-syscall argument count (arm64 ABI), so a printer can show only the real
+// arguments instead of leftover register values. Unknown syscalls return 6
+// (all of x0..x5). Moved here from src/syscalls/syscalls.c (which kept its
+// own copy of the { nr, count } table) so src/correlate/correlate.c's human
+// syscall-arg line can bound the same way (ares correlate output-clarity
+// rework) instead of always printing all 6 slots. syscalls.c layers its own
+// dense by-nr cache (arg_count_cached(), same reasoning as arg_fd_mask_cached/
+// arg_sock_index_cached above) on top of this plain linear-scan form.
+extern const struct ares_arg_count_entry g_arg_counts[];
+extern const size_t g_arg_counts_count;
+int arg_count(unsigned long long nr);
 
 #endif /* __ARES_COMMON_SYSCALL_ARGTYPES_H */

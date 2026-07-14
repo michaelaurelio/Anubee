@@ -581,6 +581,39 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-13
 
+- **`correlate` stdout output-clarity rework (follow-on to SYM1).** SYM1
+  unified the grammar and closed the content-parity gap, but two things still
+  made the live console output hard to trust: `[func]` span lines showed only
+  a bare runtime address (no symbol — A5's known limitation), and the
+  `[syscall]` arg loop printed all 6 aarch64 arg registers regardless of the
+  syscall's real arity, so a `read`'s leftover `args[3..5]` looked like real
+  arguments. Fixed both, keeping the shared `human_out` grammar (no
+  divergence from `syscalls`/`funcs`):
+  - **Named spans.** `find_target_by_entry_addr()` — funcs.c's addr→symbol
+    resolver (hash cache + `/proc/<pid>/maps` walk + lower-12-bit ASLR
+    fallback) — lifted verbatim into `src/common/target_registry.{c,h}` so
+    `correlate` can resolve its own span-opening address the same way funcs
+    already resolves its `[event]` lines. `correlate.c` now registers each
+    attached target (`target_registry_add`) and prints `mod!func @ 0xaddr`
+    instead of a bare address; unresolved falls back to `@ 0xaddr
+    (unresolved)`, mirroring funcs' own unresolved shape.
+  - **Real arity, not all 6 registers.** `arg_count()` — syscalls.c's own
+    `{nr,count}` table (`syscall_argc.h`) — moved into
+    `common/syscall_argtypes.{c,h}` so `correlate.c`'s human syscall-arg loop
+    bounds the same way syscalls.c's does; JSON output unchanged (still all 6
+    slots). Also dropped the redundant `(nr=..)` from the human syscall line
+    (name-only, matching `syscalls`).
+  - Two new host tests (`tests/test_target_registry.c`,
+    `tests/test_syscall_argtypes.c`) cover the moved/added logic; full
+    `make test` suite green. **Same standing caveat SYM1 hit for real**
+    (`arg_fd_mask`/`arg_sock_index` local/global name collision, only caught
+    by a full toolchain build): checked for it explicitly this time — grepped
+    every new/renamed symbol (`arg_count`, `arg_count_cached`,
+    `target_registry*`, `find_target_by_entry_addr`) tree-wide for
+    collisions before considering this done; none found. `syscalls.c`'s and
+    `correlate.c`'s own compiles are still unverified in this sandbox (no
+    `bpftool`/aarch64 toolchain) — a real `make` is the remaining open step.
+
 - **mediaproj-abuse analyzer (shipped 2026-07-13).** New `mod` analyzer
   detecting active `MediaProjection` screen-capture sessions — see
   DOCUMENTATION.md's `mod` analyzer list for the full design (including two

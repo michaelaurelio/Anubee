@@ -99,11 +99,10 @@ static const char *sysname(unsigned long long nr, int compat)
 }
 
 // Per-syscall argument count (arm64 ABI), so we print only the real arguments
-// instead of leftover register values. Unknown syscalls show all 6.
-static const struct { long nr; int count; } g_argc[] = {
-#include "syscall_argc.h"
-};
-static const int g_nargc = (int)(sizeof(g_argc) / sizeof(g_argc[0]));
+// instead of leftover register values. Unknown syscalls show all 6. Table
+// itself now lives in common/syscall_argtypes.c (g_arg_counts, EPIC I2-style
+// shared with correlate.c's own arg-count bounding); this file keeps only its
+// own dense by-nr cache below.
 
 // by_nr[512] dense indexes (AA7), mirroring ares_sysindex_build's scatter pattern
 // for syscall_name() (R9). Each attribute table keeps its own array/sentinel since
@@ -115,13 +114,10 @@ static int           g_argc_by_nr[ARG_TBL_CAP];
 static unsigned char g_fdmask_by_nr[ARG_TBL_CAP];
 static signed char   g_sockidx_by_nr[ARG_TBL_CAP];
 
-static int arg_count(unsigned long long nr)
+static int arg_count_cached(unsigned long long nr)
 {
 	if (nr < ARG_TBL_CAP) return g_argc_by_nr[nr];
-	for (int i = 0; i < g_nargc; i++)
-		if ((unsigned long long)g_argc[i].nr == nr)
-			return g_argc[i].count;
-	return SYSC_SYSCALL_NARGS;
+	return arg_count(nr);
 }
 
 // Syscall name -> number (reverse of the generated table), or -1 if unknown.
@@ -395,9 +391,9 @@ static void build_arg_tables(void)
 		g_fdmask_by_nr[i]  = 0;                    // default: unknown -> no fd args
 		g_sockidx_by_nr[i] = -1;                   // default: unknown -> no sockaddr arg
 	}
-	for (int i = 0; i < g_nargc; i++)
-		if (g_argc[i].nr >= 0 && g_argc[i].nr < ARG_TBL_CAP)
-			g_argc_by_nr[g_argc[i].nr] = g_argc[i].count;
+	for (size_t i = 0; i < g_arg_counts_count; i++)
+		if (g_arg_counts[i].nr >= 0 && g_arg_counts[i].nr < ARG_TBL_CAP)
+			g_argc_by_nr[g_arg_counts[i].nr] = g_arg_counts[i].count;
 	for (size_t i = 0; i < g_fd_args_count; i++)
 		if (g_fd_args[i].nr >= 0 && g_fd_args[i].nr < ARG_TBL_CAP)
 			g_fdmask_by_nr[g_fd_args[i].nr] = g_fd_args[i].mask;
@@ -537,7 +533,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	// compat: e->nr is an EABI number, so arg_count/arg_fd_mask/flags_decode_arg
 	// (all arm64-nr-keyed) would be a namespace mismatch (CR2) — show every raw
 	// argument slot instead and skip the decode sections below.
-	int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
+	int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count_cached(e->nr);
 	jb_s(j, ",\"args\":[");
 	for (int i = 0; i < nargs; i++) {
 		if (i) jb_c(j, ',');
@@ -702,7 +698,7 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		// compat: arg_count/arg_fd_mask/arg_sock_index are arm64-nr-keyed
 		// tables, a namespace mismatch for EABI numbers (CR2) — show all raw
 		// argument slots instead of guessing counts/fds/sockaddr from them.
-		int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count(e->nr);
+		int nargs = e->compat ? SYSC_SYSCALL_NARGS : arg_count_cached(e->nr);
 		unsigned fdm = e->compat ? 0u : arg_fd_mask_cached(e->nr);
 		int sockidx = e->compat ? 0 : arg_sock_index_cached(e->nr);
 		// SYM1 Phase 4a: shared human_out skeleton (timestamp + own "syscall"

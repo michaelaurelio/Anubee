@@ -296,3 +296,18 @@ unsigned arg_fd_mask(unsigned long long nr)
             return g_fd_args[i].mask;
     return 0;
 }
+
+// Per-syscall argument count (arm64 ABI) - see syscall_argtypes.h. Moved here
+// (byte-identical) from src/syscalls/syscalls.c's own g_argc[]/g_nargc.
+const struct ares_arg_count_entry g_arg_counts[] = {
+#include "common/syscall_argc.h"
+};
+const size_t g_arg_counts_count = sizeof(g_arg_counts) / sizeof(g_arg_counts[0]);
+
+int arg_count(unsigned long long nr)
+{
+    for (size_t i = 0; i < g_arg_counts_count; i++)
+        if ((unsigned long long)g_arg_counts[i].nr == nr)
+            return g_arg_counts[i].count;
+    return 6; // unknown syscall: show all 6 arm64 arg registers (x0..x5)
+}

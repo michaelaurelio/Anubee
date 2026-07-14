@@ -111,7 +111,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
-               $(SRC)/common/human_out.c
+               $(SRC)/common/human_out.c $(SRC)/common/target_registry.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -144,10 +144,11 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_syscall_table ares_syscall_table_count \
                validate_pid_or_package validate_have_selector \
                pm_is_glob pm_is_regex pm_match pm_regex \
-               install_arg_types install_sock_args arg_fd_mask arg_sock_index \
+               install_arg_types install_sock_args arg_fd_mask arg_sock_index arg_count \
                g_fd_args g_fd_args_count g_sock_args g_sock_args_count \
                jsonl_merge \
-               out_print err_print ts_print human_detail
+               out_print err_print ts_print human_detail \
+               target_registry target_registry_count target_registry_add find_target_by_entry_addr
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -544,6 +545,10 @@ test:
 	$(BUILD)/test_coverage
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_human_out.c src/common/human_out.c -o $(BUILD)/test_human_out -lpthread
 	$(BUILD)/test_human_out
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_argtypes.c -o $(BUILD)/test_syscall_argtypes
+	$(BUILD)/test_syscall_argtypes
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_registry.c src/common/target_registry.c src/common/maps.c -o $(BUILD)/test_target_registry -lpthread
+	$(BUILD)/test_target_registry
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/ares-mcp/test_unified_ingest.py; \

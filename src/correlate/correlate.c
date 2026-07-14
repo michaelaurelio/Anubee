@@ -29,6 +29,7 @@
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
+#include "common/target_registry.h"
 #include "common/target_validate.h"
 #include "common/pattern_match.h"
 #include "common/syscall_argtypes.h"
@@ -148,11 +149,29 @@ static int handle_event(void *ctx, void *data, size_t sz)
         if (sz < sizeof(struct corr_func_event)) return 0;
         const struct corr_func_event *e = data;
         g_sum_spans_opened++; // SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
-        if (!g_quiet)
-            // SYM1 Phase 4d: was printf(...).
-            ts_print("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx\n",
-                   (unsigned long long)e->span, (unsigned long long)e->parent_span,
-                   e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
+        if (!g_quiet) {
+            // Name the span: resolve entry_addr back to the mod!func this
+            // uprobe was attached at (via the shared target_registry, same
+            // resolver funcs.c's [event] line uses) instead of showing a bare
+            // address the reader has to cross-reference against [spec] lines
+            // by hand (ares correlate output-clarity rework).
+            bool used_fallback = false;
+            probe_target_t *target =
+                find_target_by_entry_addr(e->entry_addr, (pid_t)e->h.pid, &used_fallback);
+            if (target) {
+                const char *bname = strrchr(target->mod_path, '/');
+                bname = bname ? bname + 1 : target->mod_path;
+                ts_print("[func]    > span=%llu parent=%llu pid=%u tid=%u %s!%s @ 0x%llx\n",
+                       (unsigned long long)e->span, (unsigned long long)e->parent_span,
+                       e->h.pid, e->h.tid, bname, target->func_name,
+                       (unsigned long long)e->entry_addr);
+            } else {
+                // SYM1 Phase 4d: was printf(...).
+                ts_print("[func]    > span=%llu parent=%llu pid=%u tid=%u @ 0x%llx (unresolved)\n",
+                       (unsigned long long)e->span, (unsigned long long)e->parent_span,
+                       e->h.pid, e->h.tid, (unsigned long long)e->entry_addr);
+            }
+        }
         if (g_sink.f) {
             corr_emit_func(&g_sink.jb, e);
             ares_sink_emit(&g_sink);
@@ -167,14 +186,18 @@ static int handle_event(void *ctx, void *data, size_t sz)
         unsigned fdmask = arg_fd_mask(e->nr);
         int sockidx = arg_sock_index(e->nr);
         if (!g_quiet) {
-            // SYM1 Phase 4d: was printf(...).
-            ts_print("[syscall] > span=%llu pid=%u tid=%u %s (nr=%llu)\n",
-                   (unsigned long long)e->span, e->h.pid, e->h.tid, name,
-                   (unsigned long long)e->nr);
+            // SYM1 Phase 4d: was printf(...). nr dropped — redundant with the
+            // name for a human and still in the JSON record below.
+            ts_print("[syscall] > span=%llu pid=%u tid=%u %s\n",
+                   (unsigned long long)e->span, e->h.pid, e->h.tid, name);
             // Decoded args (paths/fds/sockaddrs/flag names) — same precedence
             // corr_emit_syscall's "decoded":[...] JSON array already had,
-            // closing the sharpest stdout/file content gap (§3.3).
-            for (int i = 0; i < CORR_SYS_ARGS; i++) {
+            // closing the sharpest stdout/file content gap (§3.3). Bounded to
+            // the syscall's real arity (same arg_count() syscalls.c uses) so
+            // leftover x0..x5 register values past the real args don't print
+            // as if they were arguments (ares correlate output-clarity rework).
+            int nargs = arg_count(e->nr);
+            for (int i = 0; i < nargs; i++) {
                 char dec[300];
                 if (corr_decode_arg(e, i, fdmask, sockidx, dec, sizeof(dec)))
                     human_detail("syscall", "args[%d] %s\n", i, dec);
@@ -247,6 +270,12 @@ static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
     bname = bname ? bname + 1 : path;
     if (link) {
         track_uprobe_link(link);
+        // Register so a later CORR_EV_FUNC's runtime entry_addr can be
+        // resolved back to this mod!func (ares correlate output-clarity
+        // rework) — mirrors funcs.c registering into the same shared
+        // target_registry at its own attach site. tgt.mod_path/pid are
+        // already set by resolve_custom_spec_{for,matches}_for_path.
+        target_registry_add(tgt);
         printf("[spec] > %s!%s @ 0x%lx\n", bname,
                tgt.func_name[0] ? tgt.func_name : "?", tgt.offset);
         (*attached)++;

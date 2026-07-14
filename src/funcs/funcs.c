@@ -27,6 +27,7 @@
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
+#include "common/target_registry.h"
 #include "common/target_validate.h"
 #include "common/pattern_match.h"
 #include "common/decode.h"
@@ -281,60 +282,12 @@ static void funcs_drops_tick(void *ctx)
     }
 }
 
-// ponytail: two independent mutexes, never nested (disjoint critical sections).
 // g_sink_lock serializes g_sink writes across the drain thread (lib/unlib records)
 // and the worker thread (call/return records); see emit.h for the single-writer contract.
-// (stdout/stderr line serialization moved to common/human_out.c's own lock — SYM1 Phase 0.)
-static pthread_mutex_t g_targets_lock = PTHREAD_MUTEX_INITIALIZER; // probe_targets[] + count
+// (stdout/stderr line serialization moved to common/human_out.c's own lock — SYM1 Phase 0.
+// The addr->target registry's own lock now lives in common/target_registry.c —
+// disjoint from this one, never nested, same "two independent mutexes" shape as before.)
 static pthread_mutex_t g_sink_lock    = PTHREAD_MUTEX_INITIALIZER; // g_sink (multi-writer: drain lib/unlib + worker call/return)
-
-
-probe_target_t probe_targets[4096];
-int probe_target_count = 0;
-
-static probe_target_t retired_targets[4096];
-static int retired_count;
-
-// addr -> probe_target_t* cache (AA4). probe_targets[]+retired_targets[] cap at
-// 4096 each (8192 total distinct addresses, worst case), so a fixed 16384-slot
-// table stays <=50% loaded even at that ceiling — no grow/rehash needed, unlike
-// symbolize.c's sc_ent (which caches an unbounded (pid,addr) set over a trace).
-// Guarded by g_targets_lock, same as the arrays it indexes.
-#define PT_HASH_CAP (1u << 14)   /* 16384, power of 2 */
-struct pt_hash_ent { __u64 addr; probe_target_t *target; int used; };
-static struct pt_hash_ent pt_hash[PT_HASH_CAP];
-
-static uint64_t pt_hash_fn(__u64 addr)
-{
-    uint64_t h = addr;
-    h ^= h >> 33;
-    h *= 0xff51afd7ed558ccdULL;
-    h ^= h >> 33;
-    return h;
-}
-
-// Both must be called with g_targets_lock held.
-static probe_target_t *pt_hash_get(__u64 addr)
-{
-    size_t mask = PT_HASH_CAP - 1, i = pt_hash_fn(addr) & mask;
-    for (size_t probe = 0; probe < PT_HASH_CAP; probe++) {
-        struct pt_hash_ent *e = &pt_hash[i];
-        if (!e->used) return NULL;
-        if (e->addr == addr) return e->target;
-        i = (i + 1) & mask;
-    }
-    return NULL;
-}
-
-static void pt_hash_put(__u64 addr, probe_target_t *target)
-{
-    size_t mask = PT_HASH_CAP - 1, i = pt_hash_fn(addr) & mask;
-    while (pt_hash[i].used && pt_hash[i].addr != addr)
-        i = (i + 1) & mask;
-    pt_hash[i].used = 1;
-    pt_hash[i].addr = addr;
-    pt_hash[i].target = target;
-}
 
 bool verbose = false;
 bool resolve_syms = false;
@@ -348,79 +301,9 @@ struct bpf_link *probe_links[4096];
 struct bpf_link *probe_ret_links[4096];
 static struct bpf_link *g_follow_fork_link = NULL;
 
-static probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback)
-{
-    *used_fallback = false;
-    probe_target_t *result = NULL;
-
-    // ponytail: coarse mutex, held across the /proc miss path; per-entry locking only if contention shows.
-    pthread_mutex_lock(&g_targets_lock);
-
-    result = pt_hash_get(entry_addr);
-
-    if (!result) {
-        char maps_path[64];
-        snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
-        FILE *f = fopen(maps_path, "r");
-        if (f) {
-            char line[512];
-            while (fgets(line, sizeof(line), f) && !result) {
-                struct ares_map_line ml;
-                if (!ares_parse_maps_line(line, &ml)) continue;
-                if (entry_addr < ml.start || entry_addr >= ml.end) continue;
-                if (!ml.exec || ml.path[0] != '/') continue;
-
-                unsigned long file_offset = (unsigned long)(entry_addr - ml.start)
-                                          + (unsigned long)ml.off;
-
-                for (int i = 0; i < probe_target_count; i++) {
-                    if (probe_targets[i].offset == file_offset &&
-                        strcmp(probe_targets[i].mod_path, ml.path) == 0) {
-                        probe_targets[i].runtime_entry_addr = entry_addr;
-                        result = &probe_targets[i];
-                        pt_hash_put(entry_addr, &probe_targets[i]);
-                        break;
-                    }
-                }
-            }
-            fclose(f);
-        }
-    }
-
-    // Fallback: use the lower-12-bit invariant. ASLR keeps the base page-aligned
-    // (multiple of 0x1000), so (base + file_offset) & 0xFFF == file_offset & 0xFFF
-    // always holds. Search both active and retired targets (retired = removed by UNMAP
-    // but may still have in-flight events). Two entries with the same lower 12 bits
-    // but different offset+mod_path = ambiguous, skip.
-    if (!result) {
-        unsigned long low12 = (unsigned long)(entry_addr & 0xFFF);
-        probe_target_t *candidate = NULL;
-        bool ambiguous = false;
-        for (int pass = 0; pass < 2 && !ambiguous; pass++) {
-            probe_target_t *arr = (pass == 0) ? probe_targets : retired_targets;
-            int cnt = (pass == 0) ? probe_target_count : retired_count;
-            for (int i = 0; i < cnt && !ambiguous; i++) {
-                if ((arr[i].offset & 0xFFF) != low12) continue;
-                if (!candidate) {
-                    candidate = &arr[i];
-                } else if (arr[i].offset != candidate->offset ||
-                           strcmp(arr[i].mod_path, candidate->mod_path) != 0) {
-                    ambiguous = true;
-                }
-            }
-        }
-        if (candidate && !ambiguous) {
-            candidate->runtime_entry_addr = entry_addr;
-            *used_fallback = true;
-            result = candidate;
-            pt_hash_put(entry_addr, candidate);
-        }
-    }
-
-    pthread_mutex_unlock(&g_targets_lock);
-    return result;
-}
-
+// find_target_by_entry_addr() moved to common/target_registry.c (shared with
+// correlate, which needs the same runtime-addr -> symbol resolution for its
+// [func] span lines).
 
 static pid_t find_zygote_pid(void)
 {
@@ -1018,8 +901,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // handle_event can safely dereference it after funcs_setup returns. All fields
     // point at file-scope globals that outlive the stack frame.
     g_rctx = (struct probe_resolve_ctx){
-        .targets = probe_targets, .target_count = &probe_target_count,
-        .targets_cap = (int)(sizeof(probe_targets) / sizeof(probe_targets[0])),
+        .targets = target_registry, .target_count = &target_registry_count,
+        .targets_cap = (int)(sizeof(target_registry) / sizeof(target_registry[0])),
         .custom_specs = custom_probe_specs, .custom_spec_count = custom_probe_spec_count,
         .verbose = verbose,
         .log = err_print,
@@ -1112,7 +995,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         // or the trace coordinator) so a single launch serves all armed engines.
     }
 
-    // Start the worker drain thread last — probe_targets[] is now fully populated,
+    // Start the worker drain thread last — target_registry[] is now fully populated,
     // so the worker can look up targets without racing the setup-time resolve loops.
     if (ares_evq_init(&g_q, (size_t)args.c.queue_mb << 20) != 0) {
         err_print(" [work] > cannot allocate %d MB worker queue\n", args.c.queue_mb);
@@ -1151,7 +1034,7 @@ int funcs_run(volatile sig_atomic_t *stop)
 
 void funcs_teardown(void)
 {
-    // Join the worker first: it reads probe_targets[] and writes g_sink.
+    // Join the worker first: it reads target_registry[] and writes g_sink.
     // Freeing links or closing the sink before the join would be a use-after-free.
     if (g_worker_started) {
         pthread_mutex_lock(&g_q.m);
@@ -1167,7 +1050,7 @@ void funcs_teardown(void)
         g_events_rb = NULL;
     }
 
-    for (int i = 0; i < probe_target_count; i++) {
+    for (int i = 0; i < target_registry_count; i++) {
         if (probe_links[i])     bpf_link__destroy(probe_links[i]);
         if (probe_ret_links[i]) bpf_link__destroy(probe_ret_links[i]);
     }

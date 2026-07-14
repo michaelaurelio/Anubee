@@ -38,7 +38,7 @@ map_bpf_obj() {
     mod:prop-read)  echo prop_read.bpf.o ;;
     mod:file-access)echo file_access.bpf.o ;;
     mod:massdelete-detect) echo massdelete_detect.bpf.o ;;
-    mod:exfil-burst) echo exfil_burst.bpf.o ;;
+    mod:exfil-detect) echo exfil_detect.bpf.o ;;
     mod:a11y-abuse) echo a11y_abuse.bpf.o ;;
     mod:fileless-exec) echo fileless_exec.bpf.o ;;
     mod:mediaproj-abuse) echo mediaproj_abuse.bpf.o ;;
@@ -94,7 +94,7 @@ owner_of() {
     $BUILD/modules/proc_event.o) echo mod:proc-event ;;
     $BUILD/modules/file_access.o) echo mod:file-access ;;
     $BUILD/modules/massdelete_detect.o) echo mod:massdelete-detect ;;
-    $BUILD/modules/exfil_burst.o) echo mod:exfil-burst ;;
+    $BUILD/modules/exfil_detect.o) echo mod:exfil-detect ;;
     $BUILD/modules/a11y_abuse.o) echo mod:a11y-abuse ;;
     $BUILD/modules/fileless_exec.o) echo mod:fileless-exec ;;
     $BUILD/modules/mediaproj_abuse.o) echo mod:mediaproj-abuse ;;

@@ -156,11 +156,11 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
     jb_c(j, '}');
 }
 
-void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_BURST)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");         jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');

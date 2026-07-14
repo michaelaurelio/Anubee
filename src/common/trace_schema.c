@@ -21,7 +21,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_FILE_ACCESS: return "file_access";
     case TRACE_MASSDELETE_DETECT: return "massdelete_detect";
     case TRACE_DUMP:       return "dump";
-    case TRACE_EXFIL_BURST: return "exfil_burst";
+    case TRACE_EXFIL_DETECT: return "exfil_detect";
     case TRACE_A11Y_ABUSE:        return "a11y_abuse";
     case TRACE_FILELESS_EXEC:     return "fileless_exec";
     case TRACE_MEDIAPROJ_ABUSE:   return "mediaproj_abuse";

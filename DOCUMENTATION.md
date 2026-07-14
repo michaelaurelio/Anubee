@@ -1035,7 +1035,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
-- **`exfil-burst`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
+- **`exfil-detect`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
   `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
   media-subdir- or credential-shaped-filename read (reusing `file_access`'s
   pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
@@ -1129,7 +1129,7 @@ longer lost from the file:
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
-- `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
+- `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
@@ -1148,7 +1148,7 @@ Both orderings are harmless (the sink stays open for both calls either way)
 but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-burst`,
+key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-detect`,
 `a11y-abuse`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 

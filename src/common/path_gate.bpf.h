@@ -29,7 +29,7 @@ static __always_inline int path_has_prefix(const char *path, const char *prefix,
 // (FILE_PATH_LEN), so indexing up to 48+16=64 is always safe. The 48-byte
 // window is a deliberate bound (mirrors path_hash's own 64-byte bound) --
 // a needle only appearing later in an unusually long path is a documented,
-// accepted miss, not a correctness bug (see mod exfil-burst design doc).
+// accepted miss, not a correctness bug (see mod exfil-detect design doc).
 static __always_inline int path_has_component(const char *path, const char *needle, int nlen)
 {
     #pragma unroll

@@ -78,7 +78,7 @@ enum {
     MOD_EV_PROP_READ  = 7,
     MOD_EV_FILE_ACCESS = 8,
     MOD_EV_MASSDELETE_DETECT = 9,
-    MOD_EV_EXFIL_BURST = 10,
+    MOD_EV_EXFIL_DETECT = 10,
     MOD_EV_A11Y_ABUSE = 11,
     MOD_EV_FILELESS_EXEC = 12,
     MOD_EV_MEDIAPROJ_ABUSE = 13,
@@ -139,7 +139,7 @@ struct massdelete_detect_event {
     char   sample_path[FILE_PATH_LEN];
 };
 
-struct exfil_burst_event {
+struct exfil_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];

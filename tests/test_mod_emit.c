@@ -18,7 +18,7 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage);
-void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
 void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
@@ -262,9 +262,9 @@ int main(void)
     mod_emit_massdelete_detect(&j, &rb, 15, -1);
     CHECK_HAS(j, "\"manage_external_storage\":null", "massdelete_detect manage_external_storage null");
 
-    // ---- exfil_burst: full event, destination known -------------------------
-    struct exfil_burst_event eb = {0};
-    eb.h.type = MOD_EV_EXFIL_BURST;
+    // ---- exfil_detect: full event, destination known -------------------------
+    struct exfil_detect_event eb = {0};
+    eb.h.type = MOD_EV_EXFIL_DETECT;
     eb.h.pid  = 9100;
     eb.h.tid  = 9100;
     eb.ts_ns  = 100000000007ULL;
@@ -274,20 +274,20 @@ int main(void)
     strncpy(eb.sample_path, "/sdcard/DCIM/photo1.jpg", sizeof(eb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_exfil_burst(&j, &eb, "203.0.113.1:443");
-    CHECK_HAS(j, "\"type\":\"exfil_burst\"",       "exfil_burst type");
-    CHECK_HAS(j, "\"pid\":9100",                   "exfil_burst pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_burst ts_ns");
-    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_burst comm");
-    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_burst bytes_sent");
-    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_burst window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_burst sample_path");
-    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_burst dest known");
+    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443");
+    CHECK_HAS(j, "\"type\":\"exfil_detect\"",       "exfil_detect type");
+    CHECK_HAS(j, "\"pid\":9100",                   "exfil_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_detect comm");
+    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_detect bytes_sent");
+    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_detect window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_detect sample_path");
+    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_detect dest known");
 
-    // ---- exfil_burst: no destination observed --------------------------------
+    // ---- exfil_detect: no destination observed --------------------------------
     j.len = 0;
-    mod_emit_exfil_burst(&j, &eb, NULL);
-    CHECK_HAS(j, "\"dest\":null", "exfil_burst dest null");
+    mod_emit_exfil_detect(&j, &eb, NULL);
+    CHECK_HAS(j, "\"dest\":null", "exfil_detect dest null");
 
     // ---- a11y_abuse: full event, service granted -----------------------------
     struct a11y_abuse_event aa = {0};

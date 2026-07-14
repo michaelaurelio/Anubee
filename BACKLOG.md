@@ -444,7 +444,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   see it. Real-app-driven verification (as opposed to a synthetic PID
   trigger) is now `scripts/massdeleteapp/build.sh install` — see
   DOCUMENTATION.md §"Testing tiers".
-- `mod exfil-burst` known v1 limitations (shipped 2026-07-11): contacts/
+- `mod exfil-detect` known v1 limitations (shipped 2026-07-11): contacts/
   SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,
   same structural blind spot as `massdelete-detect`'s MediaStore gap) —
   scoped deliberately to media/credential-file reads, which are visible as
@@ -514,13 +514,13 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
   groups events by `(pid, time window)` using `ts_ns`, and fuses matches
   against a small hardcoded rule table (e.g. `a11y-abuse` + `mediaproj-abuse`
-  + `exfil-burst` on one pid within N seconds) into a higher-confidence
+  + `exfil-detect` on one pid within N seconds) into a higher-confidence
   incident record. Before building: check whether ARES-Desktop or
   `tools/ares-mcp` already does something equivalent client-side —
   `ares-mcp`'s `TraceStore` doesn't currently ingest mod analyzer event
   types into a queryable table at all (only `*_summary` records, via a
   `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
-  missing `a11y_abuse_summary`, `exfil_burst_summary`,
+  missing `a11y_abuse_summary`, `exfil_detect_summary`,
   `fileless_exec_summary`, `mediaproj_abuse_summary` — worth fixing
   regardless of which venue the correlator lands in).
 

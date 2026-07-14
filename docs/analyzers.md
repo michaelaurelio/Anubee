@@ -30,7 +30,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 | `prop-read` | Android `__system_property_*` reads (anti-emulator/root checks) | **Loud** (libc uprobe) |
 | `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs | Stealthy |
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
-| `exfil-burst` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
+| `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `a11y-abuse` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
 | `fileless-exec` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `mediaproj-abuse` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
@@ -39,7 +39,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 other analyzer is a kprobe/tracepoint. Each run also prints (and, with `-o`,
 writes) an end-of-run summary record, see [`reading-traces.md`](reading-traces.md).
 
-## Testing `massdelete-detect`/`exfil-burst` against a real app (manual)
+## Testing `massdelete-detect`/`exfil-detect` against a real app (manual)
 
 The burst analyzers key off genuine app-UID file activity. `scripts/massdeleteapp/build.sh install`
 builds and installs a minimal trigger app for this; it needs **two terminals**:
@@ -76,7 +76,7 @@ adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
 
 - **The UID (step 1 above) and the PID (step 3) are not interchangeable.** The
   UID is who runs the trigger, the PID is what you kill.
-- **`massdelete-detect`/`exfil-burst` need `MANAGE_EXTERNAL_STORAGE`** ("All files
+- **`massdelete-detect`/`exfil-detect` need `MANAGE_EXTERNAL_STORAGE`** ("All files
   access") on the target app. Scoped storage (Android 11+) otherwise blocks the
   signal outright. `massdelete-detect` surfaces whether the app holds it.
 - **Deletes via MediaStore's trash API are invisible** to `massdelete-detect`.

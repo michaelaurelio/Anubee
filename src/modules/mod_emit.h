@@ -13,7 +13,7 @@ struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
 struct massdelete_detect_event; // modules/mod_events.h
-struct exfil_burst_event; // modules/mod_events.h
+struct exfil_detect_event; // modules/mod_events.h
 struct a11y_abuse_event; // modules/mod_events.h
 struct fileless_exec_event; // modules/mod_events.h
 struct mediaproj_abuse_event; // modules/mod_events.h
@@ -57,14 +57,14 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage);
 
-// {"type":"exfil_burst","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
+// {"type":"exfil_detect","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
 //  "sample_path":"..","dest":".."|null}
 // dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
 // builder free of that logic, same pattern as massdelete_detect's
 // distinct_estimate. NULL or empty -> JSON null (no connect() observed before
 // the byte threshold tripped, e.g. all volume went via a pre-attach socket's
 // sendto).
-void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
 
 // {"type":"a11y_abuse","pid":N,"comm":"..","touch_count":N,"window_ms":N,
@@ -72,7 +72,7 @@ void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
 // granted mirrors massdelete_detect's manage_ext_storage tri-state: 1 -> true,
 // 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
 // consumers derive it from touch_count/granted the same way classify_a11y()
-// does, matching massdelete_detect/exfil_burst's convention of exposing raw
+// does, matching massdelete_detect/exfil_detect's convention of exposing raw
 // fields rather than a baked-in classification string.
 void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 

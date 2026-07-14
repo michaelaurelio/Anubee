@@ -4,11 +4,14 @@
 // app, emitting only those whose user backtrace passes through a chosen native
 // library (e.g. a RASP .so).
 //
-//   usage: syscalls -P <package> -l <lib-selector> [options]
+//   usage: syscalls -P <package> [-l <lib-selector> | -a] [options]
 //   where <lib-selector> is a substring or glob (* ? []) of the library name.
+//   With neither -l nor -a, capture-all is the default (-s/-x still narrow the
+//   syscall set).
 //   e.g.   syscalls -P com.example.app -l librasp.so
 //          syscalls -P com.example.app -l 'e_[0-9]*'
 //          syscalls -P com.example.app -a -s openat,read -o out.jsonl
+//          syscalls -P com.example.app -s openat,read      # capture-all, filtered
 //
 // What it does, in order:
 //   1. Resolves the package's app-UID by stat'ing its data dir.
@@ -1280,8 +1283,15 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				copy_str(a->specs[i].mod, name, sizeof(a->specs[i].mod)); // now bare NAME
 			}
 		}
+		// No library scope given (no -l, no lib: spec) and no explicit -a:
+		// default to capture-all rather than refusing to run. -s/-x still
+		// narrow the syscall set; without them a bare run traces every
+		// syscall (the "capturing ALL syscalls" banner makes the firehose
+		// explicit). Previously this was a fatal "-l required" argp_error,
+		// but under ARGP_NO_EXIT it printed and ran on with an empty scope,
+		// dropping every syscall in the pre-arm gate.
 		if (!a->capture_all && a->nlib == 0)
-			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
+			a->capture_all = 1;
 		break;
 	default:
 		return parse_common_arg(key, arg, state, &a->c);

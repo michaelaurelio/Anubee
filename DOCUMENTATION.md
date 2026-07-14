@@ -513,7 +513,9 @@ located the module-base bug and stays available for future CFI diagnosis.
   (`-P`/`-p`/`-l`/`-A`/`-a`/`-s`/`-x`/`-e`/`-F`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/
   `--siblings`/`--no-follow-fork`); option ordering does not matter; `--help` is
   auto-generated; `--version` prints `ares syscalls`. The library selector `-l <selector>`
-  is repeatable and OR'd (each `-l` adds to the match set, not last-wins). `-s`/`-x`
+  is repeatable and OR'd (each `-l` adds to the match set, not last-wins); with
+  **neither `-l` nor `-a`, capture-all is the default** (`-s`/`-x` still narrow the
+  syscall set). `-s`/`-x`
   (syscall allow/deny lists) are also repeatable and accumulate (comma-joined); an `-s`
   allowlist that resolves to zero valid syscalls is now a hard error, not a silent no-op.
   `-e SPEC`/`-F FILE` load probe specs: `syscall:[!]NAME`, `lib:[!]PATTERN`, and

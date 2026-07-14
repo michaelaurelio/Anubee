@@ -102,21 +102,35 @@ static void add_central_dir(const struct zentry *e)
 
 int main(void)
 {
-    struct zentry ea, eb;
+    // AUDIT.md #6: an inner .so basename >127 bytes must survive apk_list_sos()
+    // intact — apk_so_entry.name/apk_so_ref.name were widened from 128 to 256
+    // (matching the fname[256] the basename is read from) so this no longer
+    // truncates silently. Build the oversized basename with snprintf/memset
+    // rather than a raw string literal since it's ~200 bytes.
+    char xs[201];
+    memset(xs, 'x', 200);
+    xs[200] = '\0';
+    char big_name[14 + 200 + 3 + 1];  // "lib/arm64-v8a/" + 200 'x' + ".so" + NUL
+    snprintf(big_name, sizeof(big_name), "lib/arm64-v8a/%s.so", xs);
+    const char *big_base = strrchr(big_name, '/') + 1;  // basename sym_apk.c should return
+
+    struct zentry ea, eb, ec;
     zpos = 0;
     add_stored_entry(&ea, "lib/arm64-v8a/liba.so", "AAAA", 4);
     add_stored_entry(&eb, "lib/arm64-v8a/libb.so", "BBBBBB", 6);
+    add_stored_entry(&ec, big_name, "CCCCCCCC", 8);
 
     uint32_t cd_off = (uint32_t)zpos;
     add_central_dir(&ea);
     add_central_dir(&eb);
+    add_central_dir(&ec);
     uint32_t cd_size = (uint32_t)zpos - cd_off;
 
     put_le32(0x06054b50);  // EOCD signature
     put_le16(0);             // disk number
     put_le16(0);             // disk with CD
-    put_le16(2);             // entries on this disk
-    put_le16(2);             // total entries
+    put_le16(3);             // entries on this disk
+    put_le16(3);             // total entries
     put_le32(cd_size);       // CD size
     put_le32(cd_off);        // CD offset
     put_le16(0);              // comment length
@@ -129,17 +143,24 @@ int main(void)
     CHECK(fwrite(zbuf, 1, zpos, f) == zpos, "fixture: fwrite full buffer");
     fclose(f);
 
-    // --- apk_list_sos: enumerate both stored .so entries ---
+    // --- apk_list_sos: enumerate all three stored .so entries ---
     struct apk_so_ref refs[8];
     int n = apk_list_sos(path, refs, 8);
-    CHECK(n == 2, "list_sos: returns 2 entries");
-    if (n == 2) {
+    CHECK(n == 3, "list_sos: returns 3 entries");
+    if (n == 3) {
         CHECK(strcmp(refs[0].name, "liba.so") == 0, "list_sos: entry 0 name");
         CHECK(refs[0].data_start == ea.data_start, "list_sos: entry 0 data_start");
         CHECK(refs[0].size == 4, "list_sos: entry 0 size");
         CHECK(strcmp(refs[1].name, "libb.so") == 0, "list_sos: entry 1 name");
         CHECK(refs[1].data_start == eb.data_start, "list_sos: entry 1 data_start");
         CHECK(refs[1].size == 6, "list_sos: entry 1 size");
+
+        // AUDIT.md #6: >127-byte basename must come back whole, not truncated.
+        CHECK(strlen(big_base) == 203, "list_sos: oversized basename fixture is 203 bytes");
+        CHECK(strlen(refs[2].name) == 203, "list_sos: entry 2 name not truncated to 127 bytes");
+        CHECK(strcmp(refs[2].name, big_base) == 0, "list_sos: entry 2 name matches full basename");
+        CHECK(refs[2].data_start == ec.data_start, "list_sos: entry 2 data_start");
+        CHECK(refs[2].size == 8, "list_sos: entry 2 size");
     }
 
     // --- apk_so_name: exact-offset reverse lookup (existing API) ---

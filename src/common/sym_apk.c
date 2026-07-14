@@ -28,7 +28,11 @@
 #define APK_CACHE_MAX  8
 
 struct apk_so_entry {
-	char     name[128];    // inner .so basename, e.g. "libnative.so"
+	char     name[256];    // inner .so basename, e.g. "libnative.so"
+	                       // AUDIT.md #6: was 128 vs. fname[256] this is read
+	                       // from — a >127-byte basename in a structurally
+	                       // valid APK truncated silently and could
+	                       // misattribute a symbolized stack frame.
 	uint64_t data_start;   // ELF start byte offset within the APK
 	uint64_t size;
 };

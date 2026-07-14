@@ -334,6 +334,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
         if (g_uid < 0) {
             fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
+            if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }  // AUDIT.md #7d
             return 1;
         }
     }
@@ -401,6 +402,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
 err_skel:
     ares_dump__destroy(skel);
+    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }  // AUDIT.md #7d
     return 1;
 }
 

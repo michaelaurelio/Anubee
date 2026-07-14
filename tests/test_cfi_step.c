@@ -35,6 +35,25 @@ static const uint8_t DF_PAC2[] = {
     0x0c,0x1d,0x10, 0x2d, 0x0a, 0x2d, 0x0b, 0x9e,0x02, 0x00
 };
 
+/* Same CIE as DF5 (CFA=sp+0, RA=reg30, data_align=-4). FDE over [0x100,0x200):
+ * def_cfa x29,16 (CFA=x29+16); DW_CFA_offset x30, ULEB128(8202) -> off = 8202*-4
+ * = -32808.
+ *
+ * AUDIT.md C3: with x[29]=0x8010 (this file's convention), CFA = 0x8020, so the
+ * RA slot = CFA + off = 0x8020 + (-32808) = 0xFFFFFFFFFFFFFFF8 (UINT64_MAX-7) --
+ * an attacker-chosen CFI offset that pushes the computed address to just below
+ * 2^64. Under the OLD buggy read64 check, slot+8 wraps to 0 (<= stack_base +
+ * stack_len), so the OOB read would have been let through; the fix must reject
+ * it cleanly (return 0, CFI_RA_READFAULT) instead. */
+static const uint8_t DF_WRAP[] = {
+    0x14,0x00,0x00,0x00, 0xff,0xff,0xff,0xff, 0x04,0x00,0x08,0x00, 0x01,0x7c,0x1e,
+    0x0c,0x1f,0x00, 0x00,0x00,0x00,0x00,0x00,0x00,
+    0x1a,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x0c,0x1d,0x10, 0x9e,0x8a,0x40
+};
+
 static void st64(uint8_t *buf, uint64_t v) { for (int i=0;i<8;i++) buf[i]=(uint8_t)(v>>(8*i)); }
 
 int main(void)
@@ -153,6 +172,33 @@ int main(void)
 		assert(dp.ra_signed == 1);
 		assert(dp.ra_value == 0x0000000001234560ull);  /* diag reports the stripped PC */
 		cfi_section_free(&psec);
+	}
+
+	/* AUDIT.md C3: a DW_CFA_offset large enough to wrap the computed RA slot
+	 * address near UINT64_MAX must be rejected cleanly, not read OOB. */
+	{
+		struct cfi_section sw;
+		assert(cfi_parse_debug_frame(&sw, DF_WRAP, sizeof(DF_WRAP)) == 0 && sw.nfde == 1);
+
+		struct cfi_cfa_state stw;
+		assert(cfi_run_program(&sw, 0x140, &stw) == 0);
+		assert(stw.cfa_reg == 29 && stw.cfa_off == 16);
+		/* Self-verify the ULEB128(8202) encoding decoded to the intended offset. */
+		assert(stw.cols[30].kind == CFI_AT_CFA && stw.cols[30].off == -32808);
+
+		uint64_t xw[31]; memset(xw, 0, sizeof(xw)); xw[29] = 0x8010; /* CFA = 0x8020 */
+		uint64_t spw = 0x8000, pcw = 0x140;
+		struct cfi_step_diag dw; memset(&dw, 0, sizeof(dw));
+		int rw = cfi_step(&sw, 0x140, xw, &spw, &pcw, stack, 0x8000, sizeof(stack), &dw);
+		assert(rw == 0);           /* rejected cleanly, no crash / no OOB read */
+		assert(dw.fde_found == 1); /* this is a read-fault, not a lookup miss */
+		/* Self-verify the wrap: CFA(0x8020) + off(-32808) == UINT64_MAX-7. Under
+		 * the OLD check, slot+8 would wrap to 0 (<= stack_base+stack_len) and
+		 * incorrectly pass the bounds check. */
+		assert(dw.ra_slot == 0xFFFFFFFFFFFFFFF8ull);
+		assert(dw.stop_reason == CFI_RA_READFAULT);
+
+		cfi_section_free(&sw);
 	}
 
 	return 0;

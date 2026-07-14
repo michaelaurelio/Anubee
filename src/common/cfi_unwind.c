@@ -1139,9 +1139,17 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
     }
     if (diag) diag->cfa = cfa;
 
-    /* Bounds-checked 8-byte little-endian read from frozen stack window */
+    /* Bounds-checked 8-byte little-endian read from frozen stack window.
+     *
+     * AUDIT.md C3: the old check compared (addr)+8 against stack_base+stack_len,
+     * both of which can overflow/wrap when addr is attacker-controlled (a crafted
+     * CFI offset can push addr near UINT64_MAX). Rewritten so the only arithmetic
+     * on addr is a subtraction that's provably safe: it only runs once
+     * `(addr) >= stack_base` has already short-circuited true, and the result is
+     * compared against stack_len - 8 (guarded by stack_len >= 8), never added
+     * back into addr. */
 #define read64(addr, valp) \
-    ((addr) >= stack_base && (addr) + 8 <= stack_base + stack_len \
+    ((addr) >= stack_base && stack_len >= 8 && (addr) - stack_base <= stack_len - 8 \
      ? (*(valp) = \
             (uint64_t)stack[(addr)-stack_base]         | \
             ((uint64_t)stack[(addr)-stack_base+1] << 8)  | \

@@ -373,7 +373,10 @@ class TraceStore:
         a.load_structured(baseline)
         b.load_structured(compare)
 
-        base_calls = {(r["module"], r["symbol"]) for r in a.call_histogram(top=MAX_ROWS)}
+        # Untruncated, mirroring base_syscalls below — call_histogram's top-N
+        # display cap must not leak into the "is this new?" check. (AUDIT.md M3)
+        base_calls = {(r[0], r[1]) for r in a.con.execute(
+            "SELECT DISTINCT module, symbol FROM calls").fetchall()}
         new_calls = [r for r in b.call_histogram(top=MAX_ROWS)
                      if (r["module"], r["symbol"]) not in base_calls]
         new_calls.sort(key=lambda r: r["n"], reverse=True)

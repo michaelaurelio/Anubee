@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # Standalone self-asserting test for diff_calls and span_timeline.
 # Run: python3 tools/ares-mcp/test_diff_timeline.py  (no pytest dependency)
+import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from trace_store import TraceStore  # noqa: E402
+from trace_store import TraceStore, MAX_ROWS  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
 BASELINE = os.path.join(DATA, "spans.jsonl")
@@ -66,6 +68,36 @@ def main():
     check(len(filtered) == 1, f"tid filter narrows to 1 span (got {len(filtered)})")
     if filtered:
         check(filtered[0]["span"] == 7, "tid=102 timeline row is span 7")
+
+    # -- diff_calls (AUDIT.md M3): a baseline with MAX_ROWS high-frequency
+    # call-sites (count=2 each) plus one LOW-frequency call-site (count=1) that
+    # call_histogram(top=MAX_ROWS)'s ranking pushes below the cutoff. The
+    # low-frequency site also appears in `compare`; it must NOT be reported as
+    # "new" — base_calls has to come from an untruncated query, not the
+    # top-N-by-count display cap.
+    with tempfile.TemporaryDirectory() as tmp:
+        base_path = os.path.join(tmp, "many_calls_base.jsonl")
+        cmp_path = os.path.join(tmp, "many_calls_cmp.jsonl")
+
+        def call_rec(symbol):
+            return json.dumps({"type": "call", "pid": 100, "tid": 101,
+                                "module": "libc.so", "symbol": symbol,
+                                "entry_addr": "0x1", "args": []})
+
+        with open(base_path, "w") as f:
+            for i in range(MAX_ROWS):
+                f.write(call_rec(f"hot{i}") + "\n")
+                f.write(call_rec(f"hot{i}") + "\n")   # count=2, ranks above the rare one
+            f.write(call_rec("rare_call") + "\n")      # count=1, ranks below the top-N cutoff
+
+        with open(cmp_path, "w") as f:
+            f.write(call_rec("rare_call") + "\n")
+
+        many_diff = ts.diff_calls(base_path, cmp_path)
+        new_sites = {(r["module"], r["symbol"]) for r in many_diff["new_calls"]}
+        check(("libc.so", "rare_call") not in new_sites,
+              f"low-frequency baseline call-site below the top-{MAX_ROWS} cutoff "
+              f"is not misreported as new (got new_calls={many_diff['new_calls']})")
 
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0

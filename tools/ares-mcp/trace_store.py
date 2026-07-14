@@ -478,7 +478,7 @@ class TraceStore:
                          self._one("SELECT max(id) FROM events")],
             "threads": self._rows(
                 "SELECT tid, count(*) AS events FROM events GROUP BY 1 "
-                "ORDER BY events DESC"),
+                f"ORDER BY events DESC LIMIT {MAX_ROWS}"),   # AUDIT.md M1
             "top_syscalls": self._rows(
                 "SELECT syscall, count(*) AS count FROM events GROUP BY 1 "
                 "ORDER BY count DESC LIMIT 25"),
@@ -517,7 +517,7 @@ class TraceStore:
         self._require()
         out = []
         for t in self._rows("SELECT tid, count(*) AS events FROM events GROUP BY 1 "
-                            "ORDER BY events DESC"):
+                            f"ORDER BY events DESC LIMIT {MAX_ROWS}"):   # AUDIT.md M1
             t["top_syscalls"] = self._rows(
                 "SELECT syscall, count(*) AS count FROM events WHERE tid = ? "
                 "GROUP BY 1 ORDER BY count DESC LIMIT 6", [t["tid"]])

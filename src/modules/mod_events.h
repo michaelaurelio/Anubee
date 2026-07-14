@@ -18,7 +18,7 @@
 #define PROP_NAME_LEN   128
 #define PROP_VALUE_LEN   96
 #define FILE_PATH_LEN   256
-// RING_LEN > THRESHOLD is load-bearing (see ransomware_burst.bpf.c): the
+// RING_LEN > THRESHOLD is load-bearing (see massdelete_detect.bpf.c): the
 // per-pid hash ring never wraps before a window resets, so at emit time the
 // first `touch_count` ring slots are always exactly this window's hashes --
 // no stale cross-window data, no wraparound bookkeeping needed. RING_LEN must
@@ -26,35 +26,35 @@
 // mask (not `%`) because the BPF verifier can prove a constant-mask AND is
 // bounded but can't range-track a non-power-of-2 modulo's multiply/shift
 // codegen -- confirmed on-device (-EACCES "unbounded memory access" at 24).
-#define RANSOMWARE_BURST_RING_LEN 32
-#define BURST_THRESHOLD           20
+#define MASSDELETE_DETECT_RING_LEN 32
+#define MASSDELETE_DETECT_THRESHOLD           20
 
-// Per-pid sliding-window burst counter for mod a11y-abuse (see
-// a11y_abuse.bpf.c). Same load-bearing relationship as
-// RANSOMWARE_BURST_RING_LEN/BURST_THRESHOLD above: the ring must never wrap
+// Per-pid sliding-window burst counter for mod accessibility-detect (see
+// accessibility_detect.bpf.c). Same load-bearing relationship as
+// MASSDELETE_DETECT_RING_LEN/MASSDELETE_DETECT_THRESHOLD above: the ring must never wrap
 // before a window resets (RING_LEN > THRESHOLD), and the slot index uses a
 // `& (RING_LEN-1)` mask, so RING_LEN must stay a power of two (the BPF
 // verifier can't range-track a non-pow2 modulo).
-#define A11Y_CODE_RING_LEN 64
-#define A11Y_THRESHOLD     50
+#define ACCESSIBILITY_DETECT_CODE_RING_LEN 64
+#define ACCESSIBILITY_DETECT_THRESHOLD     50
 
-// Truncated capture buffer for the fileless-exec analyzer's anon_name field
-// (see fileless_exec.bpf.c). Not a ring/threshold pair like the burst
+// Truncated capture buffer for the fileless-detect analyzer's anon_name field
+// (see fileless_detect.bpf.c). Not a ring/threshold pair like the burst
 // analyzers above -- this is a single fixed-size string buffer, sized to
 // comfortably hold ART's own tags (e.g. "dalvik-jit-code-cache" is 22
 // bytes) plus headroom for whatever a non-ART caller might have set.
-#define FILELESS_TAG_LEN 32
+#define FILELESS_DETECT_TAG_LEN 32
 
 // Grace window between an anon+exec mmap candidate landing in pending_map
 // and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
-// See fileless_exec.bpf.c's two-hook mmap+prctl correlate/suppress design.
-#define FILELESS_GRACE_NS (250ULL * 1000000ULL)
+// See fileless_detect.bpf.c's two-hook mmap+prctl correlate/suppress design.
+#define FILELESS_DETECT_GRACE_NS (250ULL * 1000000ULL)
 
-// BPF map key/value for fileless-exec's pending-alert map: mmap-time state
+// BPF map key/value for fileless-detect's pending-alert map: mmap-time state
 // that gets suppressed if a matching dalvik-tagged
-// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_GRACE_NS, or
-// graduates into an alert if not. Shared between fileless_exec.bpf.c
-// (writer, both hooks) and fileless_exec.c (background-thread reader).
+// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_DETECT_GRACE_NS, or
+// graduates into an alert if not. Shared between fileless_detect.bpf.c
+// (writer, both hooks) and fileless_detect.c (background-thread reader).
 struct fileless_pending_key {
     __u32 pid;
     __u32 _pad;
@@ -77,11 +77,11 @@ enum {
     MOD_EV_PROP_SCAN  = 6,
     MOD_EV_PROP_READ  = 7,
     MOD_EV_FILE_ACCESS = 8,
-    MOD_EV_RANSOMWARE_BURST = 9,
-    MOD_EV_EXFIL_BURST = 10,
-    MOD_EV_A11Y_ABUSE = 11,
-    MOD_EV_FILELESS_EXEC = 12,
-    MOD_EV_MEDIAPROJ_ABUSE = 13,
+    MOD_EV_MASSDELETE_DETECT = 9,
+    MOD_EV_EXFIL_DETECT = 10,
+    MOD_EV_ACCESSIBILITY_DETECT = 11,
+    MOD_EV_FILELESS_DETECT = 12,
+    MOD_EV_SCREENCAPTURE_DETECT = 13,
 };
 
 struct spawn_event {
@@ -129,17 +129,17 @@ struct file_access_event {
     __u8  _pad[4];
 };
 
-struct ransomware_burst_event {
+struct massdelete_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
-    __u64  path_hashes[RANSOMWARE_BURST_RING_LEN];
+    __u64  path_hashes[MASSDELETE_DETECT_RING_LEN];
     char   sample_path[FILE_PATH_LEN];
 };
 
-struct exfil_burst_event {
+struct exfil_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
@@ -150,25 +150,25 @@ struct exfil_burst_event {
     __u32  dest_len;          // 0 if no connect() was observed before threshold
 };
 
-struct a11y_abuse_event {
+struct accessibility_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
-    __u32  code_samples[A11Y_CODE_RING_LEN];
+    __u32  code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
 };
 
-struct fileless_exec_event {
+struct fileless_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  start;
     __u64  size;
-    char   anon_name[FILELESS_TAG_LEN];
+    char   anon_name[FILELESS_DETECT_TAG_LEN];
 };
 
-struct mediaproj_abuse_event {
+struct screencapture_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];

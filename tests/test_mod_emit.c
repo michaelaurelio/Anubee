@@ -16,13 +16,13 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 #include "modules/file_access_classify.h"
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
-void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage);
-void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
-void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
-void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
-void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -229,9 +229,9 @@ int main(void)
     mod_emit_file_access(&j, &fa3, 0, flags1, 1);
     CHECK_HAS(j, "\"categories\":[]", "file_access empty categories array when uncategorized");
 
-    // ---- ransomware_burst: full event, MANAGE_EXTERNAL_STORAGE granted ------
-    struct ransomware_burst_event rb = {0};
-    rb.h.type = MOD_EV_RANSOMWARE_BURST;
+    // ---- massdelete_detect: full event, MANAGE_EXTERNAL_STORAGE granted ------
+    struct massdelete_detect_event rb = {0};
+    rb.h.type = MOD_EV_MASSDELETE_DETECT;
     rb.h.pid  = 9000;
     rb.h.tid  = 9000;
     rb.ts_ns  = 100000000006ULL;
@@ -241,30 +241,30 @@ int main(void)
     strncpy(rb.sample_path, "/sdcard/DCIM/photo1.jpg.locked", sizeof(rb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, 1);
-    CHECK_HAS(j, "\"type\":\"ransomware_burst\"",  "ransomware_burst type");
-    CHECK_HAS(j, "\"pid\":9000",                   "ransomware_burst pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000006",         "ransomware_burst ts_ns");
-    CHECK_HAS(j, "\"comm\":\"malware\"",           "ransomware_burst comm");
-    CHECK_HAS(j, "\"touch_count\":20",             "ransomware_burst touch_count");
-    CHECK_HAS(j, "\"distinct_estimate\":15",       "ransomware_burst distinct_estimate");
-    CHECK_HAS(j, "\"window_ms\":3500",             "ransomware_burst window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "ransomware_burst sample_path");
-    CHECK_HAS(j, "\"manage_external_storage\":true", "ransomware_burst manage_external_storage true");
+    mod_emit_massdelete_detect(&j, &rb, 15, 1);
+    CHECK_HAS(j, "\"type\":\"massdelete_detect\"",  "massdelete_detect type");
+    CHECK_HAS(j, "\"pid\":9000",                   "massdelete_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000006",         "massdelete_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"malware\"",           "massdelete_detect comm");
+    CHECK_HAS(j, "\"touch_count\":20",             "massdelete_detect touch_count");
+    CHECK_HAS(j, "\"distinct_estimate\":15",       "massdelete_detect distinct_estimate");
+    CHECK_HAS(j, "\"window_ms\":3500",             "massdelete_detect window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "massdelete_detect sample_path");
+    CHECK_HAS(j, "\"manage_external_storage\":true", "massdelete_detect manage_external_storage true");
 
-    // ---- ransomware_burst: MANAGE_EXTERNAL_STORAGE checked, not granted -----
+    // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE checked, not granted -----
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, 0);
-    CHECK_HAS(j, "\"manage_external_storage\":false", "ransomware_burst manage_external_storage false");
+    mod_emit_massdelete_detect(&j, &rb, 15, 0);
+    CHECK_HAS(j, "\"manage_external_storage\":false", "massdelete_detect manage_external_storage false");
 
-    // ---- ransomware_burst: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
+    // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, -1);
-    CHECK_HAS(j, "\"manage_external_storage\":null", "ransomware_burst manage_external_storage null");
+    mod_emit_massdelete_detect(&j, &rb, 15, -1);
+    CHECK_HAS(j, "\"manage_external_storage\":null", "massdelete_detect manage_external_storage null");
 
-    // ---- exfil_burst: full event, destination known -------------------------
-    struct exfil_burst_event eb = {0};
-    eb.h.type = MOD_EV_EXFIL_BURST;
+    // ---- exfil_detect: full event, destination known -------------------------
+    struct exfil_detect_event eb = {0};
+    eb.h.type = MOD_EV_EXFIL_DETECT;
     eb.h.pid  = 9100;
     eb.h.tid  = 9100;
     eb.ts_ns  = 100000000007ULL;
@@ -274,24 +274,24 @@ int main(void)
     strncpy(eb.sample_path, "/sdcard/DCIM/photo1.jpg", sizeof(eb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_exfil_burst(&j, &eb, "203.0.113.1:443");
-    CHECK_HAS(j, "\"type\":\"exfil_burst\"",       "exfil_burst type");
-    CHECK_HAS(j, "\"pid\":9100",                   "exfil_burst pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_burst ts_ns");
-    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_burst comm");
-    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_burst bytes_sent");
-    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_burst window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_burst sample_path");
-    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_burst dest known");
+    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443");
+    CHECK_HAS(j, "\"type\":\"exfil_detect\"",       "exfil_detect type");
+    CHECK_HAS(j, "\"pid\":9100",                   "exfil_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"spyware\"",           "exfil_detect comm");
+    CHECK_HAS(j, "\"bytes_sent\":600000",          "exfil_detect bytes_sent");
+    CHECK_HAS(j, "\"window_ms\":4200",             "exfil_detect window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_detect sample_path");
+    CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_detect dest known");
 
-    // ---- exfil_burst: no destination observed --------------------------------
+    // ---- exfil_detect: no destination observed --------------------------------
     j.len = 0;
-    mod_emit_exfil_burst(&j, &eb, NULL);
-    CHECK_HAS(j, "\"dest\":null", "exfil_burst dest null");
+    mod_emit_exfil_detect(&j, &eb, NULL);
+    CHECK_HAS(j, "\"dest\":null", "exfil_detect dest null");
 
-    // ---- a11y_abuse: full event, service granted -----------------------------
-    struct a11y_abuse_event aa = {0};
-    aa.h.type = MOD_EV_A11Y_ABUSE;
+    // ---- accessibility_detect: full event, service granted -----------------------------
+    struct accessibility_detect_event aa = {0};
+    aa.h.type = MOD_EV_ACCESSIBILITY_DETECT;
     aa.h.pid  = 9200;
     aa.h.tid  = 9200;
     aa.ts_ns  = 100000000008ULL;
@@ -300,28 +300,28 @@ int main(void)
     aa.window_ms   = 2100;
 
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, 1);
-    CHECK_HAS(j, "\"type\":\"a11y_abuse\"", "a11y_abuse type");
-    CHECK_HAS(j, "\"pid\":9200",            "a11y_abuse pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000008",  "a11y_abuse ts_ns");
-    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "a11y_abuse comm");
-    CHECK_HAS(j, "\"touch_count\":50",      "a11y_abuse touch_count");
-    CHECK_HAS(j, "\"window_ms\":2100",      "a11y_abuse window_ms");
-    CHECK_HAS(j, "\"granted\":true",        "a11y_abuse granted true");
+    mod_emit_accessibility_detect(&j, &aa, 1);
+    CHECK_HAS(j, "\"type\":\"accessibility_detect\"", "accessibility_detect type");
+    CHECK_HAS(j, "\"pid\":9200",            "accessibility_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000008",  "accessibility_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "accessibility_detect comm");
+    CHECK_HAS(j, "\"touch_count\":50",      "accessibility_detect touch_count");
+    CHECK_HAS(j, "\"window_ms\":2100",      "accessibility_detect window_ms");
+    CHECK_HAS(j, "\"granted\":true",        "accessibility_detect granted true");
 
-    // ---- a11y_abuse: checked, not granted -------------------------------------
+    // ---- accessibility_detect: checked, not granted -------------------------------------
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, 0);
-    CHECK_HAS(j, "\"granted\":false", "a11y_abuse granted false");
+    mod_emit_accessibility_detect(&j, &aa, 0);
+    CHECK_HAS(j, "\"granted\":false", "accessibility_detect granted false");
 
-    // ---- a11y_abuse: grant check unresolved (unknown) -------------------------
+    // ---- accessibility_detect: grant check unresolved (unknown) -------------------------
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, -1);
-    CHECK_HAS(j, "\"granted\":null", "a11y_abuse granted null");
+    mod_emit_accessibility_detect(&j, &aa, -1);
+    CHECK_HAS(j, "\"granted\":null", "accessibility_detect granted null");
 
-    // ---- fileless_exec: untagged (no anon_name) -------------------------------
-    struct fileless_exec_event fe = {0};
-    fe.h.type = MOD_EV_FILELESS_EXEC;
+    // ---- fileless_detect: untagged (no anon_name) -------------------------------
+    struct fileless_detect_event fe = {0};
+    fe.h.type = MOD_EV_FILELESS_DETECT;
     fe.h.pid  = 9300;
     fe.h.tid  = 9300;
     fe.ts_ns  = 100000000009ULL;
@@ -330,28 +330,28 @@ int main(void)
     fe.size  = 4096;
 
     j.len = 0;
-    mod_emit_fileless_exec(&j, &fe);
-    CHECK_HAS(j, "\"type\":\"fileless_exec\"",     "fileless_exec type");
-    CHECK_HAS(j, "\"pid\":9300",                    "fileless_exec pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_exec ts_ns");
-    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_exec comm");
-    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_exec start hex");
-    CHECK_HAS(j, "\"size\":4096",                   "fileless_exec size");
-    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_exec anon_name empty");
+    mod_emit_fileless_detect(&j, &fe);
+    CHECK_HAS(j, "\"type\":\"fileless_detect\"",     "fileless_detect type");
+    CHECK_HAS(j, "\"pid\":9300",                    "fileless_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_detect comm");
+    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_detect start hex");
+    CHECK_HAS(j, "\"size\":4096",                   "fileless_detect size");
+    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_detect anon_name empty");
 
-    // ---- fileless_exec: tagged (non-dalvik anon_name present) -----------------
+    // ---- fileless_detect: tagged (non-dalvik anon_name present) -----------------
     // Exercises the serializer only -- nothing in the current runtime path
     // (pending_map + dalvik- suppression) ever actually populates a
-    // non-empty anon_name; this just proves mod_emit_fileless_exec()
+    // non-empty anon_name; this just proves mod_emit_fileless_detect()
     // correctly serializes whatever value it's given.
-    strncpy(fe.anon_name, "v8-jit", FILELESS_TAG_LEN - 1);
+    strncpy(fe.anon_name, "v8-jit", FILELESS_DETECT_TAG_LEN - 1);
     j.len = 0;
-    mod_emit_fileless_exec(&j, &fe);
-    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_exec anon_name tagged");
+    mod_emit_fileless_detect(&j, &fe);
+    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_detect anon_name tagged");
 
-    // ---- mediaproj_abuse: full event with Binder-call context -----------------
-    struct mediaproj_abuse_event mp = {0};
-    mp.h.type = MOD_EV_MEDIAPROJ_ABUSE;
+    // ---- screencapture_detect: full event with Binder-call context -----------------
+    struct screencapture_detect_event mp = {0};
+    mp.h.type = MOD_EV_SCREENCAPTURE_DETECT;
     mp.h.pid  = 9400;
     mp.h.tid  = 9400;
     mp.ts_ns  = 100000000010ULL;
@@ -359,18 +359,18 @@ int main(void)
     mp.binder_calls_context = 7;
 
     j.len = 0;
-    mod_emit_mediaproj_abuse(&j, &mp);
-    CHECK_HAS(j, "\"type\":\"mediaproj_abuse\"",   "mediaproj_abuse type");
-    CHECK_HAS(j, "\"pid\":9400",                    "mediaproj_abuse pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000010",          "mediaproj_abuse ts_ns");
-    CHECK_HAS(j, "\"comm\":\"fakebank\"",           "mediaproj_abuse comm");
-    CHECK_HAS(j, "\"binder_calls_context\":7",      "mediaproj_abuse binder_calls_context");
+    mod_emit_screencapture_detect(&j, &mp);
+    CHECK_HAS(j, "\"type\":\"screencapture_detect\"",   "screencapture_detect type");
+    CHECK_HAS(j, "\"pid\":9400",                    "screencapture_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000010",          "screencapture_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",           "screencapture_detect comm");
+    CHECK_HAS(j, "\"binder_calls_context\":7",      "screencapture_detect binder_calls_context");
 
-    // ---- mediaproj_abuse: zero Binder-call context (pid unresolved case) ------
+    // ---- screencapture_detect: zero Binder-call context (pid unresolved case) ------
     mp.binder_calls_context = 0;
     j.len = 0;
-    mod_emit_mediaproj_abuse(&j, &mp);
-    CHECK_HAS(j, "\"binder_calls_context\":0", "mediaproj_abuse binder_calls_context zero");
+    mod_emit_screencapture_detect(&j, &mp);
+    CHECK_HAS(j, "\"binder_calls_context\":0", "screencapture_detect binder_calls_context zero");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for the pure ransomware-burst distinct-count and
+// Host unit tests for the pure massdelete-detect distinct-count and
 // classification logic.
 #include <linux/types.h>
 #include <stdio.h>
-#include "modules/ransomware_burst_classify.h"
+#include "modules/massdelete_detect_classify.h"
 
 static int checks = 0, failures = 0;
 #define CHECK(cond, msg) do {                                 \
@@ -34,26 +34,26 @@ int main(void)
     CHECK(burst_distinct_count(uniq, -1) == 0, "negative n -> distinct 0 (defensive)");
 
     // ---- classify_burst: at the distinct floor, threshold met -------------------
-    unsigned c = classify_burst(BURST_THRESHOLD, BURST_DISTINCT_MIN, -1);
-    CHECK(c & RB_BURST_DETECTED, "touch>=threshold, distinct==floor -> burst detected");
-    CHECK(!(c & RB_MANAGE_EXT_STORAGE), "manage_ext_storage unknown -> tag not set");
+    unsigned c = classify_burst(MASSDELETE_DETECT_THRESHOLD, MASSDELETE_DETECT_DISTINCT_MIN, -1);
+    CHECK(c & MASSDELETE_DETECT_BURST_DETECTED, "touch>=threshold, distinct==floor -> burst detected");
+    CHECK(!(c & MASSDELETE_DETECT_MANAGE_EXT_STORAGE), "manage_ext_storage unknown -> tag not set");
 
     // ---- classify_burst: just under the distinct floor ---------------------------
-    c = classify_burst(BURST_THRESHOLD, BURST_DISTINCT_MIN - 1, -1);
-    CHECK(!(c & RB_BURST_DETECTED), "distinct just under floor -> not detected");
+    c = classify_burst(MASSDELETE_DETECT_THRESHOLD, MASSDELETE_DETECT_DISTINCT_MIN - 1, -1);
+    CHECK(!(c & MASSDELETE_DETECT_BURST_DETECTED), "distinct just under floor -> not detected");
 
     // ---- classify_burst: touch_count below threshold (defensive gate) -----------
-    c = classify_burst(BURST_THRESHOLD - 1, BURST_THRESHOLD, -1);
-    CHECK(!(c & RB_BURST_DETECTED), "touch_count under threshold -> not detected even if distinct is high");
+    c = classify_burst(MASSDELETE_DETECT_THRESHOLD - 1, MASSDELETE_DETECT_THRESHOLD, -1);
+    CHECK(!(c & MASSDELETE_DETECT_BURST_DETECTED), "touch_count under threshold -> not detected even if distinct is high");
 
     // ---- classify_burst: MANAGE_EXTERNAL_STORAGE granted, combined with burst ---
-    c = classify_burst(BURST_THRESHOLD, BURST_THRESHOLD, 1);
-    CHECK(c & RB_BURST_DETECTED,     "full distinct burst -> detected");
-    CHECK(c & RB_MANAGE_EXT_STORAGE, "manage_ext_storage granted -> tag set");
+    c = classify_burst(MASSDELETE_DETECT_THRESHOLD, MASSDELETE_DETECT_THRESHOLD, 1);
+    CHECK(c & MASSDELETE_DETECT_BURST_DETECTED,     "full distinct burst -> detected");
+    CHECK(c & MASSDELETE_DETECT_MANAGE_EXT_STORAGE, "manage_ext_storage granted -> tag set");
 
     // ---- classify_burst: checked and NOT granted (distinct from unknown) --------
-    c = classify_burst(BURST_THRESHOLD, BURST_THRESHOLD, 0);
-    CHECK(!(c & RB_MANAGE_EXT_STORAGE), "manage_ext_storage checked-but-denied -> tag not set");
+    c = classify_burst(MASSDELETE_DETECT_THRESHOLD, MASSDELETE_DETECT_THRESHOLD, 0);
+    CHECK(!(c & MASSDELETE_DETECT_MANAGE_EXT_STORAGE), "manage_ext_storage checked-but-denied -> tag not set");
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

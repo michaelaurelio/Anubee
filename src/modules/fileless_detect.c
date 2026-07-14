@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod fileless-exec` — userspace analyzer for the anonymous-
-// executable-mapping signal. Owns the fileless_exec BPF skeleton lifecycle;
+// `ares mod fileless-detect` — userspace analyzer for the anonymous-
+// executable-mapping signal. Owns the fileless_detect BPF skeleton lifecycle;
 // the dispatcher in mod.c drives the poll loop and teardown order. Kernel
-// side: src/modules/fileless_exec.bpf.c.
+// side: src/modules/fileless_detect.bpf.c.
 //
 // Revision 1: detection is no longer ringbuf-driven. do_mmap
 // entry/return writes a candidate into pending_map; __arm64_sys_prctl
 // deletes (suppresses) it if ART's own dalvik- naming follows shortly
 // after. This file owns the other half: a background thread that polls
 // pending_map on a short interval and, for any entry that survives
-// FILELESS_GRACE_NS unsuppressed, builds a struct fileless_exec_event and
-// emits it through the existing mod_emit_fileless_exec()/console-line path
+// FILELESS_DETECT_GRACE_NS unsuppressed, builds a struct fileless_detect_event and
+// emits it through the existing mod_emit_fileless_detect()/console-line path
 // -- unchanged from before this revision. events_rb/the ring buffer
 // ares_analyzer_t.setup() must return exists only to satisfy that
 // interface; it carries no traffic for this analyzer.
@@ -23,7 +23,7 @@
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "fileless_exec.skel.h"
+#include "fileless_detect.skel.h"
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
@@ -64,7 +64,7 @@ static void fileless_stat_add(__u32 pid, const char *comm)
     pthread_mutex_unlock(&fileless_stat_lock);
 }
 
-static struct fileless_exec_bpf *g_skel = NULL;
+static struct fileless_detect_bpf *g_skel = NULL;
 static struct bpf_link          *fileless_ff = NULL;
 static struct ring_buffer       *g_rb = NULL;
 static struct bpf_link          *mmap_entry_link = NULL;
@@ -74,7 +74,7 @@ static struct ares_mod_ctx      *g_mc = NULL;
 
 // ── grace-window background thread ──────────────────────────────────────
 // Polls pending_map every FILELESS_POLL_MS; any entry older than
-// FILELESS_GRACE_NS that's still present (never suppressed by a
+// FILELESS_DETECT_GRACE_NS that's still present (never suppressed by a
 // dalvik-tagged prctl) graduates into an alert.
 
 #define FILELESS_POLL_MS 100
@@ -85,8 +85,8 @@ static int g_poll_thread_running = 0;
 
 static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, const char *comm)
 {
-    struct fileless_exec_event e = {0};
-    e.h.type = MOD_EV_FILELESS_EXEC;
+    struct fileless_detect_event e = {0};
+    e.h.type = MOD_EV_FILELESS_DETECT;
     e.h.pid  = pid;
     e.h.tid  = pid;
     e.ts_ns  = ts_ns;
@@ -97,11 +97,11 @@ static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, co
     fileless_stat_add(pid, comm);
 
     if (!g_mc->quiet) {
-        printf("[fileless-exec] PID:%-6d (%s) anonymous executable mmap, %llu bytes\n",
+        printf("[fileless-detect] PID:%-6d (%s) anonymous executable mmap, %llu bytes\n",
                pid, comm, (unsigned long long)size);
     }
     if (g_mc->sink != NULL) {
-        mod_emit_fileless_exec(&g_mc->sink->jb, &e);
+        mod_emit_fileless_detect(&g_mc->sink->jb, &e);
         ares_sink_emit(g_mc->sink);
     }
 }
@@ -125,7 +125,7 @@ static void *fileless_poll_loop(void *arg)
         while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
             struct fileless_pending_val val;
             if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
-                fileless_now_ns() - val.ts_ns >= FILELESS_GRACE_NS) {
+                fileless_now_ns() - val.ts_ns >= FILELESS_DETECT_GRACE_NS) {
                 fileless_emit_one(next_key.pid, next_key.addr, val.size, val.ts_ns, val.comm);
                 bpf_map_delete_elem(map_fd, &next_key);
                 // A delete mutates the map's iteration order; restart the
@@ -159,13 +159,13 @@ static struct ring_buffer *fileless_setup(int uid, struct ares_mod_ctx *mc)
 {
     g_mc = mc;
 
-    g_skel = fileless_exec_bpf__open();
+    g_skel = fileless_detect_bpf__open();
     if (!g_skel) {
-        fprintf(stderr, "mod fileless-exec: failed to open BPF skeleton\n");
+        fprintf(stderr, "mod fileless-detect: failed to open BPF skeleton\n");
         return NULL;
     }
-    if (fileless_exec_bpf__load(g_skel)) {
-        fprintf(stderr, "mod fileless-exec: failed to load BPF\n");
+    if (fileless_detect_bpf__load(g_skel)) {
+        fprintf(stderr, "mod fileless-detect: failed to load BPF\n");
         goto err;
     }
 
@@ -183,35 +183,35 @@ static struct ring_buffer *fileless_setup(int uid, struct ares_mod_ctx *mc)
 
     mmap_entry_link = bpf_program__attach(g_skel->progs.on_do_mmap_entry);
     if (!mmap_entry_link) {
-        fprintf(stderr, "mod fileless-exec: kprobe/do_mmap unavailable, aborting\n");
+        fprintf(stderr, "mod fileless-detect: kprobe/do_mmap unavailable, aborting\n");
         goto err;
     }
     mmap_ret_link = bpf_program__attach(g_skel->progs.on_do_mmap_exit);
     if (!mmap_ret_link) {
-        fprintf(stderr, "mod fileless-exec: kretprobe/do_mmap unavailable, aborting\n");
+        fprintf(stderr, "mod fileless-detect: kretprobe/do_mmap unavailable, aborting\n");
         goto err;
     }
     prctl_link = bpf_program__attach(g_skel->progs.on_prctl);
     if (!prctl_link) {
-        fprintf(stderr, "mod fileless-exec: kprobe/__arm64_sys_prctl unavailable, aborting\n");
+        fprintf(stderr, "mod fileless-detect: kprobe/__arm64_sys_prctl unavailable, aborting\n");
         goto err;
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         fileless_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
-        if (!fileless_ff) fprintf(stderr, "mod fileless-exec: follow-fork attach failed (non-fatal)\n");
+        if (!fileless_ff) fprintf(stderr, "mod fileless-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             fileless_handle_event, mc, NULL);
     if (!g_rb) {
-        fprintf(stderr, "mod fileless-exec: failed to create ring buffer\n");
+        fprintf(stderr, "mod fileless-detect: failed to create ring buffer\n");
         goto err;
     }
 
     g_poll_stop = 0;
     if (pthread_create(&g_poll_thread, NULL, fileless_poll_loop, NULL) != 0) {
-        fprintf(stderr, "mod fileless-exec: failed to start grace-window poll thread\n");
+        fprintf(stderr, "mod fileless-detect: failed to start grace-window poll thread\n");
         goto err;
     }
     g_poll_thread_running = 1;
@@ -224,7 +224,7 @@ err:
     if (prctl_link)      { bpf_link__destroy(prctl_link);      prctl_link      = NULL; }
     if (fileless_ff)     { bpf_link__destroy(fileless_ff);     fileless_ff     = NULL; }
     if (g_rb)            { ring_buffer__free(g_rb);            g_rb            = NULL; }
-    if (g_skel)          { fileless_exec_bpf__destroy(g_skel); g_skel          = NULL; }
+    if (g_skel)          { fileless_detect_bpf__destroy(g_skel); g_skel          = NULL; }
     return NULL;
 }
 
@@ -241,7 +241,7 @@ static void fileless_teardown(void)
     if (prctl_link)      { bpf_link__destroy(prctl_link);      prctl_link      = NULL; }
     if (fileless_ff)     { bpf_link__destroy(fileless_ff);     fileless_ff     = NULL; }
     if (g_rb)            { ring_buffer__free(g_rb);            g_rb            = NULL; }
-    if (g_skel)          { fileless_exec_bpf__destroy(g_skel); g_skel          = NULL; }
+    if (g_skel)          { fileless_detect_bpf__destroy(g_skel); g_skel          = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
@@ -254,13 +254,13 @@ static void fileless_print_summary(void)
 {
     if (fileless_stat_count == 0) return;
 
-    printf("[fileless-exec] --- Fileless Exec Summary ---------------------------\n");
-    printf("[fileless-exec]   PID     Comm             Count\n");
+    printf("[fileless-detect] --- Fileless Detection Summary ---------------------------\n");
+    printf("[fileless-detect]   PID     Comm             Count\n");
     for (int i = 0; i < fileless_stat_count; i++) {
-        printf("[fileless-exec]  %6u  %-16s  %6u\n",
+        printf("[fileless-detect]  %6u  %-16s  %6u\n",
                fileless_stats[i].pid, fileless_stats[i].comm, fileless_stats[i].count);
     }
-    printf("[fileless-exec]  %d process%s triggered an anonymous-exec mapping\n",
+    printf("[fileless-detect]  %d process%s triggered an anonymous-exec mapping\n",
            fileless_stat_count, fileless_stat_count == 1 ? "" : "es");
 }
 
@@ -271,7 +271,7 @@ static void fileless_emit_summary(struct ares_sink *s)
     struct jbuf *j = &s->jb;
     j->len = 0;
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"fileless_exec_summary\"");
+    jb_s(j, "\"type\":\"fileless_detect_summary\"");
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)fileless_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < fileless_stat_count; i++) {
@@ -293,8 +293,8 @@ static unsigned long long fileless_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_fileless_exec = {
-    .name          = "fileless-exec",
+const ares_analyzer_t analyzer_fileless_detect = {
+    .name          = "fileless-detect",
     .description   = "Detect anonymous executable memory mappings with no ART JIT "
                       "tag (fileless native code execution -- the mechanism behind "
                       "native packers/unpackers and multi-stage droppers that avoid "

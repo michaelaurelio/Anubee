@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the exfil-burst analyzer: trace openat/openat2 (gated to
+// BPF object for the exfil-detect analyzer: trace openat/openat2 (gated to
 // media/credential-classified reads -- arms detection, doesn't count),
 // connect (tracks which (tgid,fd) pairs are non-loopback outbound sockets),
 // sendto/write/writev (byte-volume accumulation once armed+primed), and
 // close (untracks fds). Flags a per-process byte-volume burst to any
 // destination shortly after a sensitive-file read -- the syscall-level
 // signature for bulk media/credential exfiltration. Unlike
-// ransomware_burst, classification is entirely in-kernel: crossing the byte
+// massdelete_detect, classification is entirely in-kernel: crossing the byte
 // threshold IS the detection decision (see design doc for the full
 // signal-model rationale -- why byte-volume not distinct-destination-count,
 // why a single read arms rather than requiring its own burst).
@@ -97,7 +97,7 @@ struct {
 	__type(value, struct exfil_state);
 } exfil_map SEC(".maps");
 
-// Zero-template seed, same idiom as ransomware_burst.bpf.c's burst_zero --
+// Zero-template seed, same idiom as massdelete_detect.bpf.c's burst_zero --
 // struct exfil_state is too large for a safe BPF stack local.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -137,7 +137,7 @@ static __always_inline int sockaddr_is_loopback(const unsigned char *sa)
 }
 
 // Record `n` bytes sent for the current process, once armed+primed. Emits
-// an exfil_burst_event and resets the window when the byte threshold trips.
+// an exfil_detect_event and resets the window when the byte threshold trips.
 static __always_inline void record_bytes(__u64 n)
 {
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
@@ -160,7 +160,7 @@ static __always_inline void record_bytes(__u64 n)
     if (st->bytes_sent < EXFIL_BYTE_THRESHOLD)
         return;
 
-    struct exfil_burst_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+    struct exfil_detect_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
         bump_dropped();
         st->primed = 0;
@@ -169,7 +169,7 @@ static __always_inline void record_bytes(__u64 n)
     }
 
     __u64 id = bpf_get_current_pid_tgid();
-    e->h.type = MOD_EV_EXFIL_BURST;
+    e->h.type = MOD_EV_EXFIL_DETECT;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;

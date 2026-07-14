@@ -46,11 +46,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
   `bpf_d_path` canonicalization to close (see Minor section below).
-- `mod file-access`/`ransomware-burst` `.bpf.o` compiles clean here, but their
+- `mod file-access`/`massdelete-detect` `.bpf.o` compiles clean here, but their
   `*.skel.h` are stale (no `dropped` map) and `bpftool` isn't available in this
   dev env to regenerate them — full userspace compile + on-device confirmation
   of nonzero `ring_drops` is pending (see 2026-07-10 Resolved/Done entry).
-- `mod ransomware-burst` coverage is conditional on scoped-storage bypass
+- `mod massdelete-detect` coverage is conditional on scoped-storage bypass
   (`MANAGE_EXTERNAL_STORAGE` or legacy targetSdk) and doesn't cover
   lock-overlay-style extortion (see Minor section below).
 
@@ -424,7 +424,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   availability (5.10+) and CO-RE reads into `fdtable` internals, and only
   matters when an app deliberately holds a cached dir fd for a sensitive/foreign
   path — narrow compared to the common case (absolute paths).
-- `mod ransomware-burst` known v1 limitations (shipped 2026-07-08): coverage
+- `mod massdelete-detect` known v1 limitations (shipped 2026-07-08): coverage
   depends on the traced app holding `MANAGE_EXTERNAL_STORAGE` or targeting a
   legacy API level — scoped storage (Android 11+) otherwise blocks raw
   `renameat`/`unlinkat` on shared-storage files outright (surfaced via a
@@ -442,11 +442,11 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   `.trashed-*`, still on disk) performed by the MediaProvider process, not
   the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
   see it. Real-app-driven verification (as opposed to a synthetic PID
-  trigger) is now `scripts/burstapp/build.sh install` — see
+  trigger) is now `scripts/massdeleteapp/build.sh install` — see
   DOCUMENTATION.md §"Testing tiers".
-- `mod exfil-burst` known v1 limitations (shipped 2026-07-11): contacts/
+- `mod exfil-detect` known v1 limitations (shipped 2026-07-11): contacts/
   SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,
-  same structural blind spot as `ransomware-burst`'s MediaStore gap) —
+  same structural blind spot as `massdelete-detect`'s MediaStore gap) —
   scoped deliberately to media/credential-file reads, which are visible as
   real `openat` calls. Byte counts are requested length at syscall entry
   (`write`/`writev`/`sendto`'s argument), not a kretprobe-verified
@@ -460,7 +460,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   arming (a soft precondition), not the byte-threshold detection itself.
   `writev()` calls with more than 8 iovecs undercount past the 8th entry
   (bounded-loop limit for verifier provability).
-- `mod a11y-abuse` known v1 limitations (shipped 2026-07-12): no transaction-code
+- `mod accessibility-detect` known v1 limitations (shipped 2026-07-12): no transaction-code
   decode — the analyzer proves "high Binder call volume to `system_server` while
   Accessibility-granted," not *which* privileged action fired (parked, same version-
   treadmill risk shape as ART's `k_table`/`ARES_ART_OFFSETS`). Only gates on
@@ -472,7 +472,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
   `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
   matching.
-- `mod fileless-exec` known v1 limitations (shipped 2026-07-12): false positives from
+- `mod fileless-detect` known v1 limitations (shipped 2026-07-12): false positives from
   legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
   Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
   will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
@@ -496,15 +496,15 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   encryption. This item previously assumed the whole category (Window Manager /
   `SYSTEM_ALERT_WINDOW` / accessibility-service abuse) was "not file syscalls" and
   therefore out of `ares`'s reach — that premise no longer holds for the
-  accessibility-service-abuse slice: `mod a11y-abuse` (shipped 2026-07-12) proves
+  accessibility-service-abuse slice: `mod accessibility-detect` (shipped 2026-07-12) proves
   Binder-mediated behavior is kernel-observable via the `binder_transaction`
   tracepoint. What remains genuinely open is the Window-Manager/overlay-specific
   mechanism itself (`SYSTEM_ALERT_WINDOW` window creation, screen-lock detection) —
-  `a11y-abuse` v1 only signals "Binder-chatty with `system_server` while
+  `accessibility-detect` v1 only signals "Binder-chatty with `system_server` while
   Accessibility-granted," not "created a full-screen overlay." A follow-on
   analyzer targeting `IWindowManager` binder traffic specifically (same
   `system_server`-destination-gating approach) is the natural next step — see
-  `mod a11y-abuse`'s design doc Follow-up ideas.
+  `mod accessibility-detect`'s design doc Follow-up ideas.
 
 - **`mod` cross-analyzer incident correlator — open, now unblocked.** Every
   mod analyzer event carries a real `ts_ns` timestamp as of the
@@ -513,15 +513,15 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   was the prerequisite blocker for this. Next step: a tool (likely
   host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
   groups events by `(pid, time window)` using `ts_ns`, and fuses matches
-  against a small hardcoded rule table (e.g. `a11y-abuse` + `mediaproj-abuse`
-  + `exfil-burst` on one pid within N seconds) into a higher-confidence
+  against a small hardcoded rule table (e.g. `accessibility-detect` + `screencapture-detect`
+  + `exfil-detect` on one pid within N seconds) into a higher-confidence
   incident record. Before building: check whether ARES-Desktop or
   `tools/ares-mcp` already does something equivalent client-side —
   `ares-mcp`'s `TraceStore` doesn't currently ingest mod analyzer event
   types into a queryable table at all (only `*_summary` records, via a
   `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
-  missing `a11y_abuse_summary`, `exfil_burst_summary`,
-  `fileless_exec_summary`, `mediaproj_abuse_summary` — worth fixing
+  missing `accessibility_detect_summary`, `exfil_detect_summary`,
+  `fileless_detect_summary`, `screencapture_detect_summary` — worth fixing
   regardless of which venue the correlator lands in).
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
@@ -682,14 +682,14 @@ is in DOCUMENTATION.md and the referenced specs.
     `correlate.c`'s own compiles are still unverified in this sandbox (no
     `bpftool`/aarch64 toolchain) — a real `make` is the remaining open step.
 
-- **mediaproj-abuse analyzer (shipped 2026-07-13).** New `mod` analyzer
+- **screencapture-detect analyzer (shipped 2026-07-13).** New `mod` analyzer
   detecting active `MediaProjection` screen-capture sessions — see
   DOCUMENTATION.md's `mod` analyzer list for the full design (including two
   design corrections made during development: the interface's
   ring-buffer-stub requirement turned out already precedented by
-  `fileless-exec`, and the initially-planned burst-threshold Binder signal
+  `fileless-detect`, and the initially-planned burst-threshold Binder signal
   was rejected once the concrete event flow showed it doesn't transfer from
-  `a11y-abuse`'s technique to this one). Known v1 limitations: 1s poll
+  `accessibility-detect`'s technique to this one). Known v1 limitations: 1s poll
   interval bounds detection latency; no transaction-code decode; legitimate
   screen-share/remote-support apps false-positive; no frame-content or
   exfil-volume corroboration (proves a session was active, not that data
@@ -820,7 +820,7 @@ is in DOCUMENTATION.md and the referenced specs.
   byte-identical). **Pending:** the `sock[]` field grows `struct event`, so the
   checked-in `src/funcs/ares-tracer.skel.h` is stale and needs `bpftool`
   regeneration (unavailable here — same blocker as the file-access/
-  ransomware-burst drop-telemetry entry below); on-device confirmation that
+  massdelete-detect drop-telemetry entry below); on-device confirmation that
   `ares funcs -c 'libc.so!connect(F,A,V)'` renders `ip:port` folds into the
   standing pending-on-device-verification item.
 
@@ -836,7 +836,7 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **MCP richness follow-on: `*_summary` ingest.** `load_structured` gained a
   bucket for the five mod-analyzer teardown records (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
   `proc_event_summary`) — previously falling into the `skipped` count, same as
   `coverage` did before its fix. Stored as parsed Python dicts on
   `TraceStore._summaries` rather than a DuckDB table (small, bounded records
@@ -859,16 +859,16 @@ is in DOCUMENTATION.md and the referenced specs.
   is meaningful). Closes out the "full `server.py` tool surface for
   `func_spans`/`span_syscalls`/summary records, diff/timeline views" item.
 
-- **`mod file-access`/`mod ransomware-burst` drop-telemetry gap closed.** Both
+- **`mod file-access`/`mod massdelete-detect` drop-telemetry gap closed.** Both
   analyzers now follow the same pattern as `proc-event`/`execve`/`prop-read`:
   `bpf_drop.bpf.h` included, `bump_dropped()` called at each ring-buffer
   reserve-failure site (`file_access.bpf.c`'s `on_openat`/`on_openat2`;
-  `ransomware_burst.bpf.c`'s `record_touch()` re-arm branch — the deliberate
+  `massdelete_detect.bpf.c`'s `record_touch()` re-arm branch — the deliberate
   `bpf_ringbuf_discard` path-gate-reject paths are untouched, not drops), and a
   `*_drops()` accessor (needed adding `common/runtime.h`, previously unincluded
   in these two files) wired into each `ares_analyzer_t.drops` field. Their
   already-emitted `coverage` record's `ring_drops` field goes from always-`0` to
-  accurate. `make build/{file_access,ransomware_burst}.bpf.o` compile clean;
+  accurate. `make build/{file_access,massdelete_detect}.bpf.o` compile clean;
   `make test` green (33+ existing checks incl. both classify suites, unaffected).
   **Pending:** userspace `.c` compile needs `bpftool` to regenerate stale
   `*.skel.h` (`dropped` map missing from the checked-in skeletons) — absent in

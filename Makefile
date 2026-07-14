@@ -78,16 +78,16 @@ PROP_READ_BPF_OBJ  := $(BUILD)/prop_read.bpf.o
 PROP_READ_SKEL     := $(BUILD)/prop_read.skel.h
 FILE_ACCESS_BPF_OBJ := $(BUILD)/file_access.bpf.o
 FILE_ACCESS_SKEL    := $(BUILD)/file_access.skel.h
-RANSOMWARE_BURST_BPF_OBJ := $(BUILD)/ransomware_burst.bpf.o
-RANSOMWARE_BURST_SKEL    := $(BUILD)/ransomware_burst.skel.h
-EXFIL_BURST_BPF_OBJ := $(BUILD)/exfil_burst.bpf.o
-EXFIL_BURST_SKEL    := $(BUILD)/exfil_burst.skel.h
-A11Y_ABUSE_BPF_OBJ := $(BUILD)/a11y_abuse.bpf.o
-A11Y_ABUSE_SKEL    := $(BUILD)/a11y_abuse.skel.h
-FILELESS_EXEC_BPF_OBJ := $(BUILD)/fileless_exec.bpf.o
-FILELESS_EXEC_SKEL    := $(BUILD)/fileless_exec.skel.h
-MEDIAPROJ_ABUSE_BPF_OBJ := $(BUILD)/mediaproj_abuse.bpf.o
-MEDIAPROJ_ABUSE_SKEL    := $(BUILD)/mediaproj_abuse.skel.h
+MASSDELETE_DETECT_BPF_OBJ := $(BUILD)/massdelete_detect.bpf.o
+MASSDELETE_DETECT_SKEL    := $(BUILD)/massdelete_detect.skel.h
+EXFIL_DETECT_BPF_OBJ := $(BUILD)/exfil_detect.bpf.o
+EXFIL_DETECT_SKEL    := $(BUILD)/exfil_detect.skel.h
+ACCESSIBILITY_DETECT_BPF_OBJ := $(BUILD)/accessibility_detect.bpf.o
+ACCESSIBILITY_DETECT_SKEL    := $(BUILD)/accessibility_detect.skel.h
+FILELESS_DETECT_BPF_OBJ := $(BUILD)/fileless_detect.bpf.o
+FILELESS_DETECT_SKEL    := $(BUILD)/fileless_detect.skel.h
+SCREENCAPTURE_DETECT_BPF_OBJ := $(BUILD)/screencapture_detect.bpf.o
+SCREENCAPTURE_DETECT_SKEL    := $(BUILD)/screencapture_detect.skel.h
 
 BPF_CFLAGS_COMMON := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I$(LIBBPF_INC) -I. $(DEPFLAGS)
 
@@ -173,7 +173,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/ransomware_burst_classify.c $(SRC)/modules/a11y_abuse_classify.c $(SRC)/modules/mediaproj_abuse_parse.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/ransomware_burst.c $(SRC)/modules/exfil_burst.c $(SRC)/modules/a11y_abuse.c $(SRC)/modules/fileless_exec.c $(SRC)/modules/mediaproj_abuse.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -286,40 +286,40 @@ $(FILE_ACCESS_BPF_OBJ): $(SRC)/modules/file_access.bpf.c vmlinux.h $(LIBBPF_A)
 $(FILE_ACCESS_SKEL): $(FILE_ACCESS_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name file_access_bpf > $@
 
-$(RANSOMWARE_BURST_BPF_OBJ): $(SRC)/modules/ransomware_burst.bpf.c vmlinux.h $(LIBBPF_A)
+$(MASSDELETE_DETECT_BPF_OBJ): $(SRC)/modules/massdelete_detect.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
-$(RANSOMWARE_BURST_SKEL): $(RANSOMWARE_BURST_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name ransomware_burst_bpf > $@
+$(MASSDELETE_DETECT_SKEL): $(MASSDELETE_DETECT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name massdelete_detect_bpf > $@
 
-$(EXFIL_BURST_BPF_OBJ): $(SRC)/modules/exfil_burst.bpf.c vmlinux.h $(LIBBPF_A)
+$(EXFIL_DETECT_BPF_OBJ): $(SRC)/modules/exfil_detect.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
-$(EXFIL_BURST_SKEL): $(EXFIL_BURST_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name exfil_burst_bpf > $@
+$(EXFIL_DETECT_SKEL): $(EXFIL_DETECT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name exfil_detect_bpf > $@
 
-$(A11Y_ABUSE_BPF_OBJ): $(SRC)/modules/a11y_abuse.bpf.c vmlinux.h $(LIBBPF_A)
+$(ACCESSIBILITY_DETECT_BPF_OBJ): $(SRC)/modules/accessibility_detect.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
-$(A11Y_ABUSE_SKEL): $(A11Y_ABUSE_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name a11y_abuse_bpf > $@
+$(ACCESSIBILITY_DETECT_SKEL): $(ACCESSIBILITY_DETECT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name accessibility_detect_bpf > $@
 
-$(FILELESS_EXEC_BPF_OBJ): $(SRC)/modules/fileless_exec.bpf.c vmlinux.h $(LIBBPF_A)
+$(FILELESS_DETECT_BPF_OBJ): $(SRC)/modules/fileless_detect.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
-$(FILELESS_EXEC_SKEL): $(FILELESS_EXEC_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name fileless_exec_bpf > $@
+$(FILELESS_DETECT_SKEL): $(FILELESS_DETECT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name fileless_detect_bpf > $@
 
-$(MEDIAPROJ_ABUSE_BPF_OBJ): $(SRC)/modules/mediaproj_abuse.bpf.c vmlinux.h $(LIBBPF_A)
+$(SCREENCAPTURE_DETECT_BPF_OBJ): $(SRC)/modules/screencapture_detect.bpf.c vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
-$(MEDIAPROJ_ABUSE_SKEL): $(MEDIAPROJ_ABUSE_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name mediaproj_abuse_bpf > $@
+$(SCREENCAPTURE_DETECT_SKEL): $(SCREENCAPTURE_DETECT_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name screencapture_detect_bpf > $@
 
 # ---- arm64 syscall name table (numbers resolved by the cross compiler) -----
 $(SYSCALLS_TBL):
@@ -367,7 +367,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(RANSOMWARE_BURST_SKEL) $(EXFIL_BURST_SKEL) $(A11Y_ABUSE_SKEL) $(FILELESS_EXEC_SKEL) $(MEDIAPROJ_ABUSE_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(MASSDELETE_DETECT_SKEL) $(EXFIL_DETECT_SKEL) $(ACCESSIBILITY_DETECT_SKEL) $(FILELESS_DETECT_SKEL) $(SCREENCAPTURE_DETECT_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
@@ -538,12 +538,12 @@ test:
 	$(BUILD)/test_dump_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
 	$(BUILD)/test_file_access_classify
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_ransomware_burst_classify.c src/modules/ransomware_burst_classify.c -o $(BUILD)/test_ransomware_burst_classify
-	$(BUILD)/test_ransomware_burst_classify
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_a11y_abuse_classify.c src/modules/a11y_abuse_classify.c -o $(BUILD)/test_a11y_abuse_classify
-	$(BUILD)/test_a11y_abuse_classify
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mediaproj_abuse_parse.c src/modules/mediaproj_abuse_parse.c -o $(BUILD)/test_mediaproj_abuse_parse
-	$(BUILD)/test_mediaproj_abuse_parse
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_massdelete_detect_classify.c src/modules/massdelete_detect_classify.c -o $(BUILD)/test_massdelete_detect_classify
+	$(BUILD)/test_massdelete_detect_classify
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_accessibility_detect_classify.c src/modules/accessibility_detect_classify.c -o $(BUILD)/test_accessibility_detect_classify
+	$(BUILD)/test_accessibility_detect_classify
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_screencapture_detect_parse.c src/modules/screencapture_detect_parse.c -o $(BUILD)/test_screencapture_detect_parse
+	$(BUILD)/test_screencapture_detect_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscalls_attribution.c -o $(BUILD)/test_syscalls_attribution
@@ -581,6 +581,6 @@ ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
                 $(DUMP_OBJ) $(TRACE_OBJ) $(MOD_OBJ) $(MAIN_OBJ)
 ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
                 $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ) \
-                $(FILE_ACCESS_BPF_OBJ) $(RANSOMWARE_BURST_BPF_OBJ) $(EXFIL_BURST_BPF_OBJ) \
-                $(A11Y_ABUSE_BPF_OBJ) $(FILELESS_EXEC_BPF_OBJ) $(MEDIAPROJ_ABUSE_BPF_OBJ)
+                $(FILE_ACCESS_BPF_OBJ) $(MASSDELETE_DETECT_BPF_OBJ) $(EXFIL_DETECT_BPF_OBJ) \
+                $(ACCESSIBILITY_DETECT_BPF_OBJ) $(FILELESS_DETECT_BPF_OBJ) $(SCREENCAPTURE_DETECT_BPF_OBJ)
 -include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

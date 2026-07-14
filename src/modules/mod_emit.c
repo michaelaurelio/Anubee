@@ -136,11 +136,11 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
     jb_c(j, '}');
 }
 
-void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_RANSOMWARE_BURST)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_MASSDELETE_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");         jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');
@@ -156,11 +156,11 @@ void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_eve
     jb_c(j, '}');
 }
 
-void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
+void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_BURST)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_EXFIL_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");         jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');
@@ -176,10 +176,10 @@ void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
     jb_c(j, '}');
 }
 
-void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted)
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_A11Y_ABUSE)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_ACCESSIBILITY_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
@@ -193,10 +193,10 @@ void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int g
     jb_c(j, '}');
 }
 
-void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_EXEC)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
@@ -206,10 +206,10 @@ void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e)
     jb_c(j, '}');
 }
 
-void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e)
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_MEDIAPROJ_ABUSE)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_SCREENCAPTURE_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');

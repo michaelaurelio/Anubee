@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the mediaproj-abuse analyzer: a passive per-pid counter of
+// BPF object for the screencapture-detect analyzer: a passive per-pid counter of
 // outbound Binder transactions to system_server, plus a stub ring buffer.
 // The real detection signal is a userspace dumpsys poll thread
-// (mediaproj_abuse.c) -- this file's tracepoint only supplies supporting
+// (screencapture_detect.c) -- this file's tracepoint only supplies supporting
 // context (how Binder-chatty the process was), it never triggers an alert
-// itself. a11y-abuse's burst-threshold recipe doesn't transfer to this
+// itself. accessibility-detect's burst-threshold recipe doesn't transfer to this
 // technique: MediaProjection setup is 1-2 discrete Binder calls, not a
 // sustained burst, and ongoing frame delivery goes to SurfaceFlinger, not
 // system_server, so a burst threshold here would either never fire (high
@@ -18,7 +18,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 // Stub only -- nothing is ever submitted here. Exists solely because
 // ares_analyzer_t.setup() must return a non-NULL struct ring_buffer*, same
-// precedent as fileless-exec's events_rb (see fileless_exec.bpf.c's own
+// precedent as fileless-detect's events_rb (see fileless_detect.bpf.c's own
 // comment on this).
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -32,7 +32,7 @@ struct {
 
 // system_server's pid, resolved once at userspace startup (pidof
 // system_server) and pushed BEFORE attach -- same fail-closed pattern as
-// a11y_abuse.bpf.c's sys_server_pid_map. An unresolved (zero) value means
+// accessibility_detect.bpf.c's sys_server_pid_map. An unresolved (zero) value means
 // the gate never matches anything.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

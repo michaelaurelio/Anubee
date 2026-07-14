@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod mediaproj-abuse` — userspace analyzer for MediaProjection
-// screen-capture session abuse. Owns the mediaproj_abuse BPF skeleton
+// `ares mod screencapture-detect` — userspace analyzer for MediaProjection
+// screen-capture session abuse. Owns the screencapture_detect BPF skeleton
 // lifecycle; the dispatcher in mod.c drives the poll loop and teardown
-// order. Kernel side: src/modules/mediaproj_abuse.bpf.c (passive Binder-call
+// order. Kernel side: src/modules/screencapture_detect.bpf.c (passive Binder-call
 // counter only -- see design doc for why a burst-threshold signal doesn't
 // transfer to this technique). Detection is a background thread polling
 // `dumpsys activity services <pkg>` for an active mediaProjection
-// foreground service, same stub-ring-buffer precedent as fileless-exec.
-// Parsing: src/modules/mediaproj_abuse_parse.c.
+// foreground service, same stub-ring-buffer precedent as fileless-detect.
+// Parsing: src/modules/screencapture_detect_parse.c.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "mediaproj_abuse.skel.h"
+#include "screencapture_detect.skel.h"
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
@@ -25,7 +25,7 @@
 #include "common/runtime.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
-#include "modules/mediaproj_abuse_parse.h"
+#include "modules/screencapture_detect_parse.h"
 
 // ── per-pid tally (tallied unconditionally so summary survives -o) ─────────
 
@@ -63,7 +63,7 @@ static void mediaproj_stat_add(__u32 pid, const char *comm, __u64 binder_calls)
     pthread_mutex_unlock(&mediaproj_stat_lock);
 }
 
-static struct mediaproj_abuse_bpf *g_skel = NULL;
+static struct screencapture_detect_bpf *g_skel = NULL;
 static struct bpf_link            *mediaproj_ff = NULL;
 static struct bpf_link            *binder_link = NULL;
 static struct ring_buffer         *g_rb = NULL;
@@ -103,8 +103,8 @@ static __u64 mediaproj_read_and_reset_binder_count(__u32 pid)
 
 static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls)
 {
-    struct mediaproj_abuse_event e = {0};
-    e.h.type = MOD_EV_MEDIAPROJ_ABUSE;
+    struct screencapture_detect_event e = {0};
+    e.h.type = MOD_EV_SCREENCAPTURE_DETECT;
     e.h.pid  = pid;
     e.h.tid  = pid;
     struct timespec ts;
@@ -116,12 +116,12 @@ static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls)
     mediaproj_stat_add(pid, comm, binder_calls);
 
     if (!g_mc->quiet) {
-        printf("[mediaproj-abuse] PID:%-6d (%s) active MediaProjection session "
+        printf("[screencapture-detect] PID:%-6d (%s) active MediaProjection session "
                "(%llu system_server Binder calls observed)\n",
                pid, comm, (unsigned long long)binder_calls);
     }
     if (g_mc->sink != NULL) {
-        mod_emit_mediaproj_abuse(&g_mc->sink->jb, &e);
+        mod_emit_screencapture_detect(&g_mc->sink->jb, &e);
         ares_sink_emit(g_mc->sink);
     }
 }
@@ -156,7 +156,7 @@ static void *mediaproj_poll_loop(void *arg)
         }
 
         int pid = -1;
-        int active = mediaproj_parse_dumpsys(out, g_mc->pkg, &pid);
+        int active = screencapture_detect_parse_dumpsys(out, g_mc->pkg, &pid);
         if (active < 0) {
             g_mp_state = MP_UNKNOWN;
             continue;
@@ -179,7 +179,7 @@ static void *mediaproj_poll_loop(void *arg)
 // Unused: detection flows through the poll thread above, not events_rb.
 // Kept only because ring_buffer__new() requires a non-NULL sample callback
 // and ares_analyzer_t.setup() must return a non-NULL ring_buffer* for the
-// dispatcher's poll loop -- same precedent as fileless-exec's
+// dispatcher's poll loop -- same precedent as fileless-detect's
 // fileless_handle_event.
 
 static int mediaproj_handle_event(void *ctx, void *data, size_t sz)
@@ -194,13 +194,13 @@ static struct ring_buffer *mediaproj_setup(int uid, struct ares_mod_ctx *mc)
 {
     g_mc = mc;
 
-    g_skel = mediaproj_abuse_bpf__open();
+    g_skel = screencapture_detect_bpf__open();
     if (!g_skel) {
-        fprintf(stderr, "mod mediaproj-abuse: failed to open BPF skeleton\n");
+        fprintf(stderr, "mod screencapture-detect: failed to open BPF skeleton\n");
         return NULL;
     }
-    if (mediaproj_abuse_bpf__load(g_skel)) {
-        fprintf(stderr, "mod mediaproj-abuse: failed to load BPF\n");
+    if (screencapture_detect_bpf__load(g_skel)) {
+        fprintf(stderr, "mod screencapture-detect: failed to load BPF\n");
         goto err;
     }
 
@@ -219,32 +219,32 @@ static struct ring_buffer *mediaproj_setup(int uid, struct ares_mod_ctx *mc)
     __u32 sys_pid = 0, zk = 0;
     mediaproj_resolve_sys_server_pid(&sys_pid);
     if (sys_pid == 0)
-        fprintf(stderr, "mod mediaproj-abuse: could not resolve system_server pid "
+        fprintf(stderr, "mod screencapture-detect: could not resolve system_server pid "
                         "(pidof failed) -- Binder-call context will always read 0\n");
     bpf_map_update_elem(bpf_map__fd(g_skel->maps.sys_server_pid_map), &zk, &sys_pid, BPF_ANY);
 
     binder_link = bpf_program__attach(g_skel->progs.on_binder_transaction);
     if (!binder_link) {
-        fprintf(stderr, "mod mediaproj-abuse: tp/binder/binder_transaction unavailable, aborting\n");
+        fprintf(stderr, "mod screencapture-detect: tp/binder/binder_transaction unavailable, aborting\n");
         goto err;
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         mediaproj_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
-        if (!mediaproj_ff) fprintf(stderr, "mod mediaproj-abuse: follow-fork attach failed (non-fatal)\n");
+        if (!mediaproj_ff) fprintf(stderr, "mod screencapture-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             mediaproj_handle_event, mc, NULL);
     if (!g_rb) {
-        fprintf(stderr, "mod mediaproj-abuse: failed to create ring buffer\n");
+        fprintf(stderr, "mod screencapture-detect: failed to create ring buffer\n");
         goto err;
     }
 
     g_mp_state = MP_UNKNOWN;
     g_poll_stop = 0;
     if (pthread_create(&g_poll_thread, NULL, mediaproj_poll_loop, NULL) != 0) {
-        fprintf(stderr, "mod mediaproj-abuse: failed to start dumpsys poll thread\n");
+        fprintf(stderr, "mod screencapture-detect: failed to start dumpsys poll thread\n");
         goto err;
     }
     g_poll_thread_running = 1;
@@ -255,7 +255,7 @@ err:
     if (binder_link)  { bpf_link__destroy(binder_link);  binder_link  = NULL; }
     if (mediaproj_ff) { bpf_link__destroy(mediaproj_ff); mediaproj_ff = NULL; }
     if (g_rb)         { ring_buffer__free(g_rb);         g_rb         = NULL; }
-    if (g_skel)       { mediaproj_abuse_bpf__destroy(g_skel); g_skel  = NULL; }
+    if (g_skel)       { screencapture_detect_bpf__destroy(g_skel); g_skel  = NULL; }
     return NULL;
 }
 
@@ -270,27 +270,27 @@ static void mediaproj_teardown(void)
     if (binder_link)  { bpf_link__destroy(binder_link);  binder_link  = NULL; }
     if (mediaproj_ff) { bpf_link__destroy(mediaproj_ff); mediaproj_ff = NULL; }
     if (g_rb)         { ring_buffer__free(g_rb);         g_rb         = NULL; }
-    if (g_skel)       { mediaproj_abuse_bpf__destroy(g_skel); g_skel  = NULL; }
+    if (g_skel)       { screencapture_detect_bpf__destroy(g_skel); g_skel  = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
 // Lock-free reads of mediaproj_stats/mediaproj_stat_count are safe here only
 // because mod.c always calls teardown() (joining the poll thread) before
-// print_summary()/emit_summary() -- same invariant fileless-exec documents.
+// print_summary()/emit_summary() -- same invariant fileless-detect documents.
 
 static void mediaproj_print_summary(void)
 {
     if (mediaproj_stat_count == 0) return;
 
-    printf("[mediaproj-abuse] --- MediaProjection Abuse Summary ---------------------------\n");
-    printf("[mediaproj-abuse]   PID     Comm             Sessions  BinderCalls\n");
+    printf("[screencapture-detect] --- Screen-Capture Detection Summary ---------------------------\n");
+    printf("[screencapture-detect]   PID     Comm             Sessions  BinderCalls\n");
     for (int i = 0; i < mediaproj_stat_count; i++) {
-        printf("[mediaproj-abuse]  %6u  %-16s  %8u  %11llu\n",
+        printf("[screencapture-detect]  %6u  %-16s  %8u  %11llu\n",
                mediaproj_stats[i].pid, mediaproj_stats[i].comm,
                mediaproj_stats[i].sessions,
                (unsigned long long)mediaproj_stats[i].total_binder_calls);
     }
-    printf("[mediaproj-abuse]  %d process%s had an active MediaProjection session\n",
+    printf("[screencapture-detect]  %d process%s had an active MediaProjection session\n",
            mediaproj_stat_count, mediaproj_stat_count == 1 ? "" : "es");
 }
 
@@ -301,7 +301,7 @@ static void mediaproj_emit_summary(struct ares_sink *s)
     struct jbuf *j = &s->jb;
     j->len = 0;
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"mediaproj_abuse_summary\"");
+    jb_s(j, "\"type\":\"screencapture_detect_summary\"");
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)mediaproj_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < mediaproj_stat_count; i++) {
@@ -326,8 +326,8 @@ static unsigned long long mediaproj_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_mediaproj_abuse = {
-    .name          = "mediaproj-abuse",
+const ares_analyzer_t analyzer_screencapture_detect = {
+    .name          = "screencapture-detect",
     .description   = "Detect an active MediaProjection screen-capture session "
                       "(live screen streaming to C2 -- the escalation behind "
                       "OverlayPhantom and current 2026 Android banking trojans; "

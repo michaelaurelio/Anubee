@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 // Single-process sensitive-read + byte-volume burst trigger for the `mod
-// exfil-burst` device smoke test (scripts/device-test.sh). Opens one
+// exfil-detect` device smoke test (scripts/device-test.sh). Opens one
 // media-subdir-classified file (arms the analyzer), then issues a burst of
 // write() calls past EXFIL_BYTE_THRESHOLD on a non-blocking TCP socket
 // connected to a guaranteed-unreachable, non-loopback address (192.0.2.1,
 // RFC 5737 TEST-NET-1 -- reserved for documentation/testing, never a real
 // live host). The write()s are expected to fail (ENOTCONN/EAGAIN, the
-// handshake never completes) -- that's fine: exfil_burst.bpf.c's on_write
+// handshake never completes) -- that's fine: exfil_detect.bpf.c's on_write
 // hook fires on syscall ENTRY (observing the requested length via
 // record_bytes()), before the kernel even attempts delivery, so a real
 // reachable listener isn't needed to exercise the pipeline end to end (see

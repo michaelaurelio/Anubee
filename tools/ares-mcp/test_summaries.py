@@ -29,7 +29,7 @@ def main():
 
     all_summaries = ts.summaries()
     expected_kinds = {"execve_summary", "prop_read_summary", "file_access_summary",
-                       "ransomware_burst_summary", "proc_event_summary"}
+                       "massdelete_detect_summary", "proc_event_summary"}
     check(set(all_summaries.keys()) == expected_kinds,
           f"all 5 kinds present (got {set(all_summaries.keys())})")
 
@@ -53,7 +53,7 @@ def main():
         check(fa[0]["paths"][0]["categories"] == ["credential_pattern"],
               f"top path category is credential_pattern (got {fa[0]['paths'][0]['categories']})")
 
-    rb = ts.summaries("ransomware_burst_summary")
+    rb = ts.summaries("massdelete_detect_summary")
     if rb:
         check(rb[0]["processes"][0]["max_distinct"] == -1,
               f"max_distinct preserves negative value (got {rb[0]['processes'][0]['max_distinct']})")

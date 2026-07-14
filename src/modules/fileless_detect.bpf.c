@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the fileless-exec analyzer: flag anonymous (no backing
+// BPF object for the fileless-detect analyzer: flag anonymous (no backing
 // file) executable memory mappings that aren't one of ART's own JIT/zygote
 // regions. This is the mechanism behind native packers/unpackers and
 // multi-stage droppers that hand off to a second-stage payload without ever
@@ -7,7 +7,7 @@
 // handoff stage) -- not DexClassLoader/DEX loading, which executes through
 // ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
 // is mmap-only, no mprotect/memfd coverage (parked, see
-// docs/superpowers/specs/2026-07-12-mod-fileless-exec-design.md).
+// docs/superpowers/specs/2026-07-12-mod-fileless-detect-design.md).
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -34,7 +34,7 @@ struct {
 // candidate if a matching dalvik-tagged prctl(PR_SET_VMA_ANON_NAME) call
 // follows shortly after (ART's own JIT-cache naming is a distinct, later
 // syscall -- confirmed via ART source, so no single mmap-time hook could
-// ever see the name). Userspace (fileless_exec.c) polls pending_map on a
+// ever see the name). Userspace (fileless_detect.c) polls pending_map on a
 // background thread and alerts on anything that survives the grace window
 // unsuppressed. No ringbuf event is written by either hook.
 
@@ -67,7 +67,7 @@ struct {
 
 // Candidate anon+exec mappings awaiting either suppression (dalvik-tagged
 // prctl arrives) or graduation into an alert (userspace background thread
-// reads FILELESS_GRACE_NS-old entries that are still present). No ringbuf
+// reads FILELESS_DETECT_GRACE_NS-old entries that are still present). No ringbuf
 // traffic -- this map IS the signal path. At capacity (1024), a new
 // candidate is silently not inserted (BPF_MAP_TYPE_HASH has no eviction) --
 // accepted v1 gap, see design doc's Known limitations.
@@ -143,7 +143,7 @@ int BPF_KPROBE(on_prctl, const struct pt_regs *regs)
     unsigned long addr     = BPF_CORE_READ(regs, regs[2]);
     unsigned long name_ptr = BPF_CORE_READ(regs, regs[4]) & 0x00FFFFFFFFFFFFFFul;
 
-    char tag[FILELESS_TAG_LEN] = {0};
+    char tag[FILELESS_DETECT_TAG_LEN] = {0};
     bpf_probe_read_user_str(tag, sizeof(tag), (void *)name_ptr);
     if (!(tag[0] == 'd' && tag[1] == 'a' && tag[2] == 'l' && tag[3] == 'v'
           && tag[4] == 'i' && tag[5] == 'k'))

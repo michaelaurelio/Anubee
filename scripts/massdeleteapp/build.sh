@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds and (optionally) installs dev.ares.burstapp — a minimal, code-free
-# APK used to trigger mod ransomware-burst through a *real installed app*
+# Builds and (optionally) installs dev.ares.massdeleteapp — a minimal, code-free
+# APK used to trigger mod massdelete-detect through a *real installed app*
 # instead of a synthetic PID or a real file manager.
 #
 # WHY a dedicated app instead of an existing file manager: modern file
@@ -16,13 +16,13 @@
 # stock on-device android.app.Activity by name (not a subclass we'd have to
 # compile) sidesteps needing one entirely. The app does nothing on launch;
 # the actual file touches are driven separately, as the app's own UID, via
-# `su <uid> -c scripts/ares_burst_gen` (root gives us arbitrary-UID exec, no
+# `su <uid> -c scripts/ares_massdelete_gen` (root gives us arbitrary-UID exec, no
 # run-as/debuggable dance needed) — see scripts/device-test.sh for the flow.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT="$ROOT/build/burstapp"
-PKG="dev.ares.burstapp"
+OUT="$ROOT/build/massdeleteapp"
+PKG="dev.ares.massdeleteapp"
 FRAMEWORK_RES="/usr/share/android-framework-res/framework-res.apk"
 KEYSTORE="$OUT/keystore.jks"
 MODE="${1:-build}" # build | install
@@ -39,7 +39,7 @@ mkdir -p "$OUT"
 echo "=== linking (no dex — hasCode=false) ==="
 aapt2 link -o "$OUT/unsigned.apk" \
     -I "$FRAMEWORK_RES" \
-    --manifest "$ROOT/scripts/burstapp/AndroidManifest.xml" \
+    --manifest "$ROOT/scripts/massdeleteapp/AndroidManifest.xml" \
     --min-sdk-version 24 --target-sdk-version 36
 
 echo "=== zipalign ==="
@@ -49,7 +49,7 @@ zipalign -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 # spirit as Android's own debug.keystore, not meant to sign anything shipped.
 if [ ! -f "$KEYSTORE" ]; then
     echo "=== generating throwaway signing key ==="
-    keytool -genkeypair -v -keystore "$KEYSTORE" -alias burstapp \
+    keytool -genkeypair -v -keystore "$KEYSTORE" -alias massdeleteapp \
         -keyalg RSA -keysize 2048 -validity 3650 \
         -storepass changeit -keypass changeit \
         -dname "CN=ares test, OU=ares, O=ares, L=NA, S=NA, C=US" >/dev/null
@@ -71,4 +71,4 @@ adb shell "su -c 'appops set $PKG MANAGE_EXTERNAL_STORAGE allow'" >/dev/null 2>&
 uid="$(adb shell "su -c 'stat -c %u /data/data/$PKG'" 2>/dev/null | tr -d '\r')"
 [ -n "$uid" ] || fail "could not resolve installed UID for $PKG"
 echo "installed $PKG — uid $uid, MANAGE_EXTERNAL_STORAGE granted"
-echo "trigger with: su -c 'su $uid -c /data/local/tmp/ares_burst_gen <target-dir>'"
+echo "trigger with: su -c 'su $uid -c /data/local/tmp/ares_massdelete_gen <target-dir>'"

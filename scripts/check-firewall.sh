@@ -37,11 +37,11 @@ map_bpf_obj() {
     mod:execve)     echo execve.bpf.o ;;
     mod:prop-read)  echo prop_read.bpf.o ;;
     mod:file-access)echo file_access.bpf.o ;;
-    mod:ransomware-burst) echo ransomware_burst.bpf.o ;;
-    mod:exfil-burst) echo exfil_burst.bpf.o ;;
-    mod:a11y-abuse) echo a11y_abuse.bpf.o ;;
-    mod:fileless-exec) echo fileless_exec.bpf.o ;;
-    mod:mediaproj-abuse) echo mediaproj_abuse.bpf.o ;;
+    mod:massdelete-detect) echo massdelete_detect.bpf.o ;;
+    mod:exfil-detect) echo exfil_detect.bpf.o ;;
+    mod:accessibility-detect) echo accessibility_detect.bpf.o ;;
+    mod:fileless-detect) echo fileless_detect.bpf.o ;;
+    mod:screencapture-detect) echo screencapture_detect.bpf.o ;;
     *)              echo UNMAPPED ;;
   esac
 }
@@ -93,11 +93,11 @@ owner_of() {
     $BUILD/modules/prop_read.o) echo mod:prop-read ;;
     $BUILD/modules/proc_event.o) echo mod:proc-event ;;
     $BUILD/modules/file_access.o) echo mod:file-access ;;
-    $BUILD/modules/ransomware_burst.o) echo mod:ransomware-burst ;;
-    $BUILD/modules/exfil_burst.o) echo mod:exfil-burst ;;
-    $BUILD/modules/a11y_abuse.o) echo mod:a11y-abuse ;;
-    $BUILD/modules/fileless_exec.o) echo mod:fileless-exec ;;
-    $BUILD/modules/mediaproj_abuse.o) echo mod:mediaproj-abuse ;;
+    $BUILD/modules/massdelete_detect.o) echo mod:massdelete-detect ;;
+    $BUILD/modules/exfil_detect.o) echo mod:exfil-detect ;;
+    $BUILD/modules/accessibility_detect.o) echo mod:accessibility-detect ;;
+    $BUILD/modules/fileless_detect.o) echo mod:fileless-detect ;;
+    $BUILD/modules/screencapture_detect.o) echo mod:screencapture-detect ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;
     *)                          echo shared ;;

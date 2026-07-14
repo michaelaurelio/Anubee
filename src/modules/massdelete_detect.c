@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod ransomware-burst` — userspace analyzer for the rename/unlink
-// burst signal. Owns the ransomware_burst BPF skeleton lifecycle; the
+// `ares mod massdelete-detect` — userspace analyzer for the rename/unlink
+// burst signal. Owns the massdelete_detect BPF skeleton lifecycle; the
 // dispatcher in mod.c drives the poll loop and teardown order. Kernel side:
-// src/modules/ransomware_burst.bpf.c. Classification:
-// src/modules/ransomware_burst_classify.c.
+// src/modules/massdelete_detect.bpf.c. Classification:
+// src/modules/massdelete_detect_classify.c.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +11,7 @@
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "ransomware_burst.skel.h"
+#include "massdelete_detect.skel.h"
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
@@ -20,7 +20,7 @@
 #include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
-#include "modules/ransomware_burst_classify.h"
+#include "modules/massdelete_detect_classify.h"
 
 // ── per-pid tally (tallied unconditionally so summary survives -o) ─────────
 
@@ -79,14 +79,14 @@ static void rb_check_manage_ext_storage(const char *pkg)
 // Single short tag for the console line.
 static const char *burst_tag(unsigned categories)
 {
-    if ((categories & RB_BURST_DETECTED) && (categories & RB_MANAGE_EXT_STORAGE))
+    if ((categories & MASSDELETE_DETECT_BURST_DETECTED) && (categories & MASSDELETE_DETECT_MANAGE_EXT_STORAGE))
         return "[burst+manage-ext-storage]";
-    if (categories & RB_BURST_DETECTED)
-        return "[burst]";
+    if (categories & MASSDELETE_DETECT_BURST_DETECTED)
+        return "[massdelete-detect]";
     return "[low-confidence]";
 }
 
-static struct ransomware_burst_bpf *g_skel        = NULL;
+static struct massdelete_detect_bpf *g_skel        = NULL;
 static struct bpf_link             *rb_ff         = NULL;
 static struct ring_buffer          *g_rb          = NULL;
 static struct bpf_link             *renameat_link  = NULL;
@@ -100,23 +100,23 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
     struct ares_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
-    if (hdr->type != MOD_EV_RANSOMWARE_BURST || sz < sizeof(struct ransomware_burst_event))
+    if (hdr->type != MOD_EV_MASSDELETE_DETECT || sz < sizeof(struct massdelete_detect_event))
         return 0;
 
-    const struct ransomware_burst_event *e = data;
+    const struct massdelete_detect_event *e = data;
     int distinct = burst_distinct_count(e->path_hashes, (int)e->touch_count);
     unsigned categories = classify_burst((int)e->touch_count, distinct, g_manage_ext_storage);
     rb_stat_add(e->h.pid, e->comm, (int)e->touch_count, distinct);
 
     if (!mc->quiet) {
         // SYM1 Phase 4c: was printf(...).
-        ts_print("[burst] %-26s PID:%-6d (%s) %u touches, %d distinct, %ums window, e.g. %s\n",
+        ts_print("[massdelete-detect] %-26s PID:%-6d (%s) %u touches, %d distinct, %ums window, e.g. %s\n",
                burst_tag(categories), e->h.pid, e->comm, e->touch_count, distinct,
                e->window_ms, e->sample_path);
     }
 
     if (mc->sink != NULL) {
-        mod_emit_ransomware_burst(&mc->sink->jb, e, distinct, g_manage_ext_storage);
+        mod_emit_massdelete_detect(&mc->sink->jb, e, distinct, g_manage_ext_storage);
         ares_sink_emit(mc->sink);
     }
 
@@ -127,13 +127,13 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
 {
-    g_skel = ransomware_burst_bpf__open();
+    g_skel = massdelete_detect_bpf__open();
     if (!g_skel) {
-        fprintf(stderr, "mod ransomware-burst: failed to open BPF skeleton\n");
+        fprintf(stderr, "mod massdelete-detect: failed to open BPF skeleton\n");
         return NULL;
     }
-    if (ransomware_burst_bpf__load(g_skel)) {
-        fprintf(stderr, "mod ransomware-burst: failed to load BPF\n");
+    if (massdelete_detect_bpf__load(g_skel)) {
+        fprintf(stderr, "mod massdelete-detect: failed to load BPF\n");
         goto err;
     }
 
@@ -154,14 +154,14 @@ static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
     unlinkat_link  = bpf_program__attach(g_skel->progs.on_unlinkat);
 
     if (!renameat_link)
-        fprintf(stderr, "mod ransomware-burst: kprobe/__arm64_sys_renameat unavailable\n");
+        fprintf(stderr, "mod massdelete-detect: kprobe/__arm64_sys_renameat unavailable\n");
     if (!renameat2_link)
-        fprintf(stderr, "mod ransomware-burst: kprobe/__arm64_sys_renameat2 unavailable (non-fatal)\n");
+        fprintf(stderr, "mod massdelete-detect: kprobe/__arm64_sys_renameat2 unavailable (non-fatal)\n");
     if (!unlinkat_link)
-        fprintf(stderr, "mod ransomware-burst: kprobe/__arm64_sys_unlinkat unavailable\n");
+        fprintf(stderr, "mod massdelete-detect: kprobe/__arm64_sys_unlinkat unavailable\n");
 
     if (!renameat_link && !renameat2_link && !unlinkat_link) {
-        fprintf(stderr, "mod ransomware-burst: no rename/unlink kprobe attached, aborting\n");
+        fprintf(stderr, "mod massdelete-detect: no rename/unlink kprobe attached, aborting\n");
         goto err;
     }
 
@@ -173,17 +173,17 @@ static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
     // this call).
     rb_check_manage_ext_storage(mc->pkg);
     if (g_manage_ext_storage == 1)
-        printf("[burst] target holds MANAGE_EXTERNAL_STORAGE (All files access)\n");
+        printf("[massdelete-detect] target holds MANAGE_EXTERNAL_STORAGE (All files access)\n");
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         rb_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
-        if (!rb_ff) fprintf(stderr, "mod ransomware-burst: follow-fork attach failed (non-fatal)\n");
+        if (!rb_ff) fprintf(stderr, "mod massdelete-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             rb_handle_event, mc, NULL);
     if (!g_rb) {
-        fprintf(stderr, "mod ransomware-burst: failed to create ring buffer\n");
+        fprintf(stderr, "mod massdelete-detect: failed to create ring buffer\n");
         goto err;
     }
     return g_rb;
@@ -193,7 +193,7 @@ err:
     if (renameat_link)  { bpf_link__destroy(renameat_link);  renameat_link  = NULL; }
     if (renameat2_link) { bpf_link__destroy(renameat2_link); renameat2_link = NULL; }
     if (unlinkat_link)  { bpf_link__destroy(unlinkat_link);  unlinkat_link  = NULL; }
-    if (g_skel)         { ransomware_burst_bpf__destroy(g_skel); g_skel     = NULL; }
+    if (g_skel)         { massdelete_detect_bpf__destroy(g_skel); g_skel     = NULL; }
     return NULL;
 }
 
@@ -204,7 +204,7 @@ static void rb_teardown(void)
     if (renameat2_link) { bpf_link__destroy(renameat2_link); renameat2_link = NULL; }
     if (unlinkat_link)  { bpf_link__destroy(unlinkat_link);  unlinkat_link  = NULL; }
     if (g_rb)           { ring_buffer__free(g_rb);           g_rb           = NULL; }
-    if (g_skel)         { ransomware_burst_bpf__destroy(g_skel); g_skel     = NULL; }
+    if (g_skel)         { massdelete_detect_bpf__destroy(g_skel); g_skel     = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
@@ -213,19 +213,19 @@ static void rb_print_summary(void)
 {
     if (rb_stat_count == 0) return;
 
-    printf("[burst] --- Ransomware Burst Summary -----------------------------\n");
-    printf("[burst]   PID     Comm             Bursts  MaxTouch  MaxDistinct\n");
+    printf("[massdelete-detect] --- Mass-Delete Detection Summary -----------------------------\n");
+    printf("[massdelete-detect]   PID     Comm             Bursts  MaxTouch  MaxDistinct\n");
     for (int i = 0; i < rb_stat_count; i++) {
-        printf("[burst]  %6u  %-16s  %6u  %8u  %11d\n",
+        printf("[massdelete-detect]  %6u  %-16s  %6u  %8u  %11d\n",
                rb_stats[i].pid, rb_stats[i].comm, rb_stats[i].burst_count,
                rb_stats[i].max_touch_count, rb_stats[i].max_distinct);
     }
-    printf("[burst]  %d process%s triggered a burst\n",
+    printf("[massdelete-detect]  %d process%s triggered a burst\n",
            rb_stat_count, rb_stat_count == 1 ? "" : "es");
 }
 
 // File twin of rb_print_summary: same tally, one
-// {"type":"ransomware_burst_summary",...} record.
+// {"type":"massdelete_detect_summary",...} record.
 static void rb_emit_summary(struct ares_sink *s)
 {
     if (rb_stat_count == 0) return;
@@ -233,7 +233,7 @@ static void rb_emit_summary(struct ares_sink *s)
     struct jbuf *j = &s->jb;
     j->len = 0;
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"ransomware_burst_summary\"");
+    jb_s(j, "\"type\":\"massdelete_detect_summary\"");
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)rb_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < rb_stat_count; i++) {
@@ -257,8 +257,8 @@ static unsigned long long rb_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_ransomware_burst = {
-    .name          = "ransomware-burst",
+const ares_analyzer_t analyzer_massdelete_detect = {
+    .name          = "massdelete-detect",
     .description   = "Detect rename/unlink bursts on external storage (rapid rename+delete "
                       "across many distinct files -- classic crypto-ransomware signal; "
                       "stealthy -- kprobes, zero uprobes)",

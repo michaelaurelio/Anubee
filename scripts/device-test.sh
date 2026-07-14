@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|ransomware-burst|exfil-burst|a11y-abuse|fileless-exec|mediaproj-abuse|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -371,8 +371,8 @@ test_mod_file_access() {
     fi
 }
 
-# mod ransomware-burst: deterministic trigger via a compiled single-process
-# generator (scripts/ares_burst_gen.c), attached by PID (-p gates on
+# mod massdelete-detect: deterministic trigger via a compiled single-process
+# generator (scripts/ares_massdelete_gen.c), attached by PID (-p gates on
 # target_pids regardless of the generator's UID, so this doesn't need it to
 # run as the traced app). Hard-fail, not SKIP: we control the trigger, unlike
 # file-access's timing-dependent natural app behavior.
@@ -380,88 +380,88 @@ test_mod_file_access() {
 # Two requirements confirmed the hard way, both load-bearing:
 #   - One process, no forked mv/rm: burst_map keys per calling PID, so 25
 #     touches split across 25 short-lived subprocesses never accumulate to
-#     BURST_THRESHOLD — each subprocess only ever contributes one touch.
+#     MASSDELETE_DETECT_THRESHOLD — each subprocess only ever contributes one touch.
 #   - nohup+setsid: a bare `cmd & echo $!` backgrounded inside `su -c '...'`
 #     gets killed with the su session on some devices' su/shell before ares
 #     ever attaches (confirmed via `ps` — the pid was gone within ~1s, well
 #     inside its own pre-touch sleep). Detaching from the session is what
 #     keeps it alive to be traced.
-test_ransomware_burst() {
-    echo "=== mod ransomware-burst (rename/unlink burst on external storage) ==="
+test_massdelete_detect() {
+    echo "=== mod massdelete-detect (rename/unlink burst on external storage) ==="
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
-        || fail "ransomware-burst: aarch64-linux-gnu-gcc not found (see README prereqs)"
-    local gen_bin="$ROOT/build/ares_burst_gen"
-    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_burst_gen.c" \
-        || fail "ransomware-burst: failed to compile burst generator"
-    local gen="/data/local/tmp/ares_burst_gen"
-    adb push "$gen_bin" "$gen" >/dev/null || fail "ransomware-burst: push failed"
+        || fail "massdelete-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/ares_massdelete_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_massdelete_gen.c" \
+        || fail "massdelete-detect: failed to compile mass-delete generator"
+    local gen="/data/local/tmp/ares_massdelete_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "massdelete-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
-    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_burst_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
-        fail "ransomware-burst: could not start burst-generator (no pid captured)"
+        fail "massdelete-detect: could not start burst-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod ransomware-burst -p $loop_pid")"
-    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_burst_test'" >/dev/null 2>&1 || true
+    local out; out="$(ares "mod massdelete-detect -p $loop_pid")"
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_massdelete_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "ransomware-burst: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "massdelete-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[burst\]' <<<"$out"; then
-        info "ransomware-burst OK — $(grep -c '^\[burst\]' <<<"$out") [burst] line(s)"
+    if grep -q '^\[massdelete-detect\]' <<<"$out"; then
+        info "massdelete-detect OK — $(grep -c '^\[massdelete-detect\]' <<<"$out") [massdelete-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "ransomware-burst: no [burst] line from a 25-touch generator loop (threshold/window mistuned, or timing missed the attach window)"
+        fail "massdelete-detect: no [massdelete-detect] line from a 25-touch generator loop (threshold/window mistuned, or timing missed the attach window)"
     fi
 }
 
-# mod exfil-burst: deterministic trigger via a compiled single-process
+# mod exfil-detect: deterministic trigger via a compiled single-process
 # generator (scripts/ares_exfil_gen.c), attached by PID (-p gates on
 # target_pids regardless of the generator's UID). Hard-fail, not SKIP: we
-# control the trigger. Same single-process rationale as ransomware-burst's
+# control the trigger. Same single-process rationale as massdelete-detect's
 # generator (a forked write()-per-call pattern would split byte-volume
 # across too many short-lived pids to accumulate a per-pid signal) plus a
 # new constraint: the destination is a deliberately unreachable RFC 5737
-# test address, because exfil_burst.bpf.c's connect() hook discards
+# test address, because exfil_detect.bpf.c's connect() hook discards
 # loopback destinations outright (a real listener on 127.0.0.1 would never
 # arm the socket fd).
-test_exfil_burst() {
-    echo "=== mod exfil-burst (sensitive-read + network byte-volume burst) ==="
+test_exfil_detect() {
+    echo "=== mod exfil-detect (sensitive-read + network byte-volume burst) ==="
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
-        || fail "exfil-burst: aarch64-linux-gnu-gcc not found (see README prereqs)"
+        || fail "exfil-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
     local gen_bin="$ROOT/build/ares_exfil_gen"
     aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_exfil_gen.c" \
-        || fail "exfil-burst: failed to compile exfil generator"
+        || fail "exfil-detect: failed to compile exfil generator"
     local gen="/data/local/tmp/ares_exfil_gen"
-    adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-burst: push failed"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
     loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
-        fail "exfil-burst: could not start exfil-generator (no pid captured)"
+        fail "exfil-detect: could not start exfil-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod exfil-burst -p $loop_pid")"
+    local out; out="$(ares "mod exfil-detect -p $loop_pid")"
     adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_exfil_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "exfil-burst: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "exfil-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[exfil\]' <<<"$out"; then
-        info "exfil-burst OK — $(grep -c '^\[exfil\]' <<<"$out") [exfil] line(s)"
+    if grep -q '^\[exfil-detect\]' <<<"$out"; then
+        info "exfil-detect OK — $(grep -c '^\[exfil-detect\]' <<<"$out") [exfil-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "exfil-burst: no [exfil] line from a 576KiB-write generator (threshold/window mistuned, or timing missed the attach window)"
+        fail "exfil-detect: no [exfil-detect] line from a 576KiB-write generator (threshold/window mistuned, or timing missed the attach window)"
     fi
 }
 
-# mod a11y-abuse: real trigger via TalkBack (com.google.android.marvin.talkback),
-# confirmed installed on the test device. Unlike ransomware-burst/exfil-burst,
+# mod accessibility-detect: real trigger via TalkBack (com.google.android.marvin.talkback),
+# confirmed installed on the test device. Unlike massdelete-detect/exfil-detect,
 # the trigger here isn't a compiled single-process generator: a real
 # AccessibilityService needs actual compiled code, and this toolchain has no
 # dexer. TalkBack is enabled for the run (bypassing the interactive consent
@@ -472,14 +472,14 @@ test_exfil_burst() {
 # loop). Prior accessibility settings state is saved and restored
 # unconditionally, even on failure — never leave the device in a different
 # accessibility configuration than it started in. Hard-fail, not SKIP: we
-# control the trigger, same rationale as ransomware-burst/exfil-burst.
-test_a11y_abuse() {
-    echo "=== mod a11y-abuse (binder-transaction burst to system_server + accessibility grant) ==="
+# control the trigger, same rationale as massdelete-detect/exfil-detect.
+test_accessibility_detect() {
+    echo "=== mod accessibility-detect (binder-transaction burst to system_server + accessibility grant) ==="
     local tb_pkg="com.google.android.marvin.talkback"
     local tb_svc="$tb_pkg/com.google.android.marvin.talkback.TalkBackService"
 
     adb shell "pm path $tb_pkg" >/dev/null 2>&1 \
-        || fail "a11y-abuse: TalkBack ($tb_pkg) not installed on this device"
+        || fail "accessibility-detect: TalkBack ($tb_pkg) not installed on this device"
 
     local prev_svc prev_enabled
     prev_svc="$(adb shell "su -c 'settings get secure enabled_accessibility_services'" 2>/dev/null | tr -d '\r')"
@@ -500,7 +500,7 @@ test_a11y_abuse() {
     tb_pid="$(adb shell "su -c 'pidof $tb_pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
     if [ -z "$tb_pid" ] || ! [ "$tb_pid" -gt 0 ] 2>/dev/null; then
         restore_a11y
-        fail "a11y-abuse: TalkBack did not start after enabling (no pid)"
+        fail "accessibility-detect: TalkBack did not start after enabling (no pid)"
     fi
 
     (
@@ -511,83 +511,83 @@ test_a11y_abuse() {
     ) &
     local stim_pid=$!
 
-    local out; out="$(ares "mod a11y-abuse -p $tb_pid")"
+    local out; out="$(ares "mod accessibility-detect -p $tb_pid")"
     wait "$stim_pid" 2>/dev/null || true
     restore_a11y
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "a11y-abuse: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "accessibility-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[a11y\]' <<<"$out"; then
-        info "a11y-abuse OK — $(grep -c '^\[a11y\]' <<<"$out") [a11y] line(s)"
+    if grep -q '^\[accessibility-detect\]' <<<"$out"; then
+        info "accessibility-detect OK — $(grep -c '^\[accessibility-detect\]' <<<"$out") [accessibility-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "a11y-abuse: no [a11y] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
+        fail "accessibility-detect: no [accessibility-detect] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
     fi
 }
 
-# mod fileless-exec: deterministic trigger via a compiled single-process
+# mod fileless-detect: deterministic trigger via a compiled single-process
 # generator (scripts/ares_fileless_gen.c) that performs one raw
 # mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
-# of normal operation, so (like ransomware-burst/exfil-burst) this needs a
+# of normal operation, so (like massdelete-detect/exfil-detect) this needs a
 # purpose-built native binary rather than driving a real app. Hard-fail, not
 # SKIP: we control the trigger. A second, informational-only run against an
 # ordinary app checks the dalvik- carve-out doesn't false-positive on real
 # ART JIT activity -- not a hard assertion, since JIT compilation isn't
 # guaranteed to happen within a short launch window either way, so absence
 # of output there proves nothing on its own.
-test_fileless_exec() {
-    echo "=== mod fileless-exec (anonymous executable mmap, non-ART) ==="
+test_fileless_detect() {
+    echo "=== mod fileless-detect (anonymous executable mmap, non-ART) ==="
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
-        || fail "fileless-exec: aarch64-linux-gnu-gcc not found (see README prereqs)"
+        || fail "fileless-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
     local gen_bin="$ROOT/build/ares_fileless_gen"
     aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_fileless_gen.c" \
-        || fail "fileless-exec: failed to compile fileless generator"
+        || fail "fileless-detect: failed to compile fileless generator"
     local gen="/data/local/tmp/ares_fileless_gen"
-    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-exec: push failed"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
     loop_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
-        fail "fileless-exec: could not start fileless-generator (no pid captured)"
+        fail "fileless-detect: could not start fileless-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod fileless-exec -p $loop_pid")"
+    local out; out="$(ares "mod fileless-detect -p $loop_pid")"
     adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "fileless-exec: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    # Match only the per-event alert line ("[fileless-exec] PID:...") -- NOT
-    # fileless_print_summary()'s own [fileless-exec]-prefixed header/column-
+    # Match only the per-event alert line ("[fileless-detect] PID:...") -- NOT
+    # fileless_print_summary()'s own [fileless-detect]-prefixed header/column-
     # header/table-row/footer lines, which share the same tag prefix and would
     # otherwise inflate any non-zero count by 4 (confirmed via manual -o/JSONL
     # cross-check: a single real detection always produces exactly one
-    # {"type":"fileless_exec"} record, but the old '^\[fileless-exec\]' pattern
+    # {"type":"fileless_detect"} record, but the old '^\[fileless-detect\]' pattern
     # counted 5 console lines for it -- 1 real alert + 4 summary-table lines).
-    if grep -q '^\[fileless-exec\] PID:' <<<"$out"; then
-        info "fileless-exec OK — $(grep -c '^\[fileless-exec\] PID:' <<<"$out") [fileless-exec] line(s)"
+    if grep -q '^\[fileless-detect\] PID:' <<<"$out"; then
+        info "fileless-detect OK — $(grep -c '^\[fileless-detect\] PID:' <<<"$out") [fileless-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "fileless-exec: no [fileless-exec] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
+        fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
     fi
 
-    local jit_out; jit_out="$(ares "mod fileless-exec -P $PKG")"
+    local jit_out; jit_out="$(ares "mod fileless-detect -P $PKG")"
     forcestop
     local jit_lines
-    jit_lines="$(grep -c '^\[fileless-exec\] PID:' <<<"$jit_out")"
-    info "fileless-exec dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
+    jit_lines="$(grep -c '^\[fileless-detect\] PID:' <<<"$jit_out")"
+    info "fileless-detect dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
 }
 
-# mod mediaproj-abuse: real trigger via com.transsion.screenrecorder
+# mod screencapture-detect: real trigger via com.transsion.screenrecorder
 # (pre-installed OEM screen-recorder app, confirmed installed on the test
 # device), whose exported RecordingService legitimately requests a
 # MediaProjection-typed foreground service (types=0x000000A0 =
 # MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
-# installed APK). Unlike ransomware-burst/fileless-exec's synthetic
-# code-free generators, and like a11y-abuse's use of TalkBack, this drives a
+# installed APK). Unlike massdelete-detect/fileless-detect's synthetic
+# code-free generators, and like accessibility-detect's use of TalkBack, this drives a
 # real app's real service directly via its exported intent-filter action --
 # no UI/consent-dialog automation needed (the exported Service bypasses the
 # in-app "Start now" consent flow entirely, since am start-foreground-service
@@ -599,47 +599,47 @@ test_fileless_exec() {
 # device and -P's ares_launch_app() (src/common/launch.c) hard-fails before
 # the dumpsys poll thread ever starts polling -- confirmed on-device, not a
 # timing issue. -p <pid> against the already-running service process skips
-# that resolve-activity step entirely, same precedent as a11y-abuse's
+# that resolve-activity step entirely, same precedent as accessibility-detect's
 # already-running-process attach. The ares() call below is synchronous
-# (blocking, like a11y-abuse/fileless-exec), not backgrounded: this file's
+# (blocking, like accessibility-detect/fileless-detect), not backgrounded: this file's
 # own header note applies here too -- ares's stdio is fully buffered once
 # it isn't a tty, so killing it early from the host side (pkill on the local
 # adb shell client doesn't even reach the remote process -- see
 # testing-ares-on-device gotchas) loses whatever hadn't flushed yet.
 # Blocking for the device-side `timeout -s INT $TIMEOUT` window lets ares
 # exit cleanly and flush before the capture completes.
-test_mediaproj_abuse() {
-    echo "=== mod mediaproj-abuse (active MediaProjection session via dumpsys poll) ==="
+test_screencapture_detect() {
+    echo "=== mod screencapture-detect (active MediaProjection session via dumpsys poll) ==="
     local pkg="com.transsion.screenrecorder"
     local svc="$pkg/.service.RecordingService"
 
     adb shell "pm path $pkg" >/dev/null 2>&1 \
-        || fail "mediaproj-abuse: $pkg not installed on this device"
+        || fail "screencapture-detect: $pkg not installed on this device"
 
     adb shell am start-foreground-service \
         -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
-        || fail "mediaproj-abuse: could not start $svc (adb/root/service export changed?)"
-    # Settle delay for cold-start pid resolution race (same as a11y-abuse).
+        || fail "screencapture-detect: could not start $svc (adb/root/service export changed?)"
+    # Settle delay for cold-start pid resolution race (same as accessibility-detect).
     sleep 2
 
     local svc_pid
     svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
     if [ -z "$svc_pid" ] || ! [ "$svc_pid" -gt 0 ] 2>/dev/null; then
         adb shell am stopservice -n "$svc" >/dev/null 2>&1
-        fail "mediaproj-abuse: $svc did not start (no pid) after start-foreground-service"
+        fail "screencapture-detect: $svc did not start (no pid) after start-foreground-service"
     fi
 
-    local out; out="$(ares "mod mediaproj-abuse -p $svc_pid")"
+    local out; out="$(ares "mod screencapture-detect -p $svc_pid")"
     adb shell am stopservice -n "$svc" >/dev/null 2>&1
 
     if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "mediaproj-abuse: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "screencapture-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[mediaproj-abuse\] PID:' <<<"$out"; then
-        info "mediaproj-abuse OK — $(grep -c '^\[mediaproj-abuse\] PID:' <<<"$out") [mediaproj-abuse] line(s)"
+    if grep -q '^\[screencapture-detect\] PID:' <<<"$out"; then
+        info "screencapture-detect OK — $(grep -c '^\[screencapture-detect\] PID:' <<<"$out") [screencapture-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "mediaproj-abuse: no [mediaproj-abuse] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
+        fail "screencapture-detect: no [screencapture-detect] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
     fi
 }
 
@@ -709,14 +709,14 @@ case "$WHAT" in
     syscalls-cfi)      test_syscalls_cfi ;;
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
-    ransomware-burst)  test_ransomware_burst ;;
-    exfil-burst)       test_exfil_burst ;;
-    a11y-abuse)        test_a11y_abuse ;;
-    fileless-exec)     test_fileless_exec ;;
-    mediaproj-abuse)   test_mediaproj_abuse ;;
+    massdelete-detect)  test_massdelete_detect ;;
+    exfil-detect)       test_exfil_detect ;;
+    accessibility-detect)        test_accessibility_detect ;;
+    fileless-detect)     test_fileless_detect ;;
+    screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_ransomware_burst; test_exfil_burst; test_a11y_abuse; test_fileless_exec; test_mediaproj_abuse; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | ransomware-burst | exfil-burst | a11y-abuse | fileless-exec | mediaproj-abuse | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | all)" ;;
 esac
 
 forcestop

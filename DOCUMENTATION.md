@@ -275,17 +275,17 @@ expensive one:
    `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
    grep -q` pipe SIGPIPEs under `pipefail` on large output).
-4. **Realistic app-driven verification** (`scripts/burstapp/`, manual, not part of
+4. **Realistic app-driven verification** (`scripts/massdeleteapp/`, manual, not part of
    `make device-test`) — for capabilities where a synthetic trigger's fidelity to
-   the real threat model is itself in question (`mod ransomware-burst`: does a
+   the real threat model is itself in question (`mod massdelete-detect`: does a
    real app's file mutation, not a purpose-built binary, actually get seen?).
-   `scripts/burstapp/build.sh install` builds and installs `dev.ares.burstapp`, a
+   `scripts/massdeleteapp/build.sh install` builds and installs `dev.ares.massdeleteapp`, a
    minimal code-free APK (`android:hasCode="false"`, references the stock
    `android.app.Activity` by name — no dex compiler needed, see the script's
    header for why one isn't available in this toolchain), grants it
    `MANAGE_EXTERNAL_STORAGE`, and prints its UID. Attach with
-   `ares mod ransomware-burst -P dev.ares.burstapp -o <file>`, then trigger file
-   activity as that exact UID with `su <uid> -c scripts/ares_burst_gen
+   `ares mod massdelete-detect -P dev.ares.massdeleteapp -o <file>`, then trigger file
+   activity as that exact UID with `su <uid> -c scripts/ares_massdelete_gen
    <target-dir>` (root allows arbitrary-UID exec directly — no `run-as` dance).
    This is also how the MediaStore-trash blind spot noted in §6.6 was found:
    real file managers routing "delete" through `IS_TRASHED` never reached
@@ -1018,11 +1018,11 @@ object — no shared skeleton with `funcs`. Available analyzers:
   probe." Known limitation: dirfd-relative opens with a relative pathname
   aren't resolved to an absolute path and are silently dropped (see
   BACKLOG.md).
-- **`ransomware-burst`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
+- **`massdelete-detect`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
   zero uprobes), gated in-kernel to external storage only. Tracks a per-process
   sliding-window touch counter + bounded path-hash ring; when 20 touches land
   within 10 seconds, userspace estimates how many were distinct files
-  (`src/modules/ransomware_burst_classify.c`) and only alerts when most of
+  (`src/modules/massdelete_detect_classify.c`) and only alerts when most of
   them are genuinely different files (not one file touched repeatedly).
   Also checks and surfaces whether the traced app holds
   `MANAGE_EXTERNAL_STORAGE` ("All files access"), since scoped storage
@@ -1035,7 +1035,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
-- **`exfil-burst`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
+- **`exfil-detect`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
   `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
   media-subdir- or credential-shaped-filename read (reusing `file_access`'s
   pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
@@ -1046,11 +1046,11 @@ object — no shared skeleton with `funcs`. Available analyzers:
   count, since realistic exfiltration is usually one C2 endpoint receiving
   a large payload rather than many small sends to many hosts. Known
   limitations: contacts/SMS/call-log exfil is invisible (Binder-mediated,
-  same structural blind spot as `ransomware-burst`'s MediaStore gap);
+  same structural blind spot as `massdelete-detect`'s MediaStore gap);
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
-- **`a11y-abuse`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
+- **`accessibility-detect`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
   `ares` code to touch Binder). Gated to outbound calls (not replies) addressed to
   `system_server`; per-process sliding-window counter flags a burst of 50 calls within
   5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
@@ -1061,7 +1061,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   it does not decode which specific privileged action fired (transaction-code decode is
   parked — see BACKLOG.md), and only gates on `system_server` as the destination
   (misses accessibility routing through OEM-specific separate framework processes).
-- **`fileless-exec`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
+- **`fileless-detect`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
   fires for every mmap, file-backed or anonymous, correlated entry/exit via a
   per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
   into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
@@ -1078,27 +1078,27 @@ object — no shared skeleton with `funcs`. Available analyzers:
   occurrence is already the signal). Known limitation: legitimate non-ART JIT
   engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
   anonymous executable mappings and will false-positive (see BACKLOG.md).
-- **`mediaproj-abuse`** — detects an active Android `MediaProjection`
+- **`screencapture-detect`** — detects an active Android `MediaProjection`
   screen-capture session (stealthy: zero uprobes). Detection is a userspace
   thread polling `dumpsys activity services <pkg>` once a second for a
   `ServiceRecord` block matching the launched/attached package with
   `isForeground=true` and a `types=0x..` hex mask that has the
   `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed
-  against real device output (`src/modules/mediaproj_abuse_parse.c`). A
+  against real device output (`src/modules/screencapture_detect_parse.c`). A
   `tp/binder/binder_transaction` tracepoint gated on outbound calls to
   `system_server` keeps a passive per-pid counter reported as supporting
   context on each alert, not as the trigger itself — a burst-threshold
-  design (mirroring `a11y-abuse`) was tried first and rejected: MediaProjection
+  design (mirroring `accessibility-detect`) was tried first and rejected: MediaProjection
   setup is 1-2 discrete Binder calls, not a sustained burst, and ongoing frame
   delivery goes to `SurfaceFlinger`, not `system_server`. Targets the
   live-screen-streaming-to-C2 technique behind OverlayPhantom and other
   current (2026) Android banking trojans — an escalation beyond the overlay/
-  accessibility abuse `a11y-abuse` already covers. Known limitations: the
+  accessibility abuse `accessibility-detect` already covers. Known limitations: the
   1s poll interval bounds detection latency (a session that starts and stops
   within one window is missed); no transaction-code decode, so the Binder-call
   context is coarse, not proof of which `system_server` interface was called;
   legitimate screen-share/remote-support apps false-positive (same accepted
-  category as `a11y-abuse`'s legitimate-accessibility-tool false positives);
+  category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
   proves a capture session was active, not that data left the device (no
   frame-content or exfil-volume corroboration).
 
@@ -1108,7 +1108,7 @@ at the moment the underlying kernel hook fired. Two exceptions: `mediaproj-
 abuse`'s event is built entirely in userspace (a `dumpsys`-polling thread,
 not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
 call at detection time, accurate only to the analyzer's 1s poll interval;
-`fileless-exec`'s alert event reuses the timestamp already captured at the
+`fileless-detect`'s alert event reuses the timestamp already captured at the
 original `do_mmap` return (not the later moment the alert graduates past its
 grace window), since that's the more accurate instant. `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
@@ -1128,11 +1128,11 @@ longer lost from the file:
 - `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
-- `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
-- `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
-- `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
-- `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
-- `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
+- `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
+- `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
+- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
+- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -1148,8 +1148,8 @@ Both orderings are harmless (the sink stays open for both calls either way)
 but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
-`a11y-abuse`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
+key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-detect`,
+`accessibility-detect`, `fileless-detect`, and `screencapture-detect` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
@@ -1345,7 +1345,7 @@ sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
 distinct shape from both other cases. `mod` has a minimal (not exempt)
 variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`ransomware-burst`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring`
+`massdelete-detect`/`accessibility-detect`/`fileless-detect`) reports its own `drops.ring`
 count the same way, but has no snapshot/CFI/managed-naming/decode surface to
 report — every other field always reads clean.
 
@@ -1365,7 +1365,7 @@ one.
   engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
   zero/false defaults — and a `TraceStore._summaries` dict (not a DuckDB table)
   keyed by the five mod-analyzer teardown `*_summary` types (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
   `proc_event_summary`; see §6), storing each parsed record as-is. **Known
   gap, not yet closed:** SYM1 Phase 5c added three more summary types
   (`syscalls_summary`/`funcs_summary`/`correlate_summary`, §7) that this

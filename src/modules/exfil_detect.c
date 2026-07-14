@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod exfil-burst` — userspace analyzer for the sensitive-read-then-
-// network-burst signal. Owns the exfil_burst BPF skeleton lifecycle; the
+// `ares mod exfil-detect` — userspace analyzer for the sensitive-read-then-
+// network-burst signal. Owns the exfil_detect BPF skeleton lifecycle; the
 // dispatcher in mod.c drives the poll loop and teardown order. Kernel side:
-// src/modules/exfil_burst.bpf.c. No classification module (unlike
-// ransomware_burst) -- crossing the byte threshold IS the detection
+// src/modules/exfil_detect.bpf.c. No classification module (unlike
+// massdelete_detect) -- crossing the byte threshold IS the detection
 // decision, already made in BPF.
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +12,7 @@
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "exfil_burst.skel.h"
+#include "exfil_detect.skel.h"
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
@@ -53,7 +53,7 @@ static void eb_stat_add(__u32 pid, const char *comm, unsigned long long bytes_se
     eb_stat_count++;
 }
 
-static struct exfil_burst_bpf *g_skel        = NULL;
+static struct exfil_detect_bpf *g_skel        = NULL;
 static struct bpf_link        *eb_ff         = NULL;
 static struct ring_buffer     *g_rb          = NULL;
 static struct bpf_link        *openat_link   = NULL;
@@ -71,10 +71,10 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
     struct ares_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
-    if (hdr->type != MOD_EV_EXFIL_BURST || sz < sizeof(struct exfil_burst_event))
+    if (hdr->type != MOD_EV_EXFIL_DETECT || sz < sizeof(struct exfil_detect_event))
         return 0;
 
-    const struct exfil_burst_event *e = data;
+    const struct exfil_detect_event *e = data;
     char dest_buf[64];
     const char *dest_str = NULL;
     if (e->dest_len > 0 &&
@@ -84,13 +84,13 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
     eb_stat_add(e->h.pid, e->comm, e->bytes_sent);
 
     if (!mc->quiet) {
-        printf("[exfil] PID:%-6d (%s) %llu bytes, %ums window, read %s, dest %s\n",
+        printf("[exfil-detect] PID:%-6d (%s) %llu bytes, %ums window, read %s, dest %s\n",
                e->h.pid, e->comm, (unsigned long long)e->bytes_sent, e->window_ms,
                e->sample_path, dest_str ? dest_str : "unknown");
     }
 
     if (mc->sink != NULL) {
-        mod_emit_exfil_burst(&mc->sink->jb, e, dest_str);
+        mod_emit_exfil_detect(&mc->sink->jb, e, dest_str);
         ares_sink_emit(mc->sink);
     }
 
@@ -101,13 +101,13 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *eb_setup(int uid, struct ares_mod_ctx *mc)
 {
-    g_skel = exfil_burst_bpf__open();
+    g_skel = exfil_detect_bpf__open();
     if (!g_skel) {
-        fprintf(stderr, "mod exfil-burst: failed to open BPF skeleton\n");
+        fprintf(stderr, "mod exfil-detect: failed to open BPF skeleton\n");
         return NULL;
     }
-    if (exfil_burst_bpf__load(g_skel)) {
-        fprintf(stderr, "mod exfil-burst: failed to load BPF\n");
+    if (exfil_detect_bpf__load(g_skel)) {
+        fprintf(stderr, "mod exfil-detect: failed to load BPF\n");
         goto err;
     }
 
@@ -132,42 +132,42 @@ static struct ring_buffer *eb_setup(int uid, struct ares_mod_ctx *mc)
     close_link   = bpf_program__attach(g_skel->progs.on_close);
 
     if (!openat_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_openat unavailable\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_openat unavailable\n");
     if (!openat2_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_openat2 unavailable (non-fatal)\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_openat2 unavailable (non-fatal)\n");
     if (!connect_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_connect unavailable\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_connect unavailable\n");
     if (!sendto_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_sendto unavailable (non-fatal)\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_sendto unavailable (non-fatal)\n");
     if (!write_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_write unavailable\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_write unavailable\n");
     if (!writev_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_writev unavailable (non-fatal)\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_writev unavailable (non-fatal)\n");
     if (!close_link)
-        fprintf(stderr, "mod exfil-burst: kprobe/__arm64_sys_close unavailable (fd tracking degraded, non-fatal)\n");
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_close unavailable (fd tracking degraded, non-fatal)\n");
 
     if (!openat_link && !openat2_link) {
-        fprintf(stderr, "mod exfil-burst: no openat kprobe attached, aborting\n");
+        fprintf(stderr, "mod exfil-detect: no openat kprobe attached, aborting\n");
         goto err;
     }
     if (!connect_link) {
-        fprintf(stderr, "mod exfil-burst: no connect kprobe attached, aborting\n");
+        fprintf(stderr, "mod exfil-detect: no connect kprobe attached, aborting\n");
         goto err;
     }
     if (!write_link && !writev_link && !sendto_link) {
-        fprintf(stderr, "mod exfil-burst: no send-path kprobe attached, aborting\n");
+        fprintf(stderr, "mod exfil-detect: no send-path kprobe attached, aborting\n");
         goto err;
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         eb_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
-        if (!eb_ff) fprintf(stderr, "mod exfil-burst: follow-fork attach failed (non-fatal)\n");
+        if (!eb_ff) fprintf(stderr, "mod exfil-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             eb_handle_event, mc, NULL);
     if (!g_rb) {
-        fprintf(stderr, "mod exfil-burst: failed to create ring buffer\n");
+        fprintf(stderr, "mod exfil-detect: failed to create ring buffer\n");
         goto err;
     }
     return g_rb;
@@ -181,7 +181,7 @@ err:
     if (write_link)    { bpf_link__destroy(write_link);    write_link    = NULL; }
     if (writev_link)   { bpf_link__destroy(writev_link);   writev_link   = NULL; }
     if (close_link)    { bpf_link__destroy(close_link);    close_link    = NULL; }
-    if (g_skel)        { exfil_burst_bpf__destroy(g_skel); g_skel        = NULL; }
+    if (g_skel)        { exfil_detect_bpf__destroy(g_skel); g_skel        = NULL; }
     return NULL;
 }
 
@@ -196,7 +196,7 @@ static void eb_teardown(void)
     if (writev_link)   { bpf_link__destroy(writev_link);   writev_link   = NULL; }
     if (close_link)    { bpf_link__destroy(close_link);    close_link    = NULL; }
     if (g_rb)          { ring_buffer__free(g_rb);          g_rb          = NULL; }
-    if (g_skel)        { exfil_burst_bpf__destroy(g_skel); g_skel        = NULL; }
+    if (g_skel)        { exfil_detect_bpf__destroy(g_skel); g_skel        = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
@@ -205,19 +205,19 @@ static void eb_print_summary(void)
 {
     if (eb_stat_count == 0) return;
 
-    printf("[exfil] --- Exfil Burst Summary -----------------------------\n");
-    printf("[exfil]   PID     Comm             Bursts  MaxBytesSent\n");
+    printf("[exfil-detect] --- Exfil Detection Summary -----------------------------\n");
+    printf("[exfil-detect]   PID     Comm             Bursts  MaxBytesSent\n");
     for (int i = 0; i < eb_stat_count; i++) {
-        printf("[exfil]  %6u  %-16s  %6u  %12llu\n",
+        printf("[exfil-detect]  %6u  %-16s  %6u  %12llu\n",
                eb_stats[i].pid, eb_stats[i].comm, eb_stats[i].burst_count,
                eb_stats[i].max_bytes_sent);
     }
-    printf("[exfil]  %d process%s triggered an exfil burst\n",
+    printf("[exfil-detect]  %d process%s triggered an exfil burst\n",
            eb_stat_count, eb_stat_count == 1 ? "" : "es");
 }
 
 // File twin of eb_print_summary: same tally, one
-// {"type":"exfil_burst_summary",...} record.
+// {"type":"exfil_detect_summary",...} record.
 static void eb_emit_summary(struct ares_sink *s)
 {
     if (eb_stat_count == 0) return;
@@ -225,7 +225,7 @@ static void eb_emit_summary(struct ares_sink *s)
     struct jbuf *j = &s->jb;
     j->len = 0;
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"exfil_burst_summary\"");
+    jb_s(j, "\"type\":\"exfil_detect_summary\"");
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)eb_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < eb_stat_count; i++) {
@@ -248,8 +248,8 @@ static unsigned long long eb_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_exfil_burst = {
-    .name          = "exfil-burst",
+const ares_analyzer_t analyzer_exfil_detect = {
+    .name          = "exfil-detect",
     .description   = "Detect a network byte-volume burst following a sensitive "
                       "media/credential file read (bulk exfiltration signal; "
                       "stealthy -- kprobes, zero uprobes)",

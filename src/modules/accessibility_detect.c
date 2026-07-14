@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod a11y-abuse` — userspace analyzer for the Binder-transaction-burst
-// signal. Owns the a11y_abuse BPF skeleton lifecycle; the dispatcher in mod.c
+// `ares mod accessibility-detect` — userspace analyzer for the Binder-transaction-burst
+// signal. Owns the accessibility_detect BPF skeleton lifecycle; the dispatcher in mod.c
 // drives the poll loop and teardown order. Kernel side:
-// src/modules/a11y_abuse.bpf.c. Classification:
-// src/modules/a11y_abuse_classify.c.
+// src/modules/accessibility_detect.bpf.c. Classification:
+// src/modules/accessibility_detect_classify.c.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +11,7 @@
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "a11y_abuse.skel.h"
+#include "accessibility_detect.skel.h"
 #include "common/analyzer.h"
 #include "common/engine_args.h"
 #include "common/emit.h"
@@ -19,7 +19,7 @@
 #include "common/runtime.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
-#include "modules/a11y_abuse_classify.h"
+#include "modules/accessibility_detect_classify.h"
 
 // ── per-pid tally (tallied unconditionally so summary survives -o) ─────────
 
@@ -82,18 +82,18 @@ static void a11y_check_service_granted(const char *pkg)
 // Single short tag for the console line.
 static const char *a11y_tag(unsigned categories)
 {
-    if ((categories & A11Y_BURST_DETECTED) && (categories & A11Y_SERVICE_GRANTED))
-        return "[a11y-abuse]";
-    if (categories & A11Y_BURST_DETECTED)
+    if ((categories & ACCESSIBILITY_DETECT_BURST_DETECTED) && (categories & ACCESSIBILITY_DETECT_SERVICE_GRANTED))
+        return "[accessibility-detect]";
+    if (categories & ACCESSIBILITY_DETECT_BURST_DETECTED)
         return "[a11y-burst]";
-    // Unreachable while the BPF side only ever emits at count==A11Y_THRESHOLD
-    // (a11y_abuse.bpf.c's record_call): kept for the same defensive-gate
-    // reasoning classify_a11y() itself documents, mirrors burst_tag()'s
-    // equivalent fallback in ransomware_burst.c.
+    // Unreachable while the BPF side only ever emits at count==ACCESSIBILITY_DETECT_THRESHOLD
+    // (accessibility_detect.bpf.c's record_call): kept for the same defensive-gate
+    // reasoning classify_accessibility() itself documents, mirrors burst_tag()'s
+    // equivalent fallback in massdelete_detect.c.
     return "[a11y-low-confidence]";
 }
 
-static struct a11y_abuse_bpf *g_skel = NULL;
+static struct accessibility_detect_bpf *g_skel = NULL;
 static struct bpf_link       *a11y_ff = NULL;
 static struct ring_buffer    *g_rb = NULL;
 static struct bpf_link       *binder_link = NULL;
@@ -105,20 +105,20 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
     struct ares_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
-    if (hdr->type != MOD_EV_A11Y_ABUSE || sz < sizeof(struct a11y_abuse_event))
+    if (hdr->type != MOD_EV_ACCESSIBILITY_DETECT || sz < sizeof(struct accessibility_detect_event))
         return 0;
 
-    const struct a11y_abuse_event *e = data;
-    unsigned categories = classify_a11y((int)e->touch_count, g_a11y_granted);
+    const struct accessibility_detect_event *e = data;
+    unsigned categories = classify_accessibility((int)e->touch_count, g_a11y_granted);
     a11y_stat_add(e->h.pid, e->comm, (int)e->touch_count);
 
     if (!mc->quiet) {
-        printf("[a11y] %-22s PID:%-6d (%s) %u binder calls to system_server, %ums window\n",
+        printf("[accessibility-detect] %-22s PID:%-6d (%s) %u binder calls to system_server, %ums window\n",
                a11y_tag(categories), e->h.pid, e->comm, e->touch_count, e->window_ms);
     }
 
     if (mc->sink != NULL) {
-        mod_emit_a11y_abuse(&mc->sink->jb, e, g_a11y_granted);
+        mod_emit_accessibility_detect(&mc->sink->jb, e, g_a11y_granted);
         ares_sink_emit(mc->sink);
     }
 
@@ -129,13 +129,13 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
 {
-    g_skel = a11y_abuse_bpf__open();
+    g_skel = accessibility_detect_bpf__open();
     if (!g_skel) {
-        fprintf(stderr, "mod a11y-abuse: failed to open BPF skeleton\n");
+        fprintf(stderr, "mod accessibility-detect: failed to open BPF skeleton\n");
         return NULL;
     }
-    if (a11y_abuse_bpf__load(g_skel)) {
-        fprintf(stderr, "mod a11y-abuse: failed to load BPF\n");
+    if (accessibility_detect_bpf__load(g_skel)) {
+        fprintf(stderr, "mod accessibility-detect: failed to load BPF\n");
         goto err;
     }
 
@@ -159,31 +159,31 @@ static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
     __u32 sys_pid = 0, zk = 0;
     a11y_resolve_sys_server_pid(&sys_pid);
     if (sys_pid == 0)
-        fprintf(stderr, "mod a11y-abuse: could not resolve system_server pid (pidof failed) -- gate will never match\n");
+        fprintf(stderr, "mod accessibility-detect: could not resolve system_server pid (pidof failed) -- gate will never match\n");
     bpf_map_update_elem(bpf_map__fd(g_skel->maps.sys_server_pid_map), &zk, &sys_pid, BPF_ANY);
 
     binder_link = bpf_program__attach(g_skel->progs.on_binder_transaction);
     if (!binder_link) {
-        fprintf(stderr, "mod a11y-abuse: tp/binder/binder_transaction unavailable, aborting\n");
+        fprintf(stderr, "mod accessibility-detect: tp/binder/binder_transaction unavailable, aborting\n");
         goto err;
     }
 
     // Deliberately after attach, not before: this shells out (settings get)
     // and can take hundreds of ms+ on real hardware, same ordering rationale
-    // as ransomware_burst's MANAGE_EXTERNAL_STORAGE check.
+    // as massdelete_detect's MANAGE_EXTERNAL_STORAGE check.
     a11y_check_service_granted(mc->pkg);
     if (g_a11y_granted == 1)
-        printf("[a11y] target holds a granted Accessibility Service\n");
+        printf("[accessibility-detect] target holds a granted Accessibility Service\n");
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
         a11y_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
-        if (!a11y_ff) fprintf(stderr, "mod a11y-abuse: follow-fork attach failed (non-fatal)\n");
+        if (!a11y_ff) fprintf(stderr, "mod accessibility-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
                             a11y_handle_event, mc, NULL);
     if (!g_rb) {
-        fprintf(stderr, "mod a11y-abuse: failed to create ring buffer\n");
+        fprintf(stderr, "mod accessibility-detect: failed to create ring buffer\n");
         goto err;
     }
     return g_rb;
@@ -191,7 +191,7 @@ static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
 err:
     if (a11y_ff)     { bpf_link__destroy(a11y_ff);     a11y_ff     = NULL; }
     if (binder_link) { bpf_link__destroy(binder_link); binder_link = NULL; }
-    if (g_skel)      { a11y_abuse_bpf__destroy(g_skel); g_skel     = NULL; }
+    if (g_skel)      { accessibility_detect_bpf__destroy(g_skel); g_skel     = NULL; }
     return NULL;
 }
 
@@ -200,7 +200,7 @@ static void a11y_teardown(void)
     if (a11y_ff)     { bpf_link__destroy(a11y_ff);     a11y_ff     = NULL; }
     if (binder_link) { bpf_link__destroy(binder_link); binder_link = NULL; }
     if (g_rb)        { ring_buffer__free(g_rb);        g_rb        = NULL; }
-    if (g_skel)      { a11y_abuse_bpf__destroy(g_skel); g_skel     = NULL; }
+    if (g_skel)      { accessibility_detect_bpf__destroy(g_skel); g_skel     = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
@@ -209,14 +209,14 @@ static void a11y_print_summary(void)
 {
     if (a11y_stat_count == 0) return;
 
-    printf("[a11y] --- Accessibility Abuse Summary ---------------------------\n");
-    printf("[a11y]   PID     Comm             Bursts  MaxTouch\n");
+    printf("[accessibility-detect] --- Accessibility Detection Summary ---------------------------\n");
+    printf("[accessibility-detect]   PID     Comm             Bursts  MaxTouch\n");
     for (int i = 0; i < a11y_stat_count; i++) {
-        printf("[a11y]  %6u  %-16s  %6u  %8u\n",
+        printf("[accessibility-detect]  %6u  %-16s  %6u  %8u\n",
                a11y_stats[i].pid, a11y_stats[i].comm, a11y_stats[i].burst_count,
                a11y_stats[i].max_touch_count);
     }
-    printf("[a11y]  %d process%s triggered a burst\n",
+    printf("[accessibility-detect]  %d process%s triggered a burst\n",
            a11y_stat_count, a11y_stat_count == 1 ? "" : "es");
 }
 
@@ -227,7 +227,7 @@ static void a11y_emit_summary(struct ares_sink *s)
     struct jbuf *j = &s->jb;
     j->len = 0;
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"a11y_abuse_summary\"");
+    jb_s(j, "\"type\":\"accessibility_detect_summary\"");
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)a11y_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < a11y_stat_count; i++) {
@@ -250,8 +250,8 @@ static unsigned long long a11y_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_a11y_abuse = {
-    .name          = "a11y-abuse",
+const ares_analyzer_t analyzer_accessibility_detect = {
+    .name          = "accessibility-detect",
     .description   = "Detect Binder-transaction bursts to system_server while the traced "
                       "app holds a granted Accessibility Service (dominant technique in "
                       "2025-2026 Android banking trojans -- overlay/ATS fraud, screen "

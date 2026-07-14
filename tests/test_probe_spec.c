@@ -120,6 +120,11 @@ int main(void)
     CHECK(strcmp(S.mod, "/lib.*/") == 0 &&
           strcmp(S.func, "open") == 0,           "regex mod: mod/func verbatim");
 
+    // A malformed regex is a parse-time error, not a silent later non-match.
+    CHECK(parse("libc.so!/[/") == -1,            "err: invalid regex in func");
+    CHECK(parse("/[/!open") == -1,               "err: invalid regex in mod");
+    CHECK(parse("libc.so!/^SSL_/") == 0,         "valid regex func still parses");
+
     // syscall: kind — bare NAME, no args/ret grammar.
     CHECK(parse("syscall:openat") == 0,          "kind syscall: rc 0");
     CHECK(S.kind == SPEC_KIND_SYSCALL && S.deny == false &&

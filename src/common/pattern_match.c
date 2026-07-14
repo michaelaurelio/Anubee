@@ -44,3 +44,28 @@ bool pm_regex(const char *pattern, const char *text)
     regfree(&re);
     return match;
 }
+
+bool pm_regex_valid(const char *pattern, char *err, size_t errlen)
+{
+    char buf[256];
+    const char *re_src = pattern;
+
+    if (pm_is_regex(pattern)) {
+        size_t inner = strlen(pattern) - 2;
+        if (inner >= sizeof(buf))
+            inner = sizeof(buf) - 1;
+        memcpy(buf, pattern + 1, inner);
+        buf[inner] = '\0';
+        re_src = buf;
+    }
+
+    regex_t re;
+    int rc = regcomp(&re, re_src, REG_EXTENDED | REG_NOSUB);
+    if (rc != 0) {
+        if (err && errlen)
+            regerror(rc, &re, err, errlen);
+        return false;
+    }
+    regfree(&re);
+    return true;
+}

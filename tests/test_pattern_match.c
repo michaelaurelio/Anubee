@@ -48,6 +48,23 @@ int main(void)
     CHECK(pm_regex("^lib", "libc.so") == true,     "regex: bare pattern match");
     CHECK(pm_regex("[", "anything") == false,      "regex: invalid pattern fails closed");
 
+    // --- pm_regex_valid: parse-time syntax check, delimited and bare ---
+    {
+        char e[128];
+        e[0] = '\0';
+        CHECK(pm_regex_valid("/^lib/", e, sizeof e) == true, "regex_valid: delimited ok");
+        e[0] = '\0';
+        CHECK(pm_regex_valid("/[/", e, sizeof e) == false,   "regex_valid: delimited malformed");
+        CHECK(e[0] != '\0',                                  "regex_valid: err message filled");
+        e[0] = '\0';
+        CHECK(pm_regex_valid("^lib", e, sizeof e) == true,   "regex_valid: bare ok");
+        e[0] = '\0';
+        CHECK(pm_regex_valid("[", e, sizeof e) == false,     "regex_valid: bare malformed");
+        CHECK(e[0] != '\0',                                  "regex_valid: err message filled (bare)");
+        // NULL err is fine (caller doesn't want the message).
+        CHECK(pm_regex_valid("[", NULL, 0) == false,         "regex_valid: NULL err ok");
+    }
+
     printf("\n%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

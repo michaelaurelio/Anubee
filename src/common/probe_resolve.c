@@ -281,6 +281,20 @@ int parse_custom_probe_spec_ex(const char *input, custom_probe_spec_t *out,
         log("   [err] > spec needs function name or offset: %s\n", input);
         return -1;
     }
+    // A /regex/-delimited mod or func parses structurally fine even when the
+    // regex itself is malformed (e.g. "/[/") -- pm_regex would just silently
+    // never match later. Catch that here instead of leaving it silent.
+    {
+        char reerr[128];
+        if (pm_is_regex(out->mod) && !pm_regex_valid(out->mod, reerr, sizeof reerr)) {
+            log("   [err] > invalid regex '%s' in spec: %s (%s)\n", out->mod, input, reerr);
+            return -1;
+        }
+        if (out->func[0] && pm_is_regex(out->func) && !pm_regex_valid(out->func, reerr, sizeof reerr)) {
+            log("   [err] > invalid regex '%s' in spec: %s (%s)\n", out->func, input, reerr);
+            return -1;
+        }
+    }
     // '>rettype' without '()': return-only probe (no CALL event, like -r)
     // '()>rettype' or '(args)>rettype': paired (CALL + RET)
     out->ret_only = (out->ret_type != ARG_NONE && out->arg_count == -1);

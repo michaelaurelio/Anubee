@@ -31,6 +31,9 @@ bool pm_regex(const char *pattern, const char *text)
 
     if (pm_is_regex(pattern)) {
         size_t inner = strlen(pattern) - 2;
+        // AUDIT.md #2: an empty //  matches everything; fail closed instead.
+        if (inner == 0)
+            return false;
         // AUDIT.md #1: don't silently truncate into a different (broader)
         // pattern than the user wrote; fail closed instead.
         if (inner >= sizeof(buf))
@@ -55,6 +58,12 @@ bool pm_regex_valid(const char *pattern, char *err, size_t errlen)
 
     if (pm_is_regex(pattern)) {
         size_t inner = strlen(pattern) - 2;
+        // AUDIT.md #2: an empty //  matches everything; reject at parse time.
+        if (inner == 0) {
+            if (err && errlen)
+                snprintf(err, errlen, "empty /regex/ matches everything, refusing");
+            return false;
+        }
         // AUDIT.md #1: don't silently truncate into a different (broader)
         // pattern than the user wrote; reject at parse time.
         if (inner >= sizeof(buf)) {

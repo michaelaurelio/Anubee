@@ -48,6 +48,8 @@ int main(void)
     CHECK(pm_regex("/^lib/", "notlib.so") == false, "regex: delimited no match");
     CHECK(pm_regex("^lib", "libc.so") == true,     "regex: bare pattern match");
     CHECK(pm_regex("[", "anything") == false,      "regex: invalid pattern fails closed");
+    // AUDIT.md #2: empty // is an empty ERE that matches everything - reject.
+    CHECK(pm_regex("//", "anything") == false,     "regex: empty // fails closed");
     // AUDIT.md #1: an overlong pattern must fail closed, not silently
     // truncate into a shorter (different, usually broader-matching) pattern.
     {
@@ -72,6 +74,10 @@ int main(void)
         CHECK(e[0] != '\0',                                  "regex_valid: err message filled (bare)");
         // NULL err is fine (caller doesn't want the message).
         CHECK(pm_regex_valid("[", NULL, 0) == false,         "regex_valid: NULL err ok");
+        // AUDIT.md #2: empty // rejected at parse time.
+        e[0] = '\0';
+        CHECK(pm_regex_valid("//", e, sizeof e) == false,    "regex_valid: empty // rejected");
+        CHECK(e[0] != '\0',                                  "regex_valid: empty // err message filled");
         // AUDIT.md #1: overlong pattern rejected at parse time, not truncated.
         {
             char longpat[300] = "/";

@@ -132,6 +132,12 @@ void add_symbols(struct dynsym *ds, const void *symbuf, size_t symbytes,
 			continue;                // data/metadata, not code we'd land in
 		if (es.st_name >= strn)
 			continue;
+		// Untrusted ELF string table (AUDIT.md C1): st_name only bounds where
+		// the name starts, not where it ends. Require a NUL within
+		// [st_name, strn) so arena_add's strlen() can never walk past the
+		// buffer on a crafted/corrupt .strtab.
+		if (!memchr(str + es.st_name, '\0', strn - es.st_name))
+			continue;
 		uint32_t off = arena_add(ds, str + es.st_name);
 		if (!off)
 			continue;

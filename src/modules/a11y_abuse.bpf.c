@@ -48,7 +48,7 @@ struct a11y_state {
 };
 
 // Per-pid burst state. Only uid/pid-filtered processes ever get an entry (the
-// gate runs before any map access), mirrors ransomware_burst's burst_map.
+// gate runs before any map access), mirrors massdelete_detect's burst_map.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 128);
@@ -56,7 +56,7 @@ struct {
 	__type(value, struct a11y_state);
 } a11y_map SEC(".maps");
 
-// Zero-template seed, same reasoning as ransomware_burst's burst_zero: struct
+// Zero-template seed, same reasoning as massdelete_detect's burst_zero: struct
 // a11y_state is too large for a safe BPF stack local.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -67,7 +67,7 @@ struct {
 
 // Record one gated outbound Binder call for the current process; emits an
 // a11y_abuse_event and resets the window when the threshold trips. Mirrors
-// ransomware_burst.bpf.c's record_touch().
+// massdelete_detect.bpf.c's record_touch().
 static __always_inline void record_call(__u32 code)
 {
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);

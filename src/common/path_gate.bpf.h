@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Shared bounded path-prefix check for BPF programs that gate on filesystem
-// paths (mod file-access, mod ransomware-burst). Source-shared only -- each
+// paths (mod file-access, mod massdelete-detect). Source-shared only -- each
 // BPF object that #includes this gets its own compiled copy, so this has no
 // effect on the detectability firewall (that's about attached programs, not
 // shared code).
@@ -25,7 +25,7 @@ static __always_inline int path_has_prefix(const char *path, const char *prefix,
 // Bounded substring search: does `path` contain `needle` (length `nlen`,
 // max 16) anywhere within its first 48 bytes? Double loop, both bounds
 // fixed/unrolled -- same verifier-provable shape as the FNV hash loop in
-// ransomware_burst.bpf.c. path is always a fixed 256-byte buffer
+// massdelete_detect.bpf.c. path is always a fixed 256-byte buffer
 // (FILE_PATH_LEN), so indexing up to 48+16=64 is always safe. The 48-byte
 // window is a deliberate bound (mirrors path_hash's own 64-byte bound) --
 // a needle only appearing later in an unusually long path is a documented,

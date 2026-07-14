@@ -24,13 +24,13 @@ MAX_ROWS = 200                 # hard cap on rows any query returns
 # §6/§7) and, for the four that carry a nested list, which field to cap.
 _SUMMARY_TYPES = frozenset({
     "execve_summary", "prop_read_summary", "file_access_summary",
-    "ransomware_burst_summary", "proc_event_summary",
+    "massdelete_detect_summary", "proc_event_summary",
 })
 _SUMMARY_LIST_FIELD = {
     "execve_summary": "binaries",
     "prop_read_summary": "props",
     "file_access_summary": "paths",
-    "ransomware_burst_summary": "processes",
+    "massdelete_detect_summary": "processes",
 }
 
 # Explicit schema so DuckDB never mis-infers the nested/heterogeneous fields.
@@ -257,7 +257,7 @@ class TraceStore:
 
     def summaries(self, kind=None, top=50):
         """Analyzer teardown *_summary records (execve_summary, prop_read_summary,
-        file_access_summary, ransomware_burst_summary, proc_event_summary)
+        file_access_summary, massdelete_detect_summary, proc_event_summary)
         ingested from a mod analyzer's `-o` output. Without `kind`, returns all
         ingested kinds as {kind: [records]}; with `kind`, returns just that
         kind's records (empty list if none were ingested). Each record's own

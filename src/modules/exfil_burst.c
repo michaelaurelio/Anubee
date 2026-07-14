@@ -3,7 +3,7 @@
 // network-burst signal. Owns the exfil_burst BPF skeleton lifecycle; the
 // dispatcher in mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/exfil_burst.bpf.c. No classification module (unlike
-// ransomware_burst) -- crossing the byte threshold IS the detection
+// massdelete_detect) -- crossing the byte threshold IS the detection
 // decision, already made in BPF.
 #include <stdio.h>
 #include <stdlib.h>

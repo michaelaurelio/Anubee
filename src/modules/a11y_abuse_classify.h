@@ -2,7 +2,7 @@
 // Pure classification logic for the `ares mod a11y-abuse` analyzer. No libbpf
 // deps (host-testable): given the touch_count from a BPF burst event and the
 // accessibility-grant check result, decide the alert bitmask. Mirrors
-// ransomware_burst_classify.h's shape, simpler -- no distinct-file estimation
+// massdelete_detect_classify.h's shape, simpler -- no distinct-file estimation
 // needed here.
 #ifndef __ARES_A11Y_ABUSE_CLASSIFY_H
 #define __ARES_A11Y_ABUSE_CLASSIFY_H

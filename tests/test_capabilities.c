@@ -34,7 +34,7 @@ int main(void)
     CHECK(!ares_object_writes_target("mod:execve"),    "mod:execve quiet");
     CHECK( ares_object_writes_target("mod:prop-read"), "mod:prop-read loud");
     CHECK(!ares_object_writes_target("mod:file-access"), "mod:file-access quiet");
-    CHECK(!ares_object_writes_target("mod:ransomware-burst"), "mod:ransomware-burst quiet");
+    CHECK(!ares_object_writes_target("mod:massdelete-detect"), "mod:massdelete-detect quiet");
     CHECK(!ares_object_writes_target("mod:exfil-burst"), "mod:exfil-burst quiet");
     CHECK(!ares_object_writes_target("mod:a11y-abuse"), "mod:a11y-abuse quiet");
     CHECK(!ares_object_writes_target("mod:fileless-exec"), "mod:fileless-exec quiet");

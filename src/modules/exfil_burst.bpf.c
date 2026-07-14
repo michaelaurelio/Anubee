@@ -6,7 +6,7 @@
 // close (untracks fds). Flags a per-process byte-volume burst to any
 // destination shortly after a sensitive-file read -- the syscall-level
 // signature for bulk media/credential exfiltration. Unlike
-// ransomware_burst, classification is entirely in-kernel: crossing the byte
+// massdelete_detect, classification is entirely in-kernel: crossing the byte
 // threshold IS the detection decision (see design doc for the full
 // signal-model rationale -- why byte-volume not distinct-destination-count,
 // why a single read arms rather than requiring its own burst).
@@ -97,7 +97,7 @@ struct {
 	__type(value, struct exfil_state);
 } exfil_map SEC(".maps");
 
-// Zero-template seed, same idiom as ransomware_burst.bpf.c's burst_zero --
+// Zero-template seed, same idiom as massdelete_detect.bpf.c's burst_zero --
 // struct exfil_state is too large for a safe BPF stack local.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

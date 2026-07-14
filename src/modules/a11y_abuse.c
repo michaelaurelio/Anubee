@@ -89,7 +89,7 @@ static const char *a11y_tag(unsigned categories)
     // Unreachable while the BPF side only ever emits at count==A11Y_THRESHOLD
     // (a11y_abuse.bpf.c's record_call): kept for the same defensive-gate
     // reasoning classify_a11y() itself documents, mirrors burst_tag()'s
-    // equivalent fallback in ransomware_burst.c.
+    // equivalent fallback in massdelete_detect.c.
     return "[a11y-low-confidence]";
 }
 
@@ -170,7 +170,7 @@ static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
 
     // Deliberately after attach, not before: this shells out (settings get)
     // and can take hundreds of ms+ on real hardware, same ordering rationale
-    // as ransomware_burst's MANAGE_EXTERNAL_STORAGE check.
+    // as massdelete_detect's MANAGE_EXTERNAL_STORAGE check.
     a11y_check_service_granted(mc->pkg);
     if (g_a11y_granted == 1)
         printf("[a11y] target holds a granted Accessibility Service\n");

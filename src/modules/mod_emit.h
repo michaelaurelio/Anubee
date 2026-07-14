@@ -12,7 +12,7 @@ struct proc_exit_event;  // modules/mod_events.h
 struct execve_event;     // modules/mod_events.h
 struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
-struct ransomware_burst_event; // modules/mod_events.h
+struct massdelete_detect_event; // modules/mod_events.h
 struct exfil_burst_event; // modules/mod_events.h
 struct a11y_abuse_event; // modules/mod_events.h
 struct fileless_exec_event; // modules/mod_events.h
@@ -47,20 +47,20 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 
-// {"type":"ransomware_burst","pid":N,"comm":"..","touch_count":N,
+// {"type":"massdelete_detect","pid":N,"comm":"..","touch_count":N,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
 //  "manage_external_storage":true|false|null}
 // distinct_estimate: caller-computed via burst_distinct_count (keeps this
 // builder free of that logic). manage_ext_storage is tri-state: 1 = granted
 // -> true, 0 = checked and not granted -> false, negative = unknown
 // (package unresolved, never checked) -> null.
-void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage);
 
 // {"type":"exfil_burst","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
 //  "sample_path":"..","dest":".."|null}
 // dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
-// builder free of that logic, same pattern as ransomware_burst's
+// builder free of that logic, same pattern as massdelete_detect's
 // distinct_estimate. NULL or empty -> JSON null (no connect() observed before
 // the byte threshold tripped, e.g. all volume went via a pre-attach socket's
 // sendto).
@@ -69,10 +69,10 @@ void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
 
 // {"type":"a11y_abuse","pid":N,"comm":"..","touch_count":N,"window_ms":N,
 //  "granted":true|false|null}
-// granted mirrors ransomware_burst's manage_ext_storage tri-state: 1 -> true,
+// granted mirrors massdelete_detect's manage_ext_storage tri-state: 1 -> true,
 // 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
 // consumers derive it from touch_count/granted the same way classify_a11y()
-// does, matching ransomware_burst/exfil_burst's convention of exposing raw
+// does, matching massdelete_detect/exfil_burst's convention of exposing raw
 // fields rather than a baked-in classification string.
 void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
 

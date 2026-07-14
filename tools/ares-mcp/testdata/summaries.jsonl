@@ -1,5 +1,5 @@
 {"type":"execve_summary","total_execs":3,"unique_binaries":2,"flagged":1,"binaries":[{"path":"/system/bin/su","count":2,"suspicious":true},{"path":"/system/bin/id","count":1,"suspicious":false}]}
 {"type":"prop_read_summary","total":5,"unique_props":2,"rasp_count":1,"props":[{"name":"ro.debuggable","count":3,"rasp":true},{"name":"ro.build.type","count":2,"rasp":false}]}
 {"type":"file_access_summary","total":4,"unique_paths":2,"flagged":1,"paths":[{"path":"/data/data/com.example/shared_prefs/creds.xml","count":3,"categories":["credential_pattern"]},{"path":"/sdcard/Download/x.txt","count":1,"categories":["external_storage"]}]}
-{"type":"ransomware_burst_summary","process_count":1,"processes":[{"pid":1234,"comm":"worker","bursts":2,"max_touch_count":50,"max_distinct":-1}]}
+{"type":"massdelete_detect_summary","process_count":1,"processes":[{"pid":1234,"comm":"worker","bursts":2,"max_touch_count":50,"max_distinct":-1}]}
 {"type":"proc_event_summary","forks":10,"exits":9,"signal_exits":1}

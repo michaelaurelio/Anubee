@@ -33,7 +33,7 @@ enum trace_event_type {
     TRACE_STACK,      // stack snapshot sidecar
     TRACE_FUNC,       // correlate span-open (probed function entered)
     TRACE_FILE_ACCESS, // sensitive file open (mod file-access)
-    TRACE_RANSOMWARE_BURST, // rename/unlink burst (mod ransomware-burst)
+    TRACE_MASSDELETE_DETECT, // rename/unlink burst (mod massdelete-detect)
     TRACE_DUMP,        // rebuilt-module manifest record (dump, SYM1 Phase 3)
     TRACE_EXFIL_BURST, // sensitive-read-then-network-burst (mod exfil-burst)
     TRACE_A11Y_ABUSE, // binder-transaction burst to system_server (mod a11y-abuse)

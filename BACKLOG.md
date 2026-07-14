@@ -46,11 +46,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; the alloc-churn half is deferred, see Minor detail for why).
 - `mod file-access` dirfd-relative opens unresolved — needs entry+kretprobe
   `bpf_d_path` canonicalization to close (see Minor section below).
-- `mod file-access`/`ransomware-burst` `.bpf.o` compiles clean here, but their
+- `mod file-access`/`massdelete-detect` `.bpf.o` compiles clean here, but their
   `*.skel.h` are stale (no `dropped` map) and `bpftool` isn't available in this
   dev env to regenerate them — full userspace compile + on-device confirmation
   of nonzero `ring_drops` is pending (see 2026-07-10 Resolved/Done entry).
-- `mod ransomware-burst` coverage is conditional on scoped-storage bypass
+- `mod massdelete-detect` coverage is conditional on scoped-storage bypass
   (`MANAGE_EXTERNAL_STORAGE` or legacy targetSdk) and doesn't cover
   lock-overlay-style extortion (see Minor section below).
 
@@ -424,7 +424,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   availability (5.10+) and CO-RE reads into `fdtable` internals, and only
   matters when an app deliberately holds a cached dir fd for a sensitive/foreign
   path — narrow compared to the common case (absolute paths).
-- `mod ransomware-burst` known v1 limitations (shipped 2026-07-08): coverage
+- `mod massdelete-detect` known v1 limitations (shipped 2026-07-08): coverage
   depends on the traced app holding `MANAGE_EXTERNAL_STORAGE` or targeting a
   legacy API level — scoped storage (Android 11+) otherwise blocks raw
   `renameat`/`unlinkat` on shared-storage files outright (surfaced via a
@@ -442,11 +442,11 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   `.trashed-*`, still on disk) performed by the MediaProvider process, not
   the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
   see it. Real-app-driven verification (as opposed to a synthetic PID
-  trigger) is now `scripts/burstapp/build.sh install` — see
+  trigger) is now `scripts/massdeleteapp/build.sh install` — see
   DOCUMENTATION.md §"Testing tiers".
 - `mod exfil-burst` known v1 limitations (shipped 2026-07-11): contacts/
   SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,
-  same structural blind spot as `ransomware-burst`'s MediaStore gap) —
+  same structural blind spot as `massdelete-detect`'s MediaStore gap) —
   scoped deliberately to media/credential-file reads, which are visible as
   real `openat` calls. Byte counts are requested length at syscall entry
   (`write`/`writev`/`sendto`'s argument), not a kretprobe-verified
@@ -820,7 +820,7 @@ is in DOCUMENTATION.md and the referenced specs.
   byte-identical). **Pending:** the `sock[]` field grows `struct event`, so the
   checked-in `src/funcs/ares-tracer.skel.h` is stale and needs `bpftool`
   regeneration (unavailable here — same blocker as the file-access/
-  ransomware-burst drop-telemetry entry below); on-device confirmation that
+  massdelete-detect drop-telemetry entry below); on-device confirmation that
   `ares funcs -c 'libc.so!connect(F,A,V)'` renders `ip:port` folds into the
   standing pending-on-device-verification item.
 
@@ -836,7 +836,7 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **MCP richness follow-on: `*_summary` ingest.** `load_structured` gained a
   bucket for the five mod-analyzer teardown records (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
   `proc_event_summary`) — previously falling into the `skipped` count, same as
   `coverage` did before its fix. Stored as parsed Python dicts on
   `TraceStore._summaries` rather than a DuckDB table (small, bounded records
@@ -859,16 +859,16 @@ is in DOCUMENTATION.md and the referenced specs.
   is meaningful). Closes out the "full `server.py` tool surface for
   `func_spans`/`span_syscalls`/summary records, diff/timeline views" item.
 
-- **`mod file-access`/`mod ransomware-burst` drop-telemetry gap closed.** Both
+- **`mod file-access`/`mod massdelete-detect` drop-telemetry gap closed.** Both
   analyzers now follow the same pattern as `proc-event`/`execve`/`prop-read`:
   `bpf_drop.bpf.h` included, `bump_dropped()` called at each ring-buffer
   reserve-failure site (`file_access.bpf.c`'s `on_openat`/`on_openat2`;
-  `ransomware_burst.bpf.c`'s `record_touch()` re-arm branch — the deliberate
+  `massdelete_detect.bpf.c`'s `record_touch()` re-arm branch — the deliberate
   `bpf_ringbuf_discard` path-gate-reject paths are untouched, not drops), and a
   `*_drops()` accessor (needed adding `common/runtime.h`, previously unincluded
   in these two files) wired into each `ares_analyzer_t.drops` field. Their
   already-emitted `coverage` record's `ring_drops` field goes from always-`0` to
-  accurate. `make build/{file_access,ransomware_burst}.bpf.o` compile clean;
+  accurate. `make build/{file_access,massdelete_detect}.bpf.o` compile clean;
   `make test` green (33+ existing checks incl. both classify suites, unaffected).
   **Pending:** userspace `.c` compile needs `bpftool` to regenerate stale
   `*.skel.h` (`dropped` map missing from the checked-in skeletons) — absent in

@@ -275,17 +275,17 @@ expensive one:
    `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
    grep -q` pipe SIGPIPEs under `pipefail` on large output).
-4. **Realistic app-driven verification** (`scripts/burstapp/`, manual, not part of
+4. **Realistic app-driven verification** (`scripts/massdeleteapp/`, manual, not part of
    `make device-test`) — for capabilities where a synthetic trigger's fidelity to
-   the real threat model is itself in question (`mod ransomware-burst`: does a
+   the real threat model is itself in question (`mod massdelete-detect`: does a
    real app's file mutation, not a purpose-built binary, actually get seen?).
-   `scripts/burstapp/build.sh install` builds and installs `dev.ares.burstapp`, a
+   `scripts/massdeleteapp/build.sh install` builds and installs `dev.ares.massdeleteapp`, a
    minimal code-free APK (`android:hasCode="false"`, references the stock
    `android.app.Activity` by name — no dex compiler needed, see the script's
    header for why one isn't available in this toolchain), grants it
    `MANAGE_EXTERNAL_STORAGE`, and prints its UID. Attach with
-   `ares mod ransomware-burst -P dev.ares.burstapp -o <file>`, then trigger file
-   activity as that exact UID with `su <uid> -c scripts/ares_burst_gen
+   `ares mod massdelete-detect -P dev.ares.massdeleteapp -o <file>`, then trigger file
+   activity as that exact UID with `su <uid> -c scripts/ares_massdelete_gen
    <target-dir>` (root allows arbitrary-UID exec directly — no `run-as` dance).
    This is also how the MediaStore-trash blind spot noted in §6.6 was found:
    real file managers routing "delete" through `IS_TRASHED` never reached
@@ -1018,11 +1018,11 @@ object — no shared skeleton with `funcs`. Available analyzers:
   probe." Known limitation: dirfd-relative opens with a relative pathname
   aren't resolved to an absolute path and are silently dropped (see
   BACKLOG.md).
-- **`ransomware-burst`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
+- **`massdelete-detect`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
   zero uprobes), gated in-kernel to external storage only. Tracks a per-process
   sliding-window touch counter + bounded path-hash ring; when 20 touches land
   within 10 seconds, userspace estimates how many were distinct files
-  (`src/modules/ransomware_burst_classify.c`) and only alerts when most of
+  (`src/modules/massdelete_detect_classify.c`) and only alerts when most of
   them are genuinely different files (not one file touched repeatedly).
   Also checks and surfaces whether the traced app holds
   `MANAGE_EXTERNAL_STORAGE` ("All files access"), since scoped storage
@@ -1046,7 +1046,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   count, since realistic exfiltration is usually one C2 endpoint receiving
   a large payload rather than many small sends to many hosts. Known
   limitations: contacts/SMS/call-log exfil is invisible (Binder-mediated,
-  same structural blind spot as `ransomware-burst`'s MediaStore gap);
+  same structural blind spot as `massdelete-detect`'s MediaStore gap);
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
@@ -1128,7 +1128,7 @@ longer lost from the file:
 - `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
-- `{"type":"ransomware_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
+- `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_burst_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
@@ -1148,7 +1148,7 @@ Both orderings are harmless (the sink stays open for both calls either way)
 but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
-key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil-burst`,
+key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-burst`,
 `a11y-abuse`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
@@ -1345,7 +1345,7 @@ sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
 distinct shape from both other cases. `mod` has a minimal (not exempt)
 variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`ransomware-burst`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring`
+`massdelete-detect`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring`
 count the same way, but has no snapshot/CFI/managed-naming/decode surface to
 report — every other field always reads clean.
 
@@ -1365,7 +1365,7 @@ one.
   engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
   zero/false defaults — and a `TraceStore._summaries` dict (not a DuckDB table)
   keyed by the five mod-analyzer teardown `*_summary` types (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `ransomware_burst_summary`,
+  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
   `proc_event_summary`; see §6), storing each parsed record as-is. **Known
   gap, not yet closed:** SYM1 Phase 5c added three more summary types
   (`syscalls_summary`/`funcs_summary`/`correlate_summary`, §7) that this

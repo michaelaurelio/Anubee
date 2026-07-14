@@ -19,7 +19,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_STACK:     return "stack";
     case TRACE_FUNC:      return "func";
     case TRACE_FILE_ACCESS: return "file_access";
-    case TRACE_RANSOMWARE_BURST: return "ransomware_burst";
+    case TRACE_MASSDELETE_DETECT: return "massdelete_detect";
     case TRACE_DUMP:       return "dump";
     case TRACE_EXFIL_BURST: return "exfil_burst";
     case TRACE_A11Y_ABUSE:        return "a11y_abuse";

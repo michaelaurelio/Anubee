@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
-#include "modules/ransomware_burst_classify.h"
+#include "modules/massdelete_detect_classify.h"
 
 int burst_distinct_count(const unsigned long long *hashes, int n)
 {
@@ -21,9 +21,9 @@ int burst_distinct_count(const unsigned long long *hashes, int n)
 unsigned classify_burst(int touch_count, int distinct_count, int manage_ext_storage)
 {
     unsigned cat = 0;
-    if (touch_count >= BURST_THRESHOLD && distinct_count >= BURST_DISTINCT_MIN)
-        cat |= RB_BURST_DETECTED;
+    if (touch_count >= MASSDELETE_DETECT_THRESHOLD && distinct_count >= MASSDELETE_DETECT_DISTINCT_MIN)
+        cat |= MASSDELETE_DETECT_BURST_DETECTED;
     if (manage_ext_storage == 1)
-        cat |= RB_MANAGE_EXT_STORAGE;
+        cat |= MASSDELETE_DETECT_MANAGE_EXT_STORAGE;
     return cat;
 }

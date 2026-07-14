@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the ransomware-burst analyzer: trace renameat/renameat2/
+// BPF object for the massdelete-detect analyzer: trace renameat/renameat2/
 // unlinkat syscalls, gated in-kernel to external storage, and flag a
 // per-process burst (many touches in a short window) -- the syscall-level
 // signature documented for Android crypto-ransomware (Chew et al. 2024:
 // renameat -> fstat -> unlinkat, repeated per file). Distinct-path
 // estimation and alert classification happen in userspace
-// (ransomware_burst_classify.c); this program only gates volume and tracks
+// (massdelete_detect_classify.c); this program only gates volume and tracks
 // the raw per-pid counter/hash-ring state.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -59,7 +59,7 @@ struct burst_state {
     __u64 window_start_ns;
     __u32 count;
     __u32 ring_head;
-    __u64 path_hashes[RANSOMWARE_BURST_RING_LEN];
+    __u64 path_hashes[MASSDELETE_DETECT_RING_LEN];
 };
 
 // Per-pid burst state. Only uid/pid-filtered processes ever get an entry
@@ -85,7 +85,7 @@ struct {
 } burst_zero SEC(".maps");
 
 // Record one gated rename/unlink touch for the current process; emits a
-// ransomware_burst_event and resets the window when the threshold trips.
+// massdelete_detect_event and resets the window when the threshold trips.
 static __always_inline void record_touch(const char *path)
 {
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
@@ -111,15 +111,15 @@ static __always_inline void record_touch(const char *path)
         st->ring_head = 0;
     }
 
-    __u32 slot = st->ring_head & (RANSOMWARE_BURST_RING_LEN - 1);
+    __u32 slot = st->ring_head & (MASSDELETE_DETECT_RING_LEN - 1);
     st->path_hashes[slot] = path_hash(path);
     st->ring_head++;
     st->count++;
 
-    if (st->count != BURST_THRESHOLD)
+    if (st->count != MASSDELETE_DETECT_THRESHOLD)
         return;
 
-    struct ransomware_burst_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+    struct massdelete_detect_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
         // Reserve failed (ring full): re-arm now so the next touch gets a
         // fresh attempt rather than never emitting again this window.
@@ -131,7 +131,7 @@ static __always_inline void record_touch(const char *path)
     }
 
     __u64 id = bpf_get_current_pid_tgid();
-    e->h.type = MOD_EV_RANSOMWARE_BURST;
+    e->h.type = MOD_EV_MASSDELETE_DETECT;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
@@ -139,7 +139,7 @@ static __always_inline void record_touch(const char *path)
     e->touch_count = st->count;
     e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
     #pragma unroll
-    for (int i = 0; i < RANSOMWARE_BURST_RING_LEN; i++)
+    for (int i = 0; i < MASSDELETE_DETECT_RING_LEN; i++)
         e->path_hashes[i] = st->path_hashes[i];
     bpf_probe_read_kernel_str(e->sample_path, sizeof(e->sample_path), path);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));

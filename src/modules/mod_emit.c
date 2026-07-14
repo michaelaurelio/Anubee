@@ -136,11 +136,11 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
     jb_c(j, '}');
 }
 
-void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_RANSOMWARE_BURST)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_MASSDELETE_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");           jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");         jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");        jb_esc(j, e->comm); jb_c(j, '"');

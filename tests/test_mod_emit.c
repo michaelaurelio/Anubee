@@ -16,7 +16,7 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 #include "modules/file_access_classify.h"
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
-void mod_emit_ransomware_burst(struct jbuf *j, const struct ransomware_burst_event *e,
+void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage);
 void mod_emit_exfil_burst(struct jbuf *j, const struct exfil_burst_event *e,
                            const char *dest_str);
@@ -229,9 +229,9 @@ int main(void)
     mod_emit_file_access(&j, &fa3, 0, flags1, 1);
     CHECK_HAS(j, "\"categories\":[]", "file_access empty categories array when uncategorized");
 
-    // ---- ransomware_burst: full event, MANAGE_EXTERNAL_STORAGE granted ------
-    struct ransomware_burst_event rb = {0};
-    rb.h.type = MOD_EV_RANSOMWARE_BURST;
+    // ---- massdelete_detect: full event, MANAGE_EXTERNAL_STORAGE granted ------
+    struct massdelete_detect_event rb = {0};
+    rb.h.type = MOD_EV_MASSDELETE_DETECT;
     rb.h.pid  = 9000;
     rb.h.tid  = 9000;
     rb.ts_ns  = 100000000006ULL;
@@ -241,26 +241,26 @@ int main(void)
     strncpy(rb.sample_path, "/sdcard/DCIM/photo1.jpg.locked", sizeof(rb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, 1);
-    CHECK_HAS(j, "\"type\":\"ransomware_burst\"",  "ransomware_burst type");
-    CHECK_HAS(j, "\"pid\":9000",                   "ransomware_burst pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000006",         "ransomware_burst ts_ns");
-    CHECK_HAS(j, "\"comm\":\"malware\"",           "ransomware_burst comm");
-    CHECK_HAS(j, "\"touch_count\":20",             "ransomware_burst touch_count");
-    CHECK_HAS(j, "\"distinct_estimate\":15",       "ransomware_burst distinct_estimate");
-    CHECK_HAS(j, "\"window_ms\":3500",             "ransomware_burst window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "ransomware_burst sample_path");
-    CHECK_HAS(j, "\"manage_external_storage\":true", "ransomware_burst manage_external_storage true");
+    mod_emit_massdelete_detect(&j, &rb, 15, 1);
+    CHECK_HAS(j, "\"type\":\"massdelete_detect\"",  "massdelete_detect type");
+    CHECK_HAS(j, "\"pid\":9000",                   "massdelete_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000006",         "massdelete_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"malware\"",           "massdelete_detect comm");
+    CHECK_HAS(j, "\"touch_count\":20",             "massdelete_detect touch_count");
+    CHECK_HAS(j, "\"distinct_estimate\":15",       "massdelete_detect distinct_estimate");
+    CHECK_HAS(j, "\"window_ms\":3500",             "massdelete_detect window_ms");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "massdelete_detect sample_path");
+    CHECK_HAS(j, "\"manage_external_storage\":true", "massdelete_detect manage_external_storage true");
 
-    // ---- ransomware_burst: MANAGE_EXTERNAL_STORAGE checked, not granted -----
+    // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE checked, not granted -----
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, 0);
-    CHECK_HAS(j, "\"manage_external_storage\":false", "ransomware_burst manage_external_storage false");
+    mod_emit_massdelete_detect(&j, &rb, 15, 0);
+    CHECK_HAS(j, "\"manage_external_storage\":false", "massdelete_detect manage_external_storage false");
 
-    // ---- ransomware_burst: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
+    // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
     j.len = 0;
-    mod_emit_ransomware_burst(&j, &rb, 15, -1);
-    CHECK_HAS(j, "\"manage_external_storage\":null", "ransomware_burst manage_external_storage null");
+    mod_emit_massdelete_detect(&j, &rb, 15, -1);
+    CHECK_HAS(j, "\"manage_external_storage\":null", "massdelete_detect manage_external_storage null");
 
     // ---- exfil_burst: full event, destination known -------------------------
     struct exfil_burst_event eb = {0};

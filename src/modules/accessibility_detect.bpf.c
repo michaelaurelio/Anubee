@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the a11y-abuse analyzer: trace outbound Binder transactions
+// BPF object for the accessibility-detect analyzer: trace outbound Binder transactions
 // to system_server and flag a per-process burst -- accessibility-service
 // abuse (overlay/ATS fraud, screen reading, security-prompt bypass) is the
 // dominant technique across current Android banking trojans (Mamont, Hook,
 // Anatsa, ToxicPanda, RatOn, TrickMo), and it's implemented over Binder IPC.
 // v1 is a coarse volume signal only -- no transaction-code decode (parked,
-// see docs/superpowers/specs/2026-07-12-mod-a11y-abuse-design.md). Userspace
-// classification: src/modules/a11y_abuse_classify.c.
+// see docs/superpowers/specs/2026-07-12-mod-accessibility-detect-design.md). Userspace
+// classification: src/modules/accessibility_detect_classify.c.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -44,7 +44,7 @@ struct a11y_state {
     __u64 window_start_ns;
     __u32 count;
     __u32 code_ring_head;
-    __u32 code_samples[A11Y_CODE_RING_LEN];
+    __u32 code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
 };
 
 // Per-pid burst state. Only uid/pid-filtered processes ever get an entry (the
@@ -66,7 +66,7 @@ struct {
 } a11y_zero SEC(".maps");
 
 // Record one gated outbound Binder call for the current process; emits an
-// a11y_abuse_event and resets the window when the threshold trips. Mirrors
+// accessibility_detect_event and resets the window when the threshold trips. Mirrors
 // massdelete_detect.bpf.c's record_touch().
 static __always_inline void record_call(__u32 code)
 {
@@ -93,15 +93,15 @@ static __always_inline void record_call(__u32 code)
         st->code_ring_head = 0;
     }
 
-    __u32 slot = st->code_ring_head & (A11Y_CODE_RING_LEN - 1);
+    __u32 slot = st->code_ring_head & (ACCESSIBILITY_DETECT_CODE_RING_LEN - 1);
     st->code_samples[slot] = code;
     st->code_ring_head++;
     st->count++;
 
-    if (st->count != A11Y_THRESHOLD)
+    if (st->count != ACCESSIBILITY_DETECT_THRESHOLD)
         return;
 
-    struct a11y_abuse_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+    struct accessibility_detect_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
     if (!e) {
         bump_dropped();
         st->window_start_ns = now;
@@ -111,7 +111,7 @@ static __always_inline void record_call(__u32 code)
     }
 
     __u64 id = bpf_get_current_pid_tgid();
-    e->h.type = MOD_EV_A11Y_ABUSE;
+    e->h.type = MOD_EV_ACCESSIBILITY_DETECT;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
     e->h._pad = 0;
@@ -119,7 +119,7 @@ static __always_inline void record_call(__u32 code)
     e->touch_count = st->count;
     e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
     #pragma unroll
-    for (int i = 0; i < A11Y_CODE_RING_LEN; i++)
+    for (int i = 0; i < ACCESSIBILITY_DETECT_CODE_RING_LEN; i++)
         e->code_samples[i] = st->code_samples[i];   // unused in v1 -- see design doc's parked transaction-code decode
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     bpf_ringbuf_submit(e, 0);

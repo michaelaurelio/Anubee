@@ -20,7 +20,7 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
                                 int distinct_estimate, int manage_ext_storage);
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
-void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 void mod_emit_fileless_exec(struct jbuf *j, const struct fileless_exec_event *e);
 void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
 
@@ -289,9 +289,9 @@ int main(void)
     mod_emit_exfil_detect(&j, &eb, NULL);
     CHECK_HAS(j, "\"dest\":null", "exfil_detect dest null");
 
-    // ---- a11y_abuse: full event, service granted -----------------------------
-    struct a11y_abuse_event aa = {0};
-    aa.h.type = MOD_EV_A11Y_ABUSE;
+    // ---- accessibility_detect: full event, service granted -----------------------------
+    struct accessibility_detect_event aa = {0};
+    aa.h.type = MOD_EV_ACCESSIBILITY_DETECT;
     aa.h.pid  = 9200;
     aa.h.tid  = 9200;
     aa.ts_ns  = 100000000008ULL;
@@ -300,24 +300,24 @@ int main(void)
     aa.window_ms   = 2100;
 
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, 1);
-    CHECK_HAS(j, "\"type\":\"a11y_abuse\"", "a11y_abuse type");
-    CHECK_HAS(j, "\"pid\":9200",            "a11y_abuse pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000008",  "a11y_abuse ts_ns");
-    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "a11y_abuse comm");
-    CHECK_HAS(j, "\"touch_count\":50",      "a11y_abuse touch_count");
-    CHECK_HAS(j, "\"window_ms\":2100",      "a11y_abuse window_ms");
-    CHECK_HAS(j, "\"granted\":true",        "a11y_abuse granted true");
+    mod_emit_accessibility_detect(&j, &aa, 1);
+    CHECK_HAS(j, "\"type\":\"accessibility_detect\"", "accessibility_detect type");
+    CHECK_HAS(j, "\"pid\":9200",            "accessibility_detect pid");
+    CHECK_HAS(j, "\"ts_ns\":100000000008",  "accessibility_detect ts_ns");
+    CHECK_HAS(j, "\"comm\":\"fakebank\"",   "accessibility_detect comm");
+    CHECK_HAS(j, "\"touch_count\":50",      "accessibility_detect touch_count");
+    CHECK_HAS(j, "\"window_ms\":2100",      "accessibility_detect window_ms");
+    CHECK_HAS(j, "\"granted\":true",        "accessibility_detect granted true");
 
-    // ---- a11y_abuse: checked, not granted -------------------------------------
+    // ---- accessibility_detect: checked, not granted -------------------------------------
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, 0);
-    CHECK_HAS(j, "\"granted\":false", "a11y_abuse granted false");
+    mod_emit_accessibility_detect(&j, &aa, 0);
+    CHECK_HAS(j, "\"granted\":false", "accessibility_detect granted false");
 
-    // ---- a11y_abuse: grant check unresolved (unknown) -------------------------
+    // ---- accessibility_detect: grant check unresolved (unknown) -------------------------
     j.len = 0;
-    mod_emit_a11y_abuse(&j, &aa, -1);
-    CHECK_HAS(j, "\"granted\":null", "a11y_abuse granted null");
+    mod_emit_accessibility_detect(&j, &aa, -1);
+    CHECK_HAS(j, "\"granted\":null", "accessibility_detect granted null");
 
     // ---- fileless_exec: untagged (no anon_name) -------------------------------
     struct fileless_exec_event fe = {0};

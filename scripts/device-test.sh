@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|a11y-abuse|fileless-exec|mediaproj-abuse|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-exec|mediaproj-abuse|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -460,7 +460,7 @@ test_exfil_detect() {
     fi
 }
 
-# mod a11y-abuse: real trigger via TalkBack (com.google.android.marvin.talkback),
+# mod accessibility-detect: real trigger via TalkBack (com.google.android.marvin.talkback),
 # confirmed installed on the test device. Unlike massdelete-detect/exfil-detect,
 # the trigger here isn't a compiled single-process generator: a real
 # AccessibilityService needs actual compiled code, and this toolchain has no
@@ -473,13 +473,13 @@ test_exfil_detect() {
 # unconditionally, even on failure — never leave the device in a different
 # accessibility configuration than it started in. Hard-fail, not SKIP: we
 # control the trigger, same rationale as massdelete-detect/exfil-detect.
-test_a11y_abuse() {
-    echo "=== mod a11y-abuse (binder-transaction burst to system_server + accessibility grant) ==="
+test_accessibility_detect() {
+    echo "=== mod accessibility-detect (binder-transaction burst to system_server + accessibility grant) ==="
     local tb_pkg="com.google.android.marvin.talkback"
     local tb_svc="$tb_pkg/com.google.android.marvin.talkback.TalkBackService"
 
     adb shell "pm path $tb_pkg" >/dev/null 2>&1 \
-        || fail "a11y-abuse: TalkBack ($tb_pkg) not installed on this device"
+        || fail "accessibility-detect: TalkBack ($tb_pkg) not installed on this device"
 
     local prev_svc prev_enabled
     prev_svc="$(adb shell "su -c 'settings get secure enabled_accessibility_services'" 2>/dev/null | tr -d '\r')"
@@ -500,7 +500,7 @@ test_a11y_abuse() {
     tb_pid="$(adb shell "su -c 'pidof $tb_pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
     if [ -z "$tb_pid" ] || ! [ "$tb_pid" -gt 0 ] 2>/dev/null; then
         restore_a11y
-        fail "a11y-abuse: TalkBack did not start after enabling (no pid)"
+        fail "accessibility-detect: TalkBack did not start after enabling (no pid)"
     fi
 
     (
@@ -511,18 +511,18 @@ test_a11y_abuse() {
     ) &
     local stim_pid=$!
 
-    local out; out="$(ares "mod a11y-abuse -p $tb_pid")"
+    local out; out="$(ares "mod accessibility-detect -p $tb_pid")"
     wait "$stim_pid" 2>/dev/null || true
     restore_a11y
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "a11y-abuse: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "accessibility-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[a11y\]' <<<"$out"; then
-        info "a11y-abuse OK — $(grep -c '^\[a11y\]' <<<"$out") [a11y] line(s)"
+    if grep -q '^\[accessibility-detect\]' <<<"$out"; then
+        info "accessibility-detect OK — $(grep -c '^\[accessibility-detect\]' <<<"$out") [accessibility-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "a11y-abuse: no [a11y] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
+        fail "accessibility-detect: no [accessibility-detect] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
     fi
 }
 
@@ -587,7 +587,7 @@ test_fileless_exec() {
 # MediaProjection-typed foreground service (types=0x000000A0 =
 # MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
 # installed APK). Unlike massdelete-detect/fileless-exec's synthetic
-# code-free generators, and like a11y-abuse's use of TalkBack, this drives a
+# code-free generators, and like accessibility-detect's use of TalkBack, this drives a
 # real app's real service directly via its exported intent-filter action --
 # no UI/consent-dialog automation needed (the exported Service bypasses the
 # in-app "Start now" consent flow entirely, since am start-foreground-service
@@ -599,9 +599,9 @@ test_fileless_exec() {
 # device and -P's ares_launch_app() (src/common/launch.c) hard-fails before
 # the dumpsys poll thread ever starts polling -- confirmed on-device, not a
 # timing issue. -p <pid> against the already-running service process skips
-# that resolve-activity step entirely, same precedent as a11y-abuse's
+# that resolve-activity step entirely, same precedent as accessibility-detect's
 # already-running-process attach. The ares() call below is synchronous
-# (blocking, like a11y-abuse/fileless-exec), not backgrounded: this file's
+# (blocking, like accessibility-detect/fileless-exec), not backgrounded: this file's
 # own header note applies here too -- ares's stdio is fully buffered once
 # it isn't a tty, so killing it early from the host side (pkill on the local
 # adb shell client doesn't even reach the remote process -- see
@@ -619,7 +619,7 @@ test_mediaproj_abuse() {
     adb shell am start-foreground-service \
         -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
         || fail "mediaproj-abuse: could not start $svc (adb/root/service export changed?)"
-    # Settle delay for cold-start pid resolution race (same as a11y-abuse).
+    # Settle delay for cold-start pid resolution race (same as accessibility-detect).
     sleep 2
 
     local svc_pid
@@ -711,12 +711,12 @@ case "$WHAT" in
     mod-file-access)   test_mod_file_access ;;
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
-    a11y-abuse)        test_a11y_abuse ;;
+    accessibility-detect)        test_accessibility_detect ;;
     fileless-exec)     test_fileless_exec ;;
     mediaproj-abuse)   test_mediaproj_abuse ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_a11y_abuse; test_fileless_exec; test_mediaproj_abuse; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | a11y-abuse | fileless-exec | mediaproj-abuse | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_exec; test_mediaproj_abuse; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-exec | mediaproj-abuse | correlate-returns | all)" ;;
 esac
 
 forcestop

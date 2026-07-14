@@ -36,7 +36,7 @@ enum trace_event_type {
     TRACE_MASSDELETE_DETECT, // rename/unlink burst (mod massdelete-detect)
     TRACE_DUMP,        // rebuilt-module manifest record (dump, SYM1 Phase 3)
     TRACE_EXFIL_DETECT, // sensitive-read-then-network-burst (mod exfil-detect)
-    TRACE_A11Y_ABUSE, // binder-transaction burst to system_server (mod a11y-abuse)
+    TRACE_ACCESSIBILITY_DETECT, // binder-transaction burst to system_server (mod accessibility-detect)
     TRACE_FILELESS_EXEC, // anonymous executable mmap, non-ART (mod fileless-exec)
     TRACE_MEDIAPROJ_ABUSE, // active MediaProjection screen-capture session (mod mediaproj-abuse)
 };

@@ -31,7 +31,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 | `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs | Stealthy |
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
-| `a11y-abuse` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
+| `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
 | `fileless-exec` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `mediaproj-abuse` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
 
@@ -81,6 +81,6 @@ adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
   signal outright. `massdelete-detect` surfaces whether the app holds it.
 - **Deletes via MediaStore's trash API are invisible** to `massdelete-detect`.
   The real `renameat` runs under MediaProvider's UID, not the app's.
-- **`a11y-abuse`/`mediaproj-abuse` false-positive on legitimate tools.**
+- **`accessibility-detect`/`mediaproj-abuse` false-positive on legitimate tools.**
   Screen-share/remote-support apps and legitimate accessibility services trip
   the same signal as abuse.

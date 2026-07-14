@@ -460,7 +460,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   arming (a soft precondition), not the byte-threshold detection itself.
   `writev()` calls with more than 8 iovecs undercount past the 8th entry
   (bounded-loop limit for verifier provability).
-- `mod a11y-abuse` known v1 limitations (shipped 2026-07-12): no transaction-code
+- `mod accessibility-detect` known v1 limitations (shipped 2026-07-12): no transaction-code
   decode — the analyzer proves "high Binder call volume to `system_server` while
   Accessibility-granted," not *which* privileged action fired (parked, same version-
   treadmill risk shape as ART's `k_table`/`ARES_ART_OFFSETS`). Only gates on
@@ -496,15 +496,15 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   encryption. This item previously assumed the whole category (Window Manager /
   `SYSTEM_ALERT_WINDOW` / accessibility-service abuse) was "not file syscalls" and
   therefore out of `ares`'s reach — that premise no longer holds for the
-  accessibility-service-abuse slice: `mod a11y-abuse` (shipped 2026-07-12) proves
+  accessibility-service-abuse slice: `mod accessibility-detect` (shipped 2026-07-12) proves
   Binder-mediated behavior is kernel-observable via the `binder_transaction`
   tracepoint. What remains genuinely open is the Window-Manager/overlay-specific
   mechanism itself (`SYSTEM_ALERT_WINDOW` window creation, screen-lock detection) —
-  `a11y-abuse` v1 only signals "Binder-chatty with `system_server` while
+  `accessibility-detect` v1 only signals "Binder-chatty with `system_server` while
   Accessibility-granted," not "created a full-screen overlay." A follow-on
   analyzer targeting `IWindowManager` binder traffic specifically (same
   `system_server`-destination-gating approach) is the natural next step — see
-  `mod a11y-abuse`'s design doc Follow-up ideas.
+  `mod accessibility-detect`'s design doc Follow-up ideas.
 
 - **`mod` cross-analyzer incident correlator — open, now unblocked.** Every
   mod analyzer event carries a real `ts_ns` timestamp as of the
@@ -513,14 +513,14 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   was the prerequisite blocker for this. Next step: a tool (likely
   host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
   groups events by `(pid, time window)` using `ts_ns`, and fuses matches
-  against a small hardcoded rule table (e.g. `a11y-abuse` + `mediaproj-abuse`
+  against a small hardcoded rule table (e.g. `accessibility-detect` + `mediaproj-abuse`
   + `exfil-detect` on one pid within N seconds) into a higher-confidence
   incident record. Before building: check whether ARES-Desktop or
   `tools/ares-mcp` already does something equivalent client-side —
   `ares-mcp`'s `TraceStore` doesn't currently ingest mod analyzer event
   types into a queryable table at all (only `*_summary` records, via a
   `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
-  missing `a11y_abuse_summary`, `exfil_detect_summary`,
+  missing `accessibility_detect_summary`, `exfil_detect_summary`,
   `fileless_exec_summary`, `mediaproj_abuse_summary` — worth fixing
   regardless of which venue the correlator lands in).
 
@@ -689,7 +689,7 @@ is in DOCUMENTATION.md and the referenced specs.
   ring-buffer-stub requirement turned out already precedented by
   `fileless-exec`, and the initially-planned burst-threshold Binder signal
   was rejected once the concrete event flow showed it doesn't transfer from
-  `a11y-abuse`'s technique to this one). Known v1 limitations: 1s poll
+  `accessibility-detect`'s technique to this one). Known v1 limitations: 1s poll
   interval bounds detection latency; no transaction-code decode; legitimate
   screen-share/remote-support apps false-positive; no frame-content or
   exfil-volume corroboration (proves a session was active, not that data

@@ -176,10 +176,10 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
     jb_c(j, '}');
 }
 
-void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted)
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_A11Y_ABUSE)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_ACCESSIBILITY_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');

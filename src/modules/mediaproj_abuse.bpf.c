@@ -4,7 +4,7 @@
 // The real detection signal is a userspace dumpsys poll thread
 // (mediaproj_abuse.c) -- this file's tracepoint only supplies supporting
 // context (how Binder-chatty the process was), it never triggers an alert
-// itself. a11y-abuse's burst-threshold recipe doesn't transfer to this
+// itself. accessibility-detect's burst-threshold recipe doesn't transfer to this
 // technique: MediaProjection setup is 1-2 discrete Binder calls, not a
 // sustained burst, and ongoing frame delivery goes to SurfaceFlinger, not
 // system_server, so a burst threshold here would either never fire (high
@@ -32,7 +32,7 @@ struct {
 
 // system_server's pid, resolved once at userspace startup (pidof
 // system_server) and pushed BEFORE attach -- same fail-closed pattern as
-// a11y_abuse.bpf.c's sys_server_pid_map. An unresolved (zero) value means
+// accessibility_detect.bpf.c's sys_server_pid_map. An unresolved (zero) value means
 // the gate never matches anything.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

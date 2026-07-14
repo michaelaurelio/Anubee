@@ -17,7 +17,7 @@
 // Parses `buf` (the full stdout of `dumpsys activity services <pkg>`) for a
 // ServiceRecord block that:
 //   - contains `pkg` as a substring (package-scoped match, same simplicity
-//     tradeoff as a11y_abuse_classify's accessibility-grant substring check),
+//     tradeoff as accessibility_detect_classify's accessibility-grant substring check),
 //   - has `isForeground=true`,
 //   - has a `types=0x..` hex mask with MEDIAPROJ_FGS_TYPE_BIT set.
 // Returns 1 if such a block is found, 0 if not, -1 if buf or pkg is NULL or

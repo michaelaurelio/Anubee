@@ -29,14 +29,14 @@
 #define MASSDELETE_DETECT_RING_LEN 32
 #define MASSDELETE_DETECT_THRESHOLD           20
 
-// Per-pid sliding-window burst counter for mod a11y-abuse (see
-// a11y_abuse.bpf.c). Same load-bearing relationship as
+// Per-pid sliding-window burst counter for mod accessibility-detect (see
+// accessibility_detect.bpf.c). Same load-bearing relationship as
 // MASSDELETE_DETECT_RING_LEN/MASSDELETE_DETECT_THRESHOLD above: the ring must never wrap
 // before a window resets (RING_LEN > THRESHOLD), and the slot index uses a
 // `& (RING_LEN-1)` mask, so RING_LEN must stay a power of two (the BPF
 // verifier can't range-track a non-pow2 modulo).
-#define A11Y_CODE_RING_LEN 64
-#define A11Y_THRESHOLD     50
+#define ACCESSIBILITY_DETECT_CODE_RING_LEN 64
+#define ACCESSIBILITY_DETECT_THRESHOLD     50
 
 // Truncated capture buffer for the fileless-exec analyzer's anon_name field
 // (see fileless_exec.bpf.c). Not a ring/threshold pair like the burst
@@ -79,7 +79,7 @@ enum {
     MOD_EV_FILE_ACCESS = 8,
     MOD_EV_MASSDELETE_DETECT = 9,
     MOD_EV_EXFIL_DETECT = 10,
-    MOD_EV_A11Y_ABUSE = 11,
+    MOD_EV_ACCESSIBILITY_DETECT = 11,
     MOD_EV_FILELESS_EXEC = 12,
     MOD_EV_MEDIAPROJ_ABUSE = 13,
 };
@@ -150,13 +150,13 @@ struct exfil_detect_event {
     __u32  dest_len;          // 0 if no connect() was observed before threshold
 };
 
-struct a11y_abuse_event {
+struct accessibility_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
-    __u32  code_samples[A11Y_CODE_RING_LEN];
+    __u32  code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
 };
 
 struct fileless_exec_event {

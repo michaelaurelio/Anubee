@@ -14,7 +14,7 @@ struct prop_event;       // modules/mod_events.h
 struct file_access_event; // modules/mod_events.h
 struct massdelete_detect_event; // modules/mod_events.h
 struct exfil_detect_event; // modules/mod_events.h
-struct a11y_abuse_event; // modules/mod_events.h
+struct accessibility_detect_event; // modules/mod_events.h
 struct fileless_exec_event; // modules/mod_events.h
 struct mediaproj_abuse_event; // modules/mod_events.h
 
@@ -67,14 +67,14 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
 
-// {"type":"a11y_abuse","pid":N,"comm":"..","touch_count":N,"window_ms":N,
+// {"type":"accessibility_detect","pid":N,"comm":"..","touch_count":N,"window_ms":N,
 //  "granted":true|false|null}
 // granted mirrors massdelete_detect's manage_ext_storage tri-state: 1 -> true,
 // 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
-// consumers derive it from touch_count/granted the same way classify_a11y()
+// consumers derive it from touch_count/granted the same way classify_accessibility()
 // does, matching massdelete_detect/exfil_detect's convention of exposing raw
 // fields rather than a baked-in classification string.
-void mod_emit_a11y_abuse(struct jbuf *j, const struct a11y_abuse_event *e, int granted);
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 
 // {"type":"fileless_exec","pid":N,"comm":"..","start":"0x..","size":N,
 //  "anon_name":".."}

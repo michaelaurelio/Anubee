@@ -1050,7 +1050,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
-- **`a11y-abuse`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
+- **`accessibility-detect`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
   `ares` code to touch Binder). Gated to outbound calls (not replies) addressed to
   `system_server`; per-process sliding-window counter flags a burst of 50 calls within
   5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
@@ -1088,17 +1088,17 @@ object — no shared skeleton with `funcs`. Available analyzers:
   `tp/binder/binder_transaction` tracepoint gated on outbound calls to
   `system_server` keeps a passive per-pid counter reported as supporting
   context on each alert, not as the trigger itself — a burst-threshold
-  design (mirroring `a11y-abuse`) was tried first and rejected: MediaProjection
+  design (mirroring `accessibility-detect`) was tried first and rejected: MediaProjection
   setup is 1-2 discrete Binder calls, not a sustained burst, and ongoing frame
   delivery goes to `SurfaceFlinger`, not `system_server`. Targets the
   live-screen-streaming-to-C2 technique behind OverlayPhantom and other
   current (2026) Android banking trojans — an escalation beyond the overlay/
-  accessibility abuse `a11y-abuse` already covers. Known limitations: the
+  accessibility abuse `accessibility-detect` already covers. Known limitations: the
   1s poll interval bounds detection latency (a session that starts and stops
   within one window is missed); no transaction-code decode, so the Binder-call
   context is coarse, not proof of which `system_server` interface was called;
   legitimate screen-share/remote-support apps false-positive (same accepted
-  category as `a11y-abuse`'s legitimate-accessibility-tool false positives);
+  category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
   proves a capture session was active, not that data left the device (no
   frame-content or exfil-volume corroboration).
 
@@ -1130,7 +1130,7 @@ longer lost from the file:
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
-- `{"type":"a11y_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
+- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_exec_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
@@ -1149,7 +1149,7 @@ but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-detect`,
-`a11y-abuse`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
+`accessibility-detect`, `fileless-exec`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
@@ -1345,7 +1345,7 @@ sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
 distinct shape from both other cases. `mod` has a minimal (not exempt)
 variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
-`massdelete-detect`/`a11y-abuse`/`fileless-exec`) reports its own `drops.ring`
+`massdelete-detect`/`accessibility-detect`/`fileless-exec`) reports its own `drops.ring`
 count the same way, but has no snapshot/CFI/managed-naming/decode surface to
 report — every other field always reads clean.
 

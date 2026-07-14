@@ -92,7 +92,10 @@ static inline int ares_parse_pid_list(const char *csv, pid_t *out, int max)
     if (!csv || max <= 0) return 0;
     // strtok modifies its input; work on a copy
     char buf[512];
+    size_t full_len = strlen(csv);
     int  blen = (int)strnlen(csv, sizeof(buf) - 1);
+    if ((size_t)blen < full_len)   // AUDIT.md #5: was silently truncated, no warning
+        fprintf(stderr, "warn: -p list longer than %zu bytes; truncated, some PIDs may be dropped\n", sizeof(buf) - 1);
     __builtin_memcpy(buf, csv, (size_t)blen);
     buf[blen] = '\0';
     int n = 0;

@@ -36,6 +36,30 @@ int main(void)
     CHECK_EQ(ares_parse_pid_list("", buf, 64), 0, "empty csv");
     CHECK_EQ(ares_parse_pid_list(NULL, buf, 64), 0, "null csv");
 
+    // AUDIT.md #5: a csv longer than the internal 512-byte buffer now warns
+    // on stderr (not asserted here) but must still return the PIDs that DO
+    // fit ahead of the 512-byte cutoff, with no functional regression.
+    {
+        // 100 comma-joined 7-digit PIDs (1000000..1000099). The first entry
+        // costs 7 bytes, every entry after costs 8 (",1000000"), so the
+        // first 64 entries sum to exactly 7 + 63*8 = 511 bytes -- exactly
+        // ares_parse_pid_list's usable buffer size (sizeof(buf)-1) -- which
+        // lands the truncation cut precisely on a comma boundary (verified:
+        // no token is split mid-number).
+        char oversized[900] = "";
+        size_t off = 0;
+        for (int i = 0; i < 100; i++) {
+            off += (size_t)snprintf(oversized + off, sizeof(oversized) - off,
+                                     i == 0 ? "%d" : ",%d", 1000000 + i);
+        }
+
+        pid_t big_buf[100];
+        int got = ares_parse_pid_list(oversized, big_buf, 100);
+        CHECK_EQ(got, 64, "oversized csv: truncated at exactly 64 pre-cutoff PIDs");
+        for (int i = 0; i < got; i++)
+            CHECK_EQ(big_buf[i], 1000000 + i, "oversized csv: pre-cutoff PID value preserved");
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

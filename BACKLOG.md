@@ -513,7 +513,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   was the prerequisite blocker for this. Next step: a tool (likely
   host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
   groups events by `(pid, time window)` using `ts_ns`, and fuses matches
-  against a small hardcoded rule table (e.g. `accessibility-detect` + `mediaproj-abuse`
+  against a small hardcoded rule table (e.g. `accessibility-detect` + `screencapture-detect`
   + `exfil-detect` on one pid within N seconds) into a higher-confidence
   incident record. Before building: check whether ARES-Desktop or
   `tools/ares-mcp` already does something equivalent client-side —
@@ -521,7 +521,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   types into a queryable table at all (only `*_summary` records, via a
   `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
   missing `accessibility_detect_summary`, `exfil_detect_summary`,
-  `fileless_detect_summary`, `mediaproj_abuse_summary` — worth fixing
+  `fileless_detect_summary`, `screencapture_detect_summary` — worth fixing
   regardless of which venue the correlator lands in).
 
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
@@ -682,7 +682,7 @@ is in DOCUMENTATION.md and the referenced specs.
     `correlate.c`'s own compiles are still unverified in this sandbox (no
     `bpftool`/aarch64 toolchain) — a real `make` is the remaining open step.
 
-- **mediaproj-abuse analyzer (shipped 2026-07-13).** New `mod` analyzer
+- **screencapture-detect analyzer (shipped 2026-07-13).** New `mod` analyzer
   detecting active `MediaProjection` screen-capture sessions — see
   DOCUMENTATION.md's `mod` analyzer list for the full design (including two
   design corrections made during development: the interface's

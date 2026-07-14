@@ -16,7 +16,7 @@ struct massdelete_detect_event; // modules/mod_events.h
 struct exfil_detect_event; // modules/mod_events.h
 struct accessibility_detect_event; // modules/mod_events.h
 struct fileless_detect_event; // modules/mod_events.h
-struct mediaproj_abuse_event; // modules/mod_events.h
+struct screencapture_detect_event; // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -87,12 +87,12 @@ void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_de
 // baked-in verdict" convention as every prior mod analyzer.
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 
-// {"type":"mediaproj_abuse","pid":N,"comm":"..","binder_calls_context":N}
+// {"type":"screencapture_detect","pid":N,"comm":"..","binder_calls_context":N}
 // binder_calls_context is the passive system_server Binder-call count
 // observed since the last alert for this pid (coarse/cumulative, not
 // windowed -- see design doc's Known limitations). No burst/threshold/
 // severity fields, same "raw fields, no baked-in verdict" convention as
 // every prior mod analyzer.
-void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e);
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
 
 #endif /* __ARES_MOD_EMIT_H */

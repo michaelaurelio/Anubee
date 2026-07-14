@@ -81,7 +81,7 @@ enum {
     MOD_EV_EXFIL_DETECT = 10,
     MOD_EV_ACCESSIBILITY_DETECT = 11,
     MOD_EV_FILELESS_DETECT = 12,
-    MOD_EV_MEDIAPROJ_ABUSE = 13,
+    MOD_EV_SCREENCAPTURE_DETECT = 13,
 };
 
 struct spawn_event {
@@ -168,7 +168,7 @@ struct fileless_detect_event {
     char   anon_name[FILELESS_DETECT_TAG_LEN];
 };
 
-struct mediaproj_abuse_event {
+struct screencapture_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];

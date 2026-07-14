@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|mediaproj-abuse|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -581,7 +581,7 @@ test_fileless_detect() {
     info "fileless-detect dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
 }
 
-# mod mediaproj-abuse: real trigger via com.transsion.screenrecorder
+# mod screencapture-detect: real trigger via com.transsion.screenrecorder
 # (pre-installed OEM screen-recorder app, confirmed installed on the test
 # device), whose exported RecordingService legitimately requests a
 # MediaProjection-typed foreground service (types=0x000000A0 =
@@ -608,17 +608,17 @@ test_fileless_detect() {
 # testing-ares-on-device gotchas) loses whatever hadn't flushed yet.
 # Blocking for the device-side `timeout -s INT $TIMEOUT` window lets ares
 # exit cleanly and flush before the capture completes.
-test_mediaproj_abuse() {
-    echo "=== mod mediaproj-abuse (active MediaProjection session via dumpsys poll) ==="
+test_screencapture_detect() {
+    echo "=== mod screencapture-detect (active MediaProjection session via dumpsys poll) ==="
     local pkg="com.transsion.screenrecorder"
     local svc="$pkg/.service.RecordingService"
 
     adb shell "pm path $pkg" >/dev/null 2>&1 \
-        || fail "mediaproj-abuse: $pkg not installed on this device"
+        || fail "screencapture-detect: $pkg not installed on this device"
 
     adb shell am start-foreground-service \
         -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
-        || fail "mediaproj-abuse: could not start $svc (adb/root/service export changed?)"
+        || fail "screencapture-detect: could not start $svc (adb/root/service export changed?)"
     # Settle delay for cold-start pid resolution race (same as accessibility-detect).
     sleep 2
 
@@ -626,20 +626,20 @@ test_mediaproj_abuse() {
     svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
     if [ -z "$svc_pid" ] || ! [ "$svc_pid" -gt 0 ] 2>/dev/null; then
         adb shell am stopservice -n "$svc" >/dev/null 2>&1
-        fail "mediaproj-abuse: $svc did not start (no pid) after start-foreground-service"
+        fail "screencapture-detect: $svc did not start (no pid) after start-foreground-service"
     fi
 
-    local out; out="$(ares "mod mediaproj-abuse -p $svc_pid")"
+    local out; out="$(ares "mod screencapture-detect -p $svc_pid")"
     adb shell am stopservice -n "$svc" >/dev/null 2>&1
 
     if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "mediaproj-abuse: BPF load failed (root/SELinux/own-su-c?)"
+        tail -5 <<<"$out" >&2; fail "screencapture-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[mediaproj-abuse\] PID:' <<<"$out"; then
-        info "mediaproj-abuse OK — $(grep -c '^\[mediaproj-abuse\] PID:' <<<"$out") [mediaproj-abuse] line(s)"
+    if grep -q '^\[screencapture-detect\] PID:' <<<"$out"; then
+        info "screencapture-detect OK — $(grep -c '^\[screencapture-detect\] PID:' <<<"$out") [screencapture-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
-        fail "mediaproj-abuse: no [mediaproj-abuse] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
+        fail "screencapture-detect: no [screencapture-detect] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
     fi
 }
 
@@ -713,10 +713,10 @@ case "$WHAT" in
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
     fileless-detect)     test_fileless_detect ;;
-    mediaproj-abuse)   test_mediaproj_abuse ;;
+    screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_mediaproj_abuse; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | mediaproj-abuse | correlate-returns | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | all)" ;;
 esac
 
 forcestop

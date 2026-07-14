@@ -206,10 +206,10 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
     jb_c(j, '}');
 }
 
-void mod_emit_mediaproj_abuse(struct jbuf *j, const struct mediaproj_abuse_event *e)
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e)
 {
     jb_c(j, '{');
-    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_MEDIAPROJ_ABUSE)); jb_c(j, '"');
+    jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_SCREENCAPTURE_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');

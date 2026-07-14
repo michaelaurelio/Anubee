@@ -33,7 +33,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
 | `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
-| `mediaproj-abuse` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
+| `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
 
 `prop-read` is the only analyzer that writes a `BRK` into the target; every
 other analyzer is a kprobe/tracepoint. Each run also prints (and, with `-o`,
@@ -81,6 +81,6 @@ adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
   signal outright. `massdelete-detect` surfaces whether the app holds it.
 - **Deletes via MediaStore's trash API are invisible** to `massdelete-detect`.
   The real `renameat` runs under MediaProvider's UID, not the app's.
-- **`accessibility-detect`/`mediaproj-abuse` false-positive on legitimate tools.**
+- **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
   Screen-share/remote-support apps and legitimate accessibility services trip
   the same signal as abuse.

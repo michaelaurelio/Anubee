@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 // Implementation of the dumpsys output parser declared in
-// mediaproj_abuse_parse.h. See that header for the contract.
+// screencapture_detect_parse.h. See that header for the contract.
 #include <string.h>
 #include <stdlib.h>
-#include "modules/mediaproj_abuse_parse.h"
+#include "modules/screencapture_detect_parse.h"
 
 // Bounded substring search: plain strstr() requires a NUL-terminated
 // haystack, but ServiceRecord block boundaries here are found by pointer
@@ -43,7 +43,7 @@ static unsigned long parse_hex_mask(const char *p, const char *end)
     return v;
 }
 
-int mediaproj_parse_dumpsys(const char *buf, const char *pkg, int *out_pid)
+int screencapture_detect_parse_dumpsys(const char *buf, const char *pkg, int *out_pid)
 {
     if (out_pid) *out_pid = -1;
     if (!buf || !buf[0] || !pkg || !pkg[0])
@@ -65,7 +65,7 @@ int mediaproj_parse_dumpsys(const char *buf, const char *pkg, int *out_pid)
         if (has_pkg && has_fg && types_p) {
             const char *mask_start = types_p + strlen("types=");
             unsigned long mask = parse_hex_mask(mask_start, block_end);
-            if (mask & MEDIAPROJ_FGS_TYPE_BIT) {
+            if (mask & SCREENCAPTURE_DETECT_FGS_TYPE_BIT) {
                 if (out_pid) {
                     const char *pr = find_in(block, block_len, "ProcessRecord{");
                     if (pr) {

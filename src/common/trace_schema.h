@@ -38,7 +38,7 @@ enum trace_event_type {
     TRACE_EXFIL_DETECT, // sensitive-read-then-network-burst (mod exfil-detect)
     TRACE_ACCESSIBILITY_DETECT, // binder-transaction burst to system_server (mod accessibility-detect)
     TRACE_FILELESS_DETECT, // anonymous executable mmap, non-ART (mod fileless-detect)
-    TRACE_MEDIAPROJ_ABUSE, // active MediaProjection screen-capture session (mod mediaproj-abuse)
+    TRACE_SCREENCAPTURE_DETECT, // active MediaProjection screen-capture session (mod screencapture-detect)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

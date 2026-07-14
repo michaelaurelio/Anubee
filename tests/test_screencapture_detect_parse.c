@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for the mediaproj-abuse dumpsys output parser. REAL_FIXTURE
+// Host unit tests for the screencapture-detect dumpsys output parser. REAL_FIXTURE
 // is genuine `dumpsys activity services` output captured 2026-07-13 from a
 // connected test device (com.transsion.screenrecorder's exported
 // RecordingService, triggered via `adb shell am start-foreground-service`) --
@@ -7,7 +7,7 @@
 // confirmed.
 #include <stdio.h>
 #include <string.h>
-#include "modules/mediaproj_abuse_parse.h"
+#include "modules/screencapture_detect_parse.h"
 
 static int checks = 0, failures = 0;
 #define CHECK(cond, msg) do { \
@@ -35,13 +35,13 @@ int main(void)
 
     // ---- real fixture, matching package -> active, pid parsed -------------
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", &pid) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", &pid) == 1,
           "real fixture: active session detected");
     CHECK(pid == 7570, "real fixture: pid parsed as 7570");
 
     // ---- real fixture, non-matching package -> inactive -------------------
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(REAL_FIXTURE, "com.other.app", &pid) == 0,
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.other.app", &pid) == 0,
           "real fixture: wrong package -> not found");
     CHECK(pid == -1, "real fixture: wrong package -> pid stays -1");
 
@@ -51,7 +51,7 @@ int main(void)
         "    app=ProcessRecord{xyz 1234:com.example.app/u0a1}\n"
         "    isForeground=true types=0x00000080\n";
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(MIC_ONLY, "com.example.app", &pid) == 0,
+    CHECK(screencapture_detect_parse_dumpsys(MIC_ONLY, "com.example.app", &pid) == 0,
           "microphone-only mask -> not found");
 
     // ---- combined mask including 0x20 -> active -----------------------------
@@ -60,7 +60,7 @@ int main(void)
         "    app=ProcessRecord{xyz 4321:com.example.app/u0a1}\n"
         "    isForeground=true types=0x00000021\n"; // MEDIA_PROJECTION|DATA_SYNC
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(COMBINED, "com.example.app", &pid) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(COMBINED, "com.example.app", &pid) == 1,
           "combined mask with 0x20 bit -> found");
     CHECK(pid == 4321, "combined mask: pid parsed as 4321");
 
@@ -70,7 +70,7 @@ int main(void)
         "    app=ProcessRecord{xyz 1234:com.example.app/u0a1}\n"
         "    isForeground=false types=0x00000020\n";
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(NOT_FG, "com.example.app", &pid) == 0,
+    CHECK(screencapture_detect_parse_dumpsys(NOT_FG, "com.example.app", &pid) == 0,
           "isForeground=false -> not found");
 
     // ---- matching block but no ProcessRecord line -> active, pid stays -1 --
@@ -78,7 +78,7 @@ int main(void)
         "  * ServiceRecord{abc u0 com.example.app/.Svc}\n"
         "    isForeground=true types=0x00000020\n";
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(NO_PROC, "com.example.app", &pid) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(NO_PROC, "com.example.app", &pid) == 1,
           "no ProcessRecord line -> still found active");
     CHECK(pid == -1, "no ProcessRecord line -> pid stays -1 (graceful degrade)");
 
@@ -91,23 +91,23 @@ int main(void)
         "    app=ProcessRecord{bbb 222:com.example.app/u0a2}\n"
         "    isForeground=true types=0x00000020\n";
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(TWO_BLOCKS, "com.example.app", &pid) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(TWO_BLOCKS, "com.example.app", &pid) == 1,
           "two blocks: second block matches");
     CHECK(pid == 222, "two blocks: pid from the matching (second) block");
 
     // ---- unusable input ------------------------------------------------------
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(NULL, "com.example.app", &pid) == -1, "NULL buf -> -1");
+    CHECK(screencapture_detect_parse_dumpsys(NULL, "com.example.app", &pid) == -1, "NULL buf -> -1");
     CHECK(pid == -1, "NULL buf -> pid stays -1");
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys("", "com.example.app", &pid) == -1, "empty buf -> -1");
+    CHECK(screencapture_detect_parse_dumpsys("", "com.example.app", &pid) == -1, "empty buf -> -1");
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(REAL_FIXTURE, NULL, &pid) == -1, "NULL pkg -> -1");
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, NULL, &pid) == -1, "NULL pkg -> -1");
     pid = -1;
-    CHECK(mediaproj_parse_dumpsys(REAL_FIXTURE, "", &pid) == -1, "empty pkg -> -1");
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "", &pid) == -1, "empty pkg -> -1");
 
     // ---- out_pid may be NULL (caller doesn't care about the pid) -----------
-    CHECK(mediaproj_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", NULL) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", NULL) == 1,
           "NULL out_pid is tolerated");
 
     printf("%d checks, %d failures\n", checks, failures);

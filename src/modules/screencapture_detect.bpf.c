@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the mediaproj-abuse analyzer: a passive per-pid counter of
+// BPF object for the screencapture-detect analyzer: a passive per-pid counter of
 // outbound Binder transactions to system_server, plus a stub ring buffer.
 // The real detection signal is a userspace dumpsys poll thread
-// (mediaproj_abuse.c) -- this file's tracepoint only supplies supporting
+// (screencapture_detect.c) -- this file's tracepoint only supplies supporting
 // context (how Binder-chatty the process was), it never triggers an alert
 // itself. accessibility-detect's burst-threshold recipe doesn't transfer to this
 // technique: MediaProjection setup is 1-2 discrete Binder calls, not a

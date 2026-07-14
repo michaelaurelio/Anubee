@@ -38,11 +38,11 @@ int main(void)
     CHECK(!ares_object_writes_target("mod:exfil-detect"), "mod:exfil-detect quiet");
     CHECK(!ares_object_writes_target("mod:accessibility-detect"), "mod:accessibility-detect quiet");
     CHECK(!ares_object_writes_target("mod:fileless-detect"), "mod:fileless-detect quiet");
-    CHECK(!ares_object_writes_target("mod:mediaproj-abuse"), "mod:mediaproj-abuse quiet");
+    CHECK(!ares_object_writes_target("mod:screencapture-detect"), "mod:screencapture-detect quiet");
 
     int n2 = 0;
     (void)ares_bpf_objects(&n2);
-    CHECK(n2 == 15, "registry has exactly 15 entries (6 engines + 9 analyzers) after mediaproj-abuse lands");
+    CHECK(n2 == 15, "registry has exactly 15 entries (6 engines + 9 analyzers) after screencapture-detect lands");
 
     // ares_quiet_config_ok: a quiet set passes; adding a loud object fails.
     const char *quiet_set[] = { "syscalls", "lib", "dump", "mod:proc-event" };

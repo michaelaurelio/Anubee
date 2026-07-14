@@ -1078,13 +1078,13 @@ object — no shared skeleton with `funcs`. Available analyzers:
   occurrence is already the signal). Known limitation: legitimate non-ART JIT
   engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
   anonymous executable mappings and will false-positive (see BACKLOG.md).
-- **`mediaproj-abuse`** — detects an active Android `MediaProjection`
+- **`screencapture-detect`** — detects an active Android `MediaProjection`
   screen-capture session (stealthy: zero uprobes). Detection is a userspace
   thread polling `dumpsys activity services <pkg>` once a second for a
   `ServiceRecord` block matching the launched/attached package with
   `isForeground=true` and a `types=0x..` hex mask that has the
   `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed
-  against real device output (`src/modules/mediaproj_abuse_parse.c`). A
+  against real device output (`src/modules/screencapture_detect_parse.c`). A
   `tp/binder/binder_transaction` tracepoint gated on outbound calls to
   `system_server` keeps a passive per-pid counter reported as supporting
   context on each alert, not as the trigger itself — a burst-threshold
@@ -1132,7 +1132,7 @@ longer lost from the file:
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
-- `{"type":"mediaproj_abuse_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
+- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -1149,7 +1149,7 @@ but the two are not byte-order-identical.
 
 **Per-analyzer loudness** is single-sourced in `capabilities.c` via the `mod:<name>`
 key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfil-detect`,
-`accessibility-detect`, `fileless-detect`, and `mediaproj-abuse` are kprobe/tracepoint — stealthy;
+`accessibility-detect`, `fileless-detect`, and `screencapture-detect` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL

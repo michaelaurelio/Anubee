@@ -146,6 +146,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                pm_is_glob pm_is_regex pm_match pm_regex \
                install_arg_types install_sock_args arg_fd_mask arg_sock_index arg_count \
                g_fd_args g_fd_args_count g_sock_args g_sock_args_count \
+               g_arg_counts g_arg_counts_count \
                jsonl_merge \
                out_print err_print ts_print human_detail \
                target_registry target_registry_count target_registry_add find_target_by_entry_addr

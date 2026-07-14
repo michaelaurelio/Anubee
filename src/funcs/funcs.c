@@ -191,14 +191,17 @@ static struct ares_coverage g_cov = { .engine = "funcs" };
 // exec_stats[] -- tallied unconditionally so the summary survives -q. Only
 // touched from the worker thread's CALL handling (same single-writer
 // reasoning as g_cov above), so no lock needed.
+// Sized to fit the worst case: mod_path[256] '!' func_name[256] '\0' (probe_resolve.h),
+// so this can never truncate -- avoids -Wformat-truncation on the snprintf below.
 #define FUNCS_STAT_MAX 256
-typedef struct { char name[256]; unsigned long long count; } funcs_stat_t;
+#define FUNCS_STAT_NAME_MAX (256 + 1 + 256)
+typedef struct { char name[FUNCS_STAT_NAME_MAX]; unsigned long long count; } funcs_stat_t;
 static funcs_stat_t g_funcs_stats[FUNCS_STAT_MAX];
 static int          g_funcs_stat_count;
 
 static void funcs_stat_add(const char *module, const char *symbol)
 {
-    char name[256];
+    char name[FUNCS_STAT_NAME_MAX];
     snprintf(name, sizeof(name), "%s!%s", module, symbol);
     for (int i = 0; i < g_funcs_stat_count; i++)
         if (!strcmp(g_funcs_stats[i].name, name)) { g_funcs_stats[i].count++; return; }

@@ -122,7 +122,8 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_resolve_pkg_from_pid \
                ares_launch_app ares_launch_banner \
                is_duplicate \
-               parse_custom_probe_spec load_probe_spec_file resolve_custom_spec_for_path \
+               parse_custom_probe_spec parse_custom_probe_spec_ex load_probe_spec_file \
+               resolve_custom_spec_for_path \
                resolve_custom_spec_matches_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \

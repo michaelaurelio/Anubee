@@ -1126,7 +1126,10 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	struct sysc_args *a = state->input;
 	switch (key) {
 	case 'P': copy_str(a->package_name, arg, sizeof(a->package_name)); break;
-	case 'l': if (a->nlib < 64) a->lib_sels[a->nlib++] = arg; break;
+	case 'l':
+		if (a->nlib < 64) a->lib_sels[a->nlib++] = arg;
+		else fprintf(stderr, "syscalls: warning — lib-selector cap (64) reached; '%s' ignored\n", arg);
+		break;
 	case 'A': copy_str(a->activity,     arg, sizeof(a->activity));     break;
 	case 'a': a->capture_all = 1; break;
 	case  1 : a->want_snap = 1;   break;

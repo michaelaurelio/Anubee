@@ -199,7 +199,10 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case 'A': a->activity = arg;  break;
     case 'd': a->outdir   = arg;  break;
     case 'o': a->output_file = arg; break;
-    case 'l': if (a->npat < 64) a->patterns[a->npat++] = arg; break;
+    case 'l':
+        if (a->npat < 64) a->patterns[a->npat++] = arg;
+        else fprintf(stderr, "dump: warning — lib-pattern cap (64) reached; '%s' ignored\n", arg);
+        break;
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_RAW:    a->raw    = 1; break;

@@ -14,6 +14,7 @@ ares mod file-access -m file-access -m execve -P com.example.app   # run several
 | Flag | Meaning |
 |---|---|
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-A ACTIVITY` | Override launch activity component |
 | `-m NAME` | Analyzer to run; repeat `-m` to run several concurrently (or pass `NAME` positionally) |
 | `-o FILE` | Export structured JSONL to `FILE` |
 | `-v` | Verbose output (e.g. `execve`: full backtrace frames) |

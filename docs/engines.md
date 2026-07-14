@@ -165,6 +165,7 @@ ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
 | Flag | Meaning |
 |---|---|
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-A ACTIVITY` | Override launch activity component |
 | `-d DIR` | Output directory (default: current dir) |
 | `-l PATTERN` | Library basename pattern to dump (glob/substring); repeatable, OR'd |
 | `-F FILE` | Spec file; a `lib:` line supplies `PATTERN` when none given positionally |

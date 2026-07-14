@@ -71,6 +71,8 @@
 #include "common/syscall_argtypes.h"
 #include "common/human_out.h"      // SYM1 Phase 4a: shared stdout formatter
 #include "syscalls/lib_seed.h"
+#include "syscalls/scope.h"
+#include "syscalls/attribution.h"
 
 // ---- syscall name table (numbers resolved by the cross compiler) ---------
 // R9 residual: table data now lives once in common/syscall_table.c, shared
@@ -371,6 +373,81 @@ static void seed_lib_ranges_from_maps(__u32 tgid)
 		push_lib_range(tgid, ml.start, ml.end, base);
 	}
 	fclose(f);
+}
+
+// ---- per-syscall library scoping (syscall:LIBPATTERN!NAME) ---------------
+//
+// Global -l/lib: selectors (g_libs/g_nlib, above) and syscall:/-s/-x
+// selection are independent, global sets. A scope narrows one specific
+// syscall NAME to only the library patterns bound to it: e.g. "openat" from
+// libc.so/libfoo.so, "read" from libsentinel.so, in one run. The kernel-side
+// gate has no per-syscall library dimension (syscall_filter is number-only,
+// lib_ranges is a single per-tgid union) -- a true in-kernel version would
+// need a BPF map schema change. Instead: the kernel captures the *union*
+// (every scoped syscall, from the union of every scoped library, folded into
+// g_libs at parse time -- see ARGP_KEY_END), and handle_syscall() below drops
+// any event whose own syscall has a scope its stack doesn't satisfy, reusing
+// the exact range-membership test the kernel itself uses (sysc_issuer_hit),
+// just against a per-scope range mirror instead of the single global
+// lib_ranges map.
+struct sysc_scope {
+	__u64 nr;
+	const char *lib_pats[SYSC_MAX_RANGES];
+	int npat;
+	struct syscalls_lib_ranges ranges;   // userspace-only mirror, never touches the BPF map
+};
+static struct sysc_scope g_scopes[64];
+static int g_nscopes;
+
+static struct sysc_scope *find_scope(__u64 nr)
+{
+	for (int i = 0; i < g_nscopes; i++)
+		if (g_scopes[i].nr == nr)
+			return &g_scopes[i];
+	return NULL;
+}
+
+// push_lib_range's twin for a scope's own userspace-only range mirror
+// (identical dedup/cap logic, just not backed by a BPF map).
+static void push_scope_range(struct syscalls_lib_ranges *ranges, __u64 start, __u64 end)
+{
+	for (__u32 i = 0; i < ranges->count && i < SYSC_MAX_RANGES; i++)
+		if (ranges->r[i].start == start && ranges->r[i].end == end)
+			return;
+	if (ranges->count >= SYSC_MAX_RANGES)
+		return;
+	ranges->r[ranges->count].start = start;
+	ranges->r[ranges->count].end = end;
+	ranges->count++;
+}
+
+// seed_lib_ranges_from_maps's twin for one scope: arms scope->ranges from a
+// /proc/<tgid>/maps scan against just that scope's own library patterns,
+// instead of the global g_libs set.
+static void seed_scope_ranges_from_maps(__u32 tgid, struct sysc_scope *scope)
+{
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%u/maps", tgid);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return;
+
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		struct ares_map_line ml;
+		if (!ares_parse_maps_line(line, &ml))
+			continue;
+		if (!lib_seed_line_arms_any(&ml, scope->lib_pats, scope->npat))
+			continue;
+		push_scope_range(&scope->ranges, ml.start, ml.end);
+	}
+	fclose(f);
+}
+
+static void arm_all_scopes_from_maps(__u32 tgid)
+{
+	for (int i = 0; i < g_nscopes; i++)
+		seed_scope_ranges_from_maps(tgid, &g_scopes[i]);
 }
 
 // ---- string-argument types -----------------------------------------------
@@ -720,6 +797,16 @@ static void pend_flush_all(void)
 
 static void handle_syscall(const struct syscalls_syscall_event *e)
 {
+	// syscall:LIBPATTERN!NAME scoping: this syscall's own library scope (if
+	// any) wasn't satisfied -- drop before any tally/print/JSON, as if the
+	// kernel itself had never emitted it (same effect as its own gates).
+	struct sysc_scope *sc = find_scope(e->nr);
+	if (sc) {
+		int n = e->stack_sz / (int)sizeof(__u64);
+		if (!sysc_issuer_hit(&sc->ranges, e->stack, n))
+			return;
+	}
+
 	unsigned long long id = g_next_id++;
 	// SYM1 Phase 5c: tallied unconditionally so the summary survives -q.
 	sysc_stat_add(sysname(e->nr, e->compat));
@@ -858,6 +945,9 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 			const struct lib_map_event *m = data;
 			if (lib_name_matches(m->name))
 				push_lib_range(m->h.pid, m->start, m->end, m->name);
+			for (int i = 0; i < g_nscopes; i++)
+				if (lib_selector_matches_any(m->name, g_scopes[i].lib_pats, g_scopes[i].npat))
+					push_scope_range(&g_scopes[i].ranges, m->start, m->end);
 		}
 	}
 	ares_evq_push(&g_q, data, sz);
@@ -946,6 +1036,14 @@ struct sysc_args {
 	bool spec_defaulted[64];     // -e only: true if specs[i] had no KIND: prefix and was
 	                             // assumed syscall: (this engine's -e default); index-aligned
 	                             // with specs[]. -F-loaded entries always leave this false.
+	struct {                     // syscall:LIBPATTERN!NAME accumulator, one entry per NAME
+		char name[64];
+		char lib_pats[SYSC_MAX_RANGES][256]; // fixed buffers: lib_sels[]/g_scopes[] point
+		                                      // into these, so they must outlive this function
+		                                      // (safe: sa is `static` in syscalls_setup())
+		int npat;
+	} scopes[64];
+	int nscopes;
 };
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -1028,6 +1126,75 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 					if (a->specs[i].kind == SPEC_KIND_LIB)
 						a->lib_sels[a->nlib++] = a->specs[i].mod;
 		}
+		// syscall:LIBPATTERN!NAME per-syscall library scoping. Three passes so a
+		// scoped entry is never mistaken for a false self-conflict against its own
+		// (not-yet-rewritten) name -- validate everything first, only then mutate
+		// specs[]/build the scope table.
+		{
+			// Pass 1: deny+scope is invalid ("deny NAME from LIB but allow NAME from
+			// elsewhere" is a confusing partial-deny nobody asked for) -- reject.
+			for (int i = 0; i < a->nspec; i++)
+				if (a->specs[i].kind == SPEC_KIND_SYSCALL && a->specs[i].deny &&
+				    strchr(a->specs[i].mod, '!'))
+					argp_error(state, "syscall: library-scoped spec ('%s') can't combine with deny (!)",
+					           a->specs[i].mod);
+			// Pass 2: a syscall NAME can't be both scoped and unscoped in the same
+			// run (bare syscall:NAME line, or a -s/-x LIST entry) -- matches the
+			// existing precedent above of rejecting ambiguous combinations instead
+			// of silently picking a winner.
+			for (int i = 0; i < a->nspec; i++) {
+				if (a->specs[i].kind != SPEC_KIND_SYSCALL)
+					continue;
+				char libpat[256], name[64];
+				if (sysc_scope_split(a->specs[i].mod, libpat, sizeof(libpat), name, sizeof(name)) != 1)
+					continue;   // unscoped, or malformed (malformed is re-caught in pass 3)
+				for (int j = 0; j < a->nspec; j++)
+					if (j != i && a->specs[j].kind == SPEC_KIND_SYSCALL &&
+					    !strchr(a->specs[j].mod, '!') && !strcmp(a->specs[j].mod, name))
+						argp_error(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
+						           name, a->specs[i].mod);
+				if (a->syscall_list && sysc_list_contains(a->syscall_list, name))
+					argp_error(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
+					           name, a->specs[i].mod);
+			}
+			// Pass 3: build the scope table, fold libpat into the -l/lib: union so
+			// the kernel arms/captures broadly enough, and rewrite mod down to the
+			// bare NAME so it resolves via sysnr() like any other syscall: entry.
+			for (int i = 0; i < a->nspec; i++) {
+				if (a->specs[i].kind != SPEC_KIND_SYSCALL)
+					continue;
+				char libpat[256], name[64];
+				int r = sysc_scope_split(a->specs[i].mod, libpat, sizeof(libpat), name, sizeof(name));
+				if (r == 0)
+					continue;
+				if (r < 0)
+					argp_error(state, "syscall: malformed library-scoped spec (need LIBPATTERN!NAME): '%s'",
+					           a->specs[i].mod);
+				int si = -1;
+				for (int k = 0; k < a->nscopes; k++)
+					if (!strcmp(a->scopes[k].name, name)) { si = k; break; }
+				if (si < 0) {
+					if (a->nscopes >= 64) {
+						fprintf(stderr, "syscalls: warning — scoped-syscall cap (64) reached; '%s' ignored\n", name);
+						continue;
+					}
+					si = a->nscopes++;
+					copy_str(a->scopes[si].name, name, sizeof(a->scopes[si].name));
+					a->scopes[si].npat = 0;
+				}
+				if (a->scopes[si].npat < SYSC_MAX_RANGES) {
+					copy_str(a->scopes[si].lib_pats[a->scopes[si].npat], libpat,
+					         sizeof(a->scopes[si].lib_pats[0]));
+					if (a->nlib < 64)
+						a->lib_sels[a->nlib++] = a->scopes[si].lib_pats[a->scopes[si].npat];
+					a->scopes[si].npat++;
+				} else {
+					fprintf(stderr, "syscalls: warning — library-pattern cap (%d) reached for '%s'; '%s' ignored\n",
+					        SYSC_MAX_RANGES, name, libpat);
+				}
+				copy_str(a->specs[i].mod, name, sizeof(a->specs[i].mod)); // now bare NAME
+			}
+		}
 		if (!a->capture_all && a->nlib == 0)
 			argp_error(state, "-l <lib-selector> is required (or use -a to capture all)");
 		break;
@@ -1067,6 +1234,22 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 	g_pkg      = sa.package_name;
 	g_libs     = sa.lib_sels;
 	g_nlib     = sa.capture_all ? 0 : sa.nlib;
+	g_nscopes  = 0;
+	if (!sa.capture_all)
+		for (int i = 0; i < sa.nscopes && g_nscopes < 64; i++) {
+			long nr = sysnr(sa.scopes[i].name);
+			if (nr < 0) {
+				fprintf(stderr, "syscalls: warning — unknown syscall '%s' in library-scoped spec (ignored)\n",
+				        sa.scopes[i].name);
+				continue;
+			}
+			g_scopes[g_nscopes].nr = (__u64)nr;
+			g_scopes[g_nscopes].npat = sa.scopes[i].npat;
+			for (int k = 0; k < sa.scopes[i].npat; k++)
+				g_scopes[g_nscopes].lib_pats[k] = sa.scopes[i].lib_pats[k];
+			memset(&g_scopes[g_nscopes].ranges, 0, sizeof(g_scopes[g_nscopes].ranges));
+			g_nscopes++;
+		}
 	g_ndefaulted = 0;
 	for (int i = 0; i < sa.nspec && g_ndefaulted < 64; i++)
 		if (sa.spec_defaulted[i])
@@ -1189,6 +1372,7 @@ int syscalls_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 			__u32 tgid = (__u32)sa.tgt.pids[i];
 			bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
 			seed_lib_ranges_from_maps(tgid);
+			arm_all_scopes_from_maps(tgid);
 			if (sa.tgt.siblings) {
 				int puid = ares_get_pid_uid(sa.tgt.pids[i]);
 				if (puid > 0) {
@@ -1415,6 +1599,7 @@ int cmd_syscalls(int argc, char **argv)
 		// attribution defect): inherited libraries (libc.so et al., mapped in
 		// the zygote before fork) never fire a live uprobe_mmap in the child.
 		seed_lib_ranges_from_maps((__u32)pid);
+		arm_all_scopes_from_maps((__u32)pid);
 	}
 
 	syscalls_run(&exiting);

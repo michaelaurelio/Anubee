@@ -5,6 +5,7 @@
 #include "common/pattern_match.h"
 
 #include <stdio.h>
+#include <string.h>
 
 static int checks = 0, failures = 0;
 
@@ -47,6 +48,14 @@ int main(void)
     CHECK(pm_regex("/^lib/", "notlib.so") == false, "regex: delimited no match");
     CHECK(pm_regex("^lib", "libc.so") == true,     "regex: bare pattern match");
     CHECK(pm_regex("[", "anything") == false,      "regex: invalid pattern fails closed");
+    // AUDIT.md #1: an overlong pattern must fail closed, not silently
+    // truncate into a shorter (different, usually broader-matching) pattern.
+    {
+        char longpat[300] = "/";
+        memset(longpat + 1, 'a', 280);
+        longpat[281] = '/'; longpat[282] = '\0';
+        CHECK(pm_regex(longpat, "aaa") == false,   "regex: overlong pattern fails closed, not silently truncated");
+    }
 
     // --- pm_regex_valid: parse-time syntax check, delimited and bare ---
     {
@@ -63,6 +72,15 @@ int main(void)
         CHECK(e[0] != '\0',                                  "regex_valid: err message filled (bare)");
         // NULL err is fine (caller doesn't want the message).
         CHECK(pm_regex_valid("[", NULL, 0) == false,         "regex_valid: NULL err ok");
+        // AUDIT.md #1: overlong pattern rejected at parse time, not truncated.
+        {
+            char longpat[300] = "/";
+            memset(longpat + 1, 'a', 280);
+            longpat[281] = '/'; longpat[282] = '\0';
+            e[0] = '\0';
+            CHECK(pm_regex_valid(longpat, e, sizeof e) == false, "regex_valid: overlong pattern rejected");
+            CHECK(e[0] != '\0',                                   "regex_valid: overlong pattern err message filled");
+        }
     }
 
     printf("\n%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);

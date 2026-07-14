@@ -3,6 +3,7 @@
 
 #include <fnmatch.h>
 #include <regex.h>
+#include <stdio.h>
 #include <string.h>
 
 bool pm_is_glob(const char *pattern)
@@ -30,8 +31,10 @@ bool pm_regex(const char *pattern, const char *text)
 
     if (pm_is_regex(pattern)) {
         size_t inner = strlen(pattern) - 2;
+        // AUDIT.md #1: don't silently truncate into a different (broader)
+        // pattern than the user wrote; fail closed instead.
         if (inner >= sizeof(buf))
-            inner = sizeof(buf) - 1;
+            return false;
         memcpy(buf, pattern + 1, inner);
         buf[inner] = '\0';
         re_src = buf;
@@ -52,8 +55,13 @@ bool pm_regex_valid(const char *pattern, char *err, size_t errlen)
 
     if (pm_is_regex(pattern)) {
         size_t inner = strlen(pattern) - 2;
-        if (inner >= sizeof(buf))
-            inner = sizeof(buf) - 1;
+        // AUDIT.md #1: don't silently truncate into a different (broader)
+        // pattern than the user wrote; reject at parse time.
+        if (inner >= sizeof(buf)) {
+            if (err && errlen)
+                snprintf(err, errlen, "/regex/ pattern too long (max %zu bytes)", sizeof(buf) - 1);
+            return false;
+        }
         memcpy(buf, pattern + 1, inner);
         buf[inner] = '\0';
         re_src = buf;

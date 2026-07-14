@@ -49,11 +49,13 @@ static inline error_t parse_common_arg(int key, char *arg,
         case 'J': c->jsonl = 1;          return 0;
         case 'b':
             c->bufmb = atoi(arg);
-            if (c->bufmb < 1) argp_error(state, "bufsize must be >= 1 MB");
+            if (c->bufmb < 1 || c->bufmb > 4096)
+                argp_error(state, "bufsize must be between 1 and 4096 MB");  // AUDIT.md #4
             return 0;
         case 'Q':
             c->queue_mb = atoi(arg);
-            if (c->queue_mb < 1) argp_error(state, "queue must be >= 1 MB");
+            if (c->queue_mb < 1 || c->queue_mb > 4096)
+                argp_error(state, "queue must be between 1 and 4096 MB");  // AUDIT.md #4
             return 0;
     }
     return ARGP_ERR_UNKNOWN;

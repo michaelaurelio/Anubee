@@ -1,0 +1,216 @@
+# Engines: which to pick, and how to use each
+
+ARES ships seven subcommands. Six are engines (`syscalls`, `funcs`, `correlate`,
+`lib`, `dump`, `trace`); the seventh (`mod`) runs packaged analyzers, see
+[`analyzers.md`](analyzers.md). All spec-driven engines (`funcs`, `correlate`,
+`syscalls`, `dump`, `mod`) share one probe-spec grammar, see
+[`probe-specs.md`](probe-specs.md).
+
+## Pick an engine
+
+| Engine | Sees | Cost |
+|---|---|---|
+| `syscalls` | Every syscall a target library makes, decoded args + backtraces | **Injectionless** (nothing written into the target, `TracerPid` stays 0) |
+| `funcs` | Individual function calls: typed args, return values, timing | **Detectable** (inserts a `BRK` into the target's code) |
+| `correlate` | Which syscalls a probed function triggers, tagged with that function's span | **Detectable** (entry uprobe `BRK`), loud by design |
+| `lib` | Every native library (`.so`) an app loads | **Injectionless** (kprobe only) |
+| `dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | **Injectionless** (kprobe only) |
+| `trace` | `syscalls` + `funcs`/`correlate`/`lib`/`dump` together from one launch | Loud only if `--funcs`/`--correlate` is included |
+
+`syscalls`/`lib` are ideal for stealthy RASP triage (e.g. clean-vs-rooted
+diffing); `funcs`/`correlate` are more granular but a RASP can detect the uprobe
+instrumentation. They're separate subcommands on purpose. Running `funcs`
+against a protected app can tip it off and poison a stealthy `syscalls` capture
+run alongside it.
+
+## Attach modes: `-P` vs `-p`
+
+Every engine below takes exactly one of:
+
+- **`-P PACKAGE`**: launch mode (default). Force-stops and relaunches the app,
+  capturing from the first thread.
+- **`-p PID[,PID...]`**: attach to already-running process(es) instead. No
+  launch. Add **`--siblings`** to also trace every process sharing that PID's
+  UID, or **`--no-follow-fork`** to stop forked children from being auto-traced
+  (on by default).
+
+## Flags shared by every engine below
+
+| Flag | Meaning |
+|---|---|
+| `-o FILE` | Export structured JSONL to `FILE` (also prints to console; `-q` silences that) |
+| `-v` | Verbose debug output |
+| `-q` | Suppress per-event console output |
+| `-J` | Write JSON Lines (one record per line); default everywhere now, kept for compatibility |
+| `-b MB` | Kernel ring buffer size (default 4) |
+| `-Q MB` | Userspace worker queue size (default 256) |
+
+(`lib` and `dump` use a smaller, engine-specific set, see their sections.)
+
+---
+
+## `syscalls`: stealthy syscall tracer
+
+```sh
+# Syscalls that pass through a specific library:
+ares syscalls -P com.example.app -l librasp.so -o trace.jsonl
+
+# Capture ALL of an app's syscalls (no library filter):
+ares syscalls -P com.example.app -a -o trace.jsonl
+
+# Stack snapshots + CFI-unwind into Java callers (capture-all reaches JNI stacks):
+ares syscalls -P com.example.app -a -s openat --snapshot -o trace.jsonl
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-l SELECTOR` | Library selector: substring or glob (`e_*`); repeatable, OR'd |
+| `-a` | Capture all syscalls (no library filter) |
+| `-s LIST` / `-x LIST` | Allowlist / denylist, comma-separated syscall names (mutually exclusive) |
+| `-e SPEC` / `-F FILE` | Probe spec: `syscall:[!]NAME` or `lib:[!]PATTERN`, see [`probe-specs.md`](probe-specs.md) |
+| `--snapshot` / `--no-snapshot` | Capture stack snapshots for off-device unwinding (default: off) |
+| `-A ACTIVITY` | Override launch activity component |
+
+`--snapshot` writes a `<file>.stacks` sidecar (raw snapshot + CFI backtrace
+records) alongside `-o <file>`; see [`reading-traces.md`](reading-traces.md).
+
+## `funcs`: function tracer
+
+```sh
+# Trace functions from a spec file against a spawned app:
+ares funcs -P com.example.app -F specs/common-file.spec
+
+# Attach to a running PID, bulk-match by regex:
+ares funcs -p 12345 -e 'libfoo.so!/^encrypt/'
+
+# Inline spec with typed args (S=string, V=value, F=fd, A=sockaddr):
+ares funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
+
+# Structured JSONL: one record per CALL/RETURN into -o:
+ares funcs -p 12345 -e 'libc.so!open' -o trace.jsonl
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-e SPEC` / `-F FILE` | `MODULE!FUNC[@OFFSET][(ARGTYPES)][>RETTYPE]`, see [`probe-specs.md`](probe-specs.md) |
+| `-c` | Print only the direct caller, suppress the rest of the backtrace |
+| `-S` | Resolve and print symbols only, no uprobe attachment |
+| `--snapshot` / `--no-snapshot` | Capture stack snapshots for off-device DWARF unwinding (requires `-o`) |
+| `-A ACTIVITY` | Override launch activity component |
+
+Output is always JSONL into `-o` (one `{"type":"call",...}` / `{"type":"return",...}`
+record per event); console text is a separate, independent channel.
+
+## `correlate`: function→syscall tracer (loud)
+
+Attaches an entry uprobe to each spec'd function plus a span-gated syscall
+kprobe: every syscall a probed function issues on its thread is emitted tagged
+with that function's `span`. Nested probed functions get a `parent_span` chain.
+
+```sh
+# Which syscalls does libc.so!open make, in a launched app:
+ares correlate -P com.example.app -e 'libc.so!open'
+
+# Attach to a running PID, multiple specs (quote specs containing parens):
+ares correlate -p 12345 -e 'libssl.so!SSL_write(S)' -e 'libc.so!open'
+
+# Also capture retval + exact elapsed time per call (adds a uretprobe, louder):
+ares correlate -P com.example.app -e 'libc.so!open' --returns -o corr.jsonl
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-e SPEC` / `-F FILE` | `MODULE!FUNC[(ARGTYPES)]`, see [`probe-specs.md`](probe-specs.md) |
+| `--returns` | Also attach uretprobes: return value + exact span timing (opt-in, adds a second detection surface) |
+
+Up to 64 PIDs and 64 specs per run. `{"type":"func",...}` / `{"type":"syscall",...}`
+records join on `span`; `--returns` adds `{"type":"return",...}`.
+
+## `lib`: library-load tracer
+
+Launches an app fresh and lists every native library it loads.
+
+```sh
+ares lib com.example.app                         # Ctrl-C to stop
+ares lib com.example.app com.example.app/.MainActivity   # explicit launcher activity
+ares lib -o libs.jsonl com.example.app            # also write structured JSONL
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-o FILE` | Structured JSONL output |
+| `-v` | Also print `[unlib]` unmap lines (default: `[lib]` only) |
+| `-q` | Suppress human-readable `[lib]` console lines |
+| `-A ACTIVITY` | Override launch activity component |
+
+Output line: `[lib] pid 22045 /data/app/.../lib/arm64/libfoo.so [0x7a..,0x7b..) off=0x0 inode=12345 ppid=1037`
+
+## `dump`: live-memory library dumper
+
+Launches an app fresh and rebuilds a possibly decrypted/packed native library
+out of `/proc/<pid>/mem` into a loadable ELF.
+
+```sh
+# Dump every loaded library whose basename matches a glob, on exit:
+ares dump -d /data/local/tmp com.example.app 'libpacked.so'
+
+# Catch a randomized-name library the moment it maps:
+ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target |
+| `-d DIR` | Output directory (default: current dir) |
+| `-l PATTERN` | Library basename pattern to dump (glob/substring); repeatable, OR'd |
+| `-F FILE` | Spec file; a `lib:` line supplies `PATTERN` when none given positionally |
+| `--on-map` | Dump the instant a matching library maps (default: dump on exit, post-decryption) |
+| `--raw` | Emit the raw phdr-fixed image, skip ELF rebuild |
+| `-q` | Suppress progress chatter |
+
+Output filename: `<name>.<pid>.<base>.so`.
+
+## `trace`: combined runner (loud if `--funcs`/`--correlate` used)
+
+Runs `syscalls` + `funcs`/`lib`/`dump`/`correlate` together from one app launch.
+Independent streams, no cross-engine correlation (use `correlate` for that).
+
+```sh
+ares trace -P com.example.app -o /data/local/tmp/run \
+           --syscalls '-a' \
+           --funcs "-e 'libc.so!open' -e 'libc.so!/^encrypt/'"
+```
+
+| Flag | Meaning |
+|---|---|
+| `-P PACKAGE` / `-p PID[,...]` | Attach target (shared by every sub-engine below) |
+| `-o PREFIX` | Writes `<prefix>.syscalls.jsonl`, `<prefix>.funcs.jsonl`, `<prefix>.lib.jsonl`, `<prefix>.dump.jsonl`, `<prefix>.event.jsonl` |
+| `--syscalls '...'` | Syscalls-engine args (no package/PID, inherited from `-P`/`-p`) |
+| `--funcs '...'` | Funcs-engine args |
+| `--lib` | Enable library-load tracing (accepts shared `-o`/`-v`/`-q` options) |
+| `--dump '...'` | Dump-engine args (batch: runs an on-exit rescan, not a live stream) |
+| `--correlate '...'` | Correlate-engine args (needs at least one `-e`/`-F`, same as standalone) |
+| `-A ACTIVITY` | Override launch activity component |
+
+`-P`/`-p`, `-A`, and `-o` must come *before* the `--syscalls`/`--funcs`/`--lib`/
+`--dump`/`--correlate` sections.
+
+## Gotchas
+
+- **`funcs`/`correlate` are detectable; `syscalls`/`lib`/`dump` are not.** Don't
+  run a detectable engine alongside a stealthy capture you need to stay clean:
+  it can tip off the RASP and poison the stealthy run.
+- **`-P` and `-p` are mutually exclusive**, one is required.
+- **Quote specs containing parentheses** (`'libc.so!open(S)'`), otherwise the
+  shell chokes on the `(`.
+- **`correlate` caps at 64 PIDs and 64 specs per run.** A warning prints if you
+  exceed either; extras are dropped rather than silently ignored.
+- **`--returns` on `correlate` and `--snapshot` on `syscalls`/`funcs` are both
+  opt-in and louder** than the plain engine: each adds a second detection
+  surface (a uretprobe trampoline, or a wider stack capture).
+- **`dump`'s `-l`/spec-file `lib:` patterns are substring/glob only.** No
+  `/regex/` support, unlike `funcs:`'s module side.

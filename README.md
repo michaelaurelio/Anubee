@@ -15,7 +15,7 @@ on-device library dumping.
 | `ares lib` | Every native library (`.so`) an app loads | **Injectionless** (kprobe only) |
 | `ares dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | **Injectionless** (kprobe only) |
 | `ares trace` | `syscalls` + `funcs`/`correlate`/`lib`/`dump` together from one launch | Loud only if `--funcs`/`--correlate` is included |
-| `ares mod` | A packaged detection built for one behavior (ransomware, exfil, a11y abuse, ...) | Depends on analyzer |
+| `ares mod` | A packaged detection built for one behavior (mass-deletion, exfil, accessibility abuse, ...) | Depends on analyzer |
 
 > **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
 > RASP triage (e.g. clean-vs-rooted diffing). `funcs` is more granular, but a

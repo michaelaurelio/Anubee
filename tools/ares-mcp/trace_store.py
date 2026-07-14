@@ -276,8 +276,8 @@ class TraceStore:
             return out
 
         if kind is not None:
-            return [_cap(r) for r in self._summaries.get(kind, [])]
-        return {k: [_cap(r) for r in v] for k, v in self._summaries.items()}
+            return [_cap(r) for r in self._summaries.get(kind, [])[:top]]   # AUDIT.md M2
+        return {k: [_cap(r) for r in v[:top]] for k, v in self._summaries.items()}
 
     # ---- span analysis (func_spans/span_syscalls) -------------------------
 

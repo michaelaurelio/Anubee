@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trace_store import TraceStore  # noqa: E402
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "summaries.jsonl")
+FIX_MANY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "summaries_many.jsonl")
 
 checks = 0
 failures = 0
@@ -63,6 +64,23 @@ def main():
         check(len(capped[0]["binaries"]) == 1, f"top=1 caps nested list to 1 (got {len(capped[0]['binaries'])})")
 
     check(ts.summaries("nope") == [], "unknown kind returns empty list")
+
+    # outer-list capping (AUDIT.md M2): 5 proc_event_summary records ingested,
+    # top must cap the OUTER record list too, not just nested per-record lists
+    # (proc_event_summary has no nested list field, isolating this behavior).
+    ts_many = TraceStore()
+    ts_many.load_structured(FIX_MANY)
+    uncapped = ts_many.summaries("proc_event_summary")
+    check(len(uncapped) == 5, f"default top=50 keeps all 5 records (got {len(uncapped)})")
+
+    capped_kind = ts_many.summaries("proc_event_summary", top=2)
+    check(len(capped_kind) == 2,
+          f"top=2 caps outer record list to 2 (got {len(capped_kind)})")
+
+    capped_all = ts_many.summaries(top=2)
+    check(len(capped_all["proc_event_summary"]) == 2,
+          f"top=2 caps outer list in the no-kind dict form too "
+          f"(got {len(capped_all['proc_event_summary'])})")
 
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0

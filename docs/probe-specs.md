@@ -118,9 +118,10 @@ scoped syscall, because it already looks funcs-shaped (contains `!`). Use the ex
 
 ## Spec files (`-F FILE`)
 
-One spec per line. `#` starts a comment. Blank lines are skipped. A malformed line is skipped
-with a warning, not a fatal error. Lines are read up to 512 characters. Each engine caps specs
-at 64 total (`-e` plus every `-F` file combined); a warning prints if a file has more. Source:
+One spec per line. `#` starts a comment. Blank lines are skipped. A malformed line aborts
+loading the whole file (not a silent skip), so a typo in a shared spec file is never just
+dropped unnoticed. Lines are read up to 512 characters. Each engine caps specs at 64 total
+(`-e` plus every `-F` file combined); a warning prints if a file has more. Source:
 `src/common/probe_spec_loader.c`.
 
 `-e` and `-F` layer, not replace. Inline probes add to whatever a spec file already loaded:

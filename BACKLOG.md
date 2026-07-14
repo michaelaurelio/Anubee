@@ -263,7 +263,8 @@ line, e.g. `-e 'libc.so!/^encrypt/'`; behavior unchanged this release) rather th
 hard-remove, so existing scripts/CI don't break — hard removal is a follow-up once
 `specs/*.spec`, docs, and `ARES-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
 onto the shared loader/matcher and gains full `COMMON_ARGP_OPTIONS` for surface parity
-(currently hand-rolls only `-o`/`-q`). `syscalls`/`dump`/`mod` each gain new, purely
+(**done** — see the 2026-07-13 EPIC H entry below; `correlate` no longer hand-rolls
+`-o`/`-q`, it now takes `-v`/`-J`/`-b`/`-Q` too). `syscalls`/`dump`/`mod` each gain new, purely
 additive `-e`/`-F` support reading the kind lines relevant to them — no existing flag
 changes, first time these three can share a spec file with `funcs`/`correlate` at all.
 
@@ -597,6 +598,55 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
+### 2026-07-14
+
+- **Syscalls spec-system refinement cluster.** A run of follow-on fixes to
+  SPEC1/EPIC H, none individually large enough for their own heading:
+  - **Multi-library `syscalls -l`** (`1b11cd4`): `-l` is now repeatable and
+    OR'd (was a single positional/flag value). Same commit renames
+    `--specs`→`--spec-file` across engines and `funcs`'s `--entry`→`--spec`
+    for naming consistency.
+  - **Per-syscall library scoping** (`86e1c5c`, new `src/syscalls/scope.h`):
+    `syscall:LIBPATTERN!NAME` binds one syscall to one library, so different
+    syscalls in the same run can come from different libraries. Enforced in
+    userspace (broader union captured in-kernel, scoped events dropped
+    post-hoc); deny can't combine with scoping; a syscall name can't be both
+    scoped and unscoped in the same run. Full grammar in `docs/probe-specs.md`.
+  - **Per-engine `-e` default kind** (`0b31b0d`): an unprefixed `-e` value on
+    `syscalls` now defaults to `syscall:` (every other engine still defaults
+    to `funcs:`), with a stderr warning naming which values used the default.
+    `-F` files keep the universal `funcs:` default on every engine.
+  - **Spec-file validation** (`19925b5`, guard `4355dcc`): a malformed line in
+    a `-F` file now aborts loading the whole file (`load_probe_spec_file`
+    returns -1) instead of being silently skipped, so a typo in a shared spec
+    file is never just dropped unnoticed.
+  - **Cross-engine spec-coverage warnings** (`9b955f3`, `f0aa489`): `funcs`,
+    `syscalls`, `correlate`, `dump`, and `mod` each gained two warnings —
+    "ignoring N spec(s) not applicable to this engine" (printed before the
+    run) and "N spec(s)/pattern(s) never resolved/matched" (printed after) —
+    so a spec that silently did nothing is no longer indistinguishable from
+    one that worked.
+  - **`-s`/`-x` hardening** (`bd29420`): both are now repeatable/accumulate
+    (comma-joined); mixing `-s` and `-x` in the same run is a hard error; an
+    `-s` allowlist resolving to zero valid syscalls is now a hard error
+    instead of a silent no-op.
+  - `docs/probe-specs.md` (the new user-facing spec-grammar reference, added
+    this pass) already documents the per-syscall scoping and spec-file
+    abort-on-malformed-line behavior; `DOCUMENTATION.md` §2 updated to match
+    in this same pass.
+- **`mod` analyzer-listing rework** (`0cb60b4`, follow-on to MT2): bare
+  `ares mod` and `ares mod --list`/`-l` print every registered analyzer with a
+  `[LOUD]`/`[stealth]` tag from the same `capabilities.c` lookup the
+  dispatcher itself consults, replacing the earlier flat name list.
+- **`funcs --snapshot` BPF load fix** (`067f45f`): `ares_hash_stack` unrolled
+  a fixed 32-iteration FNV loop against `funcs`'s 16-entry `call_stack`,
+  reading 16 slots past the array into the ringbuf reservation — the verifier
+  rejected the OOB read (`-EACCES`), so `funcs --snapshot` never loaded on any
+  kernel. Fixed by passing the array capacity as a compile-time arg so the
+  loop unrolls to exactly the real capacity (`funcs`: 16, `syscalls`: 32).
+  Distinct from the pre-existing, still-open `uprobe_open` load failure noted
+  below (different rejection reason/offset); does not resolve that item.
+
 ### 2026-07-13
 
 - **`correlate` stdout output-clarity rework (follow-on to SYM1).** SYM1
@@ -644,6 +694,13 @@ is in DOCUMENTATION.md and the referenced specs.
   screen-share/remote-support apps false-positive; no frame-content or
   exfil-volume corroboration (proves a session was active, not that data
   left the device).
+
+- **Repeatable `-m` (mod) / `-l` (dump).** `dc530a7`: `ares mod -m NAME` is now
+  repeatable, running several analyzers concurrently in one process (the
+  single-analyzer positional form still works). `0050c21`: `ares dump -l
+  PATTERN` is now repeatable and OR'd (cap 64), on top of the legacy
+  positional `PATTERN`; a `-F` file's `lib:` lines are all folded in when
+  none is given via `-l`/positionally, not just the first.
 
 - Manual test confirms `syscalls -o` no longer silences the run — SYM1 decoupled `-q`
   from `-o`; `g_quiet` is set only by `-q` (`syscalls.c:168,700`). `funcs`/`lib`/`dump`/

@@ -509,9 +509,21 @@ located the module-base bug and stays available for future CFI diagnosis.
     also observed).
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
-- All capture behavior is flag-driven via GNU argp (`-P`/`-p`/`-l`/`-A`/`-a`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/`--siblings`/`--no-follow-fork`);
-  option ordering does not matter; `--help` is auto-generated; `--version` prints
-  `ares syscalls`. The library selector is `-l <selector>` (was a positional argument).
+- All capture behavior is flag-driven via GNU argp
+  (`-P`/`-p`/`-l`/`-A`/`-a`/`-s`/`-x`/`-e`/`-F`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/
+  `--siblings`/`--no-follow-fork`); option ordering does not matter; `--help` is
+  auto-generated; `--version` prints `ares syscalls`. The library selector `-l <selector>`
+  is repeatable and OR'd (each `-l` adds to the match set, not last-wins). `-s`/`-x`
+  (syscall allow/deny lists) are also repeatable and accumulate (comma-joined); an `-s`
+  allowlist that resolves to zero valid syscalls is now a hard error, not a silent no-op.
+  `-e SPEC`/`-F FILE` load probe specs: `syscall:[!]NAME`, `lib:[!]PATTERN`, and
+  `syscall:LIBPATTERN!NAME` to scope one syscall to one library (see `docs/probe-specs.md`
+  for the full grammar, restrictions, and worked examples). An unprefixed `-e` value on
+  `syscalls` defaults to `syscall:` kind, unlike every other engine's universal `funcs:`
+  default, with a stderr warning naming which `-e` values used the default; `-F` files
+  keep the universal `funcs:` default regardless of engine. A malformed line in a `-F`
+  file aborts loading the whole file rather than being silently skipped
+  (`src/common/probe_spec_loader.c`).
   The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's verbose
   load/relocation logging (otherwise suppressed) — the first thing to check on a BPF
   load `-EPERM` or CO-RE/relocation error.
@@ -649,6 +661,19 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   drop map or snapshot path to report on — its `[coverage]` line is an
   explicit `{"exempt":true,"reason":"..."}` record (SYM1 Phase 5b, §7),
   not silence.
+- **Packed-in-APK natives (MT3).** An `extractNativeLibs=false` app maps its
+  `.so`s straight out of `base.apk` instead of standalone files. On the first
+  mmap event whose backing path ends `.apk`, `apk_list_sos` (`common/sym_apk.c`)
+  parses the ZIP central directory and `ares_libtrace_emit_packed`
+  (`common/lib_trace.c`) surfaces every packed native inside up front (not just
+  the one segment that particular event covers): a `[lib-packed] <apk> ->
+  <soname> @0x<offset> (<size> b)` console line and a
+  `{"type":"lib_packed","apk":..,"soname":..,"offset":..,"size":..}` JSONL
+  record per entry (deduped per-APK via `mark_apk_seen`). `offset`/`size` are
+  the ZIP central directory's byte-accurate `data_start`/`size` for that inner
+  `.so`. The mmap event itself still gets its normal `[lib]` record, with
+  `soname` resolved to the inner `.so` name when the mapped file offset falls
+  inside a known entry's range-match.
 
 ## 5. The `dump` engine (kprobe, live-memory dump)
 
@@ -657,10 +682,14 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   `am start -S`), using the shared `src/common/lib_trace` probe (mmap/munmap capture +
   `/proc/<pid>/maps` resolver) to track every library mapping. No uprobes — nothing
   written into the target.
-- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--raw] [-q] [--siblings] [--no-follow-fork]`.
-  `-F FILE` loads probe specs from a file; a `lib:` line supplies PATTERN when none is
-  given positionally (first `lib:` line wins if the file has several — `dump` matches
-  against exactly one pattern, not a list).
+- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-l PATTERN] [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--raw] [-q] [--siblings] [--no-follow-fork]`.
+  `-l PATTERN` is repeatable (cap 64) and OR'd with the legacy positional `PATTERN`.
+  `-F FILE` loads probe specs from a file; every `lib:` line in it supplies a PATTERN
+  when none is given via `-l`/positionally, not just the first (`dump_name_matches_any`
+  matches against the full pattern set, not a single pattern). Two coverage warnings:
+  a non-`lib:` spec line in a `-F` file is reported ("ignoring N spec(s) not applicable
+  to this engine") before the run starts, and any pattern that never matched a module
+  is reported ("N pattern(s) never matched any module this run") after.
   `-p` attaches to a running process (skips launch); `-P` or a positional PACKAGE launches fresh.
   Package and activity also accept positional arguments (back-compat). `--help`, `--usage`, and
   `--version` (`ares dump`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
@@ -816,6 +845,8 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   attach timing: `wait_for_target_mapped()` polls `/proc/<pid>/maps` (10 ms interval,
   2 s cap) for a spec'd/regex-matched library instead of a blind `sleep(1)`, attaching
   as soon as the target appears (falls through to today's behavior on timeout).
+  Full `COMMON_ARGP_OPTIONS` parity: `-v`, `-J`, `-b`, `-Q` are also accepted
+  alongside `-o`/`-q`, resolved via `parse_common_arg` like every other engine.
 - **Output**: flat, type-discriminated JSONL via the shared serializer
   (`src/correlate/corr_emit.c`, mirrors `funcs_emit.c`) **and** a timestamped
   stdout line simultaneously — `-o` no longer implies `-q` (SYM1
@@ -838,6 +869,17 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `[syscall]` header (`corr_decode_arg`, shared by both channels — SYM1
   Phase 2; previously the console line showed only the syscall name, the
   decoded paths/fds/sockaddrs/flags existed file-only).
+- **Output-clarity rework.** `[func]` console lines resolve `entry_addr` back
+  to the `mod!func` this uprobe was attached at (via the shared
+  `target_registry`, the same resolver `funcs`' `[event]` line uses):
+  `span=N parent=M pid=.. tid=.. mod!func @ 0xaddr`, falling back to
+  `@ 0xaddr (unresolved)` when the address doesn't resolve. `[syscall]` console
+  lines dropped the redundant `(nr=..)` suffix (still in the JSON record), and
+  their decoded `args[N]` lines are now bounded to the syscall's real arity
+  (`arg_count(nr)`, the same table `syscalls` uses) instead of always printing
+  all 6 slots, so leftover register values past the real argument count no
+  longer print as if they were arguments. Console-only: the JSON `syscall`
+  record's `args`/`decoded` arrays are unchanged (still all 6 slots, §7).
 - **Library-load records**: the same object also carries the shared
   `src/common/lib_trace.bpf.h` kprobes (uprobe_mmap/uprobe_munmap, PID-gated to
   mirror the engine's filter), emitting `{"type":"lib",...}` / `{"type":"unlib",...}`
@@ -849,7 +891,10 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `bpf_link__destroy`'d on teardown (not leaked to process exit). The fixed input
   caps — `-p` (64 PIDs), `-e`/`-F` (64 specs), per-pid
   attach dedup (256) — now emit a warning when hit instead of silently truncating, so
-  a wide package or large `-F` file is not quietly under-instrumented.
+  a wide package or large `-F` file is not quietly under-instrumented. Two more
+  coverage warnings, matching `funcs`/`syscalls`/`dump`/`mod`'s idiom: a non-`funcs:`
+  spec line in a `-F` file is reported before the run, and any spec that never
+  resolved+attached is reported after.
 - **Detectability**: this object carries the uprobe, so it is the **loud** path; the
   quiet engines never load it (see §9). `--returns` adds a second uprobe trampoline
   per target (bigger surface than entry-only). Correlation is per-tid & synchronous
@@ -1109,7 +1154,14 @@ key (see §9). `proc-event`, `execve`, `file-access`, `ransomware-burst`, `exfil
 
 **Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
-`-P` launches fresh. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
+`-P` launches fresh. See [Attach modes](#attach-modes-launch--p-vs-pid--p). `-m NAME` is
+repeatable to run several analyzers concurrently in one process (`<name>` positionally is
+still accepted for the single-analyzer case). Bare `ares mod` and `ares mod --list`/`-l`
+print the available analyzers to stdout, one per line, each tagged `[LOUD]` or `[stealth]`
+(the same `capabilities.c` lookup the dispatcher itself consults). Matching
+`funcs`/`syscalls`/`dump`/`correlate`'s idiom, a non-`mod:` spec line in a `-F` file is
+reported ("ignoring N spec(s) not applicable to this engine") both before the run and
+again at teardown.
 
 ## 7. Unified trace schema
 
@@ -1201,7 +1253,14 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   for path resolution, but does not itself emit `lib`/`unlib` JSON records —
   see the `dump` manifest schema below instead. This correction is
   independent of SYM1: the doc previously claimed `dump` also emitted
-  `lib`/`unlib` records, which was never true.)
+  `lib`/`unlib` records, which was never true.) `lib`/`funcs`/`correlate` (every
+  engine sharing the `lib_trace` probe) also emit
+  `{"type":"lib_packed","apk":..,"soname":..,"offset":..,"size":..}` (MT3) the
+  first time an `extractNativeLibs=false` app maps a `.so` straight out of an
+  APK: one record per packed native the ZIP central directory lists inside
+  that APK, deduped per-APK via `mark_apk_seen`. The triggering `lib` record
+  itself still carries the normal mapping fields, with `soname` resolved when
+  the mapped file offset range-matches a known packed entry.
 - `ares dump` emits **structured** manifest records via `-o` (SYM1 Phase 3 —
   `dump` previously had no `-o`/JSON output at all): one
   `{"type":"dump","module":..,"path":..,"base":"0x..","pid":..,"raw":bool}`

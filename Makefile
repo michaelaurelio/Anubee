@@ -526,6 +526,8 @@ test:
 	$(BUILD)/test_art_shadow tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_snapshot_gate.c -o $(BUILD)/test_snapshot_gate
 	$(BUILD)/test_snapshot_gate
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_drain_progress.c -o $(BUILD)/test_drain_progress -lpthread
+	$(BUILD)/test_drain_progress
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_managed_frame.c src/common/managed_frame.c src/common/emit.c -o $(BUILD)/test_managed_frame -lpthread
 	$(BUILD)/test_managed_frame
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps

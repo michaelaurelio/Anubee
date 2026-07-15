@@ -28,7 +28,7 @@ For build/architecture/internals see [`../README.md`](../README.md) and
 | Which syscalls a specific function triggers | `correlate` | Yes (uprobe `BRK`) |
 | What native libraries an app loads | `lib` | No (injectionless) |
 | A decrypted/packed library pulled off live memory | `dump` | No (injectionless) |
-| `syscalls` + `funcs` together, one launch | `trace` | Yes (if `--funcs`/`--correlate` used) |
+| `syscalls` + `funcs`/`lib` together, one launch | `trace` | Yes (if `funcs` is enabled) |
 | A packaged detection built for one behavior (mass-deletion, exfil, accessibility abuse, ...) | `mod` | Depends on analyzer |
 
 Details and full flag reference for each: [`engines.md`](engines.md).

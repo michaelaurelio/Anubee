@@ -338,59 +338,6 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   is in kernel-PAGE_SIZE units, not bytes — `pgoff << 12` would be wrong on 16K
   devices). Compressed (non-`method==0`) packed `.so` — the `extractNativeLibs=true`
   default — is unaffected, already handled by the normal on-disk mapping path.
-- **MT4 — `trace` output file carries only funcs-side events** (call/return/lib/unlib);
-  syscall events aren't merged in. Consolidate multi-source output into one file. The
-  nested `--syscalls -a -s NAME --funcs -F FILE` sub-flag grammar (hand-rolled
-  `trace_args.c`) is also awkward — ties SPEC1 argument consolidation.
-  **Reconciled 2026-07-13 — stale finding, merge half already done.** `trace.c:334-353`
-  already builds a `srcs[]` array from every requested engine
-  (`syscalls`/`funcs`/`lib`/`correlate`) and calls the shared `jsonl_merge()`
-  (`common/jsonl_merge.c`) into the literal `-o` path — landed as EPIC C3 (commit
-  `986935b`, 2026-07-12 22:11), a confirmed git ancestor of the commit that filed this
-  finding (`600e14e`, 2026-07-13 09:13, ~11 hours later). All four suffixes
-  (`.syscalls/.funcs/.lib/.event.jsonl`) verified to match what each engine actually
-  writes. Most likely cause: the on-device binary used for the manual test wasn't
-  rebuilt/repushed after EPIC C3 landed — **re-verify on a freshly rebuilt/pushed
-  binary** before assuming this is still open. Real remaining residual: the nested
-  `--syscalls .../--funcs ...` sub-flag grammar is still hand-rolled and awkward — a
-  SPEC1-tied UX nit, not a data-merge bug.
-- **MT5 — `correlate` output undocumented.** stdout grammar unspecified; confirm whether
-  backtraces are captured (cross-check CR3). Add an output-format doc.
-  **Reconciled 2026-07-13 — mostly stale, one real gap closed.** §6
-  (`DOCUMENTATION.md:774-851`) already documented `correlate`'s stdout line shapes and
-  JSONL record fields in detail, landed by `5aeeba1` (2026-07-13 08:53) 20 minutes
-  before this finding was filed (`600e14e`, 09:13) — same staleness pattern as MT4. The
-  one genuine gap: §7 "Unified trace schema" (the systematic per-record-type reference)
-  had bullets for `syscalls`/`funcs`/`lib`/`dump` but none for `correlate`, and nowhere
-  stated the backtrace answer. Closed: added a `correlate` bullet to §7 and the direct
-  answer to the cross-check — **no**, `correlate` captures no backtraces (verified
-  against `corr_func_event`/`corr_syscall_event`/`corr_return_event`,
-  `src/correlate/correlate.h:28-61` — no stack/backtrace field in any of the three,
-  unlike `syscalls`/`funcs`); it tracks call/return via a per-tid span stack
-  (`span`/`parent_span` IDs), not a captured stack snapshot.
-- **MT6 — stdout↔file "parity" (funcs, lib).** Post-SYM1 the console and `-o` file are
-  independent channels; decide + document whether they must emit identical content
-  (relates to U1/U2 console-style unification).
-  **Resolved 2026-07-13 — decision: independent by design, doc-only.** The `-o` file is
-  the complete, authoritative JSONL; stdout is a human-readable convenience gated by
-  `-q`/`-v`; the two are **not required to match** (file = source of truth). This was
-  already the de facto behavior (stated piecemeal at 6+ places across
-  `DOCUMENTATION.md`); ratified as one explicit paragraph at the top of §7. Distinct
-  from U1/U2 (console *styling* unification, still not recommended, unchanged) —
-  this is about content parity, not cosmetic format.
-- **MT7 — `specs/common-file.spec` refresh + scope note.** Spec file needs updating;
-  document that spec files are funcs/correlate-only today (SPEC1 makes them cross-engine,
-  incl. syscalls/dump/mod).
-  **Reconciled 2026-07-13 — doc already existed, spec file now points at it.** The
-  cross-engine fact was already stated in prose at `DOCUMENTATION.md:522-524` (§3,
-  landed by the same `5aeeba1`, predating this finding). None of the 8 `specs/*.spec`
-  files had a header comment (checked all); added one to `common-file.spec` noting the
-  file is cross-engine post-SPEC1 and pointing at §3 for the full grammar. Listed
-  `libc.so!` symbols light-verified — unchanged, already correct since H11's
-  `syscall:openat` migration. Lockstep test (`tests/test_probe_spec.c`, reads
-  `specs/*.spec` directly, skips `#`/blank lines identically to the loader) reconfirmed
-  green (111/111) with the new comment lines present.
-
 - **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
   (no drop map, single-shot read). `dump`'s live-memory read
   (`src/dump/rebuild.c`) can still hit partial `/proc/<pid>/mem` reads or an ELF
@@ -724,7 +671,7 @@ is in DOCUMENTATION.md and the referenced specs.
   matches `syscalls`' rich record schema and stdout matches `funcs`' grammar,
   uniformly across `syscalls`/`funcs`/`lib`/`correlate`/`dump`/`mod`. Phased,
   11 commits (Phase 0 through 5c), each independently gated and buildable —
-  see `workspace/ares-output-asymmetry.md` for the original gap analysis this
+  see `docs/sym1-output-asymmetry.md` for the original gap analysis this
   closes, and `ares-project/TODO.md` for phase-by-phase notes.
   - **Dual-channel-always** (Phase 1): dropped the old `-o` ⇒ `-q` coupling —
     `-o FILE` now writes JSON *and* prints stdout simultaneously; `-q` is the
@@ -772,6 +719,20 @@ is in DOCUMENTATION.md and the referenced specs.
     `arg_fd_mask_cached`/`arg_sock_index_cached` (commit `b398781`). Confirms
     the standing "needs a real toolchain" caveat repeated throughout this
     plan was not just boilerplate.
+- **Manual CLI test findings MT4–MT7 — reconciled, moved down from Minor
+  (2026-07-15 backlog cleanup).** All four turned out to be stale-at-filing:
+  MT4 (`trace` output only funcs-side) — merge was already done by EPIC C3
+  (`986935b`), ~11h before the finding was filed; likely an un-rebuilt test
+  binary. MT5 (`correlate` output undocumented) — already documented by
+  `5aeeba1`, 20 min before filing; one real gap (no §7 "Unified trace schema"
+  bullet for `correlate`, and the backtrace question unanswered) closed:
+  `correlate` captures no backtraces (span-stack-based, not a stack
+  snapshot). MT6 (stdout↔file parity) — resolved by decision: independent by
+  design, file is the authoritative source, ratified as one paragraph in
+  §7. MT7 (`specs/common-file.spec` refresh) — cross-engine scope note
+  already existed in prose (`DOCUMENTATION.md:522-524`); added a header
+  comment to `common-file.spec` pointing at it. `tests/test_probe_spec.c`
+  reconfirmed green (111/111) throughout.
 
 ### 2026-07-11
 

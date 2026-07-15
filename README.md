@@ -14,7 +14,7 @@ on-device library dumping.
 | `ares correlate` | Which syscalls a probed function triggers, tagged with that function's span | **Detectable** (entry uprobe `BRK`), loud by design |
 | `ares lib` | Every native library (`.so`) an app loads | **Injectionless** (kprobe only) |
 | `ares dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | **Injectionless** (kprobe only) |
-| `ares trace` | `syscalls` + `funcs`/`correlate`/`lib`/`dump` together from one launch | Loud only if `--funcs`/`--correlate` is included |
+| `ares trace` | `syscalls` + `funcs`/`lib` together from one launch (`correlate`/`dump` are standalone-only) | Loud only if `funcs` is enabled |
 | `ares mod` | A packaged detection built for one behavior (mass-deletion, exfil, accessibility abuse, ...) | Depends on analyzer |
 
 > **Pick the right engine for the job.** `syscalls` is stealthy and ideal for

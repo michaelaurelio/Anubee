@@ -1457,10 +1457,14 @@ Design points worth knowing:
   hardcoded key list does not include — those records currently fall through
   ingest unrecognized by `_summaries` (same "retained but unhandled" outcome
   as any unknown `type`, not a crash, just not queryable via the `summaries`
-  tool below yet). `load_structured()` also loads the five mod-analyzer per-event alert
+  tool below yet). `load_structured()` also loads all 10 per-event mod-analyzer record
   types (`accessibility_detect`/`screencapture_detect`/`exfil_detect`/
-  `massdelete_detect`/`fileless_detect`) into a `mod_events` table
-  (`pid`/`type`/`ts_ns`/`comm`/`raw`), consumed by the `incidents` tool below.
+  `massdelete_detect`/`fileless_detect`/`spawn`/`proc_exit`/`execve`/`prop`/
+  `file_access`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
+  consumed by the `incidents` and `mod_events` tools below. `_SUMMARY_TYPES`
+  now covers all 9 mod-analyzer teardown summary types (the original 5 plus
+  `accessibility_detect_summary`/`exfil_detect_summary`/
+  `fileless_detect_summary`/`screencapture_detect_summary`).
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
@@ -1478,7 +1482,10 @@ Design points worth knowing:
   `incidents` (cross-analyzer chain correlator over `mod_events` — fuses
   ordered analyzer-type chains like `accessibility_detect` → `exfil_detect`
   on the same pid within a window into evidence-carrying incident records;
-  rule chains are data, in `correlation_rules.json`, not hardcoded).
+  rule chains are data, in `correlation_rules.json`, not hardcoded), and
+  `mod_events` (drill-down over the raw per-event records themselves,
+  filterable by `kind`/`pid` — the complement to `summaries`'s aggregated
+  tallies).
 - `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
   `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
   `dump_library` → `ares dump`.

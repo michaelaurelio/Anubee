@@ -111,6 +111,10 @@ def main():
     mcp_incidents = server.incidents()
     check(len(by_pid(mcp_incidents, 100)) == 1, "incidents() MCP tool reaches TraceStore.incidents()")
 
+    mcp_mod_events = server.mod_events(kind="spawn")
+    check(len(mcp_mod_events) == 1 and mcp_mod_events[0]["child_pid"] == 701,
+          "mod_events() MCP tool reaches TraceStore.mod_events()")
+
     spawn_only = ts.mod_events(kind="spawn")
     check(len(spawn_only) == 1 and spawn_only[0]["child_pid"] == 701,
           f"mod_events(kind='spawn') returns the one spawn record with child_pid 701 (got {spawn_only})")

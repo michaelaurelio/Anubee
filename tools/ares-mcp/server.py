@@ -219,6 +219,17 @@ def incidents(rules_path: Optional[str] = None, top: int = 50) -> list:
 
 
 @mcp.tool()
+def mod_events(kind: Optional[str] = None, pid: Optional[int] = None, top: int = 50) -> list:
+    """Individual per-event mod-analyzer records (requires
+    load_trace_structured): spawn, proc_exit, execve, prop, file_access,
+    accessibility_detect, screencapture_detect, exfil_detect,
+    massdelete_detect, fileless_detect. Drill-down complement to summaries()
+    -- raw individual events, not aggregated tallies. Filter by kind and/or
+    pid; omit both to see everything (capped at top)."""
+    return store.mod_events(kind, pid, top)
+
+
+@mcp.tool()
 def diff_calls(baseline: str, compare: str, top: int = 50) -> dict:
     """Compare two correlate/funcs structured traces (JSONL from `ares funcs -J`
     or `ares correlate -o`) and report call-sites and in-span syscalls seen ONLY

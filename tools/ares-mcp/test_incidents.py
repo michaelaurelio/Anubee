@@ -34,12 +34,23 @@ def by_pid(incidents, pid):
 def main():
     ts = TraceStore()
     _, skipped = ts.load_structured(FIX)
-    check(skipped == 0, f"no skipped lines (got {skipped}) -- all 5 mod-event types must be recognized")
+    check(skipped == 0, f"no skipped lines (got {skipped}) -- all 10 mod-event types must be recognized")
 
     rows = ts.con.execute("SELECT pid, type, ts_ns, comm FROM mod_events ORDER BY pid, ts_ns").fetchall()
-    check(len(rows) == 14, f"all 14 mod_events rows ingested (got {len(rows)})")
+    check(len(rows) == 19, f"all 19 mod_events rows ingested (got {len(rows)})")
     check(rows[0] == (100, "accessibility_detect", 1000000000, "target"),
           f"first row shape (got {rows[0]})")
+
+    new_types = ts.con.execute(
+        "SELECT type FROM mod_events WHERE pid = 700 ORDER BY ts_ns"
+    ).fetchall()
+    check(new_types == [("spawn",), ("prop",), ("execve",), ("file_access",)],
+          f"pid 700's 4 new-type rows in ts_ns order (got {new_types})")
+
+    exit_row = ts.con.execute(
+        "SELECT type, pid FROM mod_events WHERE type = 'proc_exit'"
+    ).fetchall()
+    check(exit_row == [("proc_exit", 701)], f"proc_exit row is pid 701 (got {exit_row})")
 
     incidents = ts.incidents()
 

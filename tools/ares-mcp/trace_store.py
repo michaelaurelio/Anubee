@@ -25,20 +25,29 @@ MAX_ROWS = 200                 # hard cap on rows any query returns
 _SUMMARY_TYPES = frozenset({
     "execve_summary", "prop_read_summary", "file_access_summary",
     "massdelete_detect_summary", "proc_event_summary",
+    "accessibility_detect_summary", "exfil_detect_summary",
+    "fileless_detect_summary", "screencapture_detect_summary",
 })
 _SUMMARY_LIST_FIELD = {
     "execve_summary": "binaries",
     "prop_read_summary": "props",
     "file_access_summary": "paths",
     "massdelete_detect_summary": "processes",
+    "accessibility_detect_summary": "processes",
+    "exfil_detect_summary": "processes",
+    "fileless_detect_summary": "processes",
+    "screencapture_detect_summary": "processes",
 }
 
-# The five mod-analyzer per-event alert record types the incident correlator
-# (incidents()) joins on. Distinct from _SUMMARY_TYPES above (teardown
-# aggregates) -- these are the individual live alert events.
+# All per-event mod-analyzer record types, ingested into the mod_events
+# table. The incident correlator (incidents()) joins on whichever of these
+# its rule chains reference; mod_events() exposes all of them for direct
+# querying. Distinct from _SUMMARY_TYPES above (teardown aggregates) -- these
+# are the individual live events.
 _MOD_EVENT_TYPES = frozenset({
     "accessibility_detect", "screencapture_detect", "exfil_detect",
     "massdelete_detect", "fileless_detect",
+    "spawn", "proc_exit", "execve", "prop", "file_access",
 })
 
 _DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")

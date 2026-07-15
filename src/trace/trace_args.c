@@ -5,8 +5,7 @@
 
 int trace_build_argv(struct trace_argv *out, const char *engine,
                      const char *prefix, const char *suffix,
-                     char **src_argv, int start, int end,
-                     int *truncated)
+                     char **toks, int ntok, int *truncated)
 {
 	int argc = 0;
 	if (truncated) *truncated = 0;
@@ -17,59 +16,100 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 		out->argv[argc++] = "-o";
 		out->argv[argc++] = out->outbuf;
 	}
-	int i = start;
-	for (; i < end && argc < TRACE_ARGV_CAP - 1; i++)
-		out->argv[argc++] = src_argv[i];
-	if (i < end && truncated)
+	int i = 0;
+	for (; i < ntok && argc < TRACE_ARGV_CAP - 1; i++)
+		out->argv[argc++] = toks[i];
+	if (i < ntok && truncated)
 		*truncated = 1;
 	out->argv[argc] = NULL;
 	return argc;
 }
 
-// Returns 1 if s is a section-start delimiter, so each section's end-scan can
-// stop at any other section (not just the one other delimiter from the 2-engine era).
-static int is_section_delim(const char *s)
+// Flags with no value, broadcast to every engine that understands them
+// (syscalls, funcs, and lib all share -v/-q/--siblings/--no-follow-fork).
+static int is_common_flag(const char *s)
 {
-	return !strcmp(s, "--syscalls") || !strcmp(s, "--funcs") || !strcmp(s, "--lib");
+	return !strcmp(s, "-v") || !strcmp(s, "-q") ||
+	       !strcmp(s, "--siblings") || !strcmp(s, "--no-follow-fork");
 }
+
+// Flags shared by syscalls+funcs only (lib has neither -b/-Q nor snapshots).
+static int is_sys_func_flag_noval(const char *s)
+{
+	return !strcmp(s, "--snapshot") || !strcmp(s, "--no-snapshot");
+}
+static int is_sys_func_flag_val(const char *s)
+{
+	return !strcmp(s, "-b") || !strcmp(s, "-Q");
+}
+
+// syscalls-unique flags: presence enables syscalls.
+static int is_sys_flag_noval(const char *s) { return !strcmp(s, "-a"); }
+static int is_sys_flag_val(const char *s)
+{
+	return !strcmp(s, "-s") || !strcmp(s, "-x") || !strcmp(s, "-l");
+}
+
+// funcs-unique flags: presence enables funcs.
+static int is_func_flag_noval(const char *s) { return !strcmp(s, "-S") || !strcmp(s, "-c"); }
 
 int trace_parse_args(int argc, char **argv, struct trace_args *o)
 {
-	o->pkg = o->prefix = o->activity = o->pids = NULL;
-	o->sys_start = o->sys_end = o->func_start = o->func_end = -1;
-	o->lib_start = o->lib_end = -1;
+	memset(o, 0, sizeof(*o));
 
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-P")) {
+		char *tok = argv[i];
+
+		if (!strcmp(tok, "-P")) {
 			if (++i >= argc) return -1;
 			if (o->pids) return -1;   // -P and -p are mutually exclusive
 			o->pkg = argv[i];
-		} else if (!strcmp(argv[i], "-p")) {
+		} else if (!strcmp(tok, "-p")) {
 			if (++i >= argc) return -1;
 			if (o->pkg) return -1;    // -P and -p are mutually exclusive
 			o->pids = argv[i];
-		} else if (!strcmp(argv[i], "-A")) {
+		} else if (!strcmp(tok, "-A")) {
 			if (++i >= argc) return -1;
 			o->activity = argv[i];
-		} else if (!strcmp(argv[i], "-o")) {
+		} else if (!strcmp(tok, "-o")) {
 			if (++i >= argc) return -1;
 			o->prefix = argv[i];
-		} else if (!strcmp(argv[i], "--syscalls")) {
-			o->sys_start = i + 1; o->sys_end = argc;
-			for (int j = o->sys_start; j < argc; j++)
-				if (is_section_delim(argv[j])) { o->sys_end = j; break; }
-			i = o->sys_end - 1;
-		} else if (!strcmp(argv[i], "--funcs")) {
-			o->func_start = i + 1; o->func_end = argc;
-			for (int j = o->func_start; j < argc; j++)
-				if (is_section_delim(argv[j])) { o->func_end = j; break; }
-			i = o->func_end - 1;
-		} else if (!strcmp(argv[i], "--lib")) {
-			o->lib_start = i + 1; o->lib_end = argc;
-			for (int j = o->lib_start; j < argc; j++)
-				if (is_section_delim(argv[j])) { o->lib_end = j; break; }
-			i = o->lib_end - 1;
-		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+		} else if (!strcmp(tok, "-e") || !strcmp(tok, "-F")) {
+			if (++i >= argc) return -1;
+			if (o->nspec >= TRACE_ARGV_CAP) {
+				fprintf(stderr, "trace: too many -e/-F specs; '%s' dropped\n", argv[i]);
+				continue;
+			}
+			o->specs[o->nspec].val = argv[i];
+			o->specs[o->nspec].is_file = !strcmp(tok, "-F");
+			o->nspec++;
+		} else if (!strcmp(tok, "--lib")) {
+			o->want_lib = true;
+		} else if (is_common_flag(tok)) {
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
+			trace_tok_push(o->lib_toks, &o->lib_ntok, "lib", tok);
+		} else if (is_sys_func_flag_noval(tok)) {
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
+		} else if (is_sys_func_flag_val(tok)) {
+			if (++i >= argc) return -1;
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", argv[i]);
+			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
+			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", argv[i]);
+		} else if (is_sys_flag_noval(tok)) {
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+			o->want_sys = true;
+		} else if (is_sys_flag_val(tok)) {
+			if (++i >= argc) return -1;
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", argv[i]);
+			o->want_sys = true;
+		} else if (is_func_flag_noval(tok)) {
+			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
+			o->want_func = true;
+		} else if (!strcmp(tok, "-h") || !strcmp(tok, "--help")) {
 			return 1;
 		} else {
 			return -1;

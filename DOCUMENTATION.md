@@ -1449,9 +1449,8 @@ Design points worth knowing:
   table flattening `{"type":"coverage",...}` records (see §7) — one row per
   engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
   zero/false defaults — and a `TraceStore._summaries` dict (not a DuckDB table)
-  keyed by the five mod-analyzer teardown `*_summary` types (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
-  `proc_event_summary`; see §6), storing each parsed record as-is. **Known
+  keyed by all nine mod-analyzer teardown `*_summary` types (see §6 and the
+  note below), storing each parsed record as-is. **Known
   gap, not yet closed:** SYM1 Phase 5c added three more summary types
   (`syscalls_summary`/`funcs_summary`/`correlate_summary`, §7) that this
   hardcoded key list does not include — those records currently fall through

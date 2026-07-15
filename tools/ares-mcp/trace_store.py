@@ -20,8 +20,8 @@ import duckdb
 
 MAX_ROWS = 200                 # hard cap on rows any query returns
 
-# The five mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
-# §6/§7) and, for the four that carry a nested list, which field to cap.
+# The nine mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
+# §6/§7) and, for the eight that carry a nested list, which field to cap.
 _SUMMARY_TYPES = frozenset({
     "execve_summary", "prop_read_summary", "file_access_summary",
     "massdelete_detect_summary", "proc_event_summary",

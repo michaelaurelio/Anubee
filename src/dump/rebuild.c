@@ -778,7 +778,7 @@ static unsigned char *read_whole_file(const char *path, size_t *len)
 // segment maps from exactly the member's data_start, so an exact offset match
 // identifies it. Reads only the member, not the whole (often multi-MB) APK.
 // Returns NULL when no member starts at `off`, or on any read failure.
-static unsigned char *read_apk_member(const char *apk, uint64_t off, size_t *len)
+unsigned char *dump_read_apk_member(const char *apk, unsigned long long off, size_t *len)
 {
 	struct apk_so_ref refs[32];
 	int n = apk_list_sos(apk, refs, 32);
@@ -850,7 +850,7 @@ static int dump_check_cb(int pid, int memfd, unsigned long long base, const char
 	// compressed (non-stored) member, or an APK we cannot parse - not merely
 	// "this came from an APK".
 	} else if (pl >= 4 && strcmp(path + pl - 4, ".apk") == 0) {
-		file = read_apk_member(path, file_off, &filelen);
+		file = dump_read_apk_member(path, file_off, &filelen);
 		if (!file)
 			state = "apk";
 	} else if (!(file = read_whole_file(path, &filelen))) {

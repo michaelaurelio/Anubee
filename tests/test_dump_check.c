@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static int checks = 0, failures = 0;
 #define EQ(got, want, msg) do { checks++;                             \
@@ -49,6 +50,27 @@ static unsigned char *mk_img(unsigned char text_fill, unsigned char data_fill)
     memset(img + TEXT_OFF, text_fill, TEXT_SZ);
     memset(img + DATA_OFF, data_fill, DATA_SZ);
     return img;
+}
+
+// ---- minimal stored-entry ZIP writer, for dump_read_apk_member below ------
+//
+// Mirrors the stored-entry writer in tests/test_sym_apk.c (which pins
+// common/sym_apk.c's central-directory reader); this is a local, single-entry
+// version so this file doesn't share statics with that one.
+
+#define ZBUF_CAP 512
+static unsigned char zbuf[ZBUF_CAP];
+static size_t zpos;
+
+static void put_bytes(const void *p, size_t n) { memcpy(zbuf + zpos, p, n); zpos += n; }
+static void put_le16(uint16_t v) {
+    unsigned char b[2] = { (unsigned char)v, (unsigned char)(v >> 8) };
+    put_bytes(b, 2);
+}
+static void put_le32(uint32_t v) {
+    unsigned char b[4] = { (unsigned char)v, (unsigned char)(v >> 8),
+                            (unsigned char)(v >> 16), (unsigned char)(v >> 24) };
+    put_bytes(b, 4);
 }
 
 int main(void)
@@ -112,6 +134,135 @@ int main(void)
     EQ(dump_check_image(oe, IMG_SZ, oe, IMG_SZ, mh, fh), "unreadable",
        "wrapped e_phoff -> unreadable, not an OOB read");
     free(oe);
+
+    // --- dump_read_apk_member: exact-offset stored-member resolution -------
+    // extractNativeLibs=false (the modern AGP default) maps a stored .so
+    // straight out of base.apk, so this is what dump --check's "apk" branch
+    // relies on to get a baseline at all. Build a minimal single-entry stored
+    // ZIP on disk and pin the exact-match behavior: an inverted offset
+    // comparison, an off-by-one in the size guard, or a broken seek/read would
+    // all sail through here undetected without this.
+    {
+        const char *ename = "lib/arm64-v8a/libfixture.so";
+        uint16_t nlen = (uint16_t)strlen(ename);
+        const unsigned char payload[] = {
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b
+        };
+        uint32_t plen = (uint32_t)sizeof(payload);
+        unsigned char *got;
+        size_t got_len;
+
+        zpos = 0;
+        uint32_t lhdr_off = (uint32_t)zpos;
+        put_le32(0x04034b50);   // local file header signature
+        put_le16(20);            // version needed
+        put_le16(0);              // flags
+        put_le16(0);              // method: 0 = stored
+        put_le16(0);              // mod time
+        put_le16(0);              // mod date
+        put_le32(0);              // crc32 (unchecked by the reader)
+        put_le32(plen);           // compressed size
+        put_le32(plen);           // uncompressed size
+        put_le16(nlen);           // filename length
+        put_le16(0);               // extra length
+        put_bytes(ename, nlen);
+        uint32_t data_start = (uint32_t)zpos;
+        put_bytes(payload, plen);
+
+        uint32_t cd_off = (uint32_t)zpos;
+        put_le32(0x02014b50);   // central directory signature
+        put_le16(0);              // version made by
+        put_le16(20);             // version needed
+        put_le16(0);              // flags
+        put_le16(0);              // method: 0 = stored
+        put_le16(0);              // mod time
+        put_le16(0);              // mod date
+        put_le32(0);              // crc32
+        put_le32(plen);           // compressed size
+        put_le32(plen);           // uncompressed size
+        put_le16(nlen);           // filename length
+        put_le16(0);               // extra length
+        put_le16(0);               // comment length
+        put_le16(0);               // disk number start
+        put_le16(0);               // internal attrs
+        put_le32(0);               // external attrs
+        put_le32(lhdr_off);       // local header offset
+        put_bytes(ename, nlen);
+        uint32_t cd_size = (uint32_t)zpos - cd_off;
+
+        put_le32(0x06054b50);   // EOCD signature
+        put_le16(0);              // disk number
+        put_le16(0);              // disk with CD
+        put_le16(1);              // entries on this disk
+        put_le16(1);              // total entries
+        put_le32(cd_size);        // CD size
+        put_le32(cd_off);         // CD offset
+        put_le16(0);               // comment length
+
+        char apk_path[] = "/tmp/test_dump_check_apk_XXXXXX";
+        int afd = mkstemp(apk_path);
+        CHECK(afd >= 0, "apk fixture: mkstemp");
+        if (afd >= 0) {
+            ssize_t w = write(afd, zbuf, zpos);
+            CHECK((size_t)w == zpos, "apk fixture: write full buffer");
+            close(afd);
+
+            // exact data_start -> the member's exact bytes and length
+            got_len = 0;
+            got = dump_read_apk_member(apk_path, data_start, &got_len);
+            CHECK(got != NULL, "apk member: exact offset hit returns non-NULL");
+            if (got) {
+                CHECK(got_len == plen, "apk member: exact offset hit returns correct length");
+                CHECK(memcmp(got, payload, plen) == 0,
+                      "apk member: exact offset hit returns correct content");
+                free(got);
+            }
+
+            // an offset matching no member -> NULL
+            got = dump_read_apk_member(apk_path, data_start + 4096, &got_len);
+            CHECK(got == NULL, "apk member: offset matching no member returns NULL");
+
+            // an offset one byte off from the real data_start -> NULL: the match
+            // must be exact, never nearest, or a range/prefix match would resolve
+            // the wrong library.
+            got = dump_read_apk_member(apk_path, data_start + 1, &got_len);
+            CHECK(got == NULL, "apk member: off-by-one offset returns NULL");
+
+            unlink(apk_path);
+        }
+
+        // a non-existent path -> NULL. mkstemp for a unique name, then delete it
+        // right away, so this can't collide with a real file left by another run.
+        {
+            char nopath[] = "/tmp/test_dump_check_apk_nonexist_XXXXXX";
+            int tmpfd = mkstemp(nopath);
+            CHECK(tmpfd >= 0, "non-existent-path fixture: mkstemp");
+            if (tmpfd >= 0) {
+                close(tmpfd);
+                unlink(nopath);
+                got = dump_read_apk_member(nopath, data_start, &got_len);
+                CHECK(got == NULL, "apk member: non-existent path returns NULL");
+            }
+        }
+
+        // a path that exists but is not a ZIP -> NULL
+        {
+            char notzip_path[] = "/tmp/test_dump_check_notzip_XXXXXX";
+            int nfd = mkstemp(notzip_path);
+            CHECK(nfd >= 0, "non-ZIP fixture: mkstemp");
+            if (nfd >= 0) {
+                const char *junk = "this is not a zip archive, just plain text padding";
+                ssize_t w2 = write(nfd, junk, strlen(junk));
+                CHECK((size_t)w2 == strlen(junk), "non-ZIP fixture: write");
+                close(nfd);
+
+                got = dump_read_apk_member(notzip_path, data_start, &got_len);
+                CHECK(got == NULL, "apk member: non-ZIP path returns NULL");
+
+                unlink(notzip_path);
+            }
+        }
+    }
 
     free(a);
     printf("%d checks, %d failures\n", checks, failures);

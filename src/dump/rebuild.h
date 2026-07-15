@@ -123,4 +123,18 @@ const char *dump_check_image(const unsigned char *mem, size_t memlen,
 int dump_check_pid_modules(int pid, const struct dump_sel *sel,
                            struct ares_sink *sink);
 
+/* Read the stored .so that begins at byte offset `off` inside the APK at `path`,
+ * returning a malloc'd buffer the caller frees and setting *len to its size.
+ * Returns NULL when no stored member starts at exactly `off`, or on any read
+ * failure.
+ *
+ * extractNativeLibs=false (the modern AGP default) maps a stored .so straight
+ * out of base.apk, so a module's backing "file" is the archive and its baseline
+ * is one member inside it. The module's base segment maps from the member's
+ * data_start, so `off` - the base segment's file offset from /proc/<pid>/maps,
+ * a BYTE offset - identifies which member it is. Reads only the member, not the
+ * whole (often multi-MB) archive. */
+unsigned char *dump_read_apk_member(const char *path, unsigned long long off,
+                                    size_t *len);
+
 #endif /* ARES_DUMP_REBUILD_H */

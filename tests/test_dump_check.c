@@ -91,6 +91,28 @@ int main(void)
     EQ(dump_check_image(junk, IMG_SZ, junk, IMG_SZ, mh, fh), "unreadable",
        "no ELF header -> unreadable");
 
+    // --- a crafted phdr must not defeat the bounds checks (integer overflow) ---
+    // dump --check reads bytes from a potentially hostile .so, so p_offset and
+    // p_filesz are attacker-controlled. A p_offset near UINT64_MAX makes
+    // p_offset + p_filesz wrap to a small value, so a naive `> len` check passes
+    // and the code then reads img + p_offset, out of bounds. Without ASan that
+    // usually does not crash - it silently hashes adjacent heap, and the wrong
+    // digest can surface as "differ": a false MODIFIED on an intact library.
+    unsigned char *ov = mk_img(0xAA, 0x11);
+    Elf64_Phdr *ovp = (Elf64_Phdr *)(ov + sizeof(Elf64_Ehdr));
+    ovp[0].p_offset = (uint64_t)-100;
+    ovp[0].p_filesz = 200;
+    EQ(dump_check_image(ov, IMG_SZ, ov, IMG_SZ, mh, fh), "unreadable",
+       "wrapped p_offset + p_filesz -> unreadable, not an OOB read");
+    free(ov);
+
+    // Same wrap, one level up: the phdr table's own offset.
+    unsigned char *oe = mk_img(0xAA, 0x11);
+    ((Elf64_Ehdr *)oe)->e_phoff = (uint64_t)-10;
+    EQ(dump_check_image(oe, IMG_SZ, oe, IMG_SZ, mh, fh), "unreadable",
+       "wrapped e_phoff -> unreadable, not an OOB read");
+    free(oe);
+
     free(a);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

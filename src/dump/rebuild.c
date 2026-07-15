@@ -705,7 +705,7 @@ static int hash_exec_segments(const unsigned char *img, size_t len, char out[65]
 		return -1;
 	if (eh.e_phoff == 0 || eh.e_phnum == 0 || eh.e_phentsize < sizeof(Elf64_Phdr))
 		return -1;
-	if (eh.e_phoff + (uint64_t)eh.e_phnum * eh.e_phentsize > len)
+	if (eh.e_phoff > len || (uint64_t)eh.e_phnum * eh.e_phentsize > len - eh.e_phoff)
 		return -1;
 
 	struct sha256_ctx c;
@@ -716,7 +716,7 @@ static int hash_exec_segments(const unsigned char *img, size_t len, char out[65]
 		memcpy(&p, img + eh.e_phoff + (size_t)i * eh.e_phentsize, sizeof(p));
 		if (p.p_type != PT_LOAD || !(p.p_flags & PF_X))
 			continue;
-		if (p.p_offset + p.p_filesz > len)
+		if (p.p_offset > len || p.p_filesz > len - p.p_offset)
 			return -1;    // short image: refuse to guess
 		sha256_update(&c, img + p.p_offset, p.p_filesz);
 		nexec++;

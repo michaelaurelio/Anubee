@@ -515,21 +515,6 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
     contract). Left as-is; revisit only if profiling shows this alloc actually matters —
     it is not gated at 8192 bytes per snapshot, but it is a single small heap round-trip.
 
-### `ares-mcp` mod-analyzer ingestion gap — 2026-07-15
-
-- **Full per-event mod-analyzer ingestion still missing.** The incident
-  correlator (see Resolved/Done) only ingests the 5 event types its rule
-  chains reference. `execve`, `file_access`, `prop_read`, and
-  `proc_event`/`spawn`/`proc_exit` are still dropped by
-  `load_structured()`'s `else: skipped` branch — independently valuable
-  regardless of correlation (e.g. `file_access`'s category flags like
-  `credential_pattern`/`external_storage`, `prop_read`'s
-  anti-emulator-fingerprinting signal, `execve`'s launch args+backtrace).
-- **`_SUMMARY_TYPES` (`trace_store.py:25-28`) is stale** — missing
-  `accessibility_detect_summary`, `exfil_detect_summary`,
-  `fileless_detect_summary`, `screencapture_detect_summary`. The `summaries`
-  tool silently can't surface these four teardown record types.
-
 ---
 
 ## Resolved / Done
@@ -538,6 +523,20 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-15
+
+- **`ares-mcp` full mod-event ingestion (shipped 2026-07-15).** Closes the
+  ingestion-gap follow-up logged when the cross-analyzer incident correlator
+  shipped. `load_structured()` now ingests all 10 per-event mod-analyzer
+  record types (the original 5 plus `spawn`/`proc_exit`/`execve`/`prop`/
+  `file_access`) into `mod_events`, queryable via the new `mod_events`
+  MCP tool (filterable by `kind`/`pid`) — the drill-down complement to
+  `summaries`'s aggregated tallies. `_SUMMARY_TYPES` also now covers all 9
+  teardown summary types (previously missing
+  `accessibility_detect_summary`/`exfil_detect_summary`/
+  `fileless_detect_summary`/`screencapture_detect_summary`) — see
+  `docs/superpowers/specs/2026-07-15-mod-event-ingestion-design.md`.
+  Known limitation: individual `prop` events carry no `rasp`-suspicious
+  classification (that logic lives only in the summary-aggregation path).
 
 - **`mod` cross-analyzer incident correlator (shipped 2026-07-15) — known
   limitations.** `ares-mcp`'s `TraceStore.incidents()` / `incidents` MCP tool

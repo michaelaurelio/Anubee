@@ -19,8 +19,8 @@
 #define PROP_VALUE_LEN   96
 #define FILE_PATH_LEN   256
 // RING_LEN > THRESHOLD is load-bearing (see massdelete_detect.bpf.c): the
-// per-pid hash ring never wraps before a window resets, so at emit time the
-// first `touch_count` ring slots are always exactly this window's hashes --
+// per-pid path ring never wraps before a window resets, so at emit time the
+// first `touch_count` ring slots are always exactly this window's paths --
 // no stale cross-window data, no wraparound bookkeeping needed. RING_LEN must
 // also stay a power of two: the slot index is computed with a `& (RING_LEN-1)`
 // mask (not `%`) because the BPF verifier can prove a constant-mask AND is
@@ -28,6 +28,16 @@
 // codegen -- confirmed on-device (-EACCES "unbounded memory access" at 24).
 #define MASSDELETE_DETECT_RING_LEN 32
 #define MASSDELETE_DETECT_THRESHOLD           20
+
+// Per-pid ring of distinct sensitive files opened while exfil-detect's
+// byte-volume window is armed (see exfil_detect.bpf.c). Unlike
+// MASSDELETE_DETECT_RING_LEN, there is no threshold-vs-ring-size guarantee
+// here: exfil-detect's trigger is bytes-sent, not read-count, so a scan
+// touching more distinct sensitive files than this ring holds will wrap and
+// lose the earliest entries (see paths_truncated on the event). Sized to
+// match MASSDELETE_DETECT_RING_LEN for consistency. Same power-of-two
+// requirement as that constant (slot index uses `& (RING_LEN-1)`).
+#define EXFIL_DETECT_RING_LEN 32
 
 // Per-pid sliding-window burst counter for mod accessibility-detect (see
 // accessibility_detect.bpf.c). Same load-bearing relationship as
@@ -135,7 +145,7 @@ struct massdelete_detect_event {
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
-    __u64  path_hashes[MASSDELETE_DETECT_RING_LEN];
+    char   paths[MASSDELETE_DETECT_RING_LEN][FILE_PATH_LEN];
     char   sample_path[FILE_PATH_LEN];
 };
 
@@ -146,6 +156,9 @@ struct exfil_detect_event {
     __u64  bytes_sent;
     __u32  window_ms;
     char   sample_path[FILE_PATH_LEN];
+    char   sensitive_paths[EXFIL_DETECT_RING_LEN][FILE_PATH_LEN];
+    __u32  sensitive_path_count;
+    __u8   paths_truncated;
     unsigned char dest[28];   // raw sockaddr bytes (sockaddr_in6-sized), or all-zero
     __u32  dest_len;          // 0 if no connect() was observed before threshold
 };

@@ -104,7 +104,7 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
         return 0;
 
     const struct massdelete_detect_event *e = data;
-    int distinct = burst_distinct_count(e->path_hashes, (int)e->touch_count);
+    int distinct = burst_distinct_count(e->paths, (int)e->touch_count);
     unsigned categories = classify_burst((int)e->touch_count, distinct, g_manage_ext_storage);
     rb_stat_add(e->h.pid, e->comm, (int)e->touch_count, distinct);
 
@@ -116,7 +116,7 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
     }
 
     if (mc->sink != NULL) {
-        mod_emit_massdelete_detect(&mc->sink->jb, e, distinct, g_manage_ext_storage);
+        mod_emit_massdelete_detect(&mc->sink->jb, e, distinct, g_manage_ext_storage, mc->verbose);
         ares_sink_emit(mc->sink);
     }
 

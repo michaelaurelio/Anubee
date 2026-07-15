@@ -17,9 +17,9 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
-                                int distinct_estimate, int manage_ext_storage);
+                                int distinct_estimate, int manage_ext_storage, int verbose);
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
-                           const char *dest_str);
+                           const char *dest_str, int verbose);
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
@@ -236,31 +236,44 @@ int main(void)
     rb.h.tid  = 9000;
     rb.ts_ns  = 100000000006ULL;
     strncpy(rb.comm, "malware", TASK_COMM_LEN - 1);
-    rb.touch_count = 20;
+    rb.touch_count = 3;
     rb.window_ms   = 3500;
-    strncpy(rb.sample_path, "/sdcard/DCIM/photo1.jpg.locked", sizeof(rb.sample_path) - 1);
+    strncpy(rb.paths[0], "/sdcard/DCIM/photo1.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.paths[1], "/sdcard/DCIM/photo2.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.paths[2], "/sdcard/DCIM/photo3.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.sample_path, "/sdcard/DCIM/photo3.jpg.locked", sizeof(rb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, 1);
+    mod_emit_massdelete_detect(&j, &rb, 3, 1, 0);
     CHECK_HAS(j, "\"type\":\"massdelete_detect\"",  "massdelete_detect type");
     CHECK_HAS(j, "\"pid\":9000",                   "massdelete_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000006",         "massdelete_detect ts_ns");
     CHECK_HAS(j, "\"comm\":\"malware\"",           "massdelete_detect comm");
-    CHECK_HAS(j, "\"touch_count\":20",             "massdelete_detect touch_count");
-    CHECK_HAS(j, "\"distinct_estimate\":15",       "massdelete_detect distinct_estimate");
+    CHECK_HAS(j, "\"touch_count\":3",              "massdelete_detect touch_count");
+    CHECK_HAS(j, "\"distinct_estimate\":3",        "massdelete_detect distinct_estimate");
     CHECK_HAS(j, "\"window_ms\":3500",             "massdelete_detect window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "massdelete_detect sample_path");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo3.jpg.locked\"", "massdelete_detect sample_path");
     CHECK_HAS(j, "\"manage_external_storage\":true", "massdelete_detect manage_external_storage true");
+    { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"paths\":")) { failures++; printf("  FAIL: paths emitted when verbose=0\n    in: %s\n", tmp); }
+    }
 
     // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE checked, not granted -----
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, 0);
+    mod_emit_massdelete_detect(&j, &rb, 3, 0, 0);
     CHECK_HAS(j, "\"manage_external_storage\":false", "massdelete_detect manage_external_storage false");
 
     // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, -1);
+    mod_emit_massdelete_detect(&j, &rb, 3, -1, 0);
     CHECK_HAS(j, "\"manage_external_storage\":null", "massdelete_detect manage_external_storage null");
+
+    // ---- massdelete_detect: verbose=1 includes the full paths array -----------
+    j.len = 0;
+    mod_emit_massdelete_detect(&j, &rb, 3, 1, 1);
+    CHECK_HAS(j, "\"paths\":[\"/sdcard/DCIM/photo1.jpg.locked\",\"/sdcard/DCIM/photo2.jpg.locked\",\"/sdcard/DCIM/photo3.jpg.locked\"]",
+              "massdelete_detect verbose=1 -> full paths array");
 
     // ---- exfil_detect: full event, destination known -------------------------
     struct exfil_detect_event eb = {0};
@@ -272,9 +285,13 @@ int main(void)
     eb.bytes_sent = 600000;
     eb.window_ms  = 4200;
     strncpy(eb.sample_path, "/sdcard/DCIM/photo1.jpg", sizeof(eb.sample_path) - 1);
+    strncpy(eb.sensitive_paths[0], "/sdcard/DCIM/photo1.jpg", FILE_PATH_LEN - 1);
+    strncpy(eb.sensitive_paths[1], "/sdcard/Download/creds.txt", FILE_PATH_LEN - 1);
+    eb.sensitive_path_count = 2;
+    eb.paths_truncated = 0;
 
     j.len = 0;
-    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443");
+    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443", 0);
     CHECK_HAS(j, "\"type\":\"exfil_detect\"",       "exfil_detect type");
     CHECK_HAS(j, "\"pid\":9100",                   "exfil_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000007",         "exfil_detect ts_ns");
@@ -283,11 +300,34 @@ int main(void)
     CHECK_HAS(j, "\"window_ms\":4200",             "exfil_detect window_ms");
     CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg\"", "exfil_detect sample_path");
     CHECK_HAS(j, "\"dest\":\"203.0.113.1:443\"",   "exfil_detect dest known");
+    { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"sensitive_paths\":")) { failures++; printf("  FAIL: sensitive_paths emitted when verbose=0\n    in: %s\n", tmp); }
+    }
 
     // ---- exfil_detect: no destination observed --------------------------------
     j.len = 0;
-    mod_emit_exfil_detect(&j, &eb, NULL);
+    mod_emit_exfil_detect(&j, &eb, NULL, 0);
     CHECK_HAS(j, "\"dest\":null", "exfil_detect dest null");
+
+    // ---- exfil_detect: verbose=1 includes sensitive_paths, count, not truncated -
+    j.len = 0;
+    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443", 1);
+    CHECK_HAS(j, "\"sensitive_paths\":[\"/sdcard/DCIM/photo1.jpg\",\"/sdcard/Download/creds.txt\"]",
+              "exfil_detect verbose=1 -> sensitive_paths array");
+    CHECK_HAS(j, "\"sensitive_path_count\":2", "exfil_detect verbose=1 -> sensitive_path_count");
+    CHECK_HAS(j, "\"paths_truncated\":false",  "exfil_detect verbose=1 -> paths_truncated false");
+
+    // ---- exfil_detect: verbose=1, ring wrapped (truncated) ---------------------
+    for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++)
+        snprintf(eb.sensitive_paths[i], FILE_PATH_LEN, "/s/p%d", i);
+    eb.sensitive_path_count = 40;
+    eb.paths_truncated = 1;
+    j.len = 0;
+    mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443", 1);
+    CHECK_HAS(j, "\"sensitive_path_count\":40", "exfil_detect truncated -> true count preserved");
+    CHECK_HAS(j, "\"paths_truncated\":true",    "exfil_detect truncated -> paths_truncated true");
+    CHECK_HAS(j, "\"/s/p31\"]", "exfil_detect truncated -> array capped at ring size (slot 31 is the last element)");
 
     // ---- accessibility_detect: full event, service granted -----------------------------
     struct accessibility_detect_event aa = {0};

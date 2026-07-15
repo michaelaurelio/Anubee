@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
+#include <string.h>
 #include "modules/massdelete_detect_classify.h"
 
-int burst_distinct_count(const unsigned long long *hashes, int n)
+int burst_distinct_count(const char paths[][FILE_PATH_LEN], int n)
 {
     if (n <= 0)
         return 0;
@@ -11,7 +12,7 @@ int burst_distinct_count(const unsigned long long *hashes, int n)
     for (int i = 0; i < n; i++) {
         int seen = 0;
         for (int j = 0; j < i; j++) {
-            if (hashes[j] == hashes[i]) { seen = 1; break; }
+            if (strncmp(paths[j], paths[i], FILE_PATH_LEN) == 0) { seen = 1; break; }
         }
         if (!seen) distinct++;
     }

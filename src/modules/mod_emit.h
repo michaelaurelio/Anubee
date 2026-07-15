@@ -49,23 +49,33 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 
 // {"type":"massdelete_detect","pid":N,"comm":"..","touch_count":N,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
-//  "manage_external_storage":true|false|null}
+//  "manage_external_storage":true|false|null[,"paths":["..",...]]}
 // distinct_estimate: caller-computed via burst_distinct_count (keeps this
-// builder free of that logic). manage_ext_storage is tri-state: 1 = granted
+// builder free of that logic). Field name "distinct_estimate" retained for schema stability;
+// the value is exact as of this branch, not an FNV-hash approximation.
+// manage_ext_storage is tri-state: 1 = granted
 // -> true, 0 = checked and not granted -> false, negative = unknown
-// (package unresolved, never checked) -> null.
+// (package unresolved, never checked) -> null. paths: only present when
+// verbose is set; exactly touch_count entries (complete, not a sample --
+// RING_LEN > THRESHOLD guarantees the ring never wraps before emission).
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
-                                int distinct_estimate, int manage_ext_storage);
+                                int distinct_estimate, int manage_ext_storage, int verbose);
 
 // {"type":"exfil_detect","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
-//  "sample_path":"..","dest":".."|null}
+//  "sample_path":"..","dest":".."|null
+//  [,"sensitive_paths":["..",...],"sensitive_path_count":N,"paths_truncated":true|false]}
 // dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
-// builder free of that logic, same pattern as massdelete_detect's
-// distinct_estimate. NULL or empty -> JSON null (no connect() observed before
-// the byte threshold tripped, e.g. all volume went via a pre-attach socket's
-// sendto).
+// builder free of that logic. NULL or empty -> JSON null (no connect()
+// observed before the byte threshold tripped). sensitive_paths/
+// sensitive_path_count/paths_truncated: only present when verbose is set.
+// sensitive_paths always has min(sensitive_path_count, EXFIL_DETECT_RING_LEN)
+// entries -- the ring only ever physically holds RING_LEN slots.
+// sensitive_path_count is the true total opened this window (keeps counting
+// past RING_LEN once wrapped). paths_truncated:true means
+// sensitive_path_count > RING_LEN -- the list is a lower bound, not a
+// guarantee (unlike massdelete_detect's paths, which are always complete).
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
-                           const char *dest_str);
+                           const char *dest_str, int verbose);
 
 // {"type":"accessibility_detect","pid":N,"comm":"..","touch_count":N,"window_ms":N,
 //  "granted":true|false|null}

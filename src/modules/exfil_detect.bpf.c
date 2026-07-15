@@ -84,6 +84,9 @@ struct exfil_state {
     __u8  _pad[7];
     __u64 bytes_sent;
     char  sample_path[FILE_PATH_LEN];
+    char  sensitive_paths[EXFIL_DETECT_RING_LEN][FILE_PATH_LEN];
+    __u32 sensitive_path_count;
+    __u8  paths_truncated;
     unsigned char dest[28];
     __u32 dest_len;
 };
@@ -177,6 +180,11 @@ static __always_inline void record_bytes(__u64 n)
     e->bytes_sent = st->bytes_sent;
     e->window_ms  = (__u32)((now - st->window_start_ns) / 1000000ULL);
     __builtin_memcpy(e->sample_path, st->sample_path, FILE_PATH_LEN);
+    #pragma unroll
+    for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++)
+        __builtin_memcpy(e->sensitive_paths[i], st->sensitive_paths[i], FILE_PATH_LEN);
+    e->sensitive_path_count = st->sensitive_path_count;
+    e->paths_truncated = st->paths_truncated;
     __builtin_memcpy(e->dest, st->dest, sizeof(e->dest));
     e->dest_len = st->dest_len;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
@@ -184,6 +192,9 @@ static __always_inline void record_bytes(__u64 n)
 
     st->primed = 0;
     st->bytes_sent = 0;
+    // Note: sensitive_path_count, paths_truncated, and the ring are deliberately NOT reset here.
+    // They reset only on a stale-window in arm_on_sensitive_read; within-window alerts report
+    // window-cumulative file count alongside since-last-emit byte count.
 }
 
 // Shared body for openat/openat2: gate already checked by caller. Arms (or
@@ -209,10 +220,18 @@ static __always_inline void arm_on_sensitive_read(const char *path)
     } else if (now - st->window_start_ns > EXFIL_WINDOW_NS) {
         st->window_start_ns = now;
         st->bytes_sent = 0;
+        st->sensitive_path_count = 0;
+        st->paths_truncated = 0;
     }
 
     st->primed = 1;
     bpf_probe_read_kernel_str(st->sample_path, sizeof(st->sample_path), path);
+
+    __u32 slot = st->sensitive_path_count & (EXFIL_DETECT_RING_LEN - 1);
+    bpf_probe_read_kernel_str(st->sensitive_paths[slot], sizeof(st->sensitive_paths[slot]), path);
+    if (st->sensitive_path_count >= EXFIL_DETECT_RING_LEN)
+        st->paths_truncated = 1;
+    st->sensitive_path_count++;
 }
 
 // openat(dirfd, pathname, flags, mode): regs[1]=pathname.

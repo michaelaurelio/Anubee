@@ -90,7 +90,7 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
     }
 
     if (mc->sink != NULL) {
-        mod_emit_exfil_detect(&mc->sink->jb, e, dest_str);
+        mod_emit_exfil_detect(&mc->sink->jb, e, dest_str, mc->verbose);
         ares_sink_emit(mc->sink);
     }
 

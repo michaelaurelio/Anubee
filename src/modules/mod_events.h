@@ -19,8 +19,8 @@
 #define PROP_VALUE_LEN   96
 #define FILE_PATH_LEN   256
 // RING_LEN > THRESHOLD is load-bearing (see massdelete_detect.bpf.c): the
-// per-pid hash ring never wraps before a window resets, so at emit time the
-// first `touch_count` ring slots are always exactly this window's hashes --
+// per-pid path ring never wraps before a window resets, so at emit time the
+// first `touch_count` ring slots are always exactly this window's paths --
 // no stale cross-window data, no wraparound bookkeeping needed. RING_LEN must
 // also stay a power of two: the slot index is computed with a `& (RING_LEN-1)`
 // mask (not `%`) because the BPF verifier can prove a constant-mask AND is
@@ -135,7 +135,7 @@ struct massdelete_detect_event {
     char   comm[TASK_COMM_LEN];
     __u32  touch_count;
     __u32  window_ms;
-    __u64  path_hashes[MASSDELETE_DETECT_RING_LEN];
+    char   paths[MASSDELETE_DETECT_RING_LEN][FILE_PATH_LEN];
     char   sample_path[FILE_PATH_LEN];
 };
 

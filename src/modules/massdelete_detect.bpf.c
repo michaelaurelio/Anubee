@@ -37,29 +37,11 @@ static __always_inline int path_is_interesting(const char *path)
     return 0;
 }
 
-// FNV-1a over the first 64 bytes of path (bounded loop; stops early at NUL).
-// 64 bytes is enough to discriminate typical filenames; a shared prefix
-// beyond that collapsing to one hash bucket is a negligible, accepted
-// approximation for a volumetric signal, not an exact-match requirement.
-static __always_inline __u64 path_hash(const char *path)
-{
-    __u64 h = 14695981039346656037ULL;
-    #pragma unroll
-    for (int i = 0; i < 64; i++) {
-        char c = path[i];
-        if (c == 0)
-            break;
-        h ^= (unsigned char)c;
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
 struct burst_state {
     __u64 window_start_ns;
     __u32 count;
     __u32 ring_head;
-    __u64 path_hashes[MASSDELETE_DETECT_RING_LEN];
+    char  paths[MASSDELETE_DETECT_RING_LEN][FILE_PATH_LEN];
 };
 
 // Per-pid burst state. Only uid/pid-filtered processes ever get an entry
@@ -112,7 +94,7 @@ static __always_inline void record_touch(const char *path)
     }
 
     __u32 slot = st->ring_head & (MASSDELETE_DETECT_RING_LEN - 1);
-    st->path_hashes[slot] = path_hash(path);
+    bpf_probe_read_kernel_str(st->paths[slot], sizeof(st->paths[slot]), path);
     st->ring_head++;
     st->count++;
 
@@ -140,7 +122,7 @@ static __always_inline void record_touch(const char *path)
     e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
     #pragma unroll
     for (int i = 0; i < MASSDELETE_DETECT_RING_LEN; i++)
-        e->path_hashes[i] = st->path_hashes[i];
+        __builtin_memcpy(e->paths[i], st->paths[i], FILE_PATH_LEN);
     bpf_probe_read_kernel_str(e->sample_path, sizeof(e->sample_path), path);
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
     bpf_ringbuf_submit(e, 0);

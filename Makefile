@@ -166,7 +166,7 @@ CORR_CSRC := $(SRC)/correlate/correlate.c $(SRC)/correlate/corr_emit.c
 CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
 CORR_PART := $(BUILD)/correlate.part.o
 
-DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c $(SRC)/dump/dump_emit.c
+DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c $(SRC)/dump/dump_emit.c $(SRC)/dump/dump_args.c
 DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
 DUMP_PART := $(BUILD)/dump.part.o
 

@@ -469,8 +469,10 @@ test:
 	 fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pattern_match.c src/common/pattern_match.c -o $(BUILD)/test_pattern_match
 	$(BUILD)/test_pattern_match
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_pattern.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c -o $(BUILD)/test_dump_pattern
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_pattern.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c -o $(BUILD)/test_dump_pattern
 	$(BUILD)/test_dump_pattern
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_walk.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c -o $(BUILD)/test_dump_walk
+	$(BUILD)/test_dump_walk
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c -o $(BUILD)/test_engine_args
 	$(BUILD)/test_engine_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_apk.c src/common/sym_apk.c -o $(BUILD)/test_sym_apk

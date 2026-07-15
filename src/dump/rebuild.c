@@ -691,8 +691,51 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	return 0;
 }
 
+int dump_sel_matches(const struct dump_sel *sel, const char *path,
+		     unsigned long long base)
+{
+	for (int i = 0; i < sel->nbase; i++)
+		if (sel->bases[i] == base)
+			return 1;
+	if (sel->npat > 0 &&
+	    dump_name_matches_any_track(sel->pats, sel->npat, path, sel->hit))
+		return 1;
+	return 0;
+}
+
+// The dump-on-exit / snapshot callback: rebuild one module to a file.
+struct dump_write_ctx {
+	const char       *outdir;
+	struct ares_sink *sink;
+};
+
+static int dump_write_cb(int pid, int memfd, unsigned long long base, const char *path,
+			 void *ctx, unsigned long long *covered_end)
+{
+	struct dump_write_ctx *c = (struct dump_write_ctx *)ctx;
+	uint64_t end = 0;
+	int rc = dump_one(pid, memfd, base, path, c->outdir, &end, c->sink);
+	if (covered_end)
+		*covered_end = end;
+	return rc;
+}
+
 int dump_pid_modules(int pid, const char *const *pats, int npat,
                      const char *outdir, struct ares_sink *sink, int *hit)
+{
+	struct dump_sel sel = { .pats = pats, .npat = npat, .hit = hit };
+	return dump_pid_modules_sel(pid, &sel, outdir, sink);
+}
+
+int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
+                         const char *outdir, struct ares_sink *sink)
+{
+	struct dump_write_ctx ctx = { .outdir = outdir, .sink = sink };
+	return dump_walk_pid_modules(pid, sel, dump_write_cb, &ctx);
+}
+
+int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
+			  dump_mod_fn fn, void *ctx)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -707,21 +750,23 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 		return -1;
 	}
 
-	uint64_t done_bases[64];                       // bases already attempted
-	struct { uint64_t s, e; } cov[64];             // ranges of modules dumped
-	int ndone = 0, ncov = 0, dumped = 0;
+	unsigned long long done_bases[64];             // bases already attempted
+	struct { unsigned long long s, e; } cov[64];   // ranges already covered
+	int ndone = 0, ncov = 0, ok = 0;
 
 	// Maps are address-sorted, so the ELF header (lowest segment) of a module is
 	// seen before its later segments. A library deleted-after-mapping shows the
 	// same path on every segment; if its segments are mapped non-contiguously,
 	// the base-walk yields a different "base" for the gapped segment even though
-	// it belongs to the module already dumped (whose full vaddr range we read
-	// from its program headers). Skip any candidate inside a dumped range so we
-	// neither re-dump it nor warn about its (header-less) middle.
+	// it belongs to the module already handled (whose full vaddr range the
+	// callback reports back). Skip any candidate inside a covered range so we
+	// neither re-handle it nor warn about its (header-less) middle.
 	for (int i = 0; i < n; i++) {
-		if (!m[i].path[0] || !dump_name_matches_any_track(pats, npat, m[i].path, hit))
+		if (!m[i].path[0])
 			continue;
 		uint64_t base = load_base_of(m, i);
+		if (!dump_sel_matches(sel, m[i].path, base))
+			continue;
 
 		int skip = 0;
 		for (int k = 0; k < ndone && !skip; k++)
@@ -736,9 +781,9 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 		if (ndone < (int)(sizeof(done_bases) / sizeof(done_bases[0])))
 			done_bases[ndone++] = base;
 
-		uint64_t end = 0;
-		if (dump_one(pid, memfd, base, m[i].path, outdir, &end, sink) == 0) {
-			dumped++;
+		unsigned long long end = 0;
+		if (fn(pid, memfd, base, m[i].path, ctx, &end) == 0) {
+			ok++;
 			if (end > base && ncov < (int)(sizeof(cov) / sizeof(cov[0]))) {
 				cov[ncov].s = base;
 				cov[ncov].e = end;
@@ -749,7 +794,7 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 
 	close(memfd);
 	free(m);
-	return dumped;
+	return ok;
 }
 
 int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct ares_sink *sink)

@@ -17,6 +17,49 @@ struct ares_sink;  /* common/emit.h */
  * whose dynamic info confuses the rebuilder. */
 void dump_set_raw(int on);
 
+/* A module selector: patterns (by name) OR exact load bases. The two are OR'd,
+ * never AND'd. A base selector ignores the path entirely, which is the point:
+ * it selects the module actually observed at that address, so a per-run
+ * randomized name, a rename-after-dlopen, or a " (deleted)" path cannot defeat
+ * it. Either side may be empty (NULL/0); an all-empty selector matches nothing
+ * (dump_args_check rejects that combination before it can reach here). */
+struct dump_sel {
+	const char *const *pats;             /* -l patterns, or NULL */
+	int                npat;
+	int               *hit;              /* optional npat-element hit tracker */
+	const unsigned long long *bases;     /* --base addresses, or NULL */
+	int                nbase;
+};
+
+/* Does the module at `path`, loaded at `base`, match the selector? */
+int dump_sel_matches(const struct dump_sel *sel, const char *path,
+                     unsigned long long base);
+
+/* Invoked once per distinct module of `pid` matching the selector. `memfd` is an
+ * already-open /proc/<pid>/mem (the walker owns it; do not close it). Return 0
+ * on success, -1 on failure - the walker counts successes. Set *covered_end to
+ * the module's end vaddr when it is known, so the walker skips later segments of
+ * the same module; leave it alone when unknown. */
+typedef int (*dump_mod_fn)(int pid, int memfd, unsigned long long base,
+                           const char *path, void *ctx,
+                           unsigned long long *covered_end);
+
+/* Walk `pid`'s /proc/<pid>/maps and invoke `fn` once per distinct module
+ * matching `sel`, deduplicating by load base and by the covered ranges callbacks
+ * report. Returns the number of `fn` calls that returned 0, or -1 if the maps or
+ * /proc/<pid>/mem could not be read. Owns the maps buffer and the mem fd.
+ *
+ * Extracted so the dump and check paths share one walk: the dedup rules here are
+ * subtle (see the coverage-range comment at the call site) and are worth having
+ * in exactly one place. */
+int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
+                          dump_mod_fn fn, void *ctx);
+
+/* Selector-driven form of dump_pid_modules (which is a thin wrapper over this
+ * with bases empty). Same return contract. */
+int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
+                         const char *outdir, struct ares_sink *sink);
+
 /* Dump every currently-mapped module of `pid` whose mapped path matches ANY of
  * `pats` (glob on basename, else substring of full path) into `outdir`. Each
  * distinct module (load base) is dumped once. Returns the number of files

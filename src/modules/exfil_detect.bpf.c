@@ -192,6 +192,9 @@ static __always_inline void record_bytes(__u64 n)
 
     st->primed = 0;
     st->bytes_sent = 0;
+    // Note: sensitive_path_count, paths_truncated, and the ring are deliberately NOT reset here.
+    // They reset only on a stale-window in arm_on_sensitive_read; within-window alerts report
+    // window-cumulative file count alongside since-last-emit byte count.
 }
 
 // Shared body for openat/openat2: gate already checked by caller. Arms (or

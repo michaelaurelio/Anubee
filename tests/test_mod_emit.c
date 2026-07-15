@@ -319,12 +319,19 @@ int main(void)
     CHECK_HAS(j, "\"paths_truncated\":false",  "exfil_detect verbose=1 -> paths_truncated false");
 
     // ---- exfil_detect: verbose=1, ring wrapped (truncated) ---------------------
+    for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++)
+        snprintf(eb.sensitive_paths[i], FILE_PATH_LEN, "/s/p%d", i);
     eb.sensitive_path_count = 40;
     eb.paths_truncated = 1;
     j.len = 0;
     mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443", 1);
     CHECK_HAS(j, "\"sensitive_path_count\":40", "exfil_detect truncated -> true count preserved");
     CHECK_HAS(j, "\"paths_truncated\":true",    "exfil_detect truncated -> paths_truncated true");
+    CHECK_HAS(j, "\"/s/p31\"", "exfil_detect truncated -> last kept slot (31) present in array");
+    { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"/s/p32\"")) { failures++; printf("  FAIL: exfil_detect truncated -> array capped, no 32nd/33rd entry beyond ring size\n    in: %s\n", tmp); }
+    }
 
     // ---- accessibility_detect: full event, service granted -----------------------------
     struct accessibility_detect_event aa = {0};

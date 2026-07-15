@@ -51,7 +51,9 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
 //  "manage_external_storage":true|false|null[,"paths":["..",...]]}
 // distinct_estimate: caller-computed via burst_distinct_count (keeps this
-// builder free of that logic). manage_ext_storage is tri-state: 1 = granted
+// builder free of that logic). Field name "distinct_estimate" retained for schema stability;
+// the value is exact as of this branch, not an FNV-hash approximation.
+// manage_ext_storage is tri-state: 1 = granted
 // -> true, 0 = checked and not granted -> false, negative = unknown
 // (package unresolved, never checked) -> null. paths: only present when
 // verbose is set; exactly touch_count entries (complete, not a sample --

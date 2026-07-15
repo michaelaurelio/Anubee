@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
 #   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -69,11 +69,14 @@ test_lib() {
     # here-strings (not echo|grep): grep -q exits on first match and would
     # SIGPIPE the writer, which `set -o pipefail` then reports as failure.
     local out; out="$(ares "lib $PKG")"
-    grep -q '^\[lib\]' <<<"$out" \
+    # SYM1 Phase 4b put emit_lib/unlib on ts_print, which prepends "HH:MM:SS "
+    # ahead of the tag -- tolerate that optional prefix rather than anchoring
+    # to a bare "[lib]" line start.
+    grep -q '^[0-9: ]*\[lib\]' <<<"$out" \
         || { tail -5 <<<"$out" >&2; fail "lib: no [lib] lines (BPF/attach broken?)"; }
     grep -q 'bionic/libc.so' <<<"$out" \
         || fail "lib: libc.so not resolved ([lib] emitter / maps resolver broken?)"
-    info "lib OK — $(grep -c '^\[lib\]' <<<"$out") [lib] lines, libc.so resolved"
+    info "lib OK - $(grep -c '^[0-9: ]*\[lib\]' <<<"$out") [lib] lines, libc.so resolved"
 }
 
 # syscalls: kprobe. Assert on the attach banner, not on events (event timing is
@@ -395,8 +398,10 @@ test_mod_file_access() {
     fi
     grep -q 'stealthy: file-access uses kernel-only probes' <<<"$out" \
         || { tail -5 <<<"$out" >&2; fail "mod-file-access: no stealthy-attach banner"; }
-    if grep -q '^\[file\]' <<<"$out"; then
-        info "mod-file-access OK — $(grep -c '^\[file\]' <<<"$out") [file] line(s)"
+    # SYM1 Phase 4c put file-access's live line on ts_print (adds "HH:MM:SS "
+    # ahead of the tag) -- tolerate that optional prefix.
+    if grep -q '^[0-9: ]*\[file\]' <<<"$out"; then
+        info "mod-file-access OK - $(grep -c '^[0-9: ]*\[file\]' <<<"$out") [file] line(s)"
     else
         echo "  SKIP: no [file] events in this window (app's own data-dir opens are timing-dependent)"
     fi
@@ -456,8 +461,10 @@ test_massdelete_detect() {
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "massdelete-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[massdelete-detect\]' <<<"$out"; then
-        info "massdelete-detect OK — $(grep -c '^\[massdelete-detect\]' <<<"$out") [massdelete-detect] line(s)"
+    # SYM1 Phase 4c put the analyzer's live alert on ts_print (adds "HH:MM:SS "
+    # ahead of the tag) -- tolerate that optional prefix.
+    if grep -q '^[0-9: ]*\[massdelete-detect\]' <<<"$out"; then
+        info "massdelete-detect OK - $(grep -c '^[0-9: ]*\[massdelete-detect\]' <<<"$out") [massdelete-detect] line(s)"
     else
         tail -10 <<<"$out" >&2
         fail "massdelete-detect: no [massdelete-detect] line from a 25-touch generator loop (threshold/window mistuned, or timing missed the attach window)"
@@ -760,6 +767,113 @@ test_lib_records() {
     info "lib-records/correlate OK — $(grep -c '"type":"lib"' <<<"$cc") lib record(s) in sink"
 }
 
+# dump --now: assert the pure-/proc snapshot path (--base) exits 0, and that
+# --check reports a real verdict for the reference app's APK-embedded
+# libsentinel.so. dev.ares.detector ships extractNativeLibs=false: libsentinel.so
+# is mapped straight out of base.apk, not extracted to disk, so this also pins
+# dump_read_apk_member's stored-ZIP-member resolution end to end.
+#
+# Own package (not $PKG): this needs dev.ares.detector specifically, same
+# precedent as accessibility-detect/screencapture-detect hardcoding their own
+# fixed target app rather than the generic $PKG.
+#
+# pid+base discovery: the natural, lowest-friction source is `ares lib -P`'s
+# own [lib] line (it already resolves the APK-embedded module's friendly name),
+# so no extra /proc/<pid>/maps parsing is needed on the host side.
+#
+# --check selector note (confirmed by hand before writing this): -l
+# 'libsentinel.so' does NOT match here. dump's --check selector (dump_sel_matches)
+# only matches the raw /proc/<pid>/maps path -- glob on basename, else substring
+# of the full path -- and has no knowledge of the APK member's resolved SONAME;
+# for an extractNativeLibs=false app every embedded library's maps path is just
+# ".../base.apk". A -l pattern of the friendly name matches nothing (0 modules
+# checked), so --base is the only selector that reaches this module, and the
+# emitted modcmp record's "module" field is correspondingly "base.apk" -- the
+# record is identified by base address, not by name.
+run_dump_now() {
+    # Same on-device timeout guard as ares() (own su -c; -s INT / -k 3 backstop)
+    # -- if --now ever regressed into the old wait-for-Ctrl-C behavior this
+    # still bounds the run -- but unlike ares(), this also surfaces the real
+    # exit status: --now's whole point is exiting 0 instead of hanging until a
+    # signal, so the status IS the assertion, not just the output.
+    #
+    # A regression surfaces here as 124, NOT 130. 130 (128+SIGINT) was the
+    # symptom the desktop client saw, where an unrelated pkill -INT delivered the
+    # signal directly. Under this wrapper the on-device timeout fires instead,
+    # and Android's timeout is toybox: it reports 124 on expiry regardless of
+    # -s INT or the -k SIGKILL backstop, and this script never passes
+    # --preserve-status. Verified on-device: `timeout -s INT -k 3 2 sleep 10`
+    # exits 124.
+    local raw
+    raw="$(adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*; echo ARES_EXIT:\$?'" 2>&1 | tr -d '\r')"
+    RUN_DUMP_NOW_STATUS="$(sed -n 's/.*ARES_EXIT:\([0-9]*\)$/\1/p' <<<"$raw" | tail -1)"
+    RUN_DUMP_NOW_OUT="$(sed '/^ARES_EXIT:[0-9]*$/d' <<<"$raw")"
+}
+test_dump_now() {
+    echo "=== dump --now (pure /proc snapshot, no BPF) + --check (APK-embedded baseline) ==="
+    local dpkg="dev.ares.detector"
+    adb shell "pm path $dpkg" >/dev/null 2>&1 \
+        || fail "dump-now: $dpkg not installed on this device"
+    forcestop
+    local lib_out; lib_out="$(ares "lib -P $dpkg")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$lib_out"; then
+        tail -5 <<<"$lib_out" >&2; fail "dump-now: lib (pid+base discovery) BPF load failed"
+    fi
+    local sline; sline="$(grep -E '\[lib\] pid [0-9]+ .*-> libsentinel\.so$' <<<"$lib_out" | tail -1)"
+    [ -n "$sline" ] || { tail -10 <<<"$lib_out" >&2; fail "dump-now: no [lib] line for libsentinel.so (pid+base discovery failed)"; }
+    local pid; pid="$(sed -E 's/.*\[lib\] pid ([0-9]+).*/\1/' <<<"$sline")"
+    local base; base="$(sed -E 's/.*\[(0x[0-9a-f]+), 0x[0-9a-f]+\).*/\1/' <<<"$sline")"
+    [ -n "$pid" ] && [ -n "$base" ] || fail "dump-now: could not parse pid/base from: $sline"
+    info "dump-now: discovered pid=$pid base=$base for libsentinel.so"
+
+    local devdir="/data/local/tmp/ares_dumpnow_test"
+    adb shell "su -c 'rm -rf $devdir; mkdir -p $devdir'" >/dev/null 2>&1
+
+    # --- Assertion A: --now --base dumps and exits 0 --------------------------
+    run_dump_now "dump --now -p $pid --base $base -d $devdir -o $devdir/manifest.jsonl"
+    [ "$RUN_DUMP_NOW_STATUS" = "0" ] \
+        || { echo "  out: $RUN_DUMP_NOW_OUT" >&2; fail "dump-now: --now --base exited ${RUN_DUMP_NOW_STATUS:-?} (expected 0; 124 means --now waited for a signal instead of snapshotting, i.e. the dump-on-exit bug is back)"; }
+    local manifest; manifest="$(adb shell "su -c 'cat $devdir/manifest.jsonl 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    grep -q '"type":"dump"' <<<"$manifest" \
+        || { echo "  manifest: $manifest" >&2; fail "dump-now: no \"type\":\"dump\" record in manifest.jsonl"; }
+    local so_count; so_count="$(adb shell "su -c 'ls -1 $devdir 2>/dev/null'" 2>/dev/null | tr -d '\r' | grep -c '\.so$')"
+    [ "${so_count:-0}" -gt 0 ] \
+        || fail "dump-now: no rebuilt .so file in $devdir"
+    info "dump-now --base OK - exit 0, manifest has a dump record, $so_count rebuilt .so file(s)"
+
+    # --- Assertion B: --now --check reports match for libsentinel.so ----------
+    # Do NOT trigger the RASP check: libsentinel.so is an ordinary compiled
+    # library that never rewrites its own .text (its only mmap is a
+    # PROT_READ|PROT_WRITE shared-memory region for antidebug; wxscan.c
+    # *detects* W^X in others, it doesn't perform it), so it must report match
+    # both before and after any RASP check fires -- match is the only
+    # assertion this makes.
+    adb shell "su -c 'rm -f $devdir/check.jsonl'" >/dev/null 2>&1
+    run_dump_now "dump --now --check -p $pid --base $base -o $devdir/check.jsonl"
+    [ "$RUN_DUMP_NOW_STATUS" = "0" ] \
+        || { echo "  out: $RUN_DUMP_NOW_OUT" >&2; fail "dump-now: --now --check exited ${RUN_DUMP_NOW_STATUS:-?} (expected 0)"; }
+    local check; check="$(adb shell "su -c 'cat $devdir/check.jsonl 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    local rec; rec="$(grep '"type":"modcmp"' <<<"$check" | grep "\"base\":\"$base\"" | head -1)"
+    [ -n "$rec" ] || { echo "  check: $check" >&2; fail "dump-now: no modcmp record for base $base in check.jsonl"; }
+    if grep -q '"state":"apk"' <<<"$rec"; then
+        echo "  rec: $rec" >&2
+        fail "dump-now: --check reports state=apk for libsentinel.so -- the APK member did not resolve at the mapping's offset"
+    fi
+    if grep -q '"state":"unreadable"' <<<"$rec"; then
+        echo "  rec: $rec" >&2
+        fail "dump-now: --check reports state=unreadable for libsentinel.so -- memory or baseline could not be read"
+    fi
+    if grep -q '"state":"differ"' <<<"$rec"; then
+        echo "  rec: $rec" >&2
+        fail "dump-now: --check reports state=differ for libsentinel.so -- it never self-modifies, so differ means the comparison itself is wrong (bad ZIP member or offset), a false-positive bug"
+    fi
+    grep -q '"state":"match"' <<<"$rec" \
+        || { echo "  rec: $rec" >&2; fail "dump-now: --check record for libsentinel.so has an unexpected state: $rec"; }
+    info "dump-now --check OK - libsentinel.so (APK-embedded) reports state=match"
+
+    adb shell "su -c 'rm -rf $devdir'" >/dev/null 2>&1
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -776,8 +890,9 @@ case "$WHAT" in
     fileless-detect)     test_fileless_detect ;;
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | all)" ;;
+    dump-now)          test_dump_now ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

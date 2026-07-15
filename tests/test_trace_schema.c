@@ -25,6 +25,12 @@ int main(void)
     CHECK(strcmp(trace_type_name(TRACE_PROP), "prop") == 0,         "prop");
     CHECK(strcmp(trace_type_name(TRACE_STACK), "stack") == 0,       "stack");
     CHECK(strcmp(trace_type_name(TRACE_FUNC), "func") == 0,         "func");
+    CHECK(strcmp(trace_type_name(TRACE_DUMP), "dump") == 0,         "dump");
+    CHECK(strcmp(trace_type_name(TRACE_MODCMP), "modcmp") == 0,     "modcmp");
+    // TRACE_DUMP's numeric value is vendored by ARES-Desktop's TS types.
+    // TRACE_MODCMP must be APPENDED, never inserted, or every type after the
+    // insertion point silently renumbers and the desktop mis-decodes records.
+    CHECK(TRACE_MODCMP > TRACE_SCREENCAPTURE_DETECT,                "modcmp appended last");
     CHECK(strcmp(trace_type_name(0), "unknown") == 0,              "zero->unknown");
     CHECK(strcmp(trace_type_name(999), "unknown") == 0,           "oob->unknown");
 

@@ -25,6 +25,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_ACCESSIBILITY_DETECT:        return "accessibility_detect";
     case TRACE_FILELESS_DETECT:     return "fileless_detect";
     case TRACE_SCREENCAPTURE_DETECT:   return "screencapture_detect";
+    case TRACE_MODCMP:     return "modcmp";
     default:              return "unknown";
     }
 }

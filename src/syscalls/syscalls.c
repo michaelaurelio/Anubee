@@ -67,6 +67,7 @@
 #include "common/syscall_index.h"
 #include "common/syscall_table.h"
 #include "common/coverage.h"
+#include "common/drain_progress.h"
 #include "common/art_buildid.h"
 #include "common/maps.h"
 #include "common/probe_resolve.h"
@@ -270,6 +271,7 @@ static struct bpf_link *g_ff;
 static struct bpf_link *g_compat;    // do_el0_svc_compat, NULL if not attached (optional)
 static pthread_t g_worker;
 static int g_worker_started;
+static struct ares_drain_progress g_dp;	// post-Ctrl-C drain progress (teardown only)
 static int g_dropfd = -1;
 static int g_uid;
 static int g_capture_all;
@@ -1628,12 +1630,17 @@ int syscalls_run(volatile sig_atomic_t *stop)
 void syscalls_teardown(void)
 {
 	if (g_worker_started) {
-		// Stop the worker and let it drain whatever is still queued.
+		// Stop the worker and let it drain whatever is still queued. Under
+		// --snapshot every queued snapshot costs a CFI unwind, so this can run
+		// for minutes - report progress instead of looking hung, and warn if a
+		// 2nd Ctrl-C throws the rest of the queue away. begin() must precede
+		// done=1: it freezes the backlog it is about to measure.
+		ares_drain_progress_begin(&g_dp, &g_q, "syscalls");
 		pthread_mutex_lock(&g_q.m);
 		g_q.done = 1;
 		pthread_cond_signal(&g_q.cv);
 		pthread_mutex_unlock(&g_q.m);
-		pthread_join(g_worker, NULL);
+		ares_drain_progress_join(&g_dp, g_worker);
 		g_worker_started = 0;
 
 		// Always report the final tally, so "no message" never means "didn't check".

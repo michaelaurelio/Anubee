@@ -33,6 +33,14 @@ _SUMMARY_LIST_FIELD = {
     "massdelete_detect_summary": "processes",
 }
 
+# The five mod-analyzer per-event alert record types the incident correlator
+# (incidents()) joins on. Distinct from _SUMMARY_TYPES above (teardown
+# aggregates) -- these are the individual live alert events.
+_MOD_EVENT_TYPES = frozenset({
+    "accessibility_detect", "screencapture_detect", "exfil_detect",
+    "massdelete_detect", "fileless_detect",
+})
+
 # Explicit schema so DuckDB never mis-infers the nested/heterogeneous fields.
 _COLS = (
     "{'id':'BIGINT','pid':'INTEGER','tid':'INTEGER','syscall_nr':'BIGINT',"
@@ -150,7 +158,7 @@ class TraceStore:
         path = os.path.abspath(os.path.expanduser(path))
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        calls, returns, fspans, syscalls, coverage = [], [], [], [], []
+        calls, returns, fspans, syscalls, coverage, mod_events = [], [], [], [], [], []
         summaries = {}
         skipped = 0
         with open(path, "r", errors="replace") as f:
@@ -176,6 +184,8 @@ class TraceStore:
                     coverage.append(rec)
                 elif t in _SUMMARY_TYPES:
                     summaries.setdefault(t, []).append(rec)
+                elif t in _MOD_EVENT_TYPES:
+                    mod_events.append(rec)
                 else:
                     # no "type" (legacy wrapper) or a plain syscalls-engine record
                     skipped += 1
@@ -194,6 +204,8 @@ class TraceStore:
                     "prearm_drops BIGINT, depth_capped BIGINT, decode_partial BOOLEAN, "
                     "returns_spans BIGINT, returns_captured BIGINT, "
                     "cfi_stops MAP(VARCHAR, BIGINT))")
+        con.execute("CREATE TABLE mod_events(pid INTEGER, type VARCHAR, ts_ns BIGINT, "
+                    "comm VARCHAR, raw VARCHAR)")
         if calls:
             con.executemany("INSERT INTO calls VALUES (?,?,?,?,?,?)",
                 [[c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
@@ -228,6 +240,10 @@ class TraceStore:
                         cfi.get("stops") or {}]
             con.executemany("INSERT INTO coverage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [_cov_row(c) for c in coverage])
+        if mod_events:
+            con.executemany("INSERT INTO mod_events VALUES (?,?,?,?,?)",
+                [[e.get("pid"), e.get("type"), e.get("ts_ns"), e.get("comm"), json.dumps(e)]
+                 for e in mod_events])
         self.con = con
         self.path = path
         self._summaries = summaries

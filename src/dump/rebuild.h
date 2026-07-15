@@ -10,6 +10,8 @@
 #ifndef ARES_DUMP_REBUILD_H
 #define ARES_DUMP_REBUILD_H
 
+#include <stddef.h>   /* size_t, for dump_check_image */
+
 struct ares_sink;  /* common/emit.h */
 
 /* When set, emit only the phdr-fixed raw memory image (no section-header
@@ -91,5 +93,31 @@ int dump_name_matches_any(const char *const *pats, int npat, const char *path);
  * "this pattern never matched anything" across a run without duplicating
  * the match loop. */
 int dump_name_matches_any_track(const char *const *pats, int npat, const char *path, int *hit);
+
+/* Compare a module's executable bytes in `mem` against the same module's bytes
+ * in `file`, both being whole images indexed by the ELF's own p_offset/p_vaddr
+ * (which coincide for a PT_LOAD in a .so). Only PT_LOAD segments with PF_X are
+ * digested: .data/.got/.data.rel.ro are rewritten by the linker on every load,
+ * so including them would report a difference for every library on the device.
+ *
+ * Returns "match", "differ", or "unreadable". "unreadable" is returned whenever
+ * a verdict cannot be honestly claimed - no ELF64 header, unusable program
+ * headers, or either image being too short for a segment the headers describe
+ * (a partial /proc/<pid>/mem read). It is NEVER reported as "differ": a short
+ * read hashes wrong, and a false "modified" on a clean library would destroy the
+ * signal's only value.
+ *
+ * mem_hex/file_hex receive 64 hex chars + NUL on match/differ, and "" otherwise
+ * (the caller passes NULL to dump_emit_modcmp for an empty digest). */
+const char *dump_check_image(const unsigned char *mem, size_t memlen,
+                             const unsigned char *file, size_t filelen,
+                             char mem_hex[65], char file_hex[65]);
+
+/* For each currently-mapped module of `pid` matching `sel`, read its live image
+ * and its backing file and emit one {"type":"modcmp",...} record. Writes no .so.
+ * Returns the number of modules checked, or -1 if the process maps could not be
+ * read. (dump --check path.) */
+int dump_check_pid_modules(int pid, const struct dump_sel *sel,
+                           struct ares_sink *sink);
 
 #endif /* ARES_DUMP_REBUILD_H */

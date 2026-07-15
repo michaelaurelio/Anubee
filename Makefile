@@ -547,6 +547,8 @@ test:
 	$(BUILD)/test_dump_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_args.c src/dump/dump_args.c -o $(BUILD)/test_dump_args
 	$(BUILD)/test_dump_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_check.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c -o $(BUILD)/test_dump_check
+	$(BUILD)/test_dump_check
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
 	$(BUILD)/test_file_access_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_massdelete_detect_classify.c src/modules/massdelete_detect_classify.c -o $(BUILD)/test_massdelete_detect_classify

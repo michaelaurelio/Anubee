@@ -28,6 +28,7 @@
 #include "common/maps.h"
 #include "common/pattern_match.h"
 #include "common/emit.h"        // SYM1 Phase 3: struct ares_sink, ares_sink_emit
+#include "common/sha256.h"
 #include "dump/dump_emit.h"     // dump_emit_module
 
 #include <stdio.h>
@@ -689,6 +690,149 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 		ares_sink_emit(sink);
 	}
 	return 0;
+}
+
+// Digest every PF_X PT_LOAD's bytes from `img`, in phdr order. Returns 0 on
+// success, -1 if the headers are unusable or the image is too short for any
+// segment they describe (i.e. a partial read - no honest verdict is possible).
+static int hash_exec_segments(const unsigned char *img, size_t len, char out[65])
+{
+	Elf64_Ehdr eh;
+	if (len < sizeof(eh))
+		return -1;
+	memcpy(&eh, img, sizeof(eh));
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64)
+		return -1;
+	if (eh.e_phoff == 0 || eh.e_phnum == 0 || eh.e_phentsize < sizeof(Elf64_Phdr))
+		return -1;
+	if (eh.e_phoff + (uint64_t)eh.e_phnum * eh.e_phentsize > len)
+		return -1;
+
+	struct sha256_ctx c;
+	sha256_init(&c);
+	int nexec = 0;
+	for (int i = 0; i < eh.e_phnum; i++) {
+		Elf64_Phdr p;
+		memcpy(&p, img + eh.e_phoff + (size_t)i * eh.e_phentsize, sizeof(p));
+		if (p.p_type != PT_LOAD || !(p.p_flags & PF_X))
+			continue;
+		if (p.p_offset + p.p_filesz > len)
+			return -1;    // short image: refuse to guess
+		sha256_update(&c, img + p.p_offset, p.p_filesz);
+		nexec++;
+	}
+	if (!nexec)
+		return -1;            // nothing executable to compare
+
+	sha256_final_hex(&c, out);
+	return 0;
+}
+
+const char *dump_check_image(const unsigned char *mem, size_t memlen,
+			     const unsigned char *file, size_t filelen,
+			     char mem_hex[65], char file_hex[65])
+{
+	mem_hex[0] = '\0';
+	file_hex[0] = '\0';
+	// The memory image's headers are authoritative: a packer rewrites .text in
+	// place, not the phdr table. If either side cannot be digested, no verdict.
+	if (hash_exec_segments(mem, memlen, mem_hex) != 0) {
+		mem_hex[0] = '\0';
+		return "unreadable";
+	}
+	if (hash_exec_segments(file, filelen, file_hex) != 0) {
+		file_hex[0] = '\0';
+		return "unreadable";
+	}
+	return strcmp(mem_hex, file_hex) == 0 ? "match" : "differ";
+}
+
+// Read the whole backing file into a fresh buffer. Returns NULL on any failure
+// (deleted/anon path, unreadable file); *len gets the byte count on success.
+static unsigned char *read_whole_file(const char *path, size_t *len)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+	long sz = ftell(f);
+	if (sz <= 0) { fclose(f); return NULL; }
+	rewind(f);
+	unsigned char *b = malloc((size_t)sz);
+	if (!b) { fclose(f); return NULL; }
+	size_t got = fread(b, 1, (size_t)sz, f);
+	fclose(f);
+	if (got != (size_t)sz) { free(b); return NULL; }
+	*len = got;
+	return b;
+}
+
+// Compare one module against its backing file and emit a modcmp record. Runs as
+// a dump_walk_pid_modules callback, so the maps walk, the per-base dedup and the
+// memfd lifetime are the walker's problem, not ours.
+//
+// Always returns 0: every visited module yields a verdict record, including the
+// non-comparable ones. covered_end is deliberately left untouched - unlike
+// dump_one we never parse the phdrs to learn the module's true extent, so we
+// have no honest range to claim.
+static int dump_check_cb(int pid, int memfd, unsigned long long base, const char *path,
+			 void *ctx, unsigned long long *covered_end)
+{
+	struct ares_sink *sink = (struct ares_sink *)ctx;
+	(void)covered_end;
+
+	char bn[DUMP_MAX_PATH];
+	snprintf(bn, sizeof(bn), "%s", basename_of(path));
+	char *del = strstr(bn, " (deleted)");
+	if (del)
+		*del = '\0';
+
+	const char *state;
+	char mem_hex[65] = "", file_hex[65] = "";
+	unsigned char *mem = NULL, *file = NULL;
+	size_t filelen = 0;
+	size_t pl = strlen(path);
+
+	// A bracketed pseudo-path or a deleted file has no baseline on disk. That is
+	// itself a packer tell, so it gets its own state rather than being skipped.
+	if (path[0] != '/' || del) {
+		state = "nofile";
+	// APK-embedded (extractNativeLibs=false): the baseline is a ZIP member, not
+	// the file itself. Resolving it needs the central directory (see BACKLOG).
+	// Report honestly rather than compare against the wrong bytes.
+	} else if (pl >= 4 && strcmp(path + pl - 4, ".apk") == 0) {
+		state = "apk";
+	} else if (!(file = read_whole_file(path, &filelen))) {
+		state = "nofile";
+	} else if (!(mem = calloc(1, filelen))) {
+		state = "unreadable";
+	} else if (proc_mem_read(memfd, base, mem, filelen) != filelen) {
+		// Partial read: hashing this would be wrong, and a false "differ" on a
+		// clean library is the one failure this feature cannot afford.
+		state = "unreadable";
+	} else {
+		state = dump_check_image(mem, filelen, file, filelen, mem_hex, file_hex);
+	}
+
+	if (sink && sink->f) {
+		sink->jb.len = 0;
+		dump_emit_modcmp(&sink->jb, bn, path, (unsigned long long)base, pid, state,
+				 mem_hex[0] ? mem_hex : NULL,
+				 file_hex[0] ? file_hex : NULL);
+		ares_sink_emit(sink);
+	}
+	printf("[dump] check: %s @0x%llx (pid %d) -> %s\n",
+	       bn, (unsigned long long)base, pid, state);
+
+	free(mem);
+	free(file);
+	return 0;
+}
+
+int dump_check_pid_modules(int pid, const struct dump_sel *sel,
+			   struct ares_sink *sink)
+{
+	return dump_walk_pid_modules(pid, sel, dump_check_cb, sink);
 }
 
 int dump_sel_matches(const struct dump_sel *sel, const char *path,

@@ -3,6 +3,7 @@
 // classification logic.
 #include <linux/types.h>
 #include <stdio.h>
+#include <string.h>
 #include "modules/massdelete_detect_classify.h"
 
 static int checks = 0, failures = 0;
@@ -14,17 +15,22 @@ static int checks = 0, failures = 0;
 int main(void)
 {
     // ---- burst_distinct_count: all-unique --------------------------------------
-    unsigned long long uniq[5] = { 1, 2, 3, 4, 5 };
-    CHECK(burst_distinct_count(uniq, 5) == 5, "5 unique hashes -> distinct 5");
+    char uniq[5][FILE_PATH_LEN] = {
+        "/sdcard/DCIM/a.jpg", "/sdcard/DCIM/b.jpg", "/sdcard/DCIM/c.jpg",
+        "/sdcard/DCIM/d.jpg", "/sdcard/DCIM/e.jpg",
+    };
+    CHECK(burst_distinct_count(uniq, 5) == 5, "5 unique paths -> distinct 5");
 
     // ---- burst_distinct_count: all-duplicate ------------------------------------
-    unsigned long long dup[20];
-    for (int i = 0; i < 20; i++) dup[i] = 42;
-    CHECK(burst_distinct_count(dup, 20) == 1, "20x same hash -> distinct 1");
+    char dup[20][FILE_PATH_LEN];
+    for (int i = 0; i < 20; i++)
+        strncpy(dup[i], "/sdcard/DCIM/same.jpg", FILE_PATH_LEN - 1);
+    CHECK(burst_distinct_count(dup, 20) == 1, "20x same path -> distinct 1");
 
     // ---- burst_distinct_count: mixed (5 unique values, each repeated 4x) -------
-    unsigned long long mixed[20];
-    for (int i = 0; i < 20; i++) mixed[i] = (unsigned long long)(i % 5);
+    char mixed[20][FILE_PATH_LEN];
+    for (int i = 0; i < 20; i++)
+        snprintf(mixed[i], FILE_PATH_LEN, "/sdcard/DCIM/f%d.jpg", i % 5);
     CHECK(burst_distinct_count(mixed, 20) == 5, "5 values x4 repeats -> distinct 5");
 
     // ---- burst_distinct_count: n == 0 --------------------------------------------

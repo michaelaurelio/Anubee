@@ -17,12 +17,12 @@
 // Of MASSDELETE_DETECT_THRESHOLD touches, floor for "real" burst (not 1 file repeated).
 #define MASSDELETE_DETECT_DISTINCT_MIN 10
 
-// Count distinct values among the first n entries of hashes. n is normally
+// Count distinct values among the first n entries of paths. n is normally
 // e->touch_count (see massdelete_detect.bpf.c: MASSDELETE_DETECT_RING_LEN >
-// MASSDELETE_DETECT_THRESHOLD guarantees the ring never wraps before a window resets, so
-// the first touch_count slots are always exactly this window's hashes -- no
-// stale cross-window data). Returns 0 for n <= 0.
-int burst_distinct_count(const unsigned long long *hashes, int n);
+// MASSDELETE_DETECT_THRESHOLD guarantees the ring never wraps before a window
+// resets, so the first touch_count slots are always exactly this window's
+// paths -- no stale cross-window data). Returns 0 for n <= 0.
+int burst_distinct_count(const char paths[][FILE_PATH_LEN], int n);
 
 // Decide the alert bitmask. touch_count/distinct_count come from the BPF
 // event + burst_distinct_count; manage_ext_storage is tri-state (1 = granted,

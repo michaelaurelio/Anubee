@@ -21,4 +21,12 @@ void ts_print(const char *fmt, ...)  __attribute__((format(printf, 1, 2))); // p
 // line's "[tag] > ..." bracket (funcs always passes "event" today).
 void human_detail(const char *tag, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+// Sticky bottom status line on stderr (the drain progress bar). Pass a rendered
+// line to pin it below all other output; NULL clears it.
+//
+// Every printer above clears the sticky line, prints its own line, then redraws
+// it - all under the one output lock, so a worker's event line can never land
+// mid-bar. Inert until a line is set, so ordinary output stays byte-identical.
+void human_progress_set(const char *line);
+
 #endif /* __ARES_COMMON_HUMAN_OUT_H */

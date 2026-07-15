@@ -533,8 +533,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `summaries`'s aggregated tallies. `_SUMMARY_TYPES` also now covers all 9
   teardown summary types (previously missing
   `accessibility_detect_summary`/`exfil_detect_summary`/
-  `fileless_detect_summary`/`screencapture_detect_summary`) — see
-  `docs/superpowers/specs/2026-07-15-mod-event-ingestion-design.md`.
+  `fileless_detect_summary`/`screencapture_detect_summary`).
   Known limitation: individual `prop` events carry no `rasp`-suspicious
   classification (that logic lives only in the summary-aggregation path).
 

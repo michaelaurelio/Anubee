@@ -448,23 +448,6 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   `system_server`-destination-gating approach) is the natural next step — see
   `mod accessibility-detect`'s design doc Follow-up ideas.
 
-- **`mod` cross-analyzer incident correlator — open, now unblocked.** Every
-  mod analyzer event carries a real `ts_ns` timestamp as of the
-  2026-07-13 event-timestamps change, which
-  was the prerequisite blocker for this. Next step: a tool (likely
-  host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
-  groups events by `(pid, time window)` using `ts_ns`, and fuses matches
-  against a small hardcoded rule table (e.g. `accessibility-detect` + `screencapture-detect`
-  + `exfil-detect` on one pid within N seconds) into a higher-confidence
-  incident record. Before building: check whether ARES-Desktop or
-  `tools/ares-mcp` already does something equivalent client-side —
-  `ares-mcp`'s `TraceStore` doesn't currently ingest mod analyzer event
-  types into a queryable table at all (only `*_summary` records, via a
-  `summaries()` tool whose `_SUMMARY_TYPES` set is itself already stale —
-  missing `accessibility_detect_summary`, `exfil_detect_summary`,
-  `fileless_detect_summary`, `screencapture_detect_summary` — worth fixing
-  regardless of which venue the correlator lands in).
-
 - **SW1 — switch-interp ShadowFrame walk follow-ups (non-blocking).** The walk shipped
   and is device-verified (`src/common/art_shadow.c`; see Resolved/Done). ELF-note parser
   hardening (`shentsize < 0x28` guard) landed 2026-07-08 — see Resolved/Done. Remaining
@@ -532,6 +515,21 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
     contract). Left as-is; revisit only if profiling shows this alloc actually matters —
     it is not gated at 8192 bytes per snapshot, but it is a single small heap round-trip.
 
+### `ares-mcp` mod-analyzer ingestion gap — 2026-07-15
+
+- **Full per-event mod-analyzer ingestion still missing.** The incident
+  correlator (see Resolved/Done) only ingests the 5 event types its rule
+  chains reference. `execve`, `file_access`, `prop_read`, and
+  `proc_event`/`spawn`/`proc_exit` are still dropped by
+  `load_structured()`'s `else: skipped` branch — independently valuable
+  regardless of correlation (e.g. `file_access`'s category flags like
+  `credential_pattern`/`external_storage`, `prop_read`'s
+  anti-emulator-fingerprinting signal, `execve`'s launch args+backtrace).
+- **`_SUMMARY_TYPES` (`trace_store.py:25-28`) is stale** — missing
+  `accessibility_detect_summary`, `exfil_detect_summary`,
+  `fileless_detect_summary`, `screencapture_detect_summary`. The `summaries`
+  tool silently can't surface these four teardown record types.
+
 ---
 
 ## Resolved / Done
@@ -540,6 +538,29 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-15
+
+- **`mod` cross-analyzer incident correlator (shipped 2026-07-15) — known
+  limitations.** `ares-mcp`'s `TraceStore.incidents()` / `incidents` MCP tool
+  fuses ordered two-step analyzer-type chains (`accessibility_detect`/
+  `screencapture_detect` → `exfil_detect`, `exfil_detect` →
+  `massdelete_detect`, `fileless_detect` → `exfil_detect`) on the same pid
+  within a per-rule time window into evidence-carrying incident records —
+  see `docs/superpowers/specs/2026-07-15-mod-incident-correlator-design.md`.
+  Checked first: neither ARES-Desktop (never parses `mod` output at all) nor
+  `ares-mcp` (only ingested five stale `*_summary` teardown types) already
+  did this.
+  - **Same-pid grouping only** — a chain split across a dropper process and
+    a spawned worker process under the same app won't correlate.
+    `spawn_event` (`pid`+`child_pid`) makes a process-lineage graph
+    buildable later if this proves too narrow in practice.
+  - **Two-step chains only** — the rule schema is a flat ordered pair; a
+    genuine 3+-step chain needs either a schema change or chained pairwise
+    rules.
+  - **Nearest-pairing, not strict one-to-one** — a single second-type event
+    can be claimed as evidence by more than one preceding first-type event
+    within window, producing duplicate incidents sharing that event. Accepted:
+    suppressing the duplicate risks hiding a real correlated pair, and it's
+    trivially recognizable (same rule + pid + overlapping span).
 
 - **Drain progress (shipped 2026-07-15) - known drawbacks.**
   - **No automated device assertion for the bar itself.** Backlog size is

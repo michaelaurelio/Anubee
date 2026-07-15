@@ -16,6 +16,11 @@ struct ares_evq {
     pthread_cond_t  cv;
     int             done;
     unsigned long long dropped; // events discarded (queue full)
+    // Monotonic record counts, mutated only under m. `pushed - popped` is the
+    // exact pending-record count, which drain_progress freezes as its label
+    // denominator at teardown. Not derivable from `used`: records vary from
+    // ~150B (syscall) to 32KB (stack snapshot).
+    unsigned long long pushed, popped;
 };
 
 // Allocate the ring (cap bytes). Returns 0 on success, -1 on malloc failure.

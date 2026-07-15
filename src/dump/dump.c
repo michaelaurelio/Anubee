@@ -221,18 +221,15 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
     case KEY_ON_MAP: a->on_map = 1; break;
     case KEY_NOW:   a->now   = 1; break;
     case KEY_CHECK: a->check = 1; break;
-    case KEY_BASE: {
+    case KEY_BASE:
         if (a->nbase >= 64) {
             fprintf(stderr, "dump: warning - base cap (64) reached; '%s' ignored\n", arg);
             break;
         }
-        char *end = NULL;
-        unsigned long long v = strtoull(arg, &end, 0);
-        if (!end || *end || end == arg)
+        if (dump_parse_base(arg, &a->bases[a->nbase]) != 0)
             argp_error(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
-        a->bases[a->nbase++] = v;
+        a->nbase++;
         break;
-    }
     case KEY_RAW:    a->raw    = 1; break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)

@@ -70,6 +70,52 @@ int main(void)
     struct dump_trigger onmap = { .on_map = 1, .has_pkg = 1, .npat = 1 };
     OK(onmap, "--on-map with -P still valid");
 
+    // --- dump_parse_base ---------------------------------------------------
+    // A --base that silently parses wrong defeats the flag's whole purpose:
+    // selecting by address is what resists per-run library renaming.
+    unsigned long long b = 0;
+
+    checks++;
+    if (dump_parse_base("0x7281a0000", &b) != 0 || b != 0x7281a0000ULL) {
+        failures++; printf("  FAIL: hex base parses\n");
+    }
+    checks++;
+    if (dump_parse_base("4096", &b) != 0 || b != 4096ULL) {
+        failures++; printf("  FAIL: decimal base parses\n");
+    }
+    // strtoull WRAPS a negative to ULLONG_MAX with errno unset and end at the
+    // NUL, so every after-the-fact check passes. This is the regression.
+    checks++;
+    if (dump_parse_base("-1", &b) == 0) {
+        failures++; printf("  FAIL: -1 must be rejected, not wrapped to ULLONG_MAX\n");
+    }
+    checks++;
+    if (dump_parse_base("+1", &b) == 0) {
+        failures++; printf("  FAIL: +1 must be rejected\n");
+    }
+    // strtoull skips leading whitespace per the C standard.
+    checks++;
+    if (dump_parse_base(" 0x1000", &b) == 0) {
+        failures++; printf("  FAIL: leading whitespace must be rejected\n");
+    }
+    checks++;
+    if (dump_parse_base("0x1000junk", &b) == 0) {
+        failures++; printf("  FAIL: trailing junk must be rejected\n");
+    }
+    checks++;
+    if (dump_parse_base("0x", &b) == 0) {
+        failures++; printf("  FAIL: bare 0x must be rejected\n");
+    }
+    checks++;
+    if (dump_parse_base("", &b) == 0) {
+        failures++; printf("  FAIL: empty must be rejected\n");
+    }
+    // 17 hex digits: strtoull returns ULLONG_MAX and sets ERANGE.
+    checks++;
+    if (dump_parse_base("0xFFFFFFFFFFFFFFFFF", &b) == 0) {
+        failures++; printf("  FAIL: overflow must be rejected (ERANGE)\n");
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

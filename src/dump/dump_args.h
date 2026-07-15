@@ -27,4 +27,14 @@ struct dump_trigger {
 //     of comparing - the wrong artifact, with no error
 const char *dump_args_check(const struct dump_trigger *t);
 
+/* Parse a --base ADDR argument (hex with 0x, or decimal; strtoull base 0).
+ * Returns 0 and stores the value in *out on success, -1 on any rejection.
+ *
+ * The sign is rejected BEFORE parsing, not after: strtoull silently WRAPS a
+ * negative, so "-1" yields ULLONG_MAX with end at the NUL and errno unset -
+ * passing every after-the-fact check and quietly selecting 0xFFFFFFFFFFFFFFFF.
+ * A load base is never negative, never signed, and never leading-whitespace,
+ * so require it to start with a digit. */
+int dump_parse_base(const char *arg, unsigned long long *out);
+
 #endif /* ARES_DUMP_ARGS_H */

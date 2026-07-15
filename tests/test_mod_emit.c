@@ -327,11 +327,7 @@ int main(void)
     mod_emit_exfil_detect(&j, &eb, "203.0.113.1:443", 1);
     CHECK_HAS(j, "\"sensitive_path_count\":40", "exfil_detect truncated -> true count preserved");
     CHECK_HAS(j, "\"paths_truncated\":true",    "exfil_detect truncated -> paths_truncated true");
-    CHECK_HAS(j, "\"/s/p31\"", "exfil_detect truncated -> last kept slot (31) present in array");
-    { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
-      checks++;
-      if (strstr(tmp, "\"/s/p32\"")) { failures++; printf("  FAIL: exfil_detect truncated -> array capped, no 32nd/33rd entry beyond ring size\n    in: %s\n", tmp); }
-    }
+    CHECK_HAS(j, "\"/s/p31\"]", "exfil_detect truncated -> array capped at ring size (slot 31 is the last element)");
 
     // ---- accessibility_detect: full event, service granted -----------------------------
     struct accessibility_detect_event aa = {0};

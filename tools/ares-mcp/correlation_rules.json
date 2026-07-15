@@ -1,0 +1,6 @@
+[
+  {"name": "accessibility-exfil", "chain": ["accessibility_detect", "exfil_detect"], "window_s": 10},
+  {"name": "screencapture-exfil", "chain": ["screencapture_detect", "exfil_detect"], "window_s": 10},
+  {"name": "destroy-after-exfil", "chain": ["exfil_detect", "massdelete_detect"], "window_s": 10},
+  {"name": "fileless-payload-exfil", "chain": ["fileless_detect", "exfil_detect"], "window_s": 10}
+]

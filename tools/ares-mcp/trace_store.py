@@ -41,6 +41,8 @@ _MOD_EVENT_TYPES = frozenset({
     "massdelete_detect", "fileless_detect",
 })
 
+_DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")
+
 # Explicit schema so DuckDB never mis-infers the nested/heterogeneous fields.
 _COLS = (
     "{'id':'BIGINT','pid':'INTEGER','tid':'INTEGER','syscall_nr':'BIGINT',"
@@ -294,6 +296,43 @@ class TraceStore:
         if kind is not None:
             return [_cap(r) for r in self._summaries.get(kind, [])[:top]]   # AUDIT.md M2
         return {k: [_cap(r) for r in v[:top]] for k, v in self._summaries.items()}
+
+    def incidents(self, rules_path=None, top=50):
+        """Cross-analyzer incident correlator. Loads ordered analyzer-type chain
+        rules from rules_path (default: bundled correlation_rules.json) and joins
+        mod_events by (pid, ts_ns order, window) to find chains like
+        accessibility_detect -> exfil_detect on the same pid within a rule's
+        window. Each incident carries the raw matched events as evidence -- no
+        baked severity, consistent with every mod analyzer's own convention of
+        exposing raw fields rather than a verdict."""
+        import json
+        self._require()
+        top = _clamp(top)
+        path = rules_path or _DEFAULT_RULES_PATH
+        with open(path) as f:
+            rules = json.load(f)
+        out = []
+        for rule in rules:
+            a_type, b_type = rule["chain"]
+            window_ns = int(rule["window_s"] * 1_000_000_000)
+            rows = self.con.execute(
+                "SELECT a.pid AS pid, a.ts_ns AS t1, a.raw AS raw1, "
+                "b.ts_ns AS t2, b.raw AS raw2 FROM mod_events a JOIN mod_events b "
+                "ON a.pid = b.pid AND a.type = ? AND b.type = ? "
+                "AND b.ts_ns > a.ts_ns AND b.ts_ns - a.ts_ns <= ? "
+                "QUALIFY row_number() OVER (PARTITION BY a.pid, a.ts_ns ORDER BY b.ts_ns) = 1 "
+                "ORDER BY a.pid, a.ts_ns",
+                [a_type, b_type, window_ns]
+            ).fetchall()
+            for pid, t1, raw1, t2, raw2 in rows:
+                out.append({
+                    "rule": rule["name"],
+                    "pid": pid,
+                    "chain": rule["chain"],
+                    "span_ms": (t2 - t1) / 1e6,
+                    "events": [json.loads(raw1), json.loads(raw2)],
+                })
+        return out[:top]
 
     # ---- span analysis (func_spans/span_syscalls) -------------------------
 

@@ -1,0 +1,3 @@
+[
+  {"name": "custom-fileless-exfil", "chain": ["fileless_detect", "exfil_detect"], "window_s": 5}
+]

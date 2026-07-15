@@ -111,6 +111,25 @@ def main():
     mcp_incidents = server.incidents()
     check(len(by_pid(mcp_incidents, 100)) == 1, "incidents() MCP tool reaches TraceStore.incidents()")
 
+    spawn_only = ts.mod_events(kind="spawn")
+    check(len(spawn_only) == 1 and spawn_only[0]["child_pid"] == 701,
+          f"mod_events(kind='spawn') returns the one spawn record with child_pid 701 (got {spawn_only})")
+
+    pid700_events = ts.mod_events(pid=700)
+    check(len(pid700_events) == 4,
+          f"mod_events(pid=700) returns its 4 events, not proc_exit (pid 701) (got {len(pid700_events)})")
+
+    execve_700 = ts.mod_events(kind="execve", pid=700)
+    check(len(execve_700) == 1 and execve_700[0]["filename"] == "/system/bin/su",
+          f"mod_events(kind='execve', pid=700) combines both filters (got {execve_700})")
+
+    all_events = ts.mod_events(top=200)
+    check(len(all_events) == 19, f"mod_events() with no filters returns all 19 rows (got {len(all_events)})")
+
+    still_reachable = ts.mod_events(kind="accessibility_detect")
+    check(len(still_reachable) == 4,
+          f"widened set didn't break the original 5 detect types -- 4 accessibility_detect rows (pid 100 x1, pid 400 x1, pid 500 x2) (got {len(still_reachable)})")
+
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0
 

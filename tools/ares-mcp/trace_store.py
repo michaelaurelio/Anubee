@@ -343,6 +343,32 @@ class TraceStore:
                 })
         return out[:top]
 
+    def mod_events(self, kind=None, pid=None, top=50):
+        """Individual per-event mod-analyzer records (spawn/proc_exit/execve/
+        prop/file_access/accessibility_detect/screencapture_detect/exfil_detect/
+        massdelete_detect/fileless_detect) ingested from a mod analyzer's `-o`
+        output. Drill-down complement to summaries() (which returns aggregated
+        teardown tallies) -- these are the raw individual events. Without kind
+        or pid, returns all ingested events (capped at top); either filters
+        further. Raw fields only, no re-derived classification (e.g. no rasp
+        flag on individual `prop` events -- that's summary-only)."""
+        import json
+        self._require()
+        top = _clamp(top)
+        where, params = [], []
+        if kind is not None:
+            where.append("type = ?")
+            params.append(kind)
+        if pid is not None:
+            where.append("pid = ?")
+            params.append(pid)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        rows = self.con.execute(
+            f"SELECT raw FROM mod_events {clause} ORDER BY ts_ns LIMIT ?",
+            params + [top]
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
     # ---- span analysis (func_spans/span_syscalls) -------------------------
 
     def spans(self, parent_span=None, pid=None, tid=None, limit=50):

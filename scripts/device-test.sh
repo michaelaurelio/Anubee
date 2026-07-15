@@ -315,6 +315,23 @@ test_syscalls_cfi() {
     grep -q '"engine":"syscalls"' <<<"$mainout" \
         || fail "syscalls-cfi: coverage record not tagged engine=syscalls"
     echo "PASS: coverage record emitted and tagged to syscalls"
+    # Task 8 drain contract: a single Ctrl-C must complete post-processing, not
+    # truncate it. This run's on-device `timeout -s INT -k 3 $TIMEOUT` sends
+    # exactly one SIGINT (the interactive Ctrl-C path) - a 2nd SIGINT would
+    # _exit(130) and drop the end-of-run records, which is the loss the drain
+    # progress UI exists to warn about. The coverage record above is
+    # unconditional on -o, so it alone doesn't prove the drain wasn't cut
+    # short; syscalls_summary only exists when sysc_emit_summary saw
+    # g_sysc_stat_count > 0, so first confirm this window actually captured
+    # syscall traffic - otherwise a quiet window fails this check for the
+    # wrong reason (no events, not a truncated drain).
+    if [ "$(grep -c '"type":"syscall"' <<<"$mainout")" -eq 0 ]; then
+        echo "  SKIP: no syscall events captured in this window - drain-contract check needs traffic to be meaningful"
+    else
+        grep -q '"type":"syscalls_summary"' <<<"$mainout" \
+            || { echo "  out: $mainout" >&2; fail "syscalls-cfi: no {\"type\":\"syscalls_summary\"} record after single SIGINT (drain truncated?)"; }
+        echo "PASS: single-SIGINT drain contract held - coverage + syscalls_summary both present"
+    fi
     # On the known apex build, art_buildid.c's table has a row, so Java naming
     # stays ON - managed_naming_off must be ABSENT (grep-negation idiom, no
     # assert_json_absent helper exists in this script).

@@ -15,7 +15,7 @@ ARES ships seven subcommands. Six are engines (`syscalls`, `funcs`, `correlate`,
 | `correlate` | Which syscalls a probed function triggers, tagged with that function's span | **Detectable** (entry uprobe `BRK`), loud by design |
 | `lib` | Every native library (`.so`) an app loads | **Injectionless** (kprobe only) |
 | `dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | **Injectionless** (kprobe only) |
-| `trace` | `syscalls` + `funcs`/`correlate`/`lib`/`dump` together from one launch | Loud only if `--funcs`/`--correlate` is included |
+| `trace` | `syscalls` + `funcs`/`lib` together from one launch (`correlate`/`dump` are standalone-only) | Loud only if `funcs` is enabled |
 
 `syscalls`/`lib` are ideal for stealthy RASP triage (e.g. clean-vs-rooted
 diffing); `funcs`/`correlate` are more granular but a RASP can detect the uprobe
@@ -175,30 +175,45 @@ ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
 
 Output filename: `<name>.<pid>.<base>.so`.
 
-## `trace`: combined runner (loud if `--funcs`/`--correlate` used)
+## `trace`: combined runner (loud if `funcs` is enabled)
 
-Runs `syscalls` + `funcs`/`lib`/`dump`/`correlate` together from one app launch.
-Independent streams, no cross-engine correlation (use `correlate` for that).
+Runs `syscalls` + `funcs`/`lib` together from one app launch — the gap standalone
+`syscalls`/`funcs` can't cover alone. Independent streams, no cross-engine
+correlation (use `correlate` standalone for that). `correlate` and `dump` are
+**not** composable into `trace`: `correlate` is itself a funcs+syscalls fusion
+that would double-instrument the same targets and needs its own post-launch
+uprobe attach; `dump` is a batch engine (rebuilt `.so` files, not a JSONL
+stream). Run either standalone alongside `trace` if you need them.
+
+No section markers — every flag routes itself to the engine(s) that
+understand it, and its presence enables that engine:
 
 ```sh
 ares trace -P com.example.app -o /data/local/tmp/run \
-           --syscalls '-a' \
-           --funcs "-e 'libc.so!open' -e 'libc.so!/^encrypt/'"
+           -a \
+           -e 'libc.so!open' -e 'libc.so!/^encrypt/'
 ```
+
+`-a` is syscalls-only (enables `syscalls`, captures everything); the two `-e`
+specs are unprefixed `funcs:` targets (enable `funcs`). Mixing engines needs
+no marker — just give each engine's own flags on the same command line.
 
 | Flag | Meaning |
 |---|---|
-| `-P PACKAGE` / `-p PID[,...]` | Attach target (shared by every sub-engine below) |
-| `-o PREFIX` | Writes `<prefix>.syscalls.jsonl`, `<prefix>.funcs.jsonl`, `<prefix>.lib.jsonl`, `<prefix>.dump.jsonl`, `<prefix>.event.jsonl` |
-| `--syscalls '...'` | Syscalls-engine args (no package/PID, inherited from `-P`/`-p`) |
-| `--funcs '...'` | Funcs-engine args |
-| `--lib` | Enable library-load tracing (accepts shared `-o`/`-v`/`-q` options) |
-| `--dump '...'` | Dump-engine args (batch: runs an on-exit rescan, not a live stream) |
-| `--correlate '...'` | Correlate-engine args (needs at least one `-e`/`-F`, same as standalone) |
+| `-P PACKAGE` / `-p PID[,...]` | Attach target (shared by every engine) |
+| `-o PREFIX` | Writes `<prefix>.syscalls.jsonl`, `<prefix>.funcs.jsonl`, `<prefix>.lib.jsonl` |
+| `-e SPEC` / `-F FILE` | Probe spec (repeatable); routed by `KIND:` prefix — `syscall:NAME`/`lib:PATTERN` → syscalls, `funcs:MODULE!FUNC`/unprefixed → funcs. A `-F` file may carry both kinds and enable both engines. `mod:` is not a trace engine. |
+| `-l PATTERN` | Syscalls library selector, equivalent to `-e 'lib:PATTERN'` |
+| `-a` / `-s LIST` / `-x LIST` | Syscalls-only: capture-all / allowlist / denylist; each enables `syscalls` |
+| `-S` / `-c` | Funcs-only: resolve-syms mode / caller-only; each enables `funcs` |
+| `--snapshot` / `--no-snapshot` | Stack snapshots, broadcast to whichever of syscalls/funcs is enabled |
+| `--lib` | Enable library-load tracing (no spec of its own) |
 | `-A ACTIVITY` | Override launch activity component |
+| `-v` / `-q` / `-b MB` / `-Q MB` | Shared verbosity/buffer flags, broadcast to every enabled engine (`-b`/`-Q`: syscalls+funcs only, `lib` has neither) |
 
-`-P`/`-p`, `-A`, and `-o` must come *before* the `--syscalls`/`--funcs`/`--lib`/
-`--dump`/`--correlate` sections.
+At least one engine must end up enabled — via a unique flag, a routed spec, or
+`--lib`. `-P`/`-p`, `-A`, and `-o` can appear anywhere on the command line
+(no ordering requirement — there are no sections left to come before).
 
 ## Gotchas
 

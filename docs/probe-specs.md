@@ -149,7 +149,7 @@ ares dump     -P com.example.app -F myapp.spec -o dump.jsonl       # reads the l
 ```
 
 Real examples: `specs/common-file.spec` and `specs/common-network.spec` mix `funcs:` lines
-with `syscall:` lines. `workspace/rasp-checks.spec` mixes all three kinds to drive a whole
+with `syscall:` lines. `ARES-Detector/sim/rasp-checks.spec` mixes all three kinds to drive a whole
 `ares trace` run from one file.
 
 ## Flag reference

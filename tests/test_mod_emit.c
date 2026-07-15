@@ -327,11 +327,7 @@ int main(void)
     fe.ts_ns  = 100000000009ULL;
     strncpy(fe.comm, "droploader", TASK_COMM_LEN - 1);
     fe.start = 0x7f0000000000ULL;
-    fe.size  = 4096;
-
-    j.len = 0;
-    mod_emit_fileless_detect(&j, &fe);
-    CHECK_HAS(j, "\"type\":\"fileless_detect\"",     "fileless_detect type");
+    CHECK_HAS(j, ""/s/p31"]", "exfil_detect truncated -> array capped at ring size (slot 31 is the last element)");
     CHECK_HAS(j, "\"pid\":9300",                    "fileless_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_detect ts_ns");
     CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_detect comm");

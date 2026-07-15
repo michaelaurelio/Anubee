@@ -49,13 +49,15 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 
 // {"type":"massdelete_detect","pid":N,"comm":"..","touch_count":N,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
-//  "manage_external_storage":true|false|null}
+//  "manage_external_storage":true|false|null[,"paths":["..",...]]}
 // distinct_estimate: caller-computed via burst_distinct_count (keeps this
 // builder free of that logic). manage_ext_storage is tri-state: 1 = granted
 // -> true, 0 = checked and not granted -> false, negative = unknown
-// (package unresolved, never checked) -> null.
+// (package unresolved, never checked) -> null. paths: only present when
+// verbose is set; exactly touch_count entries (complete, not a sample --
+// RING_LEN > THRESHOLD guarantees the ring never wraps before emission).
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
-                                int distinct_estimate, int manage_ext_storage);
+                                int distinct_estimate, int manage_ext_storage, int verbose);
 
 // {"type":"exfil_detect","pid":N,"comm":"..","bytes_sent":N,"window_ms":N,
 //  "sample_path":"..","dest":".."|null}

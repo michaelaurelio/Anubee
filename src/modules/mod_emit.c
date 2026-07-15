@@ -137,7 +137,7 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
 }
 
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
-                                int distinct_estimate, int manage_ext_storage)
+                                int distinct_estimate, int manage_ext_storage, int verbose)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");         jb_s(j, trace_type_name(TRACE_MASSDELETE_DETECT)); jb_c(j, '"');
@@ -153,6 +153,14 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
         jb_s(j, "null");
     else
         jb_s(j, manage_ext_storage ? "true" : "false");
+    if (verbose) {
+        jb_s(j, ",\"paths\":[");
+        for (int i = 0; i < (int)e->touch_count && i < MASSDELETE_DETECT_RING_LEN; i++) {
+            if (i) jb_c(j, ',');
+            jb_c(j, '"'); jb_esc(j, e->paths[i]); jb_c(j, '"');
+        }
+        jb_c(j, ']');
+    }
     jb_c(j, '}');
 }
 

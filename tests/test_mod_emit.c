@@ -17,7 +17,7 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
                            unsigned categories, const char *const *flag_strs, int n_flags);
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
-                                int distinct_estimate, int manage_ext_storage);
+                                int distinct_estimate, int manage_ext_storage, int verbose);
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str);
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
@@ -236,31 +236,44 @@ int main(void)
     rb.h.tid  = 9000;
     rb.ts_ns  = 100000000006ULL;
     strncpy(rb.comm, "malware", TASK_COMM_LEN - 1);
-    rb.touch_count = 20;
+    rb.touch_count = 3;
     rb.window_ms   = 3500;
-    strncpy(rb.sample_path, "/sdcard/DCIM/photo1.jpg.locked", sizeof(rb.sample_path) - 1);
+    strncpy(rb.paths[0], "/sdcard/DCIM/photo1.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.paths[1], "/sdcard/DCIM/photo2.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.paths[2], "/sdcard/DCIM/photo3.jpg.locked", FILE_PATH_LEN - 1);
+    strncpy(rb.sample_path, "/sdcard/DCIM/photo3.jpg.locked", sizeof(rb.sample_path) - 1);
 
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, 1);
+    mod_emit_massdelete_detect(&j, &rb, 3, 1, 0);
     CHECK_HAS(j, "\"type\":\"massdelete_detect\"",  "massdelete_detect type");
     CHECK_HAS(j, "\"pid\":9000",                   "massdelete_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000006",         "massdelete_detect ts_ns");
     CHECK_HAS(j, "\"comm\":\"malware\"",           "massdelete_detect comm");
-    CHECK_HAS(j, "\"touch_count\":20",             "massdelete_detect touch_count");
-    CHECK_HAS(j, "\"distinct_estimate\":15",       "massdelete_detect distinct_estimate");
+    CHECK_HAS(j, "\"touch_count\":3",              "massdelete_detect touch_count");
+    CHECK_HAS(j, "\"distinct_estimate\":3",        "massdelete_detect distinct_estimate");
     CHECK_HAS(j, "\"window_ms\":3500",             "massdelete_detect window_ms");
-    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo1.jpg.locked\"", "massdelete_detect sample_path");
+    CHECK_HAS(j, "\"sample_path\":\"/sdcard/DCIM/photo3.jpg.locked\"", "massdelete_detect sample_path");
     CHECK_HAS(j, "\"manage_external_storage\":true", "massdelete_detect manage_external_storage true");
+    { char tmp[4096]; int n = j.len < 4095 ? (int)j.len : 4095; memcpy(tmp, j.b, n); tmp[n]=0;
+      checks++;
+      if (strstr(tmp, "\"paths\":")) { failures++; printf("  FAIL: paths emitted when verbose=0\n    in: %s\n", tmp); }
+    }
 
     // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE checked, not granted -----
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, 0);
+    mod_emit_massdelete_detect(&j, &rb, 3, 0, 0);
     CHECK_HAS(j, "\"manage_external_storage\":false", "massdelete_detect manage_external_storage false");
 
     // ---- massdelete_detect: MANAGE_EXTERNAL_STORAGE unknown (pkg unresolved) -
     j.len = 0;
-    mod_emit_massdelete_detect(&j, &rb, 15, -1);
+    mod_emit_massdelete_detect(&j, &rb, 3, -1, 0);
     CHECK_HAS(j, "\"manage_external_storage\":null", "massdelete_detect manage_external_storage null");
+
+    // ---- massdelete_detect: verbose=1 includes the full paths array -----------
+    j.len = 0;
+    mod_emit_massdelete_detect(&j, &rb, 3, 1, 1);
+    CHECK_HAS(j, "\"paths\":[\"/sdcard/DCIM/photo1.jpg.locked\",\"/sdcard/DCIM/photo2.jpg.locked\",\"/sdcard/DCIM/photo3.jpg.locked\"]",
+              "massdelete_detect verbose=1 -> full paths array");
 
     // ---- exfil_detect: full event, destination known -------------------------
     struct exfil_detect_event eb = {0};

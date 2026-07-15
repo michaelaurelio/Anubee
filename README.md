@@ -119,7 +119,7 @@ If it takes longer than ~300ms you will see it:
 
 ```
 [drain:syscalls] finishing 8,192 queued events (already-written records are safe) - do not interrupt
-[drain:syscalls] ████████░░░░░░░░  47%  (3,850/8,192)  ~1m12s left
+[drain:syscalls] ███████░░░░░░░░░  47%  (3,120/8,192)  ~1m12s left
 [drain:syscalls] done: 8,192 events in 2m31s
 ```
 

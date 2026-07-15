@@ -68,8 +68,11 @@ int main(void)
     // output of every engine's console, so the sticky-line path must be inert
     // until a bar is actually set.
     {
-        const char *op = "/tmp/ares_ho_out.txt";
-        const char *ep = "/tmp/ares_ho_err.txt";
+        char op[] = "/tmp/ares_ho_out_XXXXXX";
+        char ep[] = "/tmp/ares_ho_err_XXXXXX";
+        int ofd = mkstemp(op), efd = mkstemp(ep);
+        if (ofd < 0 || efd < 0) { perror("mkstemp"); return 1; }
+        close(ofd); close(efd);
 
         int so = dup(STDOUT_FILENO), se = dup(STDERR_FILENO);
         FILE *of = freopen(op, "w", stdout);
@@ -90,6 +93,7 @@ int main(void)
 
         char *out = slurp(op);
         char *err = slurp(ep);
+        if (!out || !err) { fprintf(stderr, "slurp failed\n"); return 1; }
 
         CHECK_HAS(out, "plain\n", "sticky: stdout keeps plain line");
         CHECK_HAS(out, "event\n", "sticky: stdout keeps event line");

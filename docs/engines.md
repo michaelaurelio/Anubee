@@ -205,8 +205,8 @@ hashing them would report a difference for every library on the device. Each
 `modcmp` record's `state` is one of `match` (identical to disk), `differ` (the
 unpacking / self-modification signal), `nofile` (no disk backing), `apk` (an
 APK-embedded module, but no stored member starts at the observed offset), or
-`unreadable` (a short/failed `/proc/<pid>/mem` read, a bad ELF header, or an
-unusable phdr table - never reported as `differ`, since a partial read hashes
+`unreadable` (a short/failed `/proc/<pid>/mem` read, a bad ELF header, an
+unusable phdr table, or a failed allocation - never reported as `differ`, since a partial read hashes
 wrong and a false "modified" verdict on a clean library would destroy the
 signal's only value).
 

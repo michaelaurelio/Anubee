@@ -3,9 +3,7 @@
 // dump.skel.h and cannot link host-side, so the rules live in a pure unit -
 // same split as trace_args.c / tests/test_trace_args.c.
 #include "dump/dump_args.h"
-#include <assert.h>
 #include <stdio.h>
-#include <string.h>
 
 static int checks = 0, failures = 0;
 #define OK(t, msg) do { checks++;                                        \

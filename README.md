@@ -106,32 +106,6 @@ make device-test     # on-device smoke: pushes the binary, asserts each capabili
 
 ---
 
-## Stopping a trace
-
-Press Ctrl-C **once**, then wait.
-
-The tracer does not stop instantly. A worker thread is still holding queued
-events that have not been written yet, and it finishes them before exit. With
-`--snapshot` that is real work - every queued snapshot is a full CFI unwind - so
-on a busy run the wait can be seconds to minutes.
-
-If it takes longer than ~300ms you will see it:
-
-```
-[drain:syscalls] finishing 8,192 queued events (already-written records are safe) - do not interrupt
-[drain:syscalls] ███████░░░░░░░░░  47%  (3,120/8,192)  ~1m12s left
-[drain:syscalls] done: 8,192 events in 2m31s
-```
-
-The count is the **backlog** - what the worker has not caught up on. Records
-already written to your `-o` file are safe and are not part of it.
-
-A second Ctrl-C aborts immediately and throws away every event still queued,
-plus the end-of-run coverage and summary records. It will say so when you do it.
-That is the escape hatch, not the normal path: one Ctrl-C, then wait.
-
----
-
 ## Limitations
 
 - **arm64 / ELF64 only**; no x86 targets. `syscalls` has a best-effort

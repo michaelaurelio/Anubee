@@ -160,6 +160,20 @@ ares dump -d /data/local/tmp com.example.app 'libpacked.so'
 
 # Catch a randomized-name library the moment it maps:
 ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
+
+# Snapshot an already-running process's currently-mapped modules right away -
+# a pure /proc read, no BPF skeleton, no attach, nothing injected into the
+# target at all:
+ares dump -p 12345 -d /data/local/tmp --now 'libpacked.so'
+
+# Select by exact load address instead of by name - immune to a library that
+# randomizes its on-disk name per run, which defeats -l by construction:
+ares dump -p 12345 -d /data/local/tmp --now --base 0x7281a0000
+
+# Compare a module's live executable memory against its on-disk baseline
+# instead of dumping (writes modcmp records, no .so files); --base also
+# reaches an APK-embedded library, which -l cannot select at all:
+ares dump -p 12345 --now --check --base 0x7281a0000 -o check.jsonl
 ```
 
 | Flag | Meaning |
@@ -168,12 +182,41 @@ ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
 | `-A ACTIVITY` | Override launch activity component |
 | `-d DIR` | Output directory (default: current dir) |
 | `-l PATTERN` | Library basename pattern to dump (glob/substring); repeatable, OR'd |
+| `--base ADDR` | Select a module by its exact load base (hex) instead of by name; repeatable, cap 64. OR'd with `-l` |
 | `-F FILE` | Spec file; a `lib:` line supplies `PATTERN` when none given positionally |
 | `--on-map` | Dump the instant a matching library maps (default: dump on exit, post-decryption) |
+| `--now` | Requires `-p`. Rescan the target's already-mapped modules via a pure `/proc` read and exit 0 - no BPF skeleton, attach, or ring buffer at all |
+| `--check` | Requires `--now`. Compare each selected module's executable memory against its on-disk baseline instead of dumping; emits `{"type":"modcmp",...}` records, writes no `.so` files |
 | `--raw` | Emit the raw phdr-fixed image, skip ELF rebuild |
 | `-q` | Suppress progress chatter |
 
 Output filename: `<name>.<pid>.<base>.so`.
+
+`--now` exists because the default (event-driven) triggers only ever learn
+which pids to rescan from a library-map event: attaching `-p` to a process
+whose libraries are already mapped generates no such event, so dump-on-exit
+rescans nothing and, absent `--now`, waits for Ctrl-C indefinitely. `--now` is
+also strictly quieter than the (already injectionless) default - it attaches
+nothing to the target process at all.
+
+`--check` hashes only `PT_LOAD` segments with the `PF_X` flag - `.data` /
+`.got` / `.data.rel.ro` are rewritten by the dynamic linker on every load, so
+hashing them would report a difference for every library on the device. Each
+`modcmp` record's `state` is one of `match` (identical to disk), `differ` (the
+unpacking / self-modification signal), `nofile` (no disk backing), `apk` (an
+APK-embedded module, but no stored member starts at the observed offset), or
+`unreadable` (a short/failed `/proc/<pid>/mem` read, a bad ELF header, or an
+unusable phdr table - never reported as `differ`, since a partial read hashes
+wrong and a false "modified" verdict on a clean library would destroy the
+signal's only value).
+
+**APK-embedded libraries:** for an `extractNativeLibs=false` app (the modern
+AGP default), every embedded `.so` maps straight out of `base.apk`. `-l`'s
+selector only ever sees the raw `/proc/<pid>/maps` path, which for such an app
+is `base.apk` for every embedded library - it has no knowledge of the
+library's resolved name, so it cannot select one. `--base` is the only
+selector that reaches such a module, and the emitted `modcmp` record's
+`"module"` field then reads `"base.apk"`, not the library's name.
 
 ## `trace`: combined runner (loud if `funcs` is enabled)
 

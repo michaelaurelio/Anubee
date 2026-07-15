@@ -85,10 +85,8 @@ device-verified (see Resolved/Done). What remains is breadth, not a new wall:
   (`scripts/nterp-oracle/`) now hooks `open64`/`__openat` (openat ground-truth 0→80) and
   scores a 3-way trust split; the ShadowFrame authoritative path measured **~89.5% precision
   vs ART StackVisitor** (near-100% modulo `(syscall,path)` join noise), the uncorroborated
-  nterp fallback fired 0× and is now flagged with a trailing `?`. See
-  `research/2026-07-02-nterp-precision-oracle-findings.md` Result 6. Adding rows per
-  device/ART build is now one-row-per-device. Spec/plan:
-  `docs/superpowers/specs/2026-07-02-buildid-unification-design.md`.
+  nterp fallback fired 0× and is now flagged with a trailing `?`. Adding rows per
+  device/ART build is now one-row-per-device.
 - **Recall bound.** nterp chain recall is bounded by the frozen snapshot window;
   frames spilled past the window aren't named. Precision is favored over recall
   (uncorroborated candidates are dropped).
@@ -103,14 +101,11 @@ symbol path). The genuine method-index→name path is parked:
 - **OAT/ODEX native PC → Java method (parked).** App `.odex`/`.oat` AOT code is
   method-index-keyed, not ELF symbols; resolving a PC needs real OAT parsing
   (oatdump-class, **ART-version-coupled** — the main risk). The Phase-2a DEX core
-  (`src/common/dex.{c,h}`, host-tested) stays valuable for these paths. Specs:
-  `docs/superpowers/specs/2026-06-23-jit-named-cache-symbolization-design.md`,
-  `docs/superpowers/specs/2026-06-24-dex-method-resolver-core-design.md`.
+  (`src/common/dex.{c,h}`, host-tested) stays valuable for these paths.
 - **Phase 2c/2d — PARKED by 2b.** On A15/AOT, captured `classes.vdex+0x..` offsets
   land in DEX *data*, not `code_item`s (FP-unwinder mis-captures, not `dex_pc`s), so
   a vdex DEX-image locator (2c) would feed the resolver garbage and the symbolize
-  wiring (2d) has nothing valid to name. Evidence:
-  `docs/superpowers/research/2026-06-24-vdex-dex-frame-spike-findings.md`.
+  wiring (2d) has nothing valid to name.
 
 ### CR2 — `syscalls` library attribution is "presence on stack," not "issued by"
 
@@ -508,8 +503,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 - **`mod` cross-analyzer incident correlator — open, now unblocked.** Every
   mod analyzer event carries a real `ts_ns` timestamp as of the
-  2026-07-13 event-timestamps change (see
-  `docs/superpowers/specs/2026-07-13-mod-event-timestamps-design.md`), which
+  2026-07-13 event-timestamps change, which
   was the prerequisite blocker for this. Next step: a tool (likely
   host-side, in `tools/`) that reads a `-o` JSONL file from a multi-`-m` run,
   groups events by `(pid, time window)` using `ts_ns`, and fuses matches
@@ -1391,8 +1385,7 @@ is in DOCUMENTATION.md and the referenced specs.
   into throwaway copies and asserts the gate flags both, so it can't rot to a
   vacuous pass. `make check-firewall` + a CI step (after the cross-build) run
   it every PR. Section match is prefix-anchored to avoid the `kprobe/uprobe_mmap`
-  grep-trap CR1 called out. Spec/plan:
-  `docs/superpowers/{specs/2026-07-05-firewall-gate-design.md,plans/2026-07-05-firewall-gate.md}`.
+  grep-trap CR1 called out.
 
 - **CR5 - per-run coverage-health record.** Every degradation site (truncated
   32 KB snapshot, blind CFI stop, ring/queue drop, unknown ART build, stack-
@@ -1419,8 +1412,7 @@ is in DOCUMENTATION.md and the referenced specs.
   validator without recompiling, then bake into `k_table`. Reads-only (own-process file); no
   target write. Host-tested (parse valid/missing/unknown/whitespace); device-verified on apex
   `370549100` (override note fires, app interp methods named identically to the compiled row;
-  bad-path negative ignores + still names via `k_table`). Spec/plan:
-  `docs/superpowers/{specs/2026-07-02-art-offsets-override-design.md,plans/2026-07-02-art-offsets-override.md}`.
+  bad-path negative ignores + still names via `k_table`).
 
 - **#3-A — BuildID unification of managed-frame offset tables.** The nterp and
   ShadowFrame naming paths now resolve their version-coupled offsets through one
@@ -1436,9 +1428,7 @@ is in DOCUMENTATION.md and the referenced specs.
   the neutral app's own interpreted methods named, BuildID gate resolves). Onboarding
   a new device is now one `k_table` row. Remaining #3 breadth tracked under the CFI
   "generalize beyond one ART build" item: (B) on-device row-confirm helper, (C) formal
-  precision oracle closure. Spec/plan:
-  `docs/superpowers/specs/2026-07-02-buildid-unification-design.md`,
-  `docs/superpowers/plans/2026-07-02-buildid-unification.md`.
+  precision oracle closure.
 
 - **BLD1 — BPF→skeleton→binary dependency graph reconnected.** Replaced the
   hand-maintained plain-header prerequisite lists (which missed shared headers like
@@ -1547,7 +1537,7 @@ is in DOCUMENTATION.md and the referenced specs.
   Java (`boot.oat!android.os.BinderProxy.transact`, full `…→ActivityThread.main` chains;
   ~95 crossings on deskclock). Blast radius beyond CFI: symbol naming also improved for
   gapped libs. Diagnostic instrumentation commits: `cd0c628`, `d861340`, `275d3a2`,
-  `8b35511`. Spec: `docs/superpowers/specs/2026-06-29-cfi-misstep-fix-module-base-design.md`.
+  `8b35511`.
 
 - **PAC `negate_ra_state` — device-verified.** ART apex libs (`libart`, `libjavacore`,
   `libnativeloader`, `libartbase`, `libdexfile`) are PAC-built and emit
@@ -1557,8 +1547,7 @@ is in DOCUMENTATION.md and the referenced specs.
   row state through remember/restore), `655314f` (PAC-strip recovered RA in `cfi_step`),
   `63f1570` (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on a real RASP-protected
   target: `CFI_RUN_FAIL` **167/201 → 0**; `art_jni_trampoline` crossings **59 → 131**;
-  reached-managed-frame **21 → 74**. Re-measure:
-  `docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
+  reached-managed-frame **21 → 74**.
 
 ### 2026-06-29
 

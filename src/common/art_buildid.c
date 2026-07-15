@@ -6,8 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>      // getenv, strtoull
 
-// Known ART builds. Offsets are spike-verified; see
-// docs/superpowers/research/2026-07-02-managed-stack-walk-spike-findings.md.
+// Known ART builds. Offsets are spike-verified against a live ART StackVisitor.
 static const struct { const char *id; struct art_offsets off; } k_table[] = {
     { "1f156fc62660d075a8d675db850b95d5",
       { .tls_thread_slot = 0x38, .managed_stack = 0xA8, .ms_link = 0x08,

@@ -6,8 +6,7 @@
 // writing it to disk (e.g. NexusRoute's obfuscated native-library-via-JNI
 // handoff stage) -- not DexClassLoader/DEX loading, which executes through
 // ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
-// is mmap-only, no mprotect/memfd coverage (parked, see
-// docs/superpowers/specs/2026-07-12-mod-fileless-detect-design.md).
+// is mmap-only, no mprotect/memfd coverage (parked).
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

@@ -451,8 +451,7 @@ done 2026-06-29), **CFI-misstep** (module_base gapped walk-back, done 2026-06-30
 `73a9ceb`, `e8fd9e2`), and **PAC `negate_ra_state`** (done 2026-06-30 — commits `c905f78`,
 `e2e026a`, `655314f`, `63f1570`). On a real RASP-protected target app:
 `CFI_RUN_FAIL` **167/201 → 0**; `art_jni_trampoline` crossings **59 → 131**;
-reached-managed-frame **21 → 74**. Full re-measure:
-`docs/superpowers/research/2026-06-30-cfi-pac-fix-remeasure-findings.md`.
+reached-managed-frame **21 → 74**.
 
 The **nterp interpreter-frame naming wall is resolved**: the snapshot-scan
 locator (`nterp_name`, `src/common/art_nterp.c`) corroborates each `ArtMethod*` candidate

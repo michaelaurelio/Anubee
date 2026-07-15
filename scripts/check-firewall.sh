@@ -2,8 +2,7 @@
 # CR1 detectability-firewall gate. Proves, off the compiled capabilities.c
 # table (via build/capdump), that quiet BPF objects carry no uprobe/uretprobe
 # program section and loud ones do (Check A), and that only loud-owned engine
-# objects reference bpf_program__attach_uprobe (Check B, Task 3). See
-# docs/superpowers/specs/2026-07-05-firewall-gate-design.md.
+# objects reference bpf_program__attach_uprobe (Check B, Task 3).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

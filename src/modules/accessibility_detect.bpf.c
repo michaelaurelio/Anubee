@@ -4,9 +4,8 @@
 // abuse (overlay/ATS fraud, screen reading, security-prompt bypass) is the
 // dominant technique across current Android banking trojans (Mamont, Hook,
 // Anatsa, ToxicPanda, RatOn, TrickMo), and it's implemented over Binder IPC.
-// v1 is a coarse volume signal only -- no transaction-code decode (parked,
-// see docs/superpowers/specs/2026-07-12-mod-accessibility-detect-design.md). Userspace
-// classification: src/modules/accessibility_detect_classify.c.
+// v1 is a coarse volume signal only -- no transaction-code decode (parked).
+// Userspace classification: src/modules/accessibility_detect_classify.c.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

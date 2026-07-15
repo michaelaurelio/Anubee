@@ -41,6 +41,48 @@ int main(void)
     dump_emit_module(&j, "lib\"evil\".so", "/tmp/out/lib\"evil\".so", 0x10ULL, 1, 0);
     HAS(j, "\\\"evil\\\"", "dump escaped quotes in path");
 
+    // --- modcmp: the memory-vs-disk comparison record (dump --check) ---
+    j.len = 0;
+    dump_emit_modcmp(&j, "libsentinel.so", "/data/app/~~x==/lib/arm64/libsentinel.so",
+                     0x7281a0000ULL, 25659, "differ",
+                     "aaaabbbbccccddddeeeeffff00001111222233334444555566667777888899990",
+                     "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff");
+    HAS(j, "\"type\":\"modcmp\"",       "modcmp type");
+    HAS(j, "\"module\":\"libsentinel.so\"", "modcmp module");
+    HAS(j, "\"base\":\"0x7281a0000\"",  "modcmp base hex");
+    HAS(j, "\"pid\":25659",             "modcmp pid");
+    HAS(j, "\"state\":\"differ\"",      "modcmp state");
+    HAS(j, "\"mem_sha256\":\"aaaabbbb", "modcmp mem digest");
+    HAS(j, "\"file_sha256\":\"11112222", "modcmp file digest");
+
+    // A clean library.
+    j.len = 0;
+    dump_emit_modcmp(&j, "libc.so", "/apex/com.android.runtime/lib64/bionic/libc.so",
+                     0x7000000ULL, 25659, "match", "ab", "ab");
+    HAS(j, "\"state\":\"match\"", "modcmp match state");
+
+    // No disk backing: both digests are null, NOT empty strings - there is no
+    // baseline to hash, and "" would read as a real (wrong) digest.
+    j.len = 0;
+    dump_emit_modcmp(&j, "[anon:dalvik]", "[anon:dalvik]", 0x48000000ULL, 25659,
+                     "nofile", NULL, NULL);
+    HAS(j, "\"state\":\"nofile\"",    "modcmp nofile state");
+    HAS(j, "\"mem_sha256\":null",     "modcmp nofile mem null");
+    HAS(j, "\"file_sha256\":null",    "modcmp nofile file null");
+
+    // A short /proc/<pid>/mem read must NEVER be reported as differ: the memory
+    // digest is meaningless, so it is null and the state says so.
+    j.len = 0;
+    dump_emit_modcmp(&j, "libfoo.so", "/tmp/libfoo.so", 0x10ULL, 7,
+                     "unreadable", NULL, "cd");
+    HAS(j, "\"state\":\"unreadable\"", "modcmp unreadable state");
+    HAS(j, "\"mem_sha256\":null",      "modcmp unreadable mem null");
+
+    // JSON-significant chars in the module name escape.
+    j.len = 0;
+    dump_emit_modcmp(&j, "lib\"q\".so", "/tmp/lib\"q\".so", 0x20ULL, 8, "match", "a", "a");
+    HAS(j, "\\\"q\\\"", "modcmp escaped quotes");
+
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

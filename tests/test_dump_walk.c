@@ -80,11 +80,23 @@ int main(void)
     CHECK(gotf == 0, "failing callbacks count zero successes");
     CHECK(rf.n >= 1, "but the walker still visited the modules");
 
-    // --- a callback claiming a huge covered range suppresses later modules ---
-    // Proves the coverage-range skip is wired: one module claiming the whole
-    // address space must stop any further callback.
+    // --- the covered-range skip suppresses candidates inside a claimed range ---
+    // This needs >= 2 DISTINCT bases to mean anything. With a single matching
+    // module (libc's segments share one load base) the done_bases dedup alone
+    // explains "one callback", and this check would pass even against a walker
+    // with the coverage skip deleted. Select every file-backed mapping instead -
+    // "/" is a substring of any real path - so several distinct bases are live.
+    const char *anypat[] = { "/" };
+    struct dump_sel broad = { .pats = anypat, .npat = 1 };
+    struct rec rb = { 0 };
+    dump_walk_pid_modules(self, &broad, rec_cb, &rb);
+    CHECK(rb.n >= 2, "the broad selector really does see several distinct modules");
+
+    // Maps are address-sorted ascending, so the first module claiming half the
+    // address space covers every later candidate. Their bases are all distinct,
+    // so done_bases cannot suppress them - only the coverage-range skip can.
     struct rec rc = { .claim_end = ~0ULL / 2 };
-    dump_walk_pid_modules(self, &sel, rec_cb, &rc);
+    dump_walk_pid_modules(self, &broad, rec_cb, &rc);
     CHECK(rc.n == 1, "a module covering everything suppresses later candidates");
 
     // --- an empty selector matches nothing, and a dead pid returns -1 ---

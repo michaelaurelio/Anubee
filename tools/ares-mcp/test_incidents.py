@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trace_store import TraceStore  # noqa: E402
+import server  # noqa: E402
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "mod_events.jsonl")
 CUSTOM_RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "custom_rules.json")
@@ -93,6 +94,11 @@ def main():
         check(False, "invalid rules_path JSON should raise, not silently fall back")
     except ValueError:
         check(True, "invalid rules_path JSON raises ValueError (json.JSONDecodeError)")
+
+    # MCP tool wiring: same fixture/expectation as the direct TraceStore call above.
+    server.load_trace_structured(FIX)
+    mcp_incidents = server.incidents()
+    check(len(by_pid(mcp_incidents, 100)) == 1, "incidents() MCP tool reaches TraceStore.incidents()")
 
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0

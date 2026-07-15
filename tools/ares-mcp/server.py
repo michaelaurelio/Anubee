@@ -207,6 +207,18 @@ def correlate_spans(top: int = 50) -> list:
 
 
 @mcp.tool()
+def incidents(rules_path: Optional[str] = None, top: int = 50) -> list:
+    """Cross-analyzer incident correlator over the loaded mod-analyzer trace
+    (requires load_trace_structured). Fuses ordered analyzer-type chains
+    (e.g. accessibility_detect -> exfil_detect on the same pid within a time
+    window) into higher-confidence incident records carrying the raw matched
+    events as evidence -- no baked severity, judge from the fields. rules_path
+    optionally points at a custom rule-chain JSON file for this engagement
+    instead of the bundled default (tools/ares-mcp/correlation_rules.json)."""
+    return store.incidents(rules_path, top)
+
+
+@mcp.tool()
 def diff_calls(baseline: str, compare: str, top: int = 50) -> dict:
     """Compare two correlate/funcs structured traces (JSONL from `ares funcs -J`
     or `ares correlate -o`) and report call-sites and in-span syscalls seen ONLY

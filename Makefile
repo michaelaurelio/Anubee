@@ -112,7 +112,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
                $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
-               $(SRC)/common/drain_progress.c
+               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -134,6 +134,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_drops_report ares_install_stop_handler ares_round_pow2 \
                ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
                ares_drain_progress_begin ares_drain_progress_join \
+               sha256_init sha256_update sha256_final_hex \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
@@ -482,6 +483,8 @@ test:
 	fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
+	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode

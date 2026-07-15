@@ -543,8 +543,7 @@ is in DOCUMENTATION.md and the referenced specs.
   fuses ordered two-step analyzer-type chains (`accessibility_detect`/
   `screencapture_detect` → `exfil_detect`, `exfil_detect` →
   `massdelete_detect`, `fileless_detect` → `exfil_detect`) on the same pid
-  within a per-rule time window into evidence-carrying incident records —
-  see `docs/superpowers/specs/2026-07-15-mod-incident-correlator-design.md`.
+  within a per-rule time window into evidence-carrying incident records.
   Checked first: neither ARES-Desktop (never parses `mod` output at all) nor
   `ares-mcp` (only ingested five stale `*_summary` teardown types) already
   did this.

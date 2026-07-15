@@ -92,7 +92,7 @@ static const struct argp_option mod_options[] = {
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity (default: auto-resolve)", 0 },
     { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (also prints console output; -q silences that)", 0 },
     { "module",   'm', "NAME",     0, "Analyzer to run; repeat to run several concurrently", 0 },
-    { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames)", 0 },
+    { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames; massdelete-detect/exfil-detect: full file list)", 0 },
     { "quiet",    'q', NULL,       0, "Suppress per-event console output", 0 },
     { "spec-file", 'F', "FILE", 0, "Load probe specs from a file (one per line, # = comment); a mod: NAME line supplies the analyzer name when none is given positionally", 0 },
     { "list",     'l', NULL,       0, "List available analyzers and exit", 0 },

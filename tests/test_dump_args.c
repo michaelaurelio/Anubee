@@ -36,10 +36,10 @@ int main(void)
     OK(pid_pat, "-p with a pattern");
 
     // --- --base satisfies the selector requirement on its own ---
-    struct dump_trigger base_only = { .ntgt = 1, .nbase = 1 };
+    struct dump_trigger base_only = { .now = 1, .ntgt = 1, .nbase = 1 };
     OK(base_only, "--base alone satisfies the selector requirement");
 
-    struct dump_trigger base_and_pat = { .ntgt = 1, .npat = 1, .nbase = 1 };
+    struct dump_trigger base_and_pat = { .now = 1, .ntgt = 1, .npat = 1, .nbase = 1 };
     OK(base_and_pat, "--base and -l together are an OR, not a conflict");
 
     // --- --now requires -p and forbids -P ---
@@ -52,6 +52,21 @@ int main(void)
     // --- --now and --on-map are mutually exclusive triggers ---
     struct dump_trigger now_onmap = { .now = 1, .on_map = 1, .ntgt = 1, .npat = 1 };
     BAD(now_onmap, "--now with --on-map is rejected");
+
+    // --base is only consumed on the --now path (dump.c threads g_bases into
+    // dump_sel only under g_now); without --now it is silently ignored and the
+    // dump-on-exit path hangs waiting for a map event that never comes. Same
+    // class as --check-requires-now, same guard.
+    struct dump_trigger base_now = { .now = 1, .ntgt = 1, .nbase = 1 };
+    OK(base_now, "--base with --now");
+
+    struct dump_trigger base_no_now = { .ntgt = 1, .nbase = 1 };
+    BAD(base_no_now, "--base without --now is rejected");
+
+    // A base plus a pattern, still no --now: also rejected (the base half is
+    // the problem regardless of the pattern).
+    struct dump_trigger base_pat_no_now = { .ntgt = 1, .nbase = 1, .npat = 1 };
+    BAD(base_pat_no_now, "--base without --now is rejected even with a pattern");
 
     // --- --check requires --now ---
     // dump_run's on-exit path writes .so files and does not consult g_check, so

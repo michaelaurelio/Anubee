@@ -22,6 +22,11 @@ struct dump_trigger {
 //   - at least one selector (-l pattern or --base)
 //   - --now requires -p (-P launches an app; there is nothing to snapshot yet)
 //   - --now and --on-map are mutually exclusive triggers
+//   - --base requires --now: only the --now path threads the parsed bases
+//     into the dump selector, so allowing --base on the dump-on-exit or
+//     on-map paths would match nothing and hang waiting for a map event
+//     that never comes - the same silent-failure class --now was built to
+//     eliminate
 //   - --check requires --now: only the --now path consults it, so allowing
 //     --check on the dump-on-exit path would silently write .so files instead
 //     of comparing - the wrong artifact, with no error

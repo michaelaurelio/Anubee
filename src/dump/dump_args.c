@@ -19,6 +19,8 @@ const char *dump_args_check(const struct dump_trigger *t)
 		return "--now requires -p PID (with -P the app has not launched yet)";
 	if (t->now && t->on_map)
 		return "--now and --on-map are mutually exclusive triggers";
+	if (t->nbase && !t->now)
+		return "--base requires --now";
 	if (t->check && !t->now)
 		return "--check requires --now";
 	return NULL;

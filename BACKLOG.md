@@ -606,13 +606,14 @@ is in DOCUMENTATION.md and the referenced specs.
     path of every production trace. Covered by host unit tests (all pct/ETA/format
     logic is pure + inline in `drain_progress.h`) plus a manual eyeball step in the
     `testing-ares-on-device` skill. Revisit if the rendering ever regresses unseen.
-  - **Flush cadence stays coarse.** `ARES_FLUSH_MASK` is 16,384 records, and
-    stdio's ~4KB buffer is what actually bounds loss - so an aborted run can end
-    either the `.jsonl` or the `.stacks` sidecar on an incomplete line. Consciously
-    accepted: it is a rounding error next to the queued-event loss an abort already
-    costs, and tightening it would add write syscalls to every normal trace. Note
-    that adding a matching explicit flush to `.stacks` at the *current* cadence
-    would buy nothing - the bound is stdio's buffer, not the flush interval.
+  - **Flush cadence stays coarse.** `ARES_FLUSH_MASK` is `0x3fff`, so the explicit
+    flush fires every 16,384th record, and stdio's ~4KB buffer is what actually
+    bounds loss - so an aborted run can end either the `.jsonl` or the `.stacks`
+    sidecar on an incomplete line. Consciously accepted: it is a rounding error
+    next to the queued-event loss an abort already costs, and tightening it would
+    add write syscalls to every normal trace. Note that adding a matching explicit
+    flush to `.stacks` at the *current* cadence would buy nothing - the bound is
+    stdio's buffer, not the flush interval.
   - **ASCII bar fallback not implemented.** The bar uses UTF-8 block glyphs
     (U+2588/U+2591) on the assumption that adb passes bytes through to a UTF-8 host
     terminal. Add an ASCII fallback if a device shell is ever found to mangle them.

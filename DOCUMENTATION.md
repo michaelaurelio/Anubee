@@ -1386,7 +1386,7 @@ sequenceDiagram
     M->>Q: done = 1, cond_signal
     loop every 100ms until used == 0
         M->>Q: read used, popped (under q->m)
-        M->>M: render (only past 300ms) via human_progress_set
+        M->>M: render (only past 300ms): sticky bar on tty, plain line off-tty
         W->>Q: pop record
         W->>W: symbolize + CFI unwind + write jsonl/.stacks
     end
@@ -1405,8 +1405,8 @@ Design points worth knowing:
   big ones (32KB snapshot vs ~150B syscall record), so bytes track real work and
   the ETA is trustworthy; a record-based bar would rocket to 90% then crawl. The
   two therefore advance at different rates by design.
-- **No done-flag, no `pthread_tryjoin_np`.** `done` is set before the loop, so
-  observing `used == 0` already implies the worker is exiting; the plain
+- **No extra completion flag, no `pthread_tryjoin_np`.** `done` is set before the
+  loop, so observing `used == 0` already implies the worker is exiting; the plain
   `pthread_join` that follows blocks for at most one record. Keeps the code
   portable to bionic.
 - **The bar is a sticky line owned by `human_out`.** The worker still prints an

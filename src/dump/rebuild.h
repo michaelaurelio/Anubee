@@ -38,13 +38,16 @@ int dump_sel_matches(const struct dump_sel *sel, const char *path,
                      unsigned long long base);
 
 /* Invoked once per distinct module of `pid` matching the selector. `memfd` is an
- * already-open /proc/<pid>/mem (the walker owns it; do not close it). Return 0
- * on success, -1 on failure - the walker counts successes. Set *covered_end to
- * the module's end vaddr when it is known, so the walker skips later segments of
- * the same module; leave it alone when unknown. */
+ * already-open /proc/<pid>/mem (the walker owns it; do not close it). `file_off`
+ * is the byte offset of the module's base segment within `path` - 0 for an
+ * ordinary .so, and the stored member's offset when `path` is an .apk
+ * (extractNativeLibs=false). Return 0 on success, -1 on failure - the walker
+ * counts successes. Set *covered_end to the module's end vaddr when it is known,
+ * so the walker skips later segments of the same module; leave it alone when
+ * unknown. */
 typedef int (*dump_mod_fn)(int pid, int memfd, unsigned long long base,
-                           const char *path, void *ctx,
-                           unsigned long long *covered_end);
+                           const char *path, unsigned long long file_off,
+                           void *ctx, unsigned long long *covered_end);
 
 /* Walk `pid`'s /proc/<pid>/maps and invoke `fn` once per distinct module
  * matching `sel`, deduplicating by load base and by the covered ranges callbacks

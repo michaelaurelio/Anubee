@@ -28,9 +28,10 @@ struct rec {
 };
 
 static int rec_cb(int pid, int memfd, unsigned long long base, const char *path,
-                  void *ctx, unsigned long long *covered_end)
+                  unsigned long long file_off, void *ctx, unsigned long long *covered_end)
 {
     (void)pid;
+    (void)file_off;
     struct rec *r = (struct rec *)ctx;
     CHECK(memfd >= 0, "callback gets an open memfd");
     if (r->n < MAXREC) {

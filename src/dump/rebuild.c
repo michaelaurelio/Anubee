@@ -29,6 +29,7 @@
 #include "common/pattern_match.h"
 #include "common/emit.h"        // SYM1 Phase 3: struct ares_sink, ares_sink_emit
 #include "common/sha256.h"
+#include "common/sym_apk.h"     // apk_list_sos, struct apk_so_ref
 #include "dump/dump_emit.h"     // dump_emit_module
 
 #include <stdio.h>
@@ -104,6 +105,11 @@ static int read_maps(int pid, struct ares_map_line **out)
 static uint64_t load_base_of(const struct ares_map_line *m, int hit)
 {
 	return m[ares_module_base_idx(m, (size_t)hit)].start;
+}
+
+static uint64_t load_off_of(const struct ares_map_line *m, int hit)
+{
+	return m[ares_module_base_idx(m, (size_t)hit)].off;
 }
 
 static const char *basename_of(const char *p)
@@ -767,6 +773,46 @@ static unsigned char *read_whole_file(const char *path, size_t *len)
 	return b;
 }
 
+// Read the stored .so that begins at byte offset `off` inside `apk`. The APK's
+// central directory gives each stored member's byte range; the module's base
+// segment maps from exactly the member's data_start, so an exact offset match
+// identifies it. Reads only the member, not the whole (often multi-MB) APK.
+// Returns NULL when no member starts at `off`, or on any read failure.
+static unsigned char *read_apk_member(const char *apk, uint64_t off, size_t *len)
+{
+	struct apk_so_ref refs[32];
+	int n = apk_list_sos(apk, refs, 32);
+
+	for (int i = 0; i < n; i++) {
+		if (refs[i].data_start != off)
+			continue;
+		if (refs[i].size == 0 || refs[i].size > (uint64_t)SIZE_MAX)
+			return NULL;
+
+		FILE *f = fopen(apk, "rb");
+		if (!f)
+			return NULL;
+		if (fseeko(f, (off_t)refs[i].data_start, SEEK_SET) != 0) {
+			fclose(f);
+			return NULL;
+		}
+		unsigned char *b = malloc((size_t)refs[i].size);
+		if (!b) {
+			fclose(f);
+			return NULL;
+		}
+		size_t got = fread(b, 1, (size_t)refs[i].size, f);
+		fclose(f);
+		if (got != (size_t)refs[i].size) {
+			free(b);
+			return NULL;
+		}
+		*len = got;
+		return b;
+	}
+	return NULL;
+}
+
 // Compare one module against its backing file and emit a modcmp record. Runs as
 // a dump_walk_pid_modules callback, so the maps walk, the per-base dedup and the
 // memfd lifetime are the walker's problem, not ours.
@@ -776,7 +822,7 @@ static unsigned char *read_whole_file(const char *path, size_t *len)
 // dump_one we never parse the phdrs to learn the module's true extent, so we
 // have no honest range to claim.
 static int dump_check_cb(int pid, int memfd, unsigned long long base, const char *path,
-			 void *ctx, unsigned long long *covered_end)
+			 unsigned long long file_off, void *ctx, unsigned long long *covered_end)
 {
 	struct ares_sink *sink = (struct ares_sink *)ctx;
 	(void)covered_end;
@@ -787,7 +833,7 @@ static int dump_check_cb(int pid, int memfd, unsigned long long base, const char
 	if (del)
 		*del = '\0';
 
-	const char *state;
+	const char *state = NULL;
 	char mem_hex[65] = "", file_hex[65] = "";
 	unsigned char *mem = NULL, *file = NULL;
 	size_t filelen = 0;
@@ -797,21 +843,33 @@ static int dump_check_cb(int pid, int memfd, unsigned long long base, const char
 	// itself a packer tell, so it gets its own state rather than being skipped.
 	if (path[0] != '/' || del) {
 		state = "nofile";
-	// APK-embedded (extractNativeLibs=false): the baseline is a ZIP member, not
-	// the file itself. Resolving it needs the central directory (see BACKLOG).
-	// Report honestly rather than compare against the wrong bytes.
+	// APK-embedded (extractNativeLibs=false, the modern AGP default): the
+	// baseline is a stored ZIP member, not the file itself. The base segment
+	// maps from the member's data_start, so file_off identifies which .so this
+	// is. "apk" now means only that no member starts at that offset - a
+	// compressed (non-stored) member, or an APK we cannot parse - not merely
+	// "this came from an APK".
 	} else if (pl >= 4 && strcmp(path + pl - 4, ".apk") == 0) {
-		state = "apk";
+		file = read_apk_member(path, file_off, &filelen);
+		if (!file)
+			state = "apk";
 	} else if (!(file = read_whole_file(path, &filelen))) {
 		state = "nofile";
-	} else if (!(mem = calloc(1, filelen))) {
-		state = "unreadable";
-	} else if (proc_mem_read(memfd, base, mem, filelen) != filelen) {
-		// Partial read: hashing this would be wrong, and a false "differ" on a
-		// clean library is the one failure this feature cannot afford.
-		state = "unreadable";
-	} else {
-		state = dump_check_image(mem, filelen, file, filelen, mem_hex, file_hex);
+	}
+
+	// Either branch above may have resolved `file` (an ordinary readable path,
+	// or a successfully-identified APK member) without setting `state` - fall
+	// through into the same live-memory comparison for both.
+	if (!state) {
+		if (!(mem = calloc(1, filelen))) {
+			state = "unreadable";
+		} else if (proc_mem_read(memfd, base, mem, filelen) != filelen) {
+			// Partial read: hashing this would be wrong, and a false "differ" on a
+			// clean library is the one failure this feature cannot afford.
+			state = "unreadable";
+		} else {
+			state = dump_check_image(mem, filelen, file, filelen, mem_hex, file_hex);
+		}
 	}
 
 	if (sink && sink->f) {
@@ -854,9 +912,10 @@ struct dump_write_ctx {
 };
 
 static int dump_write_cb(int pid, int memfd, unsigned long long base, const char *path,
-			 void *ctx, unsigned long long *covered_end)
+			 unsigned long long file_off, void *ctx, unsigned long long *covered_end)
 {
 	struct dump_write_ctx *c = (struct dump_write_ctx *)ctx;
+	(void)file_off;
 	uint64_t end = 0;
 	int rc = dump_one(pid, memfd, base, path, c->outdir, &end, c->sink);
 	if (covered_end)
@@ -909,6 +968,7 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 		if (!m[i].path[0])
 			continue;
 		uint64_t base = load_base_of(m, i);
+		uint64_t foff = load_off_of(m, i);
 		if (!dump_sel_matches(sel, m[i].path, base))
 			continue;
 
@@ -926,7 +986,7 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 			done_bases[ndone++] = base;
 
 		unsigned long long end = 0;
-		if (fn(pid, memfd, base, m[i].path, ctx, &end) == 0) {
+		if (fn(pid, memfd, base, m[i].path, foff, ctx, &end) == 0) {
 			ok++;
 			if (end > base && ncov < (int)(sizeof(cov) / sizeof(cov[0]))) {
 				cov[ncov].s = base;

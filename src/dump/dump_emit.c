@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Pure structured-record builder for ares dump (no libbpf deps, so the host
 // test can link it). SYM1 Phase 3: dump previously had no machine channel at
-// all — see workspace/ares-output-asymmetry.md §3.5.
+// all — see docs/sym1-output-asymmetry.md §3.5.
 #include <linux/types.h>
 #include "common/emit.h"
 #include "common/trace_schema.h"

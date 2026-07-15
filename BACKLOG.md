@@ -671,7 +671,7 @@ is in DOCUMENTATION.md and the referenced specs.
   matches `syscalls`' rich record schema and stdout matches `funcs`' grammar,
   uniformly across `syscalls`/`funcs`/`lib`/`correlate`/`dump`/`mod`. Phased,
   11 commits (Phase 0 through 5c), each independently gated and buildable —
-  see `workspace/ares-output-asymmetry.md` for the original gap analysis this
+  see `docs/sym1-output-asymmetry.md` for the original gap analysis this
   closes, and `ares-project/TODO.md` for phase-by-phase notes.
   - **Dual-channel-always** (Phase 1): dropped the old `-o` ⇒ `-q` coupling —
     `-o FILE` now writes JSON *and* prints stdout simultaneously; `-q` is the

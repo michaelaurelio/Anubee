@@ -8,7 +8,7 @@
 //
 // human_detail() generalizes funcs' "         [event]   | " continuation-line
 // prefix so other engines can reuse the same indented-detail-line convention
-// under their own tag word (workspace/ares-output-asymmetry.md §4.4 fix).
+// under their own tag word (docs/sym1-output-asymmetry.md §4.4 fix).
 #ifndef __ARES_COMMON_HUMAN_OUT_H
 #define __ARES_COMMON_HUMAN_OUT_H
 

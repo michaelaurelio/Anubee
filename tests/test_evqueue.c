@@ -71,6 +71,65 @@ int main(void)
     CHECK(ares_evq_pop(&q, out, sizeof(out), &alen) == 0, "empty+done->0");
     ares_evq_destroy(&q);
 
+    // --- pushed/popped accounting (drain progress denominator) ---
+    {
+        struct ares_evq q;
+        CHECK(ares_evq_init(&q, 4096) == 0, "counters: init ok");
+        CHECK(q.pushed == 0 && q.popped == 0, "counters: zero at init");
+
+        CHECK(ares_evq_push(&q, "hello", 5) == 0, "counters: push ok");
+        CHECK(q.pushed == 1, "counters: push increments pushed");
+        CHECK(q.popped == 0, "counters: push leaves popped alone");
+
+        char out[64];
+        size_t sz = 0;
+        q.done = 1;
+        CHECK(ares_evq_pop(&q, out, sizeof out, &sz) == 1, "counters: pop ok");
+        CHECK(sz == 5, "counters: pop size");
+        CHECK(q.pushed == 1 && q.popped == 1, "counters: pop increments popped");
+        CHECK(q.used == 0, "counters: drained");
+        ares_evq_destroy(&q);
+    }
+
+    // --- oversized record: consumes bytes + counts as dropped, never popped ---
+    // Pins the intentional divergence the progress bar relies on: bytes advance
+    // while the record count does not, because the record was never delivered.
+    {
+        struct ares_evq q;
+        CHECK(ares_evq_init(&q, 4096) == 0, "oversized: init ok");
+        char big[1000];
+        memset(big, 'x', sizeof big);
+        CHECK(ares_evq_push(&q, big, sizeof big) == 0, "oversized: push ok");
+        CHECK(q.pushed == 1, "oversized: pushed counted");
+
+        char small[16];
+        size_t sz = 0;
+        q.done = 1;
+        CHECK(ares_evq_pop(&q, small, sizeof small, &sz) == 0,
+              "oversized: pop reports done+empty after draining it");
+        CHECK(q.dropped == 1, "oversized: counted as dropped");
+        CHECK(q.popped == 0, "oversized: NOT counted as popped");
+        CHECK(q.used == 0, "oversized: bytes still consumed");
+        ares_evq_destroy(&q);
+    }
+
+    // --- counters survive ring wrap ---
+    {
+        struct ares_evq q;
+        CHECK(ares_evq_init(&q, 128) == 0, "wrap: init ok");
+        char rec[16];
+        memset(rec, 'z', sizeof rec);
+        char out[64];
+        size_t sz = 0;
+        for (int i = 0; i < 50; i++) {
+            CHECK(ares_evq_push(&q, rec, sizeof rec) == 0, "wrap: push ok");
+            CHECK(ares_evq_pop(&q, out, sizeof out, &sz) == 1, "wrap: pop ok");
+        }
+        CHECK(q.pushed == 50 && q.popped == 50, "wrap: counters exact after wrap");
+        CHECK(q.used == 0, "wrap: empty");
+        ares_evq_destroy(&q);
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

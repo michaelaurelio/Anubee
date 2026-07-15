@@ -16,18 +16,28 @@ struct ares_evq {
     pthread_cond_t  cv;
     int             done;
     unsigned long long dropped; // events discarded (queue full)
+    // Monotonic record counts, mutated only under m. `pushed - popped` is the
+    // pending-record count (exact unless an oversized record is dropped by
+    // ares_evq_pop, which counts `dropped` but not `popped` - unreachable
+    // today, see tests/test_evqueue.c), which drain_progress freezes as its
+    // label denominator at teardown. Not derivable from `used`: records vary
+    // from ~150B (syscall) to 32KB (stack snapshot).
+    unsigned long long pushed, popped;
 };
 
 // Allocate the ring (cap bytes). Returns 0 on success, -1 on malloc failure.
 int  ares_evq_init(struct ares_evq *q, size_t cap);
 
 // Frame [4-byte len][payload] and push. Thread-safe (locks internally).
-// Returns 0 on success; -1 and increments q->dropped if queue is full.
+// Returns 0 on success and increments q->pushed; -1 and increments
+// q->dropped if queue is full.
 int  ares_evq_push(struct ares_evq *q, const void *rec, size_t len);
 
 // Block until a record is available or the queue is done+empty.
-// Pops one record into out (clamped to outcap); sets *actual_len.
-// Returns 1 if a record was popped, 0 if done+empty (worker should exit).
+// Pops one record into out (clamped to outcap); sets *actual_len; increments
+// q->popped (oversized records are drained and counted in q->dropped instead,
+// without returning). Returns 1 if a record was popped, 0 if done+empty
+// (worker should exit).
 int  ares_evq_pop(struct ares_evq *q, void *out, size_t outcap, size_t *actual_len);
 
 // Free the ring buffer and destroy the mutex/cond. Call after joining the consumer.

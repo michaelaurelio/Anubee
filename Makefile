@@ -111,7 +111,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
-               $(SRC)/common/human_out.c $(SRC)/common/target_registry.c
+               $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
+               $(SRC)/common/drain_progress.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -132,6 +133,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_sink_close ares_sink_report \
                ares_drops_report ares_install_stop_handler ares_round_pow2 \
                ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
+               ares_drain_progress_begin ares_drain_progress_join \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
@@ -526,6 +528,8 @@ test:
 	$(BUILD)/test_art_shadow tests/fixtures/sample.dex
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_snapshot_gate.c -o $(BUILD)/test_snapshot_gate
 	$(BUILD)/test_snapshot_gate
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_drain_progress.c -o $(BUILD)/test_drain_progress -lpthread
+	$(BUILD)/test_drain_progress
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_managed_frame.c src/common/managed_frame.c src/common/emit.c -o $(BUILD)/test_managed_frame -lpthread
 	$(BUILD)/test_managed_frame
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps.c src/common/maps.c -o $(BUILD)/test_maps

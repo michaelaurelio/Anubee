@@ -62,6 +62,60 @@ int main(void)
     CHECK_HAS(out, "         [syscall]   | decoded: AT_FDCWD\n",           "human_detail custom tag");
 
     free(out);
+
+    // --- sticky progress line ---
+    // Default (no bar set) must stay byte-identical: this file pins the exact
+    // output of every engine's console, so the sticky-line path must be inert
+    // until a bar is actually set.
+    {
+        char op[] = "/tmp/ares_ho_out_XXXXXX";
+        char ep[] = "/tmp/ares_ho_err_XXXXXX";
+        int ofd = mkstemp(op), efd = mkstemp(ep);
+        if (ofd < 0 || efd < 0) { perror("mkstemp"); return 1; }
+        close(ofd); close(efd);
+
+        int so = dup(STDOUT_FILENO), se = dup(STDERR_FILENO);
+        FILE *of = freopen(op, "w", stdout);
+        FILE *ef = freopen(ep, "w", stderr);
+        (void)of; (void)ef;
+
+        human_progress_set(NULL);          // inert: nothing set
+        out_print("plain\n");
+
+        human_progress_set("BAR1");        // draw
+        out_print("event\n");              // clear, print, redraw
+        human_progress_set(NULL);          // clear
+
+        fflush(stdout); fflush(stderr);
+        dup2(so, STDOUT_FILENO); dup2(se, STDERR_FILENO);
+        close(so); close(se);
+        clearerr(stdout); clearerr(stderr);
+
+        char *out = slurp(op);
+        char *err = slurp(ep);
+        if (!out || !err) { fprintf(stderr, "slurp failed\n"); return 1; }
+
+        CHECK_HAS(out, "plain\n", "sticky: stdout keeps plain line");
+        CHECK_HAS(out, "event\n", "sticky: stdout keeps event line");
+        checks++;
+        if (strstr(out, "\033[") || strstr(out, "\r")) {
+            failures++;
+            printf("  FAIL: sticky: stdout must carry no ANSI/CR\n    got: %s\n", out);
+        }
+        // stderr: BAR1, then clear+redraw around the event line, then final clear.
+        CHECK_HAS(err, "BAR1", "sticky: bar drawn to stderr");
+        CHECK_HAS(err, "\r\033[K", "sticky: bar cleared with CR+EL");
+        checks++;
+        if (strcmp(err, "BAR1\r\033[KBAR1\r\033[K") != 0) {
+            failures++;
+            printf("  FAIL: sticky: exact stderr sequence\n"
+                   "    want: BAR1<CR>ESC[K BAR1<CR>ESC[K\n    got:  %s\n", err);
+        }
+
+        free(out); free(err);
+        remove(op); remove(ep);
+    }
+
     fprintf(stderr, "%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -15,6 +15,14 @@
 // its own handler and let both engines share a single stop flag).
 void ares_install_stop_handler(volatile sig_atomic_t *flag);
 
+// Mark a post-processing drain as in flight. While set, a 2nd SIGINT/SIGTERM
+// writes a one-line loss warning to stderr before _exit(130), so an impatient
+// Ctrl-C states its own cost instead of silently discarding the queue.
+//
+// Set when the drain starts and cleared when it finishes - deliberately NOT
+// gated on the progress UI's 300ms timer, so a fast double-tap still warns.
+void ares_drain_set_active(int on);
+
 // Teardown drop report to stderr. Always prints something so "no message" never
 // means "didn't check":
 //   zero:       "no events dropped"

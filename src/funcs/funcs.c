@@ -39,6 +39,7 @@
 #include "common/stack_snapshot.h"
 #include "common/managed_frame.h"
 #include "common/coverage.h"
+#include "common/drain_progress.h"
 #include "common/art_buildid.h"
 
 // Argument parser module using argp.h
@@ -262,6 +263,7 @@ static unsigned long long  g_stack_count;
 static struct ares_evq g_q;
 static pthread_t       g_worker;
 static int             g_worker_started;
+static struct ares_drain_progress g_dp;   // post-Ctrl-C drain progress (teardown only)
 
 static bool g_quiet = false;
 
@@ -1104,11 +1106,16 @@ void funcs_teardown(void)
     // Join the worker first: it reads target_registry[] and writes g_sink.
     // Freeing links or closing the sink before the join would be a use-after-free.
     if (g_worker_started) {
+        // Under --snapshot every queued snapshot costs a CFI unwind, so this
+        // drain can run for minutes - report progress instead of looking hung,
+        // and warn if a 2nd Ctrl-C throws the rest of the queue away. begin()
+        // must precede done=1: it freezes the backlog it is about to measure.
+        ares_drain_progress_begin(&g_dp, &g_q, "funcs");
         pthread_mutex_lock(&g_q.m);
         g_q.done = 1;
         pthread_cond_signal(&g_q.cv);
         pthread_mutex_unlock(&g_q.m);
-        pthread_join(g_worker, NULL);
+        ares_drain_progress_join(&g_dp, g_worker);
         g_worker_started = 0;
     }
 

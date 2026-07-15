@@ -30,6 +30,7 @@ int ares_evq_init(struct ares_evq *q, size_t cap)
     if (!q->buf) return -1;
     q->cap = cap; q->head = q->tail = q->used = 0;
     q->done = 0; q->dropped = 0;
+    q->pushed = 0; q->popped = 0;
     pthread_mutex_init(&q->m, NULL);
     pthread_cond_init(&q->cv, NULL);
     return 0;
@@ -47,6 +48,7 @@ int ares_evq_push(struct ares_evq *q, const void *rec, size_t len)
     } else {
         q_in(q, &s, 4);
         q_in(q, rec, len);
+        q->pushed++;
         pthread_cond_signal(&q->cv);
         ret = 0;
     }
@@ -68,6 +70,7 @@ int ares_evq_pop(struct ares_evq *q, void *out, size_t outcap, size_t *actual_le
         q_out(q, &sz, 4);
         if (sz <= outcap) {
             q_out(q, out, sz);
+            q->popped++;
             pthread_mutex_unlock(&q->m);
             *actual_len = sz;
             return 1;

@@ -1356,6 +1356,69 @@ never means "didn't check"** - every run states its own coverage explicitly,
 whether clean or degraded, so a partial trace is never mistaken for a complete
 one.
 
+### 7.6 Drain progress (post-Ctrl-C post-processing)
+
+Ctrl-C sets the stop flag and the ring poll loop exits, but the worker thread is
+still draining `ares_evq`. `ares_evq_pop` returns 0 only when `used == 0 && done`,
+so teardown's job is to set `done` and wait. Under `--snapshot` each queued
+snapshot costs an `emit_cfi_backtrace` - a DWARF CFI unwind up to 64 frames plus
+maps lookups and ART naming - so that wait can be minutes.
+
+It used to be silent: every banner (coverage, summary, `wrote N stack snapshots`)
+prints *after* the join, and the `[drops]` ticker is a poll-loop callback that has
+already stopped. A run that looks hung invites a second Ctrl-C, which `_exit(130)`s
+and discards the entire remaining queue.
+
+`src/common/drain_progress.{c,h}` replaces the bare `pthread_join` in
+`syscalls_teardown` / `funcs_teardown`:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant M as Main thread
+    participant W as Worker thread
+    participant Q as ares_evq
+
+    U->>M: Ctrl-C (1st)
+    Note over M: runtime_sig_handler sets *stop=1
+    M->>M: poll loop exits (no producers remain)
+    M->>M: drain_progress_begin: freeze totals, set g_drain_active
+    M->>Q: done = 1, cond_signal
+    loop every 100ms until used == 0
+        M->>Q: read used, popped (under q->m)
+        M->>M: render (only past 300ms): sticky bar on tty, plain line off-tty
+        W->>Q: pop record
+        W->>W: symbolize + CFI unwind + write jsonl/.stacks
+    end
+    M->>W: pthread_join (<= one record)
+    M->>M: clear bar, final line, clear g_drain_active
+    M->>M: coverage record, summary, "wrote N snapshots"
+```
+
+Design points worth knowing:
+
+- **The denominator is exact, not estimated.** By teardown the poll loop has
+  exited, so no producer remains and `q->used` only falls. Holds under `trace`
+  too: it joins every run-thread before any teardown, and tears down sequentially
+  (so two engines' bars never interleave).
+- **Percent is bytes, the label is records.** The expensive records are also the
+  big ones (32KB snapshot vs ~150B syscall record), so bytes track real work and
+  the ETA is trustworthy; a record-based bar would rocket to 90% then crawl. The
+  two therefore advance at different rates by design.
+- **No extra completion flag, no `pthread_tryjoin_np`.** `done` is set before the
+  loop, so observing `used == 0` already implies the worker is exiting; the plain
+  `pthread_join` that follows blocks for at most one record. Keeps the code
+  portable to bionic.
+- **The bar is a sticky line owned by `human_out`.** The worker still prints an
+  event line per record during a non-`-q` drain, so all four printers clear the
+  bar, print, and redraw under the one existing output lock. Inert when no bar is
+  set, so ordinary output is byte-identical.
+- **The 2nd-Ctrl-C warning is `write(2)`, not `fprintf`.** The signal can land on
+  the worker while it holds stderr's `FILE` lock; stdio in a handler could
+  deadlock the abort. Hence a static message with no formatted count.
+- **`-q` does not suppress it.** `-q` governs per-event *stdout*; this is
+  operational status on *stderr*.
+
 ## 8. MCP server (`tools/ares-mcp`, host-side Python)
 
 - `trace_store.py` — two ingest paths. `load()` loads a `type:"syscall"` trace

@@ -195,6 +195,37 @@ test_syscalls_cfi() {
     local stacks; stacks="$(adb shell "su -c 'cat $stacks_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     local mainout; mainout="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
+    # Task 8 drain contract: a single Ctrl-C must complete post-processing, not
+    # truncate it. This run's on-device `timeout -s INT -k 3 $TIMEOUT` sends
+    # exactly one SIGINT (the interactive Ctrl-C path); a 2nd SIGINT would
+    # _exit(130) and throw away the queue plus the end-of-run records - the loss
+    # the drain progress UI exists to warn about, and what this asserts we did
+    # not do.
+    #
+    # Placed HERE, above the sidecar/cfi_stack gates below, on purpose: the
+    # contract is independent of whether --snapshot capture fired, and it only
+    # needs $mainout (populated just above). Downstream of those gates it would
+    # silently never run on a no-snapshot window - a guard that can quietly skip
+    # itself is worse than no guard.
+    #
+    # Asserts syscalls_summary only, not coverage: in syscalls_teardown
+    # ares_coverage_report runs before sysc_emit_summary (src/syscalls/syscalls.c
+    # :1655 then :1659, same g_worker_started block), so a summary record present
+    # already implies coverage was emitted. The coverage record has its own
+    # assertion further down; no need to duplicate it.
+    #
+    # Traffic gate first: sysc_emit_summary early-returns unless
+    # g_sysc_stat_count > 0, so a window that captured nothing has no summary
+    # for a legitimate reason. SKIP that case rather than fail it for the wrong
+    # reason. ("type":"syscall" is json_emit's per-event discriminator; the
+    # closing quote keeps it from matching "syscalls_summary".)
+    if [ "$(grep -c '"type":"syscall"' <<<"$mainout")" -eq 0 ]; then
+        echo "  SKIP: no syscall events captured in this window - drain-contract check needs traffic to be meaningful"
+    else
+        grep -q '"type":"syscalls_summary"' <<<"$mainout" \
+            || { echo "  out: $mainout" >&2; fail "syscalls-cfi: no {\"type\":\"syscalls_summary\"} record after single SIGINT (drain truncated?)"; }
+        echo "PASS: single-SIGINT drain contract held - syscalls_summary present after one SIGINT"
+    fi
     if [ -z "$stacks" ]; then
         echo "  SKIP: no stack sidecar produced in this window (no stack snapshots captured)"
         return

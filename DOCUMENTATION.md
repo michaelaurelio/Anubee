@@ -683,7 +683,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   `am start -S`), using the shared `src/common/lib_trace` probe (mmap/munmap capture +
   `/proc/<pid>/maps` resolver) to track every library mapping. No uprobes — nothing
   written into the target.
-- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-l PATTERN] [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--raw] [-q] [--siblings] [--no-follow-fork]`.
+- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-l PATTERN] [--base ADDR] [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--now] [--check] [--raw] [-q] [--siblings] [--no-follow-fork]`.
   `-l PATTERN` is repeatable (cap 64) and OR'd with the legacy positional `PATTERN`.
   `-F FILE` loads probe specs from a file; every `lib:` line in it supplies a PATTERN
   when none is given via `-l`/positionally, not just the first (`dump_name_matches_any`
@@ -715,6 +715,124 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   - `--on-map`: dumps a library the instant it maps, using `(pid, start)` dedup to
     avoid re-dumping the same mapping. Useful for randomized-name or early-unmap
     libraries.
+- **`--now` (requires `-p`): pure `/proc` snapshot, no BPF at all.** Both prior
+  triggers only ever learn *which* pids to rescan from a library-map event
+  observed through the ring buffer (`note_pid`, `dump.c:135`): the default
+  trigger records a pid the first time it maps anything, and rescans it at
+  Ctrl-C. Attaching `-p` to a process whose libraries are already mapped
+  generates no such event, so `g_pids_n` stays 0, dump-on-exit prints
+  `[dump] no app process mapped anything` and writes zero modules - and, since
+  the default trigger otherwise waits for Ctrl-C indefinitely, a caller that
+  never sends one (e.g. a desktop client's supervised run) hangs until
+  something else kills the process. `dump_pid_modules` was always a pure
+  `/proc/<pid>/maps` + `/proc/<pid>/mem` read that never needed BPF to do its
+  job - the ring buffer existed only for pid *discovery*, and `-p` already
+  supplies the pids directly. So `--now` (`dump_setup`, `src/dump/dump.c`)
+  skips the BPF skeleton, the attach, and the ring buffer entirely: it rescans
+  the `-p` targets' current maps right away and exits 0 instead of waiting for
+  a signal. It is also strictly stealthier than either other trigger - nothing
+  is attached to the target process at all. Mutually exclusive with
+  `--on-map`, and rejected together with `-P` (`dump_args_check`,
+  `src/dump/dump_args.c`): `-P` launches an app fresh, and there is nothing
+  mapped yet to snapshot.
+- **`--base ADDR` (repeatable, cap 64): select a module by exact load base
+  instead of by name.** A `-l` pattern matches the library's mapped *path*; a
+  packer or RASP that randomizes a library's on-disk name per run defeats that
+  by construction. `--base` instead selects whichever module is actually
+  mapped at an address the caller already observed (e.g. from a prior `ares
+  lib` run), so a renamed-per-run library cannot hide from it. `-l` and
+  `--base` OR together in the same invocation (`dump_sel_matches`,
+  `src/dump/rebuild.c`). `dump_parse_base` (`src/dump/dump_args.c`) rejects a
+  value that does not start with a digit before calling `strtoull`, because
+  `strtoull` silently wraps a leading `-` (e.g. `-1`) to `ULLONG_MAX` rather
+  than failing - accepting that would quietly select every executable page in
+  the address space.
+- **`--check` (requires `--now`): compare live memory against the on-disk
+  baseline instead of dumping.** Emits one `{"type":"modcmp",...}` record per
+  selected module (`dump_check_pid_modules` / `dump_check_cb`,
+  `src/dump/rebuild.c`) and writes no `.so` files. Named `--check`, not
+  `--verify`, because the engines are converging on `COMMON_ARGP_OPTIONS`,
+  which gives every engine a `-v`/verbose meaning that would collide with a
+  `--verify` mnemonic. Only `PT_LOAD` segments with the `PF_X` flag are
+  digested (`hash_exec_segments`, `src/dump/rebuild.c`): `.data`, `.got`, and
+  `.data.rel.ro` are rewritten by the dynamic linker on every load (relocation
+  fixups, GOT population), so hashing them would report a difference for
+  every library on the device and the signal would be worthless. The verdict
+  is one of five states:
+  - `match` - the live executable bytes hash identically to the backing file.
+  - `differ` - they do not (the unpacking / self-modification signal).
+  - `nofile` - the module has no disk backing to compare against (a deleted
+    file, or an anonymous mapping).
+  - `apk` - the module is backed by an APK member, but no stored member
+    starts at the observed file offset (a compressed member, or an
+    unparseable APK). This state means only "the baseline did not resolve" -
+    **not** "this module came from an APK" (see the APK resolution bullet
+    below).
+  - `unreadable` - a short or failed `/proc/<pid>/mem` read, a bad ELF64
+    header, an unusable program-header table, or a failed allocation. This
+    state exists so that none of those failure modes can ever be reported as
+    `differ`: a partial read hashes wrong, and a false "modified" verdict on a
+    genuinely clean library would destroy the feature's only value - a
+    security signal that gets reported as compromised has to be trustworthy,
+    or it is worse than no signal at all. `dump_check_image` (`src/dump/rebuild.c`)
+    returns `unreadable` before ever computing a comparison whenever either
+    side cannot be honestly digested.
+- **APK-embedded libraries are supported baselines, not `apk`-state
+  fallbacks.** `extractNativeLibs=false` is the modern AGP default: the app's
+  `.so` files are stored uncompressed inside `base.apk` and mapped straight
+  out of it, never landing on disk as standalone files. `--check` resolves
+  the correct baseline by reading the APK's ZIP central directory
+  (`apk_list_sos`, shared with `ares lib`'s packed-library enumeration) and
+  matching the module's mapped file offset against a stored member's exact
+  `data_start` (`dump_read_apk_member`, `src/dump/rebuild.c`). The `apk` state
+  above is reported only when that lookup fails, not merely because the
+  backing file is an APK.
+- **`-l` cannot select an APK-embedded library at all.** The selector
+  (`dump_sel_matches`) only ever sees the raw `/proc/<pid>/maps` path, which
+  for an `extractNativeLibs=false` app is just `.../base.apk` for every
+  embedded library - it has no knowledge of the library's resolved SONAME.
+  `--base` is the only selector that reaches such a module, and the emitted
+  `modcmp` record's `"module"` field is correspondingly `"base.apk"`, not the
+  library's name: the record identifies the module by base address, not by
+  name.
+- **`DT_TEXTREL` libraries and JIT regions legitimately report `differ`.** A
+  library with text relocations is rewritten in its own executable segments
+  by the dynamic linker at load time (an increasingly rare case on modern
+  Android, but not disallowed); a JIT-generated region is, by definition,
+  written after the fact. Both report `differ` even when nothing hostile
+  happened - `--check` names an observation (the executable bytes changed),
+  not an inference about intent, and there is no way to tell the two apart
+  from the bytes alone.
+
+```mermaid
+flowchart TD
+    A[module found in proc pid maps] --> B{on-disk path? not deleted?}
+    B -- no --> ST_nofile[state: nofile]
+    B -- yes --> C{path ends in .apk?}
+    C -- yes --> D{stored ZIP member at file_off?}
+    D -- no --> ST_apk[state: apk]
+    D -- yes --> E[read proc pid mem for the module's range]
+    C -- no --> F[read the backing file]
+    F -- open/read fails --> ST_nofile
+    F -- ok --> E
+    E -- alloc or read fails/short --> ST_unreadable[state: unreadable]
+    E -- ok --> G[hash PF_X PT_LOAD segments: mem vs file]
+    G -- either side unhashable --> ST_unreadable
+    G -- hashes equal --> ST_match[state: match]
+    G -- hashes differ --> ST_differ[state: differ]
+```
+
+- **Device-verified** (`scripts/device-test.sh`'s `dump-now` tier, commit
+  `e9a8d30`) against the reference app `dev.ares.detector`: `--now --base`
+  exits 0 and rebuilds its APK-embedded library into a loadable `.so`;
+  `--now --check --base` reports `match` for that same library
+  (`libsentinel.so`). `differ` is not exercised on-device by this tier -
+  `libsentinel.so` is an ordinary compiled library that never rewrites its
+  own executable memory (its only `mmap` call is `PROT_READ|PROT_WRITE`, for
+  shared memory; its own `wxscan` code *detects* W^X regions in other
+  processes rather than creating one itself) - so the `differ` path is
+  covered only by the host tests against synthetic images
+  (`tests/test_dump_check.c`).
 - **Rebuild pipeline** (`src/dump/rebuild.c`): reads the raw in-memory image via
   `/proc/<pid>/mem`, fixes program-header `p_offset` fields, captures inter-segment
   gaps, un-applies `DT_RELR` and `RELATIVE` relocations, de-rebases `.dynamic`

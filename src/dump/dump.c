@@ -38,6 +38,7 @@
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
 #include "common/emit.h"           // SYM1 Phase 3: struct ares_sink, ares_sink_open/close/report
 #include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
+#include "dump/dump_args.h"
 #include "rebuild.h"
 
 const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
@@ -49,6 +50,12 @@ static int g_npat = 0;
 static const char *g_outdir  = ".";    // -d: output directory
 static int g_on_map  = 0;              // --on-map: dump at map time, not on exit
 static int g_quiet   = 0;              // -q: suppress progress chatter
+static int g_now;                      // --now: pure /proc snapshot, no BPF
+static int g_check;                    // --check: compare, don't write
+static const unsigned long long *g_bases;
+static int g_nbase;
+static int g_tgt_pids[64];             // -p targets (for --now's direct rescan)
+static int g_ntgt;
 
 // Raw parsed specs (from -F), copied out of dump_setup's local `da` so both
 // the before-run and after-run "ignoring non-lib: spec" warnings can read
@@ -166,6 +173,10 @@ struct dump_args {
     const char *outdir;
     const char *output_file;  // -o: SYM1 Phase 3 manifest JSONL path (NULL = none)
     int on_map;
+    int now;                   // --now: snapshot -p targets, no BPF
+    int check;                 // --check: compare instead of write
+    unsigned long long bases[64];  // --base (repeatable)
+    int nbase;
     int raw;
     int quiet;
     struct target_args tgt;
@@ -175,7 +186,7 @@ struct dump_args {
 
 // Synthetic keys for long-only options (must be > 127 to avoid short-option collision).
 // Use 0x200+ to avoid collision with ARES_KEY_SIBLINGS (0x100) / ARES_KEY_NO_FOLLOW (0x101).
-enum { KEY_ON_MAP = 0x200, KEY_RAW };
+enum { KEY_ON_MAP = 0x200, KEY_RAW, KEY_NOW, KEY_BASE, KEY_CHECK };
 
 static const struct argp_option dump_options[] = {
     { "package",  'P',        "PACKAGE",  0, "App package to launch and dump", 0 },
@@ -184,6 +195,9 @@ static const struct argp_option dump_options[] = {
     { "output",   'o',        "FILE",     0, "Export a {\"type\":\"dump\",...} manifest JSONL record per dumped module (also prints console; -q silences that)", 0 },
     { "lib",      'l',        "PATTERN",  0, "Library basename pattern to dump (glob/substring); repeat for OR", 0 },
     { "on-map",   KEY_ON_MAP, NULL,       0, "Dump the instant a matching library maps (default: dump on exit, post-decryption)", 0 },
+    { "now",      KEY_NOW,    NULL,       0, "Snapshot the -p target's currently-mapped modules immediately and exit (no BPF, no launch)", 0 },
+    { "base",     KEY_BASE,   "ADDR",     0, "Dump the module at this exact load base (hex, 0x-prefixed); repeat for OR. Immune to per-run library renaming", 0 },
+    { "check",    KEY_CHECK,  NULL,       0, "Compare each module's executable memory against its file on disk and emit modcmp records instead of dumping", 0 },
     { "raw",      KEY_RAW,    NULL,       0, "Emit the raw phdr-fixed image, skip ELF rebuild", 0 },
     { "quiet",    'q',        NULL,       0, "Suppress progress chatter", 0 },
     { "spec-file", 'F',       "FILE",     0, "Load probe specs from a file (one per line, # = comment); a lib: line supplies PATTERN when none is given positionally", 0 },
@@ -205,6 +219,17 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         break;
     case 'q': a->quiet    = 1;    break;
     case KEY_ON_MAP: a->on_map = 1; break;
+    case KEY_NOW:   a->now   = 1; break;
+    case KEY_CHECK: a->check = 1; break;
+    case KEY_BASE:
+        if (a->nbase >= 64) {
+            fprintf(stderr, "dump: warning - base cap (64) reached; '%s' ignored\n", arg);
+            break;
+        }
+        if (dump_parse_base(arg, &a->bases[a->nbase]) != 0)
+            argp_error(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
+        a->nbase++;
+        break;
     case KEY_RAW:    a->raw    = 1; break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
@@ -223,12 +248,16 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         if (a->npat == 0)               // pull ALL lib: specs, not just the first
             for (int i = 0; i < a->nspec && a->npat < 64; i++)
                 if (a->specs[i].kind == SPEC_KIND_LIB) a->patterns[a->npat++] = a->specs[i].mod;
-        if (a->tgt.n > 0 && a->pkg)
-            argp_error(state, "specify exactly one of -p or -P");
-        if (!a->tgt.n && !a->pkg)
-            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
-        if (a->npat == 0)
-            argp_error(state, "at least one library pattern is required (-l or positional)");
+        {
+            struct dump_trigger t = {
+                .now = a->now, .check = a->check, .on_map = a->on_map,
+                .has_pkg = a->pkg ? 1 : 0,
+                .ntgt = a->tgt.n, .npat = a->npat, .nbase = a->nbase,
+            };
+            const char *err = dump_args_check(&t);
+            if (err)
+                argp_error(state, "%s", err);
+        }
         break;
     default:
         return ARGP_ERR_UNKNOWN;
@@ -328,6 +357,26 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         return 1;
     }
 
+    g_now    = da.now;
+    g_check  = da.check;
+    g_bases  = da.bases;
+    g_nbase  = da.nbase;
+
+    // -p targets, copied out for --now's direct rescan. Must happen before the
+    // early return below.
+    g_ntgt = da.tgt.n < 64 ? da.tgt.n : 64;
+    for (int i = 0; i < g_ntgt; i++)
+        g_tgt_pids[i] = da.tgt.pids[i];
+
+    // --now is a pure /proc read: no skeleton, no attach, no ring buffer, no
+    // stop handler. dump_run does the whole job and cmd_dump exits 0. Skipping
+    // BPF also keeps a snapshot maximally quiet - nothing is attached to the
+    // target at all (see the detectability firewall).
+    if (da.now) {
+        g_uid = 0;   // display-only; PID mode never resolves a UID
+        return 0;
+    }
+
     if (da.tgt.n > 0) {
         g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
     } else {
@@ -419,6 +468,29 @@ static const char *pat_banner(void)
 
 int dump_run(volatile sig_atomic_t *stop)
 {
+    struct dump_sel sel = { .pats = g_patterns, .npat = g_npat, .hit = g_pat_hit,
+                            .bases = g_bases, .nbase = g_nbase };
+
+    // --now: the -p targets are already running and have already mapped
+    // everything they are going to map, so there are no events to wait for.
+    // Rescan their maps directly and return. (This is the whole reason --now
+    // exists: dump-on-exit only rescans pids recorded from map events, so
+    // attaching to an already-running process rescanned nothing.)
+    if (g_now) {
+        int total = 0;
+        for (int i = 0; i < g_ntgt; i++) {
+            int r = g_check ? dump_check_pid_modules(g_tgt_pids[i], &sel, &g_sink)
+                            : dump_pid_modules_sel(g_tgt_pids[i], &sel, g_outdir, &g_sink);
+            if (r > 0)
+                total += r;
+        }
+        fprintf(stderr, "[dump] %s %d module%s in %d pid%s\n",
+                g_check ? "checked" : "wrote", total, total == 1 ? "" : "s",
+                g_ntgt, g_ntgt == 1 ? "" : "s");
+        print_never_matched_report();
+        return 0;
+    }
+
     printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
            g_uid, pat_banner(), g_on_map ? "on map" : "on exit");
 

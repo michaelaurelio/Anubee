@@ -28,6 +28,8 @@
 #include "common/maps.h"
 #include "common/pattern_match.h"
 #include "common/emit.h"        // SYM1 Phase 3: struct ares_sink, ares_sink_emit
+#include "common/sha256.h"
+#include "common/sym_apk.h"     // apk_list_sos, struct apk_so_ref
 #include "dump/dump_emit.h"     // dump_emit_module
 
 #include <stdio.h>
@@ -103,6 +105,11 @@ static int read_maps(int pid, struct ares_map_line **out)
 static uint64_t load_base_of(const struct ares_map_line *m, int hit)
 {
 	return m[ares_module_base_idx(m, (size_t)hit)].start;
+}
+
+static uint64_t load_off_of(const struct ares_map_line *m, int hit)
+{
+	return m[ares_module_base_idx(m, (size_t)hit)].off;
 }
 
 static const char *basename_of(const char *p)
@@ -691,8 +698,247 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	return 0;
 }
 
+// Digest every PF_X PT_LOAD's bytes from `img`, in phdr order. Returns 0 on
+// success, -1 if the headers are unusable or the image is too short for any
+// segment they describe (i.e. a partial read - no honest verdict is possible).
+static int hash_exec_segments(const unsigned char *img, size_t len, char out[65])
+{
+	Elf64_Ehdr eh;
+	if (len < sizeof(eh))
+		return -1;
+	memcpy(&eh, img, sizeof(eh));
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64)
+		return -1;
+	if (eh.e_phoff == 0 || eh.e_phnum == 0 || eh.e_phentsize < sizeof(Elf64_Phdr))
+		return -1;
+	if (eh.e_phoff > len || (uint64_t)eh.e_phnum * eh.e_phentsize > len - eh.e_phoff)
+		return -1;
+
+	struct sha256_ctx c;
+	sha256_init(&c);
+	int nexec = 0;
+	for (int i = 0; i < eh.e_phnum; i++) {
+		Elf64_Phdr p;
+		memcpy(&p, img + eh.e_phoff + (size_t)i * eh.e_phentsize, sizeof(p));
+		if (p.p_type != PT_LOAD || !(p.p_flags & PF_X))
+			continue;
+		if (p.p_offset > len || p.p_filesz > len - p.p_offset)
+			return -1;    // short image: refuse to guess
+		sha256_update(&c, img + p.p_offset, p.p_filesz);
+		nexec++;
+	}
+	if (!nexec)
+		return -1;            // nothing executable to compare
+
+	sha256_final_hex(&c, out);
+	return 0;
+}
+
+const char *dump_check_image(const unsigned char *mem, size_t memlen,
+			     const unsigned char *file, size_t filelen,
+			     char mem_hex[65], char file_hex[65])
+{
+	mem_hex[0] = '\0';
+	file_hex[0] = '\0';
+	// The memory image's headers are authoritative: a packer rewrites .text in
+	// place, not the phdr table. If either side cannot be digested, no verdict.
+	if (hash_exec_segments(mem, memlen, mem_hex) != 0) {
+		mem_hex[0] = '\0';
+		return "unreadable";
+	}
+	if (hash_exec_segments(file, filelen, file_hex) != 0) {
+		file_hex[0] = '\0';
+		return "unreadable";
+	}
+	return strcmp(mem_hex, file_hex) == 0 ? "match" : "differ";
+}
+
+// Read the whole backing file into a fresh buffer. Returns NULL on any failure
+// (deleted/anon path, unreadable file); *len gets the byte count on success.
+static unsigned char *read_whole_file(const char *path, size_t *len)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+	long sz = ftell(f);
+	if (sz <= 0) { fclose(f); return NULL; }
+	rewind(f);
+	unsigned char *b = malloc((size_t)sz);
+	if (!b) { fclose(f); return NULL; }
+	size_t got = fread(b, 1, (size_t)sz, f);
+	fclose(f);
+	if (got != (size_t)sz) { free(b); return NULL; }
+	*len = got;
+	return b;
+}
+
+// Read the stored .so that begins at byte offset `off` inside `apk`. The APK's
+// central directory gives each stored member's byte range; the module's base
+// segment maps from exactly the member's data_start, so an exact offset match
+// identifies it. Reads only the member, not the whole (often multi-MB) APK.
+// Returns NULL when no member starts at `off`, or on any read failure.
+unsigned char *dump_read_apk_member(const char *apk, unsigned long long off, size_t *len)
+{
+	struct apk_so_ref refs[32];
+	int n = apk_list_sos(apk, refs, 32);
+
+	for (int i = 0; i < n; i++) {
+		if (refs[i].data_start != off)
+			continue;
+		if (refs[i].size == 0 || refs[i].size > (uint64_t)SIZE_MAX)
+			return NULL;
+
+		FILE *f = fopen(apk, "rb");
+		if (!f)
+			return NULL;
+		if (fseeko(f, (off_t)refs[i].data_start, SEEK_SET) != 0) {
+			fclose(f);
+			return NULL;
+		}
+		unsigned char *b = malloc((size_t)refs[i].size);
+		if (!b) {
+			fclose(f);
+			return NULL;
+		}
+		size_t got = fread(b, 1, (size_t)refs[i].size, f);
+		fclose(f);
+		if (got != (size_t)refs[i].size) {
+			free(b);
+			return NULL;
+		}
+		*len = got;
+		return b;
+	}
+	return NULL;
+}
+
+// Compare one module against its backing file and emit a modcmp record. Runs as
+// a dump_walk_pid_modules callback, so the maps walk, the per-base dedup and the
+// memfd lifetime are the walker's problem, not ours.
+//
+// Always returns 0: every visited module yields a verdict record, including the
+// non-comparable ones. covered_end is deliberately left untouched - unlike
+// dump_one we never parse the phdrs to learn the module's true extent, so we
+// have no honest range to claim.
+static int dump_check_cb(int pid, int memfd, unsigned long long base, const char *path,
+			 unsigned long long file_off, void *ctx, unsigned long long *covered_end)
+{
+	struct ares_sink *sink = (struct ares_sink *)ctx;
+	(void)covered_end;
+
+	char bn[DUMP_MAX_PATH];
+	snprintf(bn, sizeof(bn), "%s", basename_of(path));
+	char *del = strstr(bn, " (deleted)");
+	if (del)
+		*del = '\0';
+
+	const char *state = NULL;
+	char mem_hex[65] = "", file_hex[65] = "";
+	unsigned char *mem = NULL, *file = NULL;
+	size_t filelen = 0;
+	size_t pl = strlen(path);
+
+	// A bracketed pseudo-path or a deleted file has no baseline on disk. That is
+	// itself a packer tell, so it gets its own state rather than being skipped.
+	if (path[0] != '/' || del) {
+		state = "nofile";
+	// APK-embedded (extractNativeLibs=false, the modern AGP default): the
+	// baseline is a stored ZIP member, not the file itself. The base segment
+	// maps from the member's data_start, so file_off identifies which .so this
+	// is. "apk" now means only that no member starts at that offset - a
+	// compressed (non-stored) member, or an APK we cannot parse - not merely
+	// "this came from an APK".
+	} else if (pl >= 4 && strcmp(path + pl - 4, ".apk") == 0) {
+		file = dump_read_apk_member(path, file_off, &filelen);
+		if (!file)
+			state = "apk";
+	} else if (!(file = read_whole_file(path, &filelen))) {
+		state = "nofile";
+	}
+
+	// Either branch above may have resolved `file` (an ordinary readable path,
+	// or a successfully-identified APK member) without setting `state` - fall
+	// through into the same live-memory comparison for both.
+	if (!state) {
+		if (!(mem = calloc(1, filelen))) {
+			state = "unreadable";
+		} else if (proc_mem_read(memfd, base, mem, filelen) != filelen) {
+			// Partial read: hashing this would be wrong, and a false "differ" on a
+			// clean library is the one failure this feature cannot afford.
+			state = "unreadable";
+		} else {
+			state = dump_check_image(mem, filelen, file, filelen, mem_hex, file_hex);
+		}
+	}
+
+	if (sink && sink->f) {
+		sink->jb.len = 0;
+		dump_emit_modcmp(&sink->jb, bn, path, (unsigned long long)base, pid, state,
+				 mem_hex[0] ? mem_hex : NULL,
+				 file_hex[0] ? file_hex : NULL);
+		ares_sink_emit(sink);
+	}
+	printf("[dump] check: %s @0x%llx (pid %d) -> %s\n",
+	       bn, (unsigned long long)base, pid, state);
+
+	free(mem);
+	free(file);
+	return 0;
+}
+
+int dump_check_pid_modules(int pid, const struct dump_sel *sel,
+			   struct ares_sink *sink)
+{
+	return dump_walk_pid_modules(pid, sel, dump_check_cb, sink);
+}
+
+int dump_sel_matches(const struct dump_sel *sel, const char *path,
+		     unsigned long long base)
+{
+	for (int i = 0; i < sel->nbase; i++)
+		if (sel->bases[i] == base)
+			return 1;
+	if (sel->npat > 0 &&
+	    dump_name_matches_any_track(sel->pats, sel->npat, path, sel->hit))
+		return 1;
+	return 0;
+}
+
+// The dump-on-exit / snapshot callback: rebuild one module to a file.
+struct dump_write_ctx {
+	const char       *outdir;
+	struct ares_sink *sink;
+};
+
+static int dump_write_cb(int pid, int memfd, unsigned long long base, const char *path,
+			 unsigned long long file_off, void *ctx, unsigned long long *covered_end)
+{
+	struct dump_write_ctx *c = (struct dump_write_ctx *)ctx;
+	(void)file_off;
+	uint64_t end = 0;
+	int rc = dump_one(pid, memfd, base, path, c->outdir, &end, c->sink);
+	if (covered_end)
+		*covered_end = end;
+	return rc;
+}
+
 int dump_pid_modules(int pid, const char *const *pats, int npat,
                      const char *outdir, struct ares_sink *sink, int *hit)
+{
+	struct dump_sel sel = { .pats = pats, .npat = npat, .hit = hit };
+	return dump_pid_modules_sel(pid, &sel, outdir, sink);
+}
+
+int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
+                         const char *outdir, struct ares_sink *sink)
+{
+	struct dump_write_ctx ctx = { .outdir = outdir, .sink = sink };
+	return dump_walk_pid_modules(pid, sel, dump_write_cb, &ctx);
+}
+
+int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
+			  dump_mod_fn fn, void *ctx)
 {
 	struct ares_map_line *m = NULL;
 	int n = read_maps(pid, &m);
@@ -707,21 +953,24 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 		return -1;
 	}
 
-	uint64_t done_bases[64];                       // bases already attempted
-	struct { uint64_t s, e; } cov[64];             // ranges of modules dumped
-	int ndone = 0, ncov = 0, dumped = 0;
+	unsigned long long done_bases[64];             // bases already attempted
+	struct { unsigned long long s, e; } cov[64];   // ranges already covered
+	int ndone = 0, ncov = 0, ok = 0;
 
 	// Maps are address-sorted, so the ELF header (lowest segment) of a module is
 	// seen before its later segments. A library deleted-after-mapping shows the
 	// same path on every segment; if its segments are mapped non-contiguously,
 	// the base-walk yields a different "base" for the gapped segment even though
-	// it belongs to the module already dumped (whose full vaddr range we read
-	// from its program headers). Skip any candidate inside a dumped range so we
-	// neither re-dump it nor warn about its (header-less) middle.
+	// it belongs to the module already handled (whose full vaddr range the
+	// callback reports back). Skip any candidate inside a covered range so we
+	// neither re-handle it nor warn about its (header-less) middle.
 	for (int i = 0; i < n; i++) {
-		if (!m[i].path[0] || !dump_name_matches_any_track(pats, npat, m[i].path, hit))
+		if (!m[i].path[0])
 			continue;
 		uint64_t base = load_base_of(m, i);
+		uint64_t foff = load_off_of(m, i);
+		if (!dump_sel_matches(sel, m[i].path, base))
+			continue;
 
 		int skip = 0;
 		for (int k = 0; k < ndone && !skip; k++)
@@ -736,9 +985,9 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 		if (ndone < (int)(sizeof(done_bases) / sizeof(done_bases[0])))
 			done_bases[ndone++] = base;
 
-		uint64_t end = 0;
-		if (dump_one(pid, memfd, base, m[i].path, outdir, &end, sink) == 0) {
-			dumped++;
+		unsigned long long end = 0;
+		if (fn(pid, memfd, base, m[i].path, foff, ctx, &end) == 0) {
+			ok++;
 			if (end > base && ncov < (int)(sizeof(cov) / sizeof(cov[0]))) {
 				cov[ncov].s = base;
 				cov[ncov].e = end;
@@ -749,7 +998,7 @@ int dump_pid_modules(int pid, const char *const *pats, int npat,
 
 	close(memfd);
 	free(m);
-	return dumped;
+	return ok;
 }
 
 int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct ares_sink *sink)

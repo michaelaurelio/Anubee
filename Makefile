@@ -112,7 +112,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
                $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
-               $(SRC)/common/drain_progress.c
+               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
@@ -134,6 +134,7 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                ares_drops_report ares_install_stop_handler ares_round_pow2 \
                ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
                ares_drain_progress_begin ares_drain_progress_join \
+               sha256_init sha256_update sha256_final_hex \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
                seg_vaddr_to_off \
@@ -165,7 +166,7 @@ CORR_CSRC := $(SRC)/correlate/correlate.c $(SRC)/correlate/corr_emit.c
 CORR_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(CORR_CSRC))
 CORR_PART := $(BUILD)/correlate.part.o
 
-DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c $(SRC)/dump/dump_emit.c
+DUMP_CSRC := $(SRC)/dump/dump.c $(SRC)/dump/rebuild.c $(SRC)/dump/dump_emit.c $(SRC)/dump/dump_args.c
 DUMP_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(DUMP_CSRC))
 DUMP_PART := $(BUILD)/dump.part.o
 
@@ -468,8 +469,10 @@ test:
 	 fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pattern_match.c src/common/pattern_match.c -o $(BUILD)/test_pattern_match
 	$(BUILD)/test_pattern_match
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_pattern.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c -o $(BUILD)/test_dump_pattern
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_pattern.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_dump_pattern
 	$(BUILD)/test_dump_pattern
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_walk.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_dump_walk
+	$(BUILD)/test_dump_walk
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c -o $(BUILD)/test_engine_args
 	$(BUILD)/test_engine_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_apk.c src/common/sym_apk.c -o $(BUILD)/test_sym_apk
@@ -482,6 +485,8 @@ test:
 	fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
+	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
@@ -540,6 +545,10 @@ test:
 	$(BUILD)/test_mod_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_emit.c src/dump/dump_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_dump_emit
 	$(BUILD)/test_dump_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_args.c src/dump/dump_args.c -o $(BUILD)/test_dump_args
+	$(BUILD)/test_dump_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_check.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_dump_check
+	$(BUILD)/test_dump_check
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_file_access_classify.c src/modules/file_access_classify.c -o $(BUILD)/test_file_access_classify
 	$(BUILD)/test_file_access_classify
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_massdelete_detect_classify.c src/modules/massdelete_detect_classify.c -o $(BUILD)/test_massdelete_detect_classify

@@ -145,6 +145,23 @@ make device-test     # on-device smoke: pushes the binary, asserts each capabili
   `correlate` now surface them explicitly in a per-run coverage-health record
   (stderr banner + `{"type":"coverage"}` in the `-o` sink) instead of leaving
   them to be inferred from missing output (see `DOCUMENTATION.md`).
+- `dump`: the default trigger (dump-on-exit) only rescans pids it saw map a
+  library, so attaching `-p` to an already-running process observes nothing
+  and dumps nothing. `--now` fixes this - it requires `-p` (there is nothing
+  to snapshot before an app has launched), skips BPF entirely, rescans the
+  target's already-mapped modules directly, and exits 0, e.g.
+  `ares dump --now -p 24601 --base 0x7281a0000 -d /data/local/tmp/out`.
+  `--base ADDR` (repeatable, cap 64) selects a module by its exact load
+  address instead of by name, which is the only way to select a library
+  whose name is randomized per run. `--check` (requires `--now`) compares
+  each selected module's executable memory against its on-disk baseline
+  instead of writing a rebuilt `.so`, e.g.
+  `ares dump --now --check -p 24601 --base 0x7281a0000 -o /data/local/tmp/check.jsonl`.
+  `-l`/spec-file `lib:` patterns **cannot** select an APK-embedded library
+  (`extractNativeLibs=false` apps map their `.so` straight out of `base.apk`,
+  and the selector only ever sees that raw `/proc/<pid>/maps` path) - use
+  `--base` for those; the emitted record's `module` field then reads
+  `base.apk`, not the library's name.
 
 ---
 

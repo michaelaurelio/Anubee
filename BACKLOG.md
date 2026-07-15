@@ -32,6 +32,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
 
 **Minor:**
+- `dump --now`/`--base`/`--check` known drawbacks: `-l` cannot select an
+  APK-embedded module (`--base` only, and its `modcmp` record names the
+  module `base.apk`); `DT_TEXTREL` libraries legitimately report `differ`;
+  the `differ` signal itself is not yet proven end-to-end on a device (see
+  Minor section below).
 - CR5 follow-on: `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
@@ -531,6 +536,39 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
     but the general-purpose pure builder would no longer honor its own documented
     contract). Left as-is; revisit only if profiling shows this alloc actually matters —
     it is not gated at 8192 bytes per snapshot, but it is a single small heap round-trip.
+
+- **`dump --now`/`--base`/`--check` shipped-with-known-drawbacks (2026-07-16).**
+  Device-verified against the reference app (`scripts/device-test.sh`'s
+  `dump-now` tier, commit `e9a8d30`); the drawbacks below are what remains.
+  - **`-l` cannot select an APK-embedded library at all.**
+    `dump_sel_matches` (`src/dump/rebuild.c`) only ever sees the raw
+    `/proc/<pid>/maps` path, which for an `extractNativeLibs=false` app is
+    just `.../base.apk` for every embedded library - it has no knowledge of
+    the resolved SONAME. `--base` is the only selector that reaches such a
+    module, and the emitted `modcmp` record's `"module"` field is
+    correspondingly `"base.apk"`, not the library's name - the record
+    identifies the module by base address, not by name.
+  - **`DT_TEXTREL` libraries (and JIT regions) legitimately report
+    `differ`.** `--check` names an observation (the executable bytes
+    changed since the on-disk baseline), not an inference about intent -
+    a library the dynamic linker text-relocates at load time, or a
+    JIT-generated region, reports `differ` with nothing hostile having
+    happened, and there is no way to tell the two apart from the bytes
+    alone.
+  - **The `differ` verdict is not proven end-to-end on a device.** The
+    reference app's `libsentinel.so` never rewrites its own executable
+    memory (an ordinary compiled library; its only `mmap` call is
+    `PROT_READ|PROT_WRITE`, for shared memory - its own `wxscan` code
+    *detects* W^X regions in other processes rather than creating one
+    itself), so device testing only exercises `match`.
+    `differ` is covered by the host tests against synthetic ELF images
+    (`tests/test_dump_check.c`) but not by anything running against a real
+    process. Closing this needs either a self-modifying fixture added to
+    the reference app, or a genuinely packed real-world target.
+  - **Relates to the CR5 follow-on entry above** (`dump` coverage field):
+    that entry names a partial `/proc/<pid>/mem` read as an open coverage
+    gap for the dump-and-rebuild path; `--check`'s `unreadable` state is
+    the same failure mode, named explicitly, for the compare path.
 
 ---
 

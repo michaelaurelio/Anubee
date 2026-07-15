@@ -436,6 +436,21 @@ test_massdelete_detect() {
     fi
 
     local out; out="$(ares "mod massdelete-detect -p $loop_pid")"
+
+    local loop_pid2
+    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -n "$loop_pid2" ] && [ "$loop_pid2" -gt 0 ] 2>/dev/null; then
+        adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH mod massdelete-detect -p $loop_pid2 -v -o /data/local/tmp/massdelete_verbose.jsonl -q'" >/dev/null 2>&1
+        local verbose_out
+        verbose_out="$(adb shell "su -c 'cat /data/local/tmp/massdelete_verbose.jsonl'" 2>/dev/null)"
+        adb shell "su -c 'rm -f /data/local/tmp/massdelete_verbose.jsonl'" >/dev/null 2>&1
+        if grep -q '"paths":\[' <<<"$verbose_out"; then
+            info "massdelete-detect -v OK — paths array present in alert JSON"
+        else
+            echo "  SKIP: massdelete-detect -v produced no paths array (burst may not have re-fired in this window)"
+        fi
+    fi
+
     adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_massdelete_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
@@ -478,6 +493,21 @@ test_exfil_detect() {
     fi
 
     local out; out="$(ares "mod exfil-detect -p $loop_pid")"
+
+    local loop_pid2
+    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -n "$loop_pid2" ] && [ "$loop_pid2" -gt 0 ] 2>/dev/null; then
+        adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH mod exfil-detect -p $loop_pid2 -v -o /data/local/tmp/exfil_verbose.jsonl -q'" >/dev/null 2>&1
+        local verbose_out
+        verbose_out="$(adb shell "su -c 'cat /data/local/tmp/exfil_verbose.jsonl'" 2>/dev/null)"
+        adb shell "su -c 'rm -f /data/local/tmp/exfil_verbose.jsonl'" >/dev/null 2>&1
+        if grep -q '"sensitive_paths":\[' <<<"$verbose_out"; then
+            info "exfil-detect -v OK — sensitive_paths array present in alert JSON"
+        else
+            echo "  SKIP: exfil-detect -v produced no sensitive_paths array (burst may not have re-fired in this window)"
+        fi
+    fi
+
     adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_exfil_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then

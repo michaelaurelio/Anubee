@@ -20,18 +20,37 @@ import duckdb
 
 MAX_ROWS = 200                 # hard cap on rows any query returns
 
-# The five mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
-# §6/§7) and, for the four that carry a nested list, which field to cap.
+# The nine mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
+# §6/§7) and, for the eight that carry a nested list, which field to cap.
 _SUMMARY_TYPES = frozenset({
     "execve_summary", "prop_read_summary", "file_access_summary",
     "massdelete_detect_summary", "proc_event_summary",
+    "accessibility_detect_summary", "exfil_detect_summary",
+    "fileless_detect_summary", "screencapture_detect_summary",
 })
 _SUMMARY_LIST_FIELD = {
     "execve_summary": "binaries",
     "prop_read_summary": "props",
     "file_access_summary": "paths",
     "massdelete_detect_summary": "processes",
+    "accessibility_detect_summary": "processes",
+    "exfil_detect_summary": "processes",
+    "fileless_detect_summary": "processes",
+    "screencapture_detect_summary": "processes",
 }
+
+# All per-event mod-analyzer record types, ingested into the mod_events
+# table. The incident correlator (incidents()) joins on whichever of these
+# its rule chains reference; mod_events() exposes all of them for direct
+# querying. Distinct from _SUMMARY_TYPES above (teardown aggregates) -- these
+# are the individual live events.
+_MOD_EVENT_TYPES = frozenset({
+    "accessibility_detect", "screencapture_detect", "exfil_detect",
+    "massdelete_detect", "fileless_detect",
+    "spawn", "proc_exit", "execve", "prop", "file_access",
+})
+
+_DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")
 
 # Explicit schema so DuckDB never mis-infers the nested/heterogeneous fields.
 _COLS = (
@@ -150,7 +169,7 @@ class TraceStore:
         path = os.path.abspath(os.path.expanduser(path))
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        calls, returns, fspans, syscalls, coverage = [], [], [], [], []
+        calls, returns, fspans, syscalls, coverage, mod_events = [], [], [], [], [], []
         summaries = {}
         skipped = 0
         with open(path, "r", errors="replace") as f:
@@ -176,6 +195,8 @@ class TraceStore:
                     coverage.append(rec)
                 elif t in _SUMMARY_TYPES:
                     summaries.setdefault(t, []).append(rec)
+                elif t in _MOD_EVENT_TYPES:
+                    mod_events.append(rec)
                 else:
                     # no "type" (legacy wrapper) or a plain syscalls-engine record
                     skipped += 1
@@ -194,6 +215,8 @@ class TraceStore:
                     "prearm_drops BIGINT, depth_capped BIGINT, decode_partial BOOLEAN, "
                     "returns_spans BIGINT, returns_captured BIGINT, "
                     "cfi_stops MAP(VARCHAR, BIGINT))")
+        con.execute("CREATE TABLE mod_events(pid INTEGER, type VARCHAR, ts_ns BIGINT, "
+                    "comm VARCHAR, raw VARCHAR)")
         if calls:
             con.executemany("INSERT INTO calls VALUES (?,?,?,?,?,?)",
                 [[c.get("pid"), c.get("tid"), c.get("module"), c.get("symbol"),
@@ -228,6 +251,10 @@ class TraceStore:
                         cfi.get("stops") or {}]
             con.executemany("INSERT INTO coverage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [_cov_row(c) for c in coverage])
+        if mod_events:
+            con.executemany("INSERT INTO mod_events VALUES (?,?,?,?,?)",
+                [[e.get("pid"), e.get("type"), e.get("ts_ns"), e.get("comm"), json.dumps(e)]
+                 for e in mod_events])
         self.con = con
         self.path = path
         self._summaries = summaries
@@ -278,6 +305,69 @@ class TraceStore:
         if kind is not None:
             return [_cap(r) for r in self._summaries.get(kind, [])[:top]]   # AUDIT.md M2
         return {k: [_cap(r) for r in v[:top]] for k, v in self._summaries.items()}
+
+    def incidents(self, rules_path=None, top=50):
+        """Cross-analyzer incident correlator. Loads ordered analyzer-type chain
+        rules from rules_path (default: bundled correlation_rules.json) and joins
+        mod_events by (pid, ts_ns order, window) to find chains like
+        accessibility_detect -> exfil_detect on the same pid within a rule's
+        window. Each incident carries the raw matched events as evidence -- no
+        baked severity, consistent with every mod analyzer's own convention of
+        exposing raw fields rather than a verdict."""
+        import json
+        self._require()
+        top = _clamp(top)
+        path = rules_path or _DEFAULT_RULES_PATH
+        with open(path) as f:
+            rules = json.load(f)
+        out = []
+        for rule in rules:
+            a_type, b_type = rule["chain"]
+            window_ns = int(rule["window_s"] * 1_000_000_000)
+            rows = self.con.execute(
+                "SELECT a.pid AS pid, a.ts_ns AS t1, a.raw AS raw1, "
+                "b.ts_ns AS t2, b.raw AS raw2 FROM mod_events a JOIN mod_events b "
+                "ON a.pid = b.pid AND a.type = ? AND b.type = ? "
+                "AND b.ts_ns > a.ts_ns AND b.ts_ns - a.ts_ns <= ? "
+                "QUALIFY row_number() OVER (PARTITION BY a.pid, a.ts_ns ORDER BY b.ts_ns) = 1 "
+                "ORDER BY a.pid, a.ts_ns",
+                [a_type, b_type, window_ns]
+            ).fetchall()
+            for pid, t1, raw1, t2, raw2 in rows:
+                out.append({
+                    "rule": rule["name"],
+                    "pid": pid,
+                    "chain": rule["chain"],
+                    "span_ms": (t2 - t1) / 1e6,
+                    "events": [json.loads(raw1), json.loads(raw2)],
+                })
+        return out[:top]
+
+    def mod_events(self, kind=None, pid=None, top=50):
+        """Individual per-event mod-analyzer records (spawn/proc_exit/execve/
+        prop/file_access/accessibility_detect/screencapture_detect/exfil_detect/
+        massdelete_detect/fileless_detect) ingested from a mod analyzer's `-o`
+        output. Drill-down complement to summaries() (which returns aggregated
+        teardown tallies) -- these are the raw individual events. Without kind
+        or pid, returns all ingested events (capped at top); either filters
+        further. Raw fields only, no re-derived classification (e.g. no rasp
+        flag on individual `prop` events -- that's summary-only)."""
+        import json
+        self._require()
+        top = _clamp(top)
+        where, params = [], []
+        if kind is not None:
+            where.append("type = ?")
+            params.append(kind)
+        if pid is not None:
+            where.append("pid = ?")
+            params.append(pid)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        rows = self.con.execute(
+            f"SELECT raw FROM mod_events {clause} ORDER BY ts_ns LIMIT ?",
+            params + [top]
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
 
     # ---- span analysis (func_spans/span_syscalls) -------------------------
 

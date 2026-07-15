@@ -1567,15 +1567,21 @@ Design points worth knowing:
   table flattening `{"type":"coverage",...}` records (see §7) — one row per
   engine, sparse nested fields (`snaps`/`cfi`/`drops`/`returns`) flattened with
   zero/false defaults — and a `TraceStore._summaries` dict (not a DuckDB table)
-  keyed by the five mod-analyzer teardown `*_summary` types (`execve_summary`,
-  `prop_read_summary`, `file_access_summary`, `massdelete_detect_summary`,
-  `proc_event_summary`; see §6), storing each parsed record as-is. **Known
+  keyed by all nine mod-analyzer teardown `*_summary` types (see §6 and the
+  note below), storing each parsed record as-is. **Known
   gap, not yet closed:** SYM1 Phase 5c added three more summary types
   (`syscalls_summary`/`funcs_summary`/`correlate_summary`, §7) that this
   hardcoded key list does not include — those records currently fall through
   ingest unrecognized by `_summaries` (same "retained but unhandled" outcome
   as any unknown `type`, not a crash, just not queryable via the `summaries`
-  tool below yet).
+  tool below yet). `load_structured()` also loads all 10 per-event mod-analyzer record
+  types (`accessibility_detect`/`screencapture_detect`/`exfil_detect`/
+  `massdelete_detect`/`fileless_detect`/`spawn`/`proc_exit`/`execve`/`prop`/
+  `file_access`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
+  consumed by the `incidents` and `mod_events` tools below. `_SUMMARY_TYPES`
+  now covers all 9 mod-analyzer teardown summary types (the original 5 plus
+  `accessibility_detect_summary`/`exfil_detect_summary`/
+  `fileless_detect_summary`/`screencapture_detect_summary`).
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
@@ -1588,8 +1594,15 @@ Design points worth knowing:
   over `func_spans`/`span_syscalls` — parent/child nesting, "what's under span N"),
   `span_timeline` (spans in allocation order with a per-span syscall count),
   `diff_calls` (the `diff_traces` analog for funcs data — new call-sites/in-span
-  syscalls in a `compare` trace vs `baseline`), and `summaries` (the ingested
-  `*_summary` teardown records, optionally filtered by `kind`).
+  syscalls in a `compare` trace vs `baseline`), `summaries` (the ingested
+  `*_summary` teardown records, optionally filtered by `kind`), and
+  `incidents` (cross-analyzer chain correlator over `mod_events` — fuses
+  ordered analyzer-type chains like `accessibility_detect` → `exfil_detect`
+  on the same pid within a window into evidence-carrying incident records;
+  rule chains are data, in `correlation_rules.json`, not hardcoded), and
+  `mod_events` (drill-down over the raw per-event records themselves,
+  filterable by `kind`/`pid` — the complement to `summaries`'s aggregated
+  tallies).
 - `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
   `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
   `dump_library` → `ares dump`.

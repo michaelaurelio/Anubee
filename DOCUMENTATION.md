@@ -584,6 +584,8 @@ located the module-base bug and stays available for future CFI diagnosis.
 `-o FILE` opens a shared `ares_sink` (8 MB buffered, JSONL) and emits one
 structured record per CALL or RETURN event. Human-readable stdout text is
 unchanged; no legacy `{ts,stream,tag,message}` wrapper is written to the file.
+Output is always JSONL; `-J`/`--jsonl` is accepted for backward compatibility
+but is a no-op.
 
 Record shapes (from `src/funcs/funcs_emit.c`, built on the shared `emit.h` +
 `trace_schema.h`):

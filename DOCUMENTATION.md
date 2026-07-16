@@ -388,7 +388,7 @@ flowchart LR
     step["cfi_step(sec, module_pc, regs, &sp, &pc,\n  snap->snap, snap->sp, snap->snap_len)\ncfi_unwind.c — reads only the frozen window"]
     sym["sym_resolve(pid, pc, sym)\nsymbolize.c"]
     emit["emit_cfi_backtrace\nsyscalls.c"]
-    out["{\"type\":\"cfi_stack\",\n\"cfi_backtrace\":[{frame,addr,symbol,kind},...]}"]
+    out["{#quot;type#quot;:#quot;cfi_stack#quot;,\n#quot;cfi_backtrace#quot;:[{frame,addr,symbol,kind},...]}"]
 
     snap --> unwind
     unwind --> step

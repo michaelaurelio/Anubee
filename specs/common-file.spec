@@ -17,4 +17,12 @@ libc.so!access(S,V)>V
 libc.so!inotify_add_watch(V,S,V)>V
 
 syscall:openat
+syscall:openat2
+syscall:read
+syscall:readlinkat
+syscall:newfstatat
+syscall:faccessat
+syscall:statx
+syscall:unlinkat
 
+mod:file-access

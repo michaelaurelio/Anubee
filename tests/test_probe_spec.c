@@ -225,15 +225,17 @@ int main(void)
     // --- lockstep: every specs/*.spec line parses as its intended kind.
     // Originally (Phase 1) every line was plain FUNCS, proving the KIND-prefix
     // strip never fired on real spec files. EPIC H11 adds syscall:/lib: lines
-    // to two of these files, so a line's own prefix now decides which
+    // to two of these files, and a later pass adds mod: lines plus two new
+    // mod:/lib:-only files, so a line's own prefix now decides which
     // assertion applies -- still catches a real FUNCS line misclassified, or
-    // a real syscall:/lib: line failing to be recognized as such. ---
+    // a real syscall:/lib:/mod: line failing to be recognized as such. ---
     {
         static const char *const spec_files[] = {
             "specs/common-dynload.spec", "specs/common-file.spec",
             "specs/common-getprop.spec", "specs/common-network.spec",
             "specs/common-process.spec", "specs/common-string.spec",
-            "specs/example-fd.spec",
+            "specs/example-fd.spec", "specs/common-mod.spec",
+            "specs/common-dump.spec",
         };
         int total_lines = 0;
         for (size_t fi = 0; fi < sizeof(spec_files) / sizeof(spec_files[0]); fi++) {
@@ -254,7 +256,8 @@ int main(void)
                 checks++;
                 total_lines++;
                 bool expect_non_funcs = (strncmp(line, "syscall:", 8) == 0 ||
-                                          strncmp(line, "lib:", 4) == 0);
+                                          strncmp(line, "lib:", 4) == 0 ||
+                                          strncmp(line, "mod:", 4) == 0);
                 if (parse_custom_probe_spec(line, &S, noop_log) != 0) {
                     failures++;
                     printf("  FAIL: lockstep: %s: '%s' failed to parse\n",

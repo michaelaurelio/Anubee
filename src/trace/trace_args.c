@@ -61,21 +61,21 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 		char *tok = argv[i];
 
 		if (!strcmp(tok, "-P")) {
-			if (++i >= argc) return -1;
-			if (o->pids) return -1;   // -P and -p are mutually exclusive
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
+			if (o->pids) { fprintf(stderr, "trace: -P and -p are mutually exclusive\n"); return -1; }
 			o->pkg = argv[i];
 		} else if (!strcmp(tok, "-p")) {
-			if (++i >= argc) return -1;
-			if (o->pkg) return -1;    // -P and -p are mutually exclusive
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
+			if (o->pkg) { fprintf(stderr, "trace: -P and -p are mutually exclusive\n"); return -1; }
 			o->pids = argv[i];
 		} else if (!strcmp(tok, "-A")) {
-			if (++i >= argc) return -1;
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
 			o->activity = argv[i];
 		} else if (!strcmp(tok, "-o")) {
-			if (++i >= argc) return -1;
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
 			o->prefix = argv[i];
 		} else if (!strcmp(tok, "-e") || !strcmp(tok, "-F")) {
-			if (++i >= argc) return -1;
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
 			if (o->nspec >= TRACE_ARGV_CAP) {
 				fprintf(stderr, "trace: too many -e/-F specs; '%s' dropped\n", argv[i]);
 				continue;
@@ -93,7 +93,7 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
 			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
 		} else if (is_sys_func_flag_val(tok)) {
-			if (++i >= argc) return -1;
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", argv[i]);
 			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
@@ -102,7 +102,7 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
 			o->want_sys = true;
 		} else if (is_sys_flag_val(tok)) {
-			if (++i >= argc) return -1;
+			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", argv[i]);
 			o->want_sys = true;
@@ -112,6 +112,7 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 		} else if (!strcmp(tok, "-h") || !strcmp(tok, "--help")) {
 			return 1;
 		} else {
+			fprintf(stderr, "trace: unrecognized argument '%s'\n", tok);
 			return -1;
 		}
 	}

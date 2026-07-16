@@ -108,6 +108,36 @@ int main(void)
     struct rec r4 = { 0 };
     CHECK(dump_walk_pid_modules(999999, &sel, rec_cb, &r4) == -1, "unreadable pid -> -1");
 
+    // --- a base INSIDE a module (not its load base) still resolves to it ---
+    // The Desktop feeds the executable-segment start (r-xp), which is a few
+    // pages above the normalized ELF-header base. Range matching must map any
+    // interior address back to the one module, reported at its true load base.
+    if (r.n > 0) {
+        unsigned long long load_base = r.base[0];
+        // Find a libc mapping line whose start is above the load base (a later
+        // segment, e.g. the r-xp text). That start is a valid interior address.
+        FILE *mf = fopen("/proc/self/maps", "r");
+        CHECK(mf != NULL, "can open own maps");
+        char lbuf[512];
+        unsigned long long interior = 0;
+        while (mf && fgets(lbuf, sizeof(lbuf), mf)) {
+            unsigned long long s, e; char perms[8]; char p[400];
+            p[0] = '\0';
+            if (sscanf(lbuf, "%llx-%llx %7s %*x %*x:%*x %*d %399[^\n]",
+                       &s, &e, perms, p) >= 3 &&
+                strstr(p, "libc") && s > load_base) { interior = s; break; }
+        }
+        if (mf) fclose(mf);
+        if (interior) {
+            struct dump_sel isel = { .bases = &interior, .nbase = 1 };
+            struct rec ri = { 0 };
+            int goti = dump_walk_pid_modules(self, &isel, rec_cb, &ri);
+            CHECK(goti == 1, "interior-address selector reports exactly one module");
+            CHECK(ri.n == 1 && ri.base[0] == load_base,
+                  "and it resolves to the module's load base, not the interior addr");
+        }
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

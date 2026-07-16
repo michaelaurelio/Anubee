@@ -905,6 +905,18 @@ int dump_sel_matches(const struct dump_sel *sel, const char *path,
 	return 0;
 }
 
+int dump_sel_matches_seg(const struct dump_sel *sel, const char *path,
+                         unsigned long long seg_start, unsigned long long seg_end)
+{
+	for (int i = 0; i < sel->nbase; i++)
+		if (sel->bases[i] >= seg_start && sel->bases[i] < seg_end)
+			return 1;
+	if (sel->npat > 0 &&
+	    dump_name_matches_any_track(sel->pats, sel->npat, path, sel->hit))
+		return 1;
+	return 0;
+}
+
 // The dump-on-exit / snapshot callback: rebuild one module to a file.
 struct dump_write_ctx {
 	const char       *outdir;
@@ -969,7 +981,7 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 			continue;
 		uint64_t base = load_base_of(m, i);
 		uint64_t foff = load_off_of(m, i);
-		if (!dump_sel_matches(sel, m[i].path, base))
+		if (!dump_sel_matches_seg(sel, m[i].path, m[i].start, m[i].end))
 			continue;
 
 		int skip = 0;

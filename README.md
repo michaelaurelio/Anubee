@@ -59,7 +59,7 @@ Here's exactly what each subcommand is for:
 
 You've seen what Anubee can do and how to run it. Here's proof that the quiet part of that promise is real, not just something we say.
 
-[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a companion app, built by the same team, whose only job is catching tools like Anubee in the act. It runs real anti-tamper checks and turns its screen red the instant it notices anything watching it.
+[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a companion app whose only job is catching tools like Anubee in the act. It runs real anti-tamper checks and turns its screen red the instant it notices anything watching it.
 
 <table>
 <tr>

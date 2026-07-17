@@ -17,33 +17,28 @@
 
 ---
 
-Ever wanted to know **exactly** what an app is really doing?
+**Ever wanted to know exactly what an app is really doing?**
 
-**You're in the right place!**
-
-Anubee sees what an app is doing, no matter how hidden it is. Most of the time, it watches silently, without leaving a trace.
+Anubee sees what an app is doing, no matter how hidden it is — watching from the kernel, most of the time without leaving a trace. No repackaging, no injected gadget, nothing the app can find.
 
 ---
 
 ## Demo
 
-Coming soon. While that's in the works, here's the full list of what Anubee can actually do:
+Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ---
 
-## Capabilities
+## Why Anubee?
 
-Here's exactly what each subcommand is for:
-
-| Subcommand | What it's for |
-|---|---|
-| `anubee syscalls` | Stealthy behavioral triage: see what an app does without it ever knowing you're watching |
-| `anubee funcs` | Deep function-level reverse engineering: exact arguments, return values, and timing, used when staying hidden isn't the priority |
-| `anubee correlate` | Tying a specific function to the syscalls it triggers, to understand exactly what a suspicious function does |
-| `anubee lib` | Discovering every native library an app loads, including ones it only loads dynamically, mid-run |
-| `anubee dump` | Pulling a decrypted or packed native library out of a running app and rebuilding it into something you can open in a disassembler |
-| `anubee trace` | Running `syscalls` and `funcs`/`lib` together from one launch, when you want both views at once |
-| `anubee mod` | Ready-made detection for specific malicious behavior (mass-deletion, exfiltration, accessibility abuse) without writing your own probe spec |
+- **Invisible while it watches.** Anubee reads everything the app does without writing a
+  single byte into it — anti-tamper and RASP checks come back clean.
+- **Unpacks what packers hide.** It rebuilds encrypted or packed native code straight out
+  of live memory, after the app decrypts itself — a clean, loadable file for your disassembler.
+- **Behavior with a cause.** Every syscall comes decoded and tied to the exact function
+  that triggered it, so even obfuscated code has nowhere to hide.
+- **Malware detection, out of the box.** Ransomware-style mass deletion, data exfiltration,
+  accessibility abuse, screen-capture spying — caught with no setup.
 
 ---
 

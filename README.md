@@ -50,21 +50,26 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ---
 
-## Watch It Get Caught, Live
+## Run It Past a Tool Built to Catch It
 
-You've seen what Anubee can do and how to run it. Here's proof that the quiet part of that promise is real.
+You don't have to take the stealth on faith. We ran Anubee against a tool built to catch it.
 
-[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a companion app whose only job is catching tools like Anubee in the act. It runs real anti-tamper checks and turns its screen red the instant it notices anything watching it.
+[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a purpose-built tripwire for exactly this kind of tool. It loops real anti-tamper checks and flips its screen red the instant something starts watching.
 
 <table>
 <tr>
-<td align="center" width="33%"><img src="assets/detector-clean.png" width="220"><br><sub>Fresh install. Green "SECURE" banner, 0/4 tripped, every check passing.</sub></td>
-<td align="center" width="33%"><img src="assets/detector-autoloop.png" width="220"><br><sub>Auto-loop switched on, so it keeps re-checking itself. Still green, still 0/4.</sub></td>
-<td align="center" width="33%"><img src="assets/detector-compromised.png" width="220"><br><sub>Seconds after <code>anubee mod prop-read</code> attaches: the banner flips to red "COMPROMISED".</sub></td>
+<td align="center" width="25%"><img src="assets/detector-clean.png" width="200"><br><sub>Baseline. Green "SECURE", 0/4 tripped, every check passing.</sub></td>
+<td align="center" width="25%"><img src="assets/detector-autoloop.png" width="200"><br><sub>Auto-loop on, re-checking itself every second. Still green, still 0/4.</sub></td>
+<td align="center" width="25%"><img src="assets/detector-compromised.png" width="200"><br><sub>Seconds after <code>anubee mod prop-read</code> attaches, the next check flips red "COMPROMISED" and names the exact address. The detector works.</sub></td>
+<td align="center" width="25%"><img src="assets/detector-stealth.png" width="200"><br><sub><code>anubee syscalls</code> attached and capturing. Still green, still 0/4. It never saw it.</sub></td>
 </tr>
 </table>
 
-That flip happened on the very next automatic check. It wasn't staged or delayed, and the log behind it names the exact memory address it caught. `prop-read` is one of the few Anubee capabilities detectable by design. Point one of the undetectable ones at the same app instead, `syscalls`, `lib`, or `dump`, and the banner never moves.
+First, proof the detector isn't for show: Anubee's one loud capability trips it right away.
+
+Then the quiet side runs against the same app. The detector keeps checking, and always coming back clean.
+
+That's what "invisible when it counts" means.
 
 ---
 

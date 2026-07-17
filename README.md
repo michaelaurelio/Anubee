@@ -44,9 +44,9 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ## Quick Start
 
-**Recommended:** [ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop) takes the raw output nobody wants to read by hand and turns it into something you can actually follow. It drives `anubee` for you while it's at it. [Click here](https://github.com/michaelaurelio/ARES-Desktop) and follow its own README for setup.
+**Get started:** one static `anubee` binary, nothing else to install. Grab it and run your first trace. Full walkthrough, prerequisites included: [`docs/getting-started.md`](docs/getting-started.md).
 
-**Full capability:** need more than what Desktop gives you? The binary puts every subcommand and flag directly in your hands. Full walkthrough, prerequisites included: [`docs/getting-started.md`](docs/getting-started.md).
+**Full capability:** [ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/ARES-Desktop) and follow its README.
 
 ---
 

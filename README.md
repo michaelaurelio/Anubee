@@ -1,4 +1,4 @@
-# Anubee: All-Seeing Eye for Android Apps
+# Anubee: Trace Deeper, Sting Faster
 
 <p align="center" width="100">
 

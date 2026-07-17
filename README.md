@@ -49,25 +49,9 @@ Here's exactly what each subcommand is for:
 
 ## Quick start
 
-**The fastest way in is [ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop).** A trace is worthless if you can't read it back: once you have one, you're staring down millions of syscalls and raw addresses, cross-referencing every meaningful hit in a disassembler by hand. ARES-Desktop closes that loop: load the trace, and follow the whole chain, from Java method call, to native function, to the exact address you'd open in a disassembler. It can drive `anubee` directly against a connected device too, so it stays the one place you actually work from. See its own README for setup.
+**Recommended:** that's [ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop) in the demo above, taking the raw output nobody wants to read by hand and turning it into something you can actually follow. It drives `anubee` for you while it's at it. [Click here](https://github.com/michaelaurelio/ARES-Desktop) and follow its own README for setup.
 
-Prefer the raw binary instead? Anubee needs a rooted arm64/aarch64 Android device with an eBPF + BTF kernel. Native build and first-trace walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
-
-```sh
-# Grab the prebuilt binary from Releases, or build it (container, no host setup):
-git clone --recurse-submodules <repo-url> anubee
-cd anubee
-./scripts/build.sh            # -> build/anubee
-
-./scripts/deploy.sh           # adb push build/anubee + specs to /data/local/tmp
-
-# First trace: every syscall com.example.app's librasp.so makes
-adb shell "su -c '/data/local/tmp/anubee syscalls -P com.example.app -l librasp.so \
-                   -o /data/local/tmp/trace.jsonl'"
-```
-
-The [Releases](../../releases) page has the prebuilt static binary. Most
-users never need to build.
+**Full capability:** need more than what Desktop gives you? The binary puts every subcommand and flag directly in your hands. Full walkthrough, prerequisites included: [`docs/getting-started.md`](docs/getting-started.md).
 
 ---
 

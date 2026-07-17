@@ -1,4 +1,4 @@
-# ANUBEE: All-Seeing Eye for Android Apps
+# Anubee: All-Seeing Eye for Android Apps
 
 <p align="center" width="100">
 
@@ -29,7 +29,7 @@ Most tracing tools force a choice: hook deep and risk getting caught, or stay hi
 
 ## Table of Contents
 
-- [ANUBEE: All-Seeing Eye for Android Apps](#anubee-all-seeing-eye-for-android-apps)
+- [Anubee: All-Seeing Eye for Android Apps](#anubee-all-seeing-eye-for-android-apps)
   - [Table of Contents](#table-of-contents)
   - [Why Anubee?](#why-anubee)
   - [Quick start](#quick-start)

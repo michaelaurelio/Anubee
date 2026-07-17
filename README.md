@@ -31,8 +31,8 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ## Why Anubee?
 
-- **Invisible while it watches.** Anubee reads everything the app does without writing a
-  single byte into it. Anti-tamper and RASP checks come back clean.
+- **Invisible when it counts.** Most of what Anubee does never writes a byte into the app.
+  It watches from the kernel, so anti-tamper and RASP checks come back clean.
 - **Unpacks what packers hide.** It rebuilds encrypted or packed native code straight out
   of live memory, after the app decrypts itself. You get a clean, loadable file for your disassembler.
 - **Behavior with a cause.** Every syscall comes decoded and tied to the exact function

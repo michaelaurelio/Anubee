@@ -58,10 +58,9 @@ You don't have to take the stealth on faith. We ran Anubee against a tool built 
 
 <table>
 <tr>
-<td align="center" width="25%"><img src="assets/detector-clean.png" width="200"><br><sub>Baseline. Green "SECURE", 0/4 tripped, every check passing.</sub></td>
-<td align="center" width="25%"><img src="assets/detector-autoloop.png" width="200"><br><sub>Auto-loop on, re-checking itself every second. Still green, still 0/4.</sub></td>
-<td align="center" width="25%"><img src="assets/detector-compromised.png" width="200"><br><sub>Seconds after <code>anubee mod prop-read</code> attaches, the next check flips red "COMPROMISED" and names the exact address. The detector works.</sub></td>
-<td align="center" width="25%"><img src="assets/detector-stealth.png" width="200"><br><sub><code>anubee syscalls</code> attached and capturing. Still green, still 0/4. It never saw it.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-clean.png" width="220"><br><sub>Clean baseline. SECURE, 0/4 tripped.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-autoloop.png" width="220"><br><sub>Auto-loop on, re-checking continuously. Still SECURE, 0/4.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-compromised.png" width="220"><br><sub>Only loud capability trips it: 1/4 tripped, banner turns COMPROMISED.</sub></td>
 </tr>
 </table>
 

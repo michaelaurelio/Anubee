@@ -10,6 +10,14 @@ one binary with a shared build, a type-discriminated trace schema, and one MCP
 server. The syscalls engine now uses `ANUBEE_*` naming and `syscalls.*` source files
 (rename completed).
 
+See also:
+- [`docs/getting-started.md`](docs/getting-started.md): prerequisites, build, deploy
+- [`docs/engines.md`](docs/engines.md): which subcommand to pick, full flag reference
+- [`docs/probe-specs.md`](docs/probe-specs.md): the probe-spec grammar shared by every engine
+- [`docs/analyzers.md`](docs/analyzers.md): `anubee mod`'s built-in analyzers
+- [`docs/reading-traces.md`](docs/reading-traces.md): output formats, the coverage record
+- [`docs/mcp.md`](docs/mcp.md): querying a trace (or driving a live device) from Claude
+
 ---
 
 ## 1. Architecture
@@ -1657,7 +1665,23 @@ output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLO
 
 ---
 
-## 10. Future work
+## 10. Limitations
+
+- arm64 / ELF64 only, no x86 targets. `syscalls` has a best-effort exception
+  for 32-bit/AArch32 app code.
+- Rooted device required. Needs eBPF + BTF and (usually) SELinux permissive.
+- `syscalls` attribution is an "issued by" heuristic, not full-stack
+  presence, with a few known blind spots: vDSO calls, and a brief pre-arm
+  window right after a library maps.
+- `funcs` and `correlate` write into the target and are detectable by
+  design. `dump`'s trigger modes and module-selection flags have some sharp
+  edges around already-running processes and APK-embedded libraries.
+- Trace coverage isn't always complete. Known gaps include snapshot
+  truncation, an unrecognized ART build, and blind CFI-unwind stops.
+
+---
+
+## 11. Future work
 
 Deferred architecture work, the `src/common/` consolidation roadmap, and known
 tech debt now live in [BACKLOG.md](BACKLOG.md).

@@ -17,7 +17,7 @@
 char LICENSE[] SEC("license") = "GPL";
 
 // Stub only -- nothing is ever submitted here. Exists solely because
-// ares_analyzer_t.setup() must return a non-NULL struct ring_buffer*, same
+// anubee_analyzer_t.setup() must return a non-NULL struct ring_buffer*, same
 // precedent as fileless-detect's events_rb (see fileless_detect.bpf.c's own
 // comment on this).
 struct {

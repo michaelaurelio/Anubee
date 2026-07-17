@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for ares_libtrace_emit_lib/unlib via ares_sink.
-// Pins the JSON field names and escaping so the schema is stable for ares-mcp ingest.
+// Host unit tests for anubee_libtrace_emit_lib/unlib via anubee_sink.
+// Pins the JSON field names and escaping so the schema is stable for anubee-mcp ingest.
 #include <linux/types.h>
 #include <stdbool.h>
 #include "common/emit.h"
@@ -41,9 +41,9 @@ int main(void)
     if (fd < 0) { perror("mkstemp"); return 1; }
     close(fd);
 
-    struct ares_sink sink = {0};
-    if (ares_sink_open(&sink, tmppath, "lib", 1) != 0) {
-        fprintf(stderr, "ares_sink_open failed\n");
+    struct anubee_sink sink = {0};
+    if (anubee_sink_open(&sink, tmppath, "lib", 1) != 0) {
+        fprintf(stderr, "anubee_sink_open failed\n");
         remove(tmppath);
         return 1;
     }
@@ -53,25 +53,25 @@ int main(void)
     e.start = 0xb4000000; e.end = 0xb4001000; e.pgoff = 0; e.inode = 42;
 
     // plain path
-    ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libc.so", NULL);
+    anubee_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libc.so", NULL);
     // path with JSON-significant chars
-    ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/lib\"evil\".so", NULL);
+    anubee_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/lib\"evil\".so", NULL);
     // with soname
-    ares_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libexample.so", "libexample.so");
+    anubee_libtrace_emit_lib(&sink, /*quiet=*/1, &e, "/data/app/libexample.so", "libexample.so");
 
     struct lib_unmap_event u = {0};
     u.h.pid = 5678; u.h.tid = 5680;
     u.start = 0xc0000000; u.end = 0xc0002000;
-    ares_libtrace_emit_unlib(&sink, /*quiet=*/1, &u);
+    anubee_libtrace_emit_unlib(&sink, /*quiet=*/1, &u);
 
     // MT3: packed-in-APK enumeration record
     struct apk_so_ref ref = {0};
     snprintf(ref.name, sizeof(ref.name), "libsentinel.so");
     ref.data_start = 12345;
     ref.size       = 6789;
-    ares_libtrace_emit_packed(&sink, /*quiet=*/1, "/data/app/base.apk", &ref);
+    anubee_libtrace_emit_packed(&sink, /*quiet=*/1, "/data/app/base.apk", &ref);
 
-    ares_sink_close(&sink);
+    anubee_sink_close(&sink);
     free(sink.jb.b);
 
     char *out = slurp(tmppath);

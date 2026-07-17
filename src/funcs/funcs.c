@@ -44,7 +44,7 @@
 
 // Argument parser module using argp.h
 const char *argp_program_bug_address = "<vincent.kwee@binus.ac.id>";
-static const char doc[] = "ares funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
+static const char doc[] = "anubee funcs — uprobe function tracer for Android apps (LOUD: writes BRK into target)"
     "\v"
     "Note: -o also prints console output (dual-channel); pass -q to suppress it.";
 static const char args_doc[] = "";
@@ -145,8 +145,8 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
             break;
         
         case 'p':
-        case ARES_KEY_SIBLINGS:
-        case ARES_KEY_NO_FOLLOW:
+        case ANUBEE_KEY_SIBLINGS:
+        case ANUBEE_KEY_NO_FOLLOW:
             return parse_target_arg(key, arg, state, &args->tgt);
 
         // Default case
@@ -161,10 +161,10 @@ static const struct argp argp = { options, parse_opts, args_doc, doc, 0, 0, 0 };
 
 // Application UID resolver 
 // launch/UID helpers (sh_exec / resolve_uid / get_pid_uid / resolve_component)
-// moved to src/common/launch.{c,h} as ares_*; shared with the correlate engine.
+// moved to src/common/launch.{c,h} as anubee_*; shared with the correlate engine.
 
 
-// Ctrl-C / SIGTERM → ares_install_stop_handler (cmd_funcs only, not under trace).
+// Ctrl-C / SIGTERM → anubee_install_stop_handler (cmd_funcs only, not under trace).
 // sig_atomic_t so the same type can be shared with the kprobe engine under trace.
 static volatile sig_atomic_t exiting = 0;
 
@@ -178,14 +178,14 @@ static char g_funcs_pkg[256];           // package to launch (spawn mode), else 
 static char g_funcs_activity[256];      // launch activity override (empty = auto-resolve)
 static int  g_funcs_uid;               // resolved UID for the launch banner
 
-// Output sink: shared ares_sink for structured JSONL; stdout/stderr for human text.
-static struct ares_sink g_sink;
+// Output sink: shared anubee_sink for structured JSONL; stdout/stderr for human text.
+static struct anubee_sink g_sink;
 
 // Coverage-health record (CR5). Mutated only from process_call_return()'s STACK
 // branch, which (N1 fix) runs exclusively on the worker thread; read at teardown
 // only after pthread_join(g_worker, ...) has returned, so the worker is no longer
 // running - no lock needed (same reasoning as syscalls.c's g_cov).
-static struct ares_coverage g_cov = { .engine = "funcs" };
+static struct anubee_coverage g_cov = { .engine = "funcs" };
 
 // SYM1 Phase 5c: per-symbol ("module!func") tally, mirrors mod execve.c's
 // exec_stats[] -- tallied unconditionally so the summary survives -q. Only
@@ -233,7 +233,7 @@ static void funcs_print_summary(void)
            total, total == 1 ? "" : "s", g_funcs_stat_count, g_funcs_stat_count == 1 ? "" : "s");
 }
 
-static void funcs_emit_summary(struct ares_sink *s)
+static void funcs_emit_summary(struct anubee_sink *s)
 {
     if (g_funcs_stat_count == 0 || !s->f) return;
     unsigned long long total = 0;
@@ -252,7 +252,7 @@ static void funcs_emit_summary(struct ares_sink *s)
         jb_c(j, '}');
     }
     jb_s(j, "]}");
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 // Stack-snapshot sidecar (JSON Lines), written by the drain thread only (no lock).
@@ -260,10 +260,10 @@ static FILE               *g_stacks;
 static unsigned long long  g_stack_count;
 
 // Worker-thread drain: ring callback pushes CALL/RETURN; worker pops + processes.
-static struct ares_evq g_q;
+static struct anubee_evq g_q;
 static pthread_t       g_worker;
 static int             g_worker_started;
-static struct ares_drain_progress g_dp;   // post-Ctrl-C drain progress (teardown only)
+static struct anubee_drain_progress g_dp;   // post-Ctrl-C drain progress (teardown only)
 
 static bool g_quiet = false;
 
@@ -279,7 +279,7 @@ static void funcs_drops_tick(void *ctx)
     pthread_mutex_lock(&g_q.m);
     unsigned long long qd = g_q.dropped;     // worker thread writes this concurrently
     pthread_mutex_unlock(&g_q.m);
-    unsigned long long d = ares_drops_read(bpf_map__fd(skel->maps.dropped)) + qd;
+    unsigned long long d = anubee_drops_read(bpf_map__fd(skel->maps.dropped)) + qd;
     if (d > g_funcs_last_drops) {
         fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
         g_funcs_last_drops = d;
@@ -367,7 +367,7 @@ static void attach_one_custom_target(const struct probe_resolve_ctx *ctx, const 
             entry_prog, false, uprobe_pid, path, tgt.offset);
         if (!probe_links[idx] && map_start && map_end) {
             char map_files[80];
-            ares_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
+            anubee_map_files_path(map_files, sizeof(map_files), pid, map_start, map_end);
             if (access(map_files, F_OK) == 0) {
                 probe_links[idx] = bpf_program__attach_uprobe(
                     entry_prog, false, uprobe_pid, map_files, tgt.offset);
@@ -499,7 +499,7 @@ static void process_call_return(const void *data, size_t data_sz)
     const struct trace_event_header *header = data;
     if (data_sz < sizeof(*header)) return;
 
-    if (header->type == ARES_EVENT_CALL) {
+    if (header->type == ANUBEE_EVENT_CALL) {
         if (data_sz < sizeof(struct event)) return;
         const struct event *e = data;
 
@@ -528,9 +528,9 @@ static void process_call_return(const void *data, size_t data_sz)
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
                 char js[208];
-                const char *jsp = ares_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
+                const char *jsp = anubee_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp, syms);
-                ares_sink_emit(&g_sink);
+                anubee_sink_emit(&g_sink);
                 pthread_mutex_unlock(&g_sink_lock);
             }
         } else {
@@ -616,7 +616,7 @@ static void process_call_return(const void *data, size_t data_sz)
         return;
     }
 
-    if (header->type == ARES_EVENT_RETURN) {
+    if (header->type == ANUBEE_EVENT_RETURN) {
         if (data_sz < sizeof(struct event)) return;
         const struct event *e = data;
 
@@ -677,7 +677,7 @@ static void process_call_return(const void *data, size_t data_sz)
             pthread_mutex_lock(&g_sink_lock);
             g_sink.jb.len = 0;
             funcs_emit_return(&g_sink.jb, e, bname, fname, target, syms);
-            ares_sink_emit(&g_sink);
+            anubee_sink_emit(&g_sink);
             pthread_mutex_unlock(&g_sink_lock);
         }
 
@@ -701,19 +701,19 @@ static void process_call_return(const void *data, size_t data_sz)
         }
     }
 
-    if (header->type == ARES_EVENT_STACK) {
-        if (data_sz < (int)sizeof(struct ares_stack_snapshot)) return;
+    if (header->type == ANUBEE_EVENT_STACK) {
+        if (data_sz < (int)sizeof(struct anubee_stack_snapshot)) return;
         // ponytail: worker-thread scratch jbuf — worker is single-writer, no lock
         // (N1 fix: this used to run on the drain thread, same single-writer
         // reasoning applied there; only the thread changed).
         static struct jbuf sj;
         sj.len = 0;
-        ares_stack_snapshot_emit_json(&sj, data);
+        anubee_stack_snapshot_emit_json(&sj, data);
         if (sj.b && sj.len)
             fwrite(sj.b, 1, sj.len, g_stacks);
         g_stack_count++;
 
-        const struct ares_stack_snapshot *s = (const void *)data;
+        const struct anubee_stack_snapshot *s = (const void *)data;
         uint64_t pcs[64], sps[64];
         struct cfi_step_diag diags[64];
         // Unconditional zero-init: cfi_unwind_snapshot's early-exit break
@@ -728,7 +728,7 @@ static void process_call_return(const void *data, size_t data_sz)
             g_cov.snaps_total++;
             g_cov.cfi_walks++;
             int stop_reason = diags[n - 1].stop_reason;
-            if (stop_reason >= 0 && stop_reason < ARES_CFI_STOP_N)
+            if (stop_reason >= 0 && stop_reason < ANUBEE_CFI_STOP_N)
                 g_cov.cfi_stop[stop_reason]++;
 
             // AA9: resolve each frame once and share it with both emitters
@@ -742,12 +742,12 @@ static void process_call_return(const void *data, size_t data_sz)
             }
 
             struct jbuf cj = {0};
-            ares_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, syms, NULL);
+            anubee_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, syms, NULL);
             if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
             free(cj.b);
             char frag[208];
-            if (ares_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
-                ares_jcache_put(s->stack_id, frag);
+            if (anubee_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
+                anubee_jcache_put(s->stack_id, frag);
         }
     }
 }
@@ -755,13 +755,13 @@ static void process_call_return(const void *data, size_t data_sz)
 static void *funcs_worker_main(void *arg)
 {
     (void)arg;
-    static char rec[sizeof(struct ares_stack_snapshot) + 64];
+    static char rec[sizeof(struct anubee_stack_snapshot) + 64];
     size_t sz;
     unsigned long flushed = 0;
-    while (ares_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
+    while (anubee_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
         process_call_return(rec, sz);
-        if (g_sink.f && (++flushed & ARES_FLUSH_MASK) == 0)
-            ares_sink_flush(&g_sink); // fflush only; glibc FILE ops are thread-safe; no g_sink_lock needed
+        if (g_sink.f && (++flushed & ANUBEE_FLUSH_MASK) == 0)
+            anubee_sink_flush(&g_sink); // fflush only; glibc FILE ops are thread-safe; no g_sink_lock needed
     }
     return NULL;
 }
@@ -775,25 +775,25 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     // Structured record status (per event type):
     //   CALL   — done (worker via funcs_emit_call)
     //   RETURN — done (worker via funcs_emit_return)
-    //   LIB    — done (drain via ares_libtrace_emit_lib, g_sink_lock)
-    //   UNLIB  — done (drain via ares_libtrace_emit_unlib, g_sink_lock)
+    //   LIB    — done (drain via anubee_libtrace_emit_lib, g_sink_lock)
+    //   UNLIB  — done (drain via anubee_libtrace_emit_unlib, g_sink_lock)
     //   STACK  — done (worker via process_call_return, N1 fix — mirrors syscalls'
     //            worker-only CFI/chain walk; queued here, not processed inline)
 
-    if (header->type == ARES_EVENT_STACK) {
+    if (header->type == ANUBEE_EVENT_STACK) {
         if (g_stacks)
-            ares_evq_push(&g_q, data, data_sz);
+            anubee_evq_push(&g_q, data, data_sz);
         return 0;
     }
 
-    if (header->type == ARES_EVENT_MAP) {
+    if (header->type == ANUBEE_EVENT_MAP) {
         const struct lib_map_event *e = data;
         if (data_sz < sizeof(*e))
             return 0;
 
         if (verbose) err_print("         [event]   | MMAP : %s\n", e->name);
         char path[256];
-        if (ares_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
+        if (anubee_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
             return 0;
 
         // Emit structured lib record for every load (regardless of probe filter).
@@ -801,7 +801,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         // (funcs already prints [uprobe]/[sym] attach lines — avoids double-reporting).
         if (g_sink.f || verbose) {
             pthread_mutex_lock(&g_sink_lock);
-            ares_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
+            anubee_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
             pthread_mutex_unlock(&g_sink_lock);
         }
 
@@ -812,23 +812,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         return 0;
     }
 
-    if (header->type == ARES_EVENT_UNMAP) {
+    if (header->type == ANUBEE_EVENT_UNMAP) {
         const struct lib_unmap_event *e = data;
         if (data_sz < sizeof(*e))
             return 0;
 
         if (g_sink.f || verbose) {
             pthread_mutex_lock(&g_sink_lock);
-            ares_libtrace_emit_unlib(&g_sink, g_quiet || !verbose, e);
+            anubee_libtrace_emit_unlib(&g_sink, g_quiet || !verbose, e);
             pthread_mutex_unlock(&g_sink_lock);
         }
 
         return 0;
     }
 
-    if (header->type == ARES_EVENT_CALL || header->type == ARES_EVENT_RETURN) {
+    if (header->type == ANUBEE_EVENT_CALL || header->type == ANUBEE_EVENT_RETURN) {
         if (!resolve_syms)
-            ares_evq_push(&g_q, data, data_sz);
+            anubee_evq_push(&g_q, data, data_sz);
         return 0;
     }
 
@@ -837,13 +837,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 
 // La driver function
-int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
+int funcs_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
     // Boilerplate setup
     int err = 0;
     int uid = -1;
 
-    libbpf_set_print(ares_libbpf_quiet);
+    libbpf_set_print(anubee_libbpf_quiet);
 
     // Argument parsing
     struct args args = { .c = COMMON_ARGS_INIT };
@@ -860,7 +860,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     if (args.c.output_file) {
         int jsonl = 1; // SYM1 Phase 5a: JSONL always, matches lib/mod/correlate
-        if (ares_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
+        if (anubee_sink_open(&g_sink, args.c.output_file, "event", jsonl) != 0) {
             fprintf(stderr, "cannot open '%s': %s\n", args.c.output_file, strerror(errno));
             return 1;
         }
@@ -889,7 +889,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         // Remember the package so the caller can launch it after setup returns.
         snprintf(g_funcs_pkg, sizeof(g_funcs_pkg), "%s", args.package_name);
         snprintf(g_funcs_activity, sizeof(g_funcs_activity), "%s", args.activity);
-        uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(args.package_name);
+        uid = (rc && rc->uid > 0) ? rc->uid : anubee_resolve_uid(args.package_name);
         if (uid < 0) {
             err_print(" [spawn] > could not resolve UID for '%s' (installed? run as root?)\n", args.package_name);
             err = -1;
@@ -934,7 +934,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     {
         int bufmb = args.c.bufmb;
-        size_t bufbytes = ares_round_pow2((unsigned long)bufmb << 20);
+        size_t bufbytes = anubee_round_pow2((unsigned long)bufmb << 20);
         bpf_map__set_max_entries(skel->maps.events_rb, (unsigned int)bufbytes);
         skel->rodata->snapshot_enabled = (g_stacks != NULL) ? 1 : 0;
 
@@ -993,7 +993,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
 
             if (args.tgt.siblings) {
-                int pid_uid = ares_get_pid_uid(args.tgt.pids[i]);
+                int pid_uid = anubee_get_pid_uid(args.tgt.pids[i]);
                 if (pid_uid > 0) {
                     __u32 vuid = (__u32)pid_uid;
                     bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
@@ -1002,7 +1002,7 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         }
 
         if (!args.tgt.no_follow) {
-            g_follow_fork_link = bpf_program__attach(skel->progs.ares_follow_fork);
+            g_follow_fork_link = bpf_program__attach(skel->progs.anubee_follow_fork);
             if (!g_follow_fork_link)
                 fprintf(stderr, "funcs: follow-fork attach failed (non-fatal)\n");
         }
@@ -1016,8 +1016,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
                 if (!mf) continue;
                 char mline[512];
                 while (fgets(mline, sizeof(mline), mf)) {
-                    struct ares_map_line ml;
-                    if (!ares_parse_maps_line(mline, &ml)) continue;
+                    struct anubee_map_line ml;
+                    if (!anubee_parse_maps_line(mline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
                     apply_custom_specs_for_file(&g_rctx, args.tgt.pids[p], ml.path, args.tgt.pids[p], 0, 0);
                 }
@@ -1042,8 +1042,8 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             if (cf) {
                 char cline[512];
                 while (fgets(cline, sizeof(cline), cf)) {
-                    struct ares_map_line ml;
-                    if (!ares_parse_maps_line(cline, &ml)) continue;
+                    struct anubee_map_line ml;
+                    if (!anubee_parse_maps_line(cline, &ml)) continue;
                     if (ml.path[0] != '/' || !ml.exec) continue;
                     apply_custom_specs_for_file(&g_rctx, zygote_pid, ml.path, -1, 0, 0);
                 }
@@ -1066,14 +1066,14 @@ int funcs_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     // Start the worker drain thread last — target_registry[] is now fully populated,
     // so the worker can look up targets without racing the setup-time resolve loops.
-    if (ares_evq_init(&g_q, (size_t)args.c.queue_mb << 20) != 0) {
+    if (anubee_evq_init(&g_q, (size_t)args.c.queue_mb << 20) != 0) {
         err_print(" [work] > cannot allocate %d MB worker queue\n", args.c.queue_mb);
         err = -1;
         goto cleanup;
     }
     if (pthread_create(&g_worker, NULL, funcs_worker_main, NULL) != 0) {
         err_print(" [work] > cannot start worker thread\n");
-        ares_evq_destroy(&g_q);
+        anubee_evq_destroy(&g_q);
         err = -1;
         goto cleanup;
     }
@@ -1094,7 +1094,7 @@ int funcs_run(volatile sig_atomic_t *stop)
 {
     g_funcs_drop_ticks = 0;
     g_funcs_last_drops = 0;
-    int err = ares_rb_poll_until_cb(g_events_rb, stop, funcs_drops_tick, NULL);
+    int err = anubee_rb_poll_until_cb(g_events_rb, stop, funcs_drops_tick, NULL);
     if (err < 0)
         err_print("   [err] > ring buffer poll error: %d\n", err);
 
@@ -1110,12 +1110,12 @@ void funcs_teardown(void)
         // drain can run for minutes - report progress instead of looking hung,
         // and warn if a 2nd Ctrl-C throws the rest of the queue away. begin()
         // must precede done=1: it freezes the backlog it is about to measure.
-        ares_drain_progress_begin(&g_dp, &g_q, "funcs");
+        anubee_drain_progress_begin(&g_dp, &g_q, "funcs");
         pthread_mutex_lock(&g_q.m);
         g_q.done = 1;
         pthread_cond_signal(&g_q.cv);
         pthread_mutex_unlock(&g_q.m);
-        ares_drain_progress_join(&g_dp, g_worker);
+        anubee_drain_progress_join(&g_dp, g_worker);
         g_worker_started = 0;
     }
 
@@ -1132,17 +1132,17 @@ void funcs_teardown(void)
 
     if (skel) {
         // Always report the final tally, so "no message" never means "didn't
-        // check". Subsumes the old ares_drops_report: ring/queue drops are
+        // check". Subsumes the old anubee_drops_report: ring/queue drops are
         // coverage fields here. Safe to read g_cov here: the drain loop
         // (funcs_run's ring-buffer poll, the only writer) has already
         // returned and the worker thread has been joined above.
         int covfd = bpf_map__fd(skel->maps.coverage_stats);
-        g_cov.snaps_truncated = ares_coverage_read(covfd, COV_TRUNC);
-        g_cov.depth_capped    = ares_coverage_read(covfd, COV_DEPTH_CAP);
-        g_cov.ring_drops      = ares_drops_read(bpf_map__fd(skel->maps.dropped));
+        g_cov.snaps_truncated = anubee_coverage_read(covfd, COV_TRUNC);
+        g_cov.depth_capped    = anubee_coverage_read(covfd, COV_DEPTH_CAP);
+        g_cov.ring_drops      = anubee_drops_read(bpf_map__fd(skel->maps.dropped));
         g_cov.queue_drops     = g_q.dropped;
-        g_cov.managed_naming_off = ares_art_naming_disabled();
-        ares_coverage_report(&g_sink, &g_cov);
+        g_cov.managed_naming_off = anubee_art_naming_disabled();
+        anubee_coverage_report(&g_sink, &g_cov);
         // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
         // (sink must still be open for emit_summary's JSON line).
         funcs_print_summary();
@@ -1152,9 +1152,9 @@ void funcs_teardown(void)
         funcs_bpf__destroy(skel);
         skel = NULL;
     }
-    ares_evq_destroy(&g_q);
-    ares_sink_close(&g_sink);
-    ares_sink_report(&g_sink);
+    anubee_evq_destroy(&g_q);
+    anubee_sink_close(&g_sink);
+    anubee_sink_report(&g_sink);
     if (g_stacks) {
         fclose(g_stacks);
         g_stacks = NULL;
@@ -1168,12 +1168,12 @@ int cmd_funcs(int argc, char **argv)
 {
     // MT1: argp_parse(ARGP_NO_EXIT) inside funcs_setup returns 0 on --help/--usage
     // (it only prints), so control would otherwise fall through into attach/run.
-    if (ares_wants_help(argc, argv)) {
+    if (anubee_wants_help(argc, argv)) {
         argp_help(&argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
         return 0;
     }
 
-    ares_install_stop_handler(&exiting);
+    anubee_install_stop_handler(&exiting);
 
     int ret = funcs_setup(argc, argv, NULL);
     if (ret != 0)
@@ -1182,8 +1182,8 @@ int cmd_funcs(int argc, char **argv)
     // Standalone: launch the package now that probes + UID are armed (spawn mode
     // only; -p PID attach mode has no package and never launches).
     if (g_funcs_pkg[0]) {
-        ares_launch_banner(g_funcs_pkg, g_funcs_uid);
-        if (ares_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL, NULL) != 0) {
+        anubee_launch_banner(g_funcs_pkg, g_funcs_uid);
+        if (anubee_launch_app(g_funcs_pkg, g_funcs_activity[0] ? g_funcs_activity : NULL, NULL) != 0) {
             err_print(" [spawn] > failed to launch %s\n", g_funcs_pkg);
             funcs_teardown();
             return 1;

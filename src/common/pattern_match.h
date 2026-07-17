@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef __ARES_COMMON_PATTERN_MATCH_H
-#define __ARES_COMMON_PATTERN_MATCH_H
+#ifndef __ANUBEE_COMMON_PATTERN_MATCH_H
+#define __ANUBEE_COMMON_PATTERN_MATCH_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -32,4 +32,4 @@ bool pm_regex(const char *pattern, const char *text);
 // as pm_regex.
 bool pm_regex_valid(const char *pattern, char *err, size_t errlen);
 
-#endif /* __ARES_COMMON_PATTERN_MATCH_H */
+#endif /* __ANUBEE_COMMON_PATTERN_MATCH_H */

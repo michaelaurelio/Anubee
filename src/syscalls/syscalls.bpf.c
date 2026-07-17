@@ -145,8 +145,8 @@ static __always_inline int syscall_wanted(__u64 nr)
 }
 
 // Shared snapshot BPF helpers (hash + emit) — pulled from common.
-// ARES_SNAPSHOT_RB names the ringbuf this engine uses.
-#define ARES_SNAPSHOT_RB events
+// ANUBEE_SNAPSHOT_RB names the ringbuf this engine uses.
+#define ANUBEE_SNAPSHOT_RB events
 #include "common/stack_snapshot.bpf.h"
 
 // ---- syscall entry -------------------------------------------------------
@@ -202,11 +202,11 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	// (snapshot_enabled is never set in capture-all).
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
-		stack_id = ares_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
+		stack_id = anubee_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			ares_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
 		}
 	}
 
@@ -346,11 +346,11 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
-		stack_id = ares_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
+		stack_id = anubee_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			ares_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
 		}
 	}
 

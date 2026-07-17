@@ -1,5 +1,5 @@
-#ifndef ARES_DWARF_H
-#define ARES_DWARF_H
+#ifndef ANUBEE_DWARF_H
+#define ANUBEE_DWARF_H
 #include <stdint.h>
 #include <stddef.h>
 

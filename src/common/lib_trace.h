@@ -3,22 +3,22 @@
 //
 // One implementation of the mmap/munmap capture, /proc/<pid>/maps full-path
 // resolution, and the unified "[lib]" emitter, used by every engine:
-//   - `ares lib`     (src/lib)      — standalone library-load tracer
-//   - `ares syscalls`(src/syscalls) — feeds its lib_ranges stack-origin filter
+//   - `anubee lib`     (src/lib)      — standalone library-load tracer
+//   - `anubee syscalls`(src/syscalls) — feeds its lib_ranges stack-origin filter
 //                                     + emits lib/unlib records to the -o sink
-//   - `ares funcs`   (src/funcs)    — triggers uprobe attachment on map
-//   - `ares correlate`(src/correlate) — emits lib/unlib records alongside spans
-//   - `ares dump`    (src/dump)     — library-load context for the dump
+//   - `anubee funcs`   (src/funcs)    — triggers uprobe attachment on map
+//   - `anubee correlate`(src/correlate) — emits lib/unlib records alongside spans
+//   - `anubee dump`    (src/dump)     — library-load context for the dump
 //
 // The BPF probe lives in lib_trace.bpf.h (source-shared, compiled into each
 // engine's own skeleton — the detectability firewall requires per-engine BPF
 // objects). The userspace API below is linked once (build/common.part.o).
-#ifndef ARES_COMMON_LIB_TRACE_H
-#define ARES_COMMON_LIB_TRACE_H
+#ifndef ANUBEE_COMMON_LIB_TRACE_H
+#define ANUBEE_COMMON_LIB_TRACE_H
 
 #ifndef __bpf__
 #include <linux/types.h>   // __u32/__u64/__s32 in userspace; BPF gets them from vmlinux.h
-#include "common/emit.h"   // struct ares_sink (used in emitter signatures)
+#include "common/emit.h"   // struct anubee_sink (used in emitter signatures)
 #endif
 
 #define LIBTRACE_MAX_NAME 128
@@ -66,7 +66,7 @@ struct lib_unmap_event {
 // by start address and caches basename->path; on an unreadable maps file, falls
 // back to the cache keyed on the BPF-supplied basename. Returns 0 and fills
 // `out` on success, -1 if the path could not be resolved.
-int ares_libtrace_resolve_path(pid_t pid, unsigned long long start,
+int anubee_libtrace_resolve_path(pid_t pid, unsigned long long start,
                                const char *basename, char *out, size_t outsz);
 
 // Format the unified, MCP-compatible library-load text line (no trailing newline):
@@ -74,24 +74,24 @@ int ares_libtrace_resolve_path(pid_t pid, unsigned long long start,
 // For callers (e.g. the funcs engine) that route text through their own output
 // plumbing rather than the printf-based emitter below. `soname` is an optional
 // APK-embedded .so name (NULL to omit).
-void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_event *e,
+void anubee_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_event *e,
                               const char *fullpath, const char *soname);
 
 // Emit one library-load record: the unified line (see format_lib) to stdout unless
-// `quiet`; if `sink->f` != NULL also writes a {"type":"lib",...} record via ares_sink.
-void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_map_event *e,
+// `quiet`; if `sink->f` != NULL also writes a {"type":"lib",...} record via anubee_sink.
+void anubee_libtrace_emit_lib(struct anubee_sink *sink, int quiet, const struct lib_map_event *e,
                             const char *fullpath, const char *soname);
 
 // Emit one unmap record: "[unlib] pid <N> [0x<start>, 0x<end>)" unless `quiet`;
 // {"type":"unlib",...} if `sink->f` != NULL.
-void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e);
+void anubee_libtrace_emit_unlib(struct anubee_sink *sink, int quiet, const struct lib_unmap_event *e);
 
 // MT3: emit one packed-in-APK native record — a lib/*/*.so entry apk_list_sos
 // found inside apk_path, whether or not it's actually been mapped this run.
 // "[lib-packed] <apk> -> <soname> @0x<offset> (<size> b)" unless `quiet`;
 // {"type":"lib_packed",...} if `sink->f` != NULL.
-void ares_libtrace_emit_packed(struct ares_sink *sink, int quiet, const char *apk_path,
+void anubee_libtrace_emit_packed(struct anubee_sink *sink, int quiet, const char *apk_path,
                                const struct apk_so_ref *ref);
 #endif /* __bpf__ */
 
-#endif /* ARES_COMMON_LIB_TRACE_H */
+#endif /* ANUBEE_COMMON_LIB_TRACE_H */

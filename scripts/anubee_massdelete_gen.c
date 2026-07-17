@@ -11,7 +11,7 @@
 
 int main(int argc, char **argv)
 {
-    const char *dir = argc > 1 ? argv[1] : "/sdcard/.ares_massdelete_test";
+    const char *dir = argc > 1 ? argv[1] : "/sdcard/.anubee_massdelete_test";
     mkdir(dir, 0777);
     sleep(3); // give the caller time to attach kprobes before the burst
     for (int i = 1; i <= 25; i++) {

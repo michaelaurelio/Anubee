@@ -4,8 +4,8 @@
 // both BPF objects (after vmlinux.h) and userspace loaders, so it must NOT pull
 // <linux/types.h> or libc headers (would clash with vmlinux.h) — same rule as
 // src/correlate/correlate.h.
-#ifndef __ARES_TRACE_SCHEMA_H
-#define __ARES_TRACE_SCHEMA_H
+#ifndef __ANUBEE_TRACE_SCHEMA_H
+#define __ANUBEE_TRACE_SCHEMA_H
 
 // Canonical per-event header. Replaces the byte-identical struct event_header
 // (funcs) and struct corr_event_header (correlate).
@@ -16,7 +16,7 @@ struct trace_event_header {
     __u32 _pad;
 };
 
-// The single discriminator vocabulary. Host-side ares-mcp keys ingest on the
+// The single discriminator vocabulary. Host-side anubee-mcp keys ingest on the
 // string form (see trace_type_name). Not compiled into BPF objects (vmlinux.h
 // defines conflicting enum members such as TRACE_STACK).
 #ifndef __bpf__
@@ -24,8 +24,8 @@ enum trace_event_type {
     TRACE_CALL = 1,   // native function entry (funcs)
     TRACE_RETURN,     // native function return (funcs)
     TRACE_SYSCALL,    // syscall record (syscalls / correlate)
-    TRACE_LIB,        // library mmap  ("lib"   — matches ares_libtrace_emit_lib output)
-    TRACE_UNLIB,      // library munmap ("unlib" — matches ares_libtrace_emit_unlib output)
+    TRACE_LIB,        // library mmap  ("lib"   — matches anubee_libtrace_emit_lib output)
+    TRACE_UNLIB,      // library munmap ("unlib" — matches anubee_libtrace_emit_unlib output)
     TRACE_SPAWN,      // process fork
     TRACE_PROC_EXIT,  // process exit
     TRACE_EXECVE,     // execve
@@ -47,4 +47,4 @@ enum trace_event_type {
 const char *trace_type_name(unsigned type);
 #endif /* __bpf__ */
 
-#endif /* __ARES_TRACE_SCHEMA_H */
+#endif /* __ANUBEE_TRACE_SCHEMA_H */

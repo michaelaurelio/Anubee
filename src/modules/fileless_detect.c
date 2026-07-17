@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod fileless-detect` — userspace analyzer for the anonymous-
+// `anubee mod fileless-detect` — userspace analyzer for the anonymous-
 // executable-mapping signal. Owns the fileless_detect BPF skeleton lifecycle;
 // the dispatcher in mod.c drives the poll loop and teardown order. Kernel
 // side: src/modules/fileless_detect.bpf.c.
@@ -12,7 +12,7 @@
 // FILELESS_DETECT_GRACE_NS unsuppressed, builds a struct fileless_detect_event and
 // emits it through the existing mod_emit_fileless_detect()/console-line path
 // -- unchanged from before this revision. events_rb/the ring buffer
-// ares_analyzer_t.setup() must return exists only to satisfy that
+// anubee_analyzer_t.setup() must return exists only to satisfy that
 // interface; it carries no traffic for this analyzer.
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +70,7 @@ static struct ring_buffer       *g_rb = NULL;
 static struct bpf_link          *mmap_entry_link = NULL;
 static struct bpf_link          *mmap_ret_link = NULL;
 static struct bpf_link          *prctl_link = NULL;
-static struct ares_mod_ctx      *g_mc = NULL;
+static struct anubee_mod_ctx      *g_mc = NULL;
 
 // ── grace-window background thread ──────────────────────────────────────
 // Polls pending_map every FILELESS_POLL_MS; any entry older than
@@ -102,7 +102,7 @@ static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, co
     }
     if (g_mc->sink != NULL) {
         mod_emit_fileless_detect(&g_mc->sink->jb, &e);
-        ares_sink_emit(g_mc->sink);
+        anubee_sink_emit(g_mc->sink);
     }
 }
 
@@ -144,7 +144,7 @@ static void *fileless_poll_loop(void *arg)
 // ---- ring-buffer callback ---------------------------------------------------
 // Unused: detection no longer flows through events_rb (see Revision 1 note
 // above). Kept only because ring_buffer__new() requires a non-NULL sample
-// callback and ares_analyzer_t.setup() must return a non-NULL ring_buffer*
+// callback and anubee_analyzer_t.setup() must return a non-NULL ring_buffer*
 // for the dispatcher's poll loop.
 
 static int fileless_handle_event(void *ctx, void *data, size_t sz)
@@ -155,7 +155,7 @@ static int fileless_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *fileless_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *fileless_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_mc = mc;
 
@@ -198,7 +198,7 @@ static struct ring_buffer *fileless_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        fileless_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        fileless_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!fileless_ff) fprintf(stderr, "mod fileless-detect: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -264,7 +264,7 @@ static void fileless_print_summary(void)
            fileless_stat_count, fileless_stat_count == 1 ? "" : "es");
 }
 
-static void fileless_emit_summary(struct ares_sink *s)
+static void fileless_emit_summary(struct anubee_sink *s)
 {
     if (fileless_stat_count == 0) return;
 
@@ -283,17 +283,17 @@ static void fileless_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long fileless_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_fileless_detect = {
+const anubee_analyzer_t analyzer_fileless_detect = {
     .name          = "fileless-detect",
     .description   = "Detect anonymous executable memory mappings with no ART JIT "
                       "tag (fileless native code execution -- the mechanism behind "

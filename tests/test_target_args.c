@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for the shared target-arg CSV parser (ares_parse_pid_list).
+// Host unit tests for the shared target-arg CSV parser (anubee_parse_pid_list).
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -18,23 +18,23 @@ int main(void)
     pid_t buf[64];
 
     // basic comma-separated list
-    CHECK_EQ(ares_parse_pid_list("10,20,30", buf, 64), 3, "csv count 3");
+    CHECK_EQ(anubee_parse_pid_list("10,20,30", buf, 64), 3, "csv count 3");
     CHECK_EQ(buf[0], 10, "csv[0]=10");
     CHECK_EQ(buf[1], 20, "csv[1]=20");
     CHECK_EQ(buf[2], 30, "csv[2]=30");
 
     // single value
-    CHECK_EQ(ares_parse_pid_list("42", buf, 64), 1, "single count");
+    CHECK_EQ(anubee_parse_pid_list("42", buf, 64), 1, "single count");
     CHECK_EQ(buf[0], 42, "single value=42");
 
     // cap respected: max=2 on a 3-element list → only 2 written
-    CHECK_EQ(ares_parse_pid_list("1,2,3", buf, 2), 2, "cap at max=2");
+    CHECK_EQ(anubee_parse_pid_list("1,2,3", buf, 2), 2, "cap at max=2");
     CHECK_EQ(buf[0], 1, "capped[0]=1");
     CHECK_EQ(buf[1], 2, "capped[1]=2");
 
     // empty / NULL
-    CHECK_EQ(ares_parse_pid_list("", buf, 64), 0, "empty csv");
-    CHECK_EQ(ares_parse_pid_list(NULL, buf, 64), 0, "null csv");
+    CHECK_EQ(anubee_parse_pid_list("", buf, 64), 0, "empty csv");
+    CHECK_EQ(anubee_parse_pid_list(NULL, buf, 64), 0, "null csv");
 
     // AUDIT.md #5: a csv longer than the internal 512-byte buffer now warns
     // on stderr (not asserted here) but must still return the PIDs that DO
@@ -43,7 +43,7 @@ int main(void)
         // 100 comma-joined 7-digit PIDs (1000000..1000099). The first entry
         // costs 7 bytes, every entry after costs 8 (",1000000"), so the
         // first 64 entries sum to exactly 7 + 63*8 = 511 bytes -- exactly
-        // ares_parse_pid_list's usable buffer size (sizeof(buf)-1) -- which
+        // anubee_parse_pid_list's usable buffer size (sizeof(buf)-1) -- which
         // lands the truncation cut precisely on a comma boundary (verified:
         // no token is split mid-number).
         char oversized[900] = "";
@@ -54,7 +54,7 @@ int main(void)
         }
 
         pid_t big_buf[100];
-        int got = ares_parse_pid_list(oversized, big_buf, 100);
+        int got = anubee_parse_pid_list(oversized, big_buf, 100);
         CHECK_EQ(got, 64, "oversized csv: truncated at exactly 64 pre-cutoff PIDs");
         for (int i = 0; i < got; i++)
             CHECK_EQ(big_buf[i], 1000000 + i, "oversized csv: pre-cutoff PID value preserved");

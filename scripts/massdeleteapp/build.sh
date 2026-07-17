@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds and (optionally) installs dev.ares.massdeleteapp — a minimal, code-free
+# Builds and (optionally) installs dev.anubee.massdeleteapp — a minimal, code-free
 # APK used to trigger mod massdelete-detect through a *real installed app*
 # instead of a synthetic PID or a real file manager.
 #
@@ -16,13 +16,13 @@
 # stock on-device android.app.Activity by name (not a subclass we'd have to
 # compile) sidesteps needing one entirely. The app does nothing on launch;
 # the actual file touches are driven separately, as the app's own UID, via
-# `su <uid> -c scripts/ares_massdelete_gen` (root gives us arbitrary-UID exec, no
+# `su <uid> -c scripts/anubee_massdelete_gen` (root gives us arbitrary-UID exec, no
 # run-as/debuggable dance needed) — see scripts/device-test.sh for the flow.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/build/massdeleteapp"
-PKG="dev.ares.massdeleteapp"
+PKG="dev.anubee.massdeleteapp"
 FRAMEWORK_RES="/usr/share/android-framework-res/framework-res.apk"
 KEYSTORE="$OUT/keystore.jks"
 MODE="${1:-build}" # build | install
@@ -52,7 +52,7 @@ if [ ! -f "$KEYSTORE" ]; then
     keytool -genkeypair -v -keystore "$KEYSTORE" -alias massdeleteapp \
         -keyalg RSA -keysize 2048 -validity 3650 \
         -storepass changeit -keypass changeit \
-        -dname "CN=ares test, OU=ares, O=ares, L=NA, S=NA, C=US" >/dev/null
+        -dname "CN=anubee test, OU=anubee, O=anubee, L=NA, S=NA, C=US" >/dev/null
 fi
 
 echo "=== signing ==="
@@ -71,4 +71,4 @@ adb shell "su -c 'appops set $PKG MANAGE_EXTERNAL_STORAGE allow'" >/dev/null 2>&
 uid="$(adb shell "su -c 'stat -c %u /data/data/$PKG'" 2>/dev/null | tr -d '\r')"
 [ -n "$uid" ] || fail "could not resolve installed UID for $PKG"
 echo "installed $PKG — uid $uid, MANAGE_EXTERNAL_STORAGE granted"
-echo "trigger with: su -c 'su $uid -c /data/local/tmp/ares_massdelete_gen <target-dir>'"
+echo "trigger with: su -c 'su $uid -c /data/local/tmp/anubee_massdelete_gen <target-dir>'"

@@ -1,4 +1,4 @@
-"""Join ares interp-frame naming against a Frida/ART oracle; score precision."""
+"""Join anubee interp-frame naming against a Frida/ART oracle; score precision."""
 import json
 import re
 
@@ -9,7 +9,7 @@ _PATH_ARG = {"openat": "1", "openat2": "1", "open": "0", "faccessat": "1",
              "newfstatat": "1", "statx": "1", "readlinkat": "1"}
 
 def parse_frame_name(symbol):
-    """(fqn, cls): strip ares' trust marker and return the trust class. cls is
+    """(fqn, cls): strip anubee' trust marker and return the trust class. cls is
     'corr'       — dex_pc-corroborated (trailing +0x<hex>),
     'unverified' — uncorroborated nterp single-frame fallback (trailing '?'),
     'auth'       — bare name: ShadowFrame authoritative method_ (or an unmarked
@@ -29,7 +29,7 @@ def _iter_jsonl(path):
             if line:
                 yield json.loads(line)
 
-def _ares_path(rec):
+def _anubee_path(rec):
     sa = rec.get("string_args") or {}
     key = _PATH_ARG.get(rec.get("syscall"))
     if key is not None and key in sa:
@@ -47,7 +47,7 @@ def _interp_chain(cfi_rec):
             out.append(parse_frame_name(fr.get("symbol", "")))
     return out
 
-def load_ares(events_path, stacks_path):
+def load_anubee(events_path, stacks_path):
     chains = {}
     for rec in _iter_jsonl(stacks_path):
         if rec.get("type") == "cfi_stack":
@@ -61,7 +61,7 @@ def load_ares(events_path, stacks_path):
             continue
         out.append({
             "syscall": rec.get("syscall"),
-            "path": _ares_path(rec),
+            "path": _anubee_path(rec),
             "tid": rec.get("tid"),
             "stack_id": sid,
             "interp": chains.get(sid, []),
@@ -85,12 +85,12 @@ def load_frida(path):
         })
     return out
 
-def join(ares_recs, frida_recs):
+def join(anubee_recs, frida_recs):
     by_key = {}
     for fr in frida_recs:
         by_key.setdefault((fr["syscall"], fr["path"]), []).append(fr)
     matches = []
-    for a in ares_recs:
+    for a in anubee_recs:
         cands = by_key.get((a["syscall"], a["path"]), [])
         chosen = None
         a_names = {n for n, _ in a["interp"]}
@@ -148,12 +148,12 @@ def format_report(s):
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="nterp precision oracle scorer")
-    ap.add_argument("--ares-events", required=True)
-    ap.add_argument("--ares-stacks", required=True)
+    ap.add_argument("--anubee-events", required=True)
+    ap.add_argument("--anubee-stacks", required=True)
     ap.add_argument("--frida", required=True)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    matches = join(load_ares(a.ares_events, a.ares_stacks), load_frida(a.frida))
+    matches = join(load_anubee(a.anubee_events, a.anubee_stacks), load_frida(a.frida))
     s = score(matches)
     print(json.dumps(s, indent=2) if a.json else format_report(s))
 

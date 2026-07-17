@@ -2,8 +2,8 @@
 // art_buildid.h — gate the version-coupled ShadowFrame/ManagedStack offsets on the
 // running libart.so BuildID. An unrecognized build resolves NULL, so the caller
 // (shadow_frame_chain) names nothing. Firewall: reads only.
-#ifndef ARES_COMMON_ART_BUILDID_H
-#define ARES_COMMON_ART_BUILDID_H
+#ifndef ANUBEE_COMMON_ART_BUILDID_H
+#define ANUBEE_COMMON_ART_BUILDID_H
 
 #include <stdint.h>
 #include <stddef.h>   // size_t
@@ -40,7 +40,7 @@ int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
                       struct art_offsets *out);
 
 // 1 if an unknown libart BuildID disabled managed (Java) naming this run.
-int ares_art_naming_disabled(void);
+int anubee_art_naming_disabled(void);
 
 // Test seam: read the ELF .note.gnu.build-id from `path`, lowercase hex into
 // `out`. Returns 1 on success, 0 on any malformed/missing input (fail-closed).

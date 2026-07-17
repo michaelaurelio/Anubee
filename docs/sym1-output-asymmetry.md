@@ -1,21 +1,21 @@
-# ares: file-output vs stdout-output asymmetry
+# anubee: file-output vs stdout-output asymmetry
 
 > **STATUS: RESOLVED — SYM1, 2026-07-13.** Every gap this document identifies
 > is closed. 11 phased, independently-gated commits
-> (`ARES` `1fced42`..`906d6c1`, Phase 0 through 5c) implemented the plan this
+> (`ANUBEE` `1fced42`..`906d6c1`, Phase 0 through 5c) implemented the plan this
 > analysis fed into (§7 below, as agreed with the user 2026-07-12). Full
-> changelog entry: `ARES/BACKLOG.md` "SYM1" (2026-07-13). This document's
+> changelog entry: `ANUBEE/BACKLOG.md` "SYM1" (2026-07-13). This document's
 > analysis was accurate at the time and is kept below as the historical
 > record of the problem being fixed — it no longer describes current
 > behavior. **§6 "Summary of every asymmetry" is annotated with a resolution
 > note per item; §1-§5, §7-§8 are left as originally written.**
 
-**Purpose of this document:** a complete map of how each `ares` engine's stdout
+**Purpose of this document:** a complete map of how each `anubee` engine's stdout
 (human) output diverges from its `-o FILE` (JSON) output, with exact file:line
 pointers, so a fix can be planned/implemented without re-deriving this from
-scratch. Written 2026-07-12 against `/home/archiver/Documents/projects/ares-project/ARES/`.
+scratch. Written 2026-07-12 against `/home/archiver/Documents/projects/anubee-project/ANUBEE/`.
 
-`ares` is a C + eBPF Android RASP / malware-analysis tracer (not a Rust
+`anubee` is a C + eBPF Android RASP / malware-analysis tracer (not a Rust
 project — no `println!`; all output is `printf`/`fprintf`/`fputs`/`vprintf`).
 It ships several "engines," each a subcommand: `syscalls`, `funcs`, `lib`,
 `dump`, `correlate`, plus `trace` (a coordinator that runs several engines from
@@ -25,11 +25,11 @@ engine can emit two kinds of output:
 - **stdout** — a live, human-readable rendering of events, startup status
   lines, and (mod only) an end-of-run summary table.
 - **`-o FILE`** — structured JSON, written via the shared serializer/sink in
-  `src/common/emit.{c,h}` (`struct jbuf` + `struct ares_sink`). The sink
+  `src/common/emit.{c,h}` (`struct jbuf` + `struct anubee_sink`). The sink
   *always* `fopen`s a real file — there is no `-o -`/stdout-JSON convention
   anywhere in the codebase.
 - **stderr** — diagnostics, the `wrote N … to PATH` report
-  (`ares_sink_report`, `emit.c:157`), and the `[coverage]` banner
+  (`anubee_sink_report`, `emit.c:157`), and the `[coverage]` banner
   (`src/common/coverage.c`).
 
 ---
@@ -67,23 +67,23 @@ below is where the symmetry breaks down.
   `jb_c`, `jb_u64`, `jb_i64`, `jb_hex`, `jb_esc`, `jb_b64` (`emit.h:20-26`,
   impl `emit.c:32-84,169`). No per-field `fprintf` — bulk memcpy + manual
   digit/escape encoding.
-- `struct ares_sink` (`emit.h:33-42`): owns `FILE*`, an embedded `jbuf`,
+- `struct anubee_sink` (`emit.h:33-42`): owns `FILE*`, an embedded `jbuf`,
   record `count`, `path`, `noun` (e.g. `"syscall"`/`"event"`), a `jsonl` flag
   (1 = newline-per-record, 0 = JSON array with commas), flush counter, and a
   latched write-error (`werr`).
-- `ares_sink_open()` (`emit.c:93`): `fopen(path, "w")` + an 8 MB `_IOFBF`
+- `anubee_sink_open()` (`emit.c:93`): `fopen(path, "w")` + an 8 MB `_IOFBF`
   buffer; array mode writes the opening `[`.
-- `ares_sink_emit()` (`emit.c:113`): writes the record built into `s->jb`
+- `anubee_sink_emit()` (`emit.c:113`): writes the record built into `s->jb`
   with framing, resets `jb.len`, flushes every `SINK_FLUSH_DEFAULT` (8192)
-  records (`ARES_FLUSH_MASK`, `emit.h:19`).
-- `ares_sink_close()` (`emit.c:144`): array mode writes `\n]\n`, flush,
+  records (`ANUBEE_FLUSH_MASK`, `emit.h:19`).
+- `anubee_sink_close()` (`emit.c:144`): array mode writes `\n]\n`, flush,
   `fclose`.
-- `ares_sink_report()` (`emit.c:157`): prints `wrote N <noun>(s) to <path>`
+- `anubee_sink_report()` (`emit.c:157`): prints `wrote N <noun>(s) to <path>`
   to **stderr**, plus a `WARNING: write error on … output is incomplete`
   line if any write failed.
 
 Each engine keeps one global `g_sink`, builds a bare `{…}` object into
-`g_sink.jb`, then calls `ares_sink_emit`. `funcs` is multi-writer (drain
+`g_sink.jb`, then calls `anubee_sink_emit`. `funcs` is multi-writer (drain
 thread emits lib/unlib, worker thread emits call/return) and serializes both
 under `g_sink_lock`; everyone else is single-writer.
 
@@ -108,14 +108,14 @@ ends in `.jsonl`: `jsonl = c.jsonl || ends_with(output_file, ".jsonl")`
 
 ### 2.3 The reference dual-channel pattern — `src/common/lib_trace.c:130-157`
 
-`ares_libtrace_emit_lib()` / `ares_libtrace_emit_unlib()` are the *only*
+`anubee_libtrace_emit_lib()` / `anubee_libtrace_emit_unlib()` are the *only*
 functions in the codebase that already render one event to both channels from
 a single call site:
 
 ```c
-void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, ...) {
+void anubee_libtrace_emit_lib(struct anubee_sink *sink, int quiet, ...) {
     if (!quiet) { ...; printf("%s\n", line); }              // human: "[lib] pid ... [0x..,0x..) off=.. inode=.. ppid=.."
-    if (sink && sink->f) { ...; jb_s(...); ares_sink_emit(sink); }  // JSON: {"type":"lib","pid":..,"library":..}
+    if (sink && sink->f) { ...; jb_s(...); anubee_sink_emit(sink); }  // JSON: {"type":"lib","pid":..,"library":..}
 }
 ```
 
@@ -123,18 +123,18 @@ This is the template to generalize.
 
 ### 2.4 The one *already-generalized* two-channel contract — `src/common/analyzer.h:26-51`
 
-`ares mod` analyzers implement `ares_analyzer_t`:
+`anubee mod` analyzers implement `anubee_analyzer_t`:
 
 ```c
 typedef struct {
     const char *name;
     const char *description;
-    struct ring_buffer *(*setup)(int uid, struct ares_mod_ctx *mc);
+    struct ring_buffer *(*setup)(int uid, struct anubee_mod_ctx *mc);
     void (*teardown)(void);
     void (*print_summary)(void);              // stdout
-    void (*emit_summary)(struct ares_sink *sink);  // file
+    void (*emit_summary)(struct anubee_sink *sink);  // file
     unsigned long long (*drops)(void);
-} ares_analyzer_t;
+} anubee_analyzer_t;
 ```
 
 `print_summary` (stdout table) and `emit_summary` (JSON `*_summary` record)
@@ -143,11 +143,11 @@ are two renderings of the same aggregate data, both called at teardown
 be (a) extended to per-event records, not only summaries, and (b) generalized
 from `mod` to the five top-level engines (`syscalls`, `funcs`, `lib`, `dump`,
 `correlate`), which have no equivalent struct today — they hand-roll
-`printf` calls and a separate `ares_sink_emit` call at each event site.
+`printf` calls and a separate `anubee_sink_emit` call at each event site.
 
 ### 2.5 Coverage — `src/common/coverage.{c,h}`
 
-`ares_coverage_report(sink, cov)` (`coverage.h:37`, impl `coverage.c`) is
+`anubee_coverage_report(sink, cov)` (`coverage.h:37`, impl `coverage.c`) is
 already dual-channel by design: one call emits **both** a stderr banner
 (`cov_banner`, `coverage.c:96`, format `[coverage] <engine>: ...` or
 `full coverage - no truncation, drops, or blind spots`) **and** a
@@ -280,7 +280,7 @@ no manifest of what was dumped, when, from where, with what base address.
 Nothing to diff two runs against, nothing for the MCP server to ingest the
 way it does every other engine's JSONL.
 
-**Related bug:** `ares trace`'s `-o <prefix>` fan-out
+**Related bug:** `anubee trace`'s `-o <prefix>` fan-out
 (`src/trace/trace_args.c`, injection site `src/trace/trace.c:168`)
 *unconditionally* builds `-o <prefix>.dump.jsonl` and passes it to the dump
 section — but since `dump` has no `-o` option, this flag is silently a
@@ -417,7 +417,7 @@ dead — the flag literally doesn't exist in dump's parser.
 
 ## 5. Coverage-record asymmetry (§2.5's mechanism, applied inconsistently)
 
-`ares_coverage_report(sink, cov)` gives clean, exempt-vs-degraded semantics
+`anubee_coverage_report(sink, cov)` gives clean, exempt-vs-degraded semantics
 for free, but its *use* varies:
 
 | Engine | Coverage record | Fields tracked |
@@ -454,7 +454,7 @@ false sense that everything relevant was checked.
 2. **No shared per-event output contract for the five top-level engines** —
    only `mod` analyzers have the `print_summary`/`emit_summary` split
    (`analyzer.h`, §2.4); `syscalls`/`funcs`/`lib`/`dump`/`correlate` each
-   hand-roll `printf` + a separate `ares_sink_emit` call at every event site.
+   hand-roll `printf` + a separate `anubee_sink_emit` call at every event site.
    > **RESOLVED.** `common/human_out.{c,h}` (Phase 0) is now that shared
    > contract for the stdout half, adopted by all five engines (4a-4d) —
    > deliberately plain formatter functions, not a `print_event`/`emit_event`
@@ -521,16 +521,16 @@ machine channel, then cosmetic/surface unification.
    restructure so each event's decoded fields (symbols, `decoded_args`,
    `sock_addr`, `fd_args`, `decoded[]`) are computed **once** into a struct,
    then fed to *both* the JSON builder and a human-line printer. Use
-   `ares_libtrace_emit_lib/unlib` (`lib_trace.c:130-157`, §2.3) as the
+   `anubee_libtrace_emit_lib/unlib` (`lib_trace.c:130-157`, §2.3) as the
    reference pattern — it already does this for one event type. Also decide
    whether `-q`/quiet mode should still skip decode work (`syscalls.c:898-901`)
    now that both channels may want it, or whether decode should always run
    and only the *print* be skipped.
-2. **Shared render contract.** Generalize `ares_analyzer_t`
+2. **Shared render contract.** Generalize `anubee_analyzer_t`
    (`analyzer.h:26-51`, §2.4) — or a new sibling struct — from mod-only,
    summary-only to all five engines, per-event: something like
    `emit_event`/`print_event`/`emit_summary`/`print_summary`, declared
-   alongside `ARES_ENGINE_DRIVER` in `src/common/engine_driver.h`.
+   alongside `ANUBEE_ENGINE_DRIVER` in `src/common/engine_driver.h`.
 3. **Universal coverage + summaries (§5).** Give `lib`/`dump` an explicit
    coverage record (clean/exempt, not silence); add end-of-run summaries to
    `syscalls`/`funcs`/`correlate` using the same `*_summary` + `emit_summary`
@@ -538,7 +538,7 @@ machine channel, then cosmetic/surface unification.
    happened" rule.
 4. **`dump` machine channel (§3.5, §4.5).** Add `-o` to `dump`'s argp
    (currently missing `COMMON_ARGP_OPTIONS`, `dump.c:155-165`); open an
-   `ares_sink`; emit one manifest record per dumped module, e.g.
+   `anubee_sink`; emit one manifest record per dumped module, e.g.
    `{"type":"dump","module":..,"path":..,"base":..,"pid":..,"raw":bool}`
    from the rebuild path (`rebuild.c:651`). This also makes `trace`'s
    existing `-o <prefix>.dump.jsonl` injection (`trace.c:168`) real instead
@@ -558,7 +558,7 @@ at the same time; `-q` remains as the explicit, independent stdout silencer.
 Content parity (item 1 above) was named the top priority; all other items
 above are in scope but lower priority. This decision, plus a phased
 implementation plan, was also recorded in
-`/home/archiver/Documents/projects/ares-project/ARES/BACKLOG.md` under a
+`/home/archiver/Documents/projects/anubee-project/ANUBEE/BACKLOG.md` under a
 `### SYM1 — file/stdout output symmetry across all engines` entry (Major
 section) — cross-reference that entry for the tracking ID and any newer
 status updates before starting implementation.

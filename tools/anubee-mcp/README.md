@@ -1,16 +1,16 @@
-# ares-mcp
+# anubee-mcp
 
-An MCP server that exposes an **ares** trace to an LLM client (Claude Code /
+An MCP server that exposes an **anubee** trace to an LLM client (Claude Code /
 Claude Desktop) as **queryable tools**, so you analyze a multi-million-event
 firehose trace by *retrieval* — the model pulls small, pre-aggregated slices on
 demand — instead of pasting the whole trace into the context window.
 
 It's backed by **DuckDB** (the trace is loaded into an in-memory columnar DB), and
-it reuses ares's loop-folding to collapse repetition.
+it reuses anubee's loop-folding to collapse repetition.
 
 > **Scope today:** this server analyzes the **structured syscall JSONL** emitted by
-> `ares syscalls` (records with `"type":"syscall"`), and also ingests the
-> type-discriminated records emitted by `ares funcs -J` and `ares correlate -o`
+> `anubee syscalls` (records with `"type":"syscall"`), and also ingests the
+> type-discriminated records emitted by `anubee funcs -J` and `anubee correlate -o`
 > via `load_structured` — exposing a span-join that correlates syscalls to their
 > enclosing function spans.
 
@@ -27,7 +27,7 @@ JSON/JSONL natively, handles the nested `string_args`/`backtrace` fields with
 Requires Python ≥ 3.10.
 
 ```sh
-cd tools/ares-mcp
+cd tools/anubee-mcp
 python3 -m venv .venv
 . .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e .                # add [dev] for the test suite: pip install -e ".[dev]"
@@ -35,7 +35,7 @@ pip install -e .                # add [dev] for the test suite: pip install -e "
 
 Use the **absolute path to the venv's Python** in the client config below
 (`.venv/bin/python` on Linux, `.venv\Scripts\python.exe` on Windows), or the
-installed `ares-mcp` console script.
+installed `anubee-mcp` console script.
 
 ## Tools
 
@@ -61,16 +61,16 @@ Aggregation-first — the model is told to start broad, then drill down:
 ### Unified ingest (funcs / correlate)
 
 `load_structured(path)` ingests a type-discriminated JSONL file produced by
-`ares funcs -J` or `ares correlate -o` into four DuckDB tables:
+`anubee funcs -J` or `anubee correlate -o` into four DuckDB tables:
 `calls`, `returns`, `func_spans`, and `span_syscalls`. It returns
 `(abspath, skipped_count)` where `skipped_count` counts lines without a `"type"`
-field — the legacy `{ts,stream,tag,message}` wrapper lines that `ares` emits
+field — the legacy `{ts,stream,tag,message}` wrapper lines that `anubee` emits
 alongside the structured records in the same output file.
 
 Key design notes:
-- `return` records from `ares funcs -J` already carry `elapsed_ns` — no
+- `return` records from `anubee funcs -J` already carry `elapsed_ns` — no
   call→return join is needed for timing; the data is self-contained per record.
-- Lines with `"type":"syscall"` but **no** `"span"` field (plain `ares syscalls`
+- Lines with `"type":"syscall"` but **no** `"span"` field (plain `anubee syscalls`
   engine records) are counted as skipped, not ingested, keeping the two ingest
   paths separate.
 
@@ -84,28 +84,28 @@ the syscall came from* (e.g. `via="librasp"`), the key dimension for RASP work.
 
 ### On-device tools (live)
 
-These drive the `ares` binary on a connected device (they need `adb` and `ares`
+These drive the `anubee` binary on a connected device (they need `adb` and `anubee`
 pushed to the device), rather than querying a captured trace. They use the
-stealthy `ares syscalls` engine:
+stealthy `anubee syscalls` engine:
 
 | Tool | Purpose |
 |---|---|
-| `mapped_libraries(package, seconds, activity)` | Launch the app via `ares syscalls -l` for a few seconds and return the native libraries it loaded — one record per (pid, library) with merged range + inode. Use it to discover the (possibly randomized) name of a protector payload. |
-| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `ares syscalls -l -D <pattern>` for `seconds` (long enough for the app to decrypt), dump every loaded library whose **basename** matches `pattern` from live memory, rebuild a loadable `.so`, and pull it to the host. `pattern` is a glob: `'e_*'` / `'e_[0-9]*'` for a randomized per-run name, or `'libfoo.so'`. Each result carries an ELF sanity check; bump `seconds` if a dump looks like ciphertext. |
+| `mapped_libraries(package, seconds, activity)` | Launch the app via `anubee syscalls -l` for a few seconds and return the native libraries it loaded — one record per (pid, library) with merged range + inode. Use it to discover the (possibly randomized) name of a protector payload. |
+| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `anubee syscalls -l -D <pattern>` for `seconds` (long enough for the app to decrypt), dump every loaded library whose **basename** matches `pattern` from live memory, rebuild a loadable `.so`, and pull it to the host. `pattern` is a glob: `'e_*'` / `'e_[0-9]*'` for a randomized per-run name, or `'libfoo.so'`. Each result carries an ELF sanity check; bump `seconds` if a dump looks like ciphertext. |
 
-Configure how `ares` is invoked via environment (set these in the MCP client
+Configure how `anubee` is invoked via environment (set these in the MCP client
 config's `env`):
 
 | Var | Default | Meaning |
 |---|---|---|
-| `ARES_ADB` | `adb` | adb executable |
-| `ARES_BIN` | `/data/local/tmp/ares` | ares path on the device |
-| `ARES_SHELL_PREFIX` | *(empty)* | wrap the device command, e.g. `su -c`, when adbd isn't already root |
-| `ARES_SERIAL` | *(empty)* | target a specific device (`adb -s`) |
+| `ANUBEE_ADB` | `adb` | adb executable |
+| `ANUBEE_BIN` | `/data/local/tmp/anubee` | anubee path on the device |
+| `ANUBEE_SHELL_PREFIX` | *(empty)* | wrap the device command, e.g. `su -c`, when adbd isn't already root |
+| `ANUBEE_SERIAL` | *(empty)* | target a specific device (`adb -s`) |
 
-`ares` is run under `timeout -s INT <seconds>` so it traces for the bounded window
+`anubee` is run under `timeout -s INT <seconds>` so it traces for the bounded window
 and then gets the SIGINT that triggers its exit-time memory dump. If a tool returns
-an empty result, check the `error` field — it surfaces the common causes (ares not
+an empty result, check the `error` field — it surfaces the common causes (anubee not
 pushed, needs root, package not installed).
 
 ## Claude Code
@@ -113,8 +113,8 @@ pushed, needs root, package not installed).
 Either register it:
 
 ```sh
-claude mcp add ares -- /ABS/PATH/tools/ares-mcp/.venv/bin/python \
-                       /ABS/PATH/tools/ares-mcp/server.py
+claude mcp add anubee -- /ABS/PATH/tools/anubee-mcp/.venv/bin/python \
+                       /ABS/PATH/tools/anubee-mcp/server.py
 ```
 
 …or add a `.mcp.json` in your project:
@@ -122,16 +122,16 @@ claude mcp add ares -- /ABS/PATH/tools/ares-mcp/.venv/bin/python \
 ```json
 {
   "mcpServers": {
-    "ares": {
-      "command": "/ABS/PATH/tools/ares-mcp/.venv/bin/python",
-      "args": ["/ABS/PATH/tools/ares-mcp/server.py"],
-      "env": { "ARES_TRACE": "/ABS/PATH/trace.jsonl" }
+    "anubee": {
+      "command": "/ABS/PATH/tools/anubee-mcp/.venv/bin/python",
+      "args": ["/ABS/PATH/tools/anubee-mcp/server.py"],
+      "env": { "ANUBEE_TRACE": "/ABS/PATH/trace.jsonl" }
     }
   }
 }
 ```
 
-`ARES_TRACE` is optional (preloads a trace); you can also just call `load_trace`
+`ANUBEE_TRACE` is optional (preloads a trace); you can also just call `load_trace`
 from chat.
 
 ## Claude Desktop
@@ -143,9 +143,9 @@ Edit `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "ares": {
-      "command": "C:\\ABS\\PATH\\tools\\ares-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\ABS\\PATH\\tools\\ares-mcp\\server.py"]
+    "anubee": {
+      "command": "C:\\ABS\\PATH\\tools\\anubee-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\ABS\\PATH\\tools\\anubee-mcp\\server.py"]
     }
   }
 }
@@ -153,14 +153,14 @@ Edit `claude_desktop_config.json`:
 
 (On Linux use the `.venv/bin/python` path.) Restart Claude Desktop after editing.
 
-The on-device tools read the `ARES_*` env above; put them in the same `env` block,
-e.g. `"env": { "ARES_SHELL_PREFIX": "su -c" }`.
+The on-device tools read the `ANUBEE_*` env above; put them in the same `env` block,
+e.g. `"env": { "ANUBEE_SHELL_PREFIX": "su -c" }`.
 
 ## Workflow
 
 **Offline (analyze a captured trace):**
 
-1. Capture on device: `ares syscalls -a -q -b 64 -o /data/local/tmp/t.jsonl <pkg>`
+1. Capture on device: `anubee syscalls -a -q -b 64 -o /data/local/tmp/t.jsonl <pkg>`
 2. Pull to host: `adb pull /data/local/tmp/t.jsonl`
 3. In chat: *"load_trace('/path/t.jsonl'), give me the overview and hot loops,
    then show me everything from librasp that touches /proc or fails."*
@@ -184,7 +184,7 @@ from live memory, and inspects the rebuilt ELF — all without leaving chat.
 
 - Trace is held **in memory** (DuckDB). Very large traces use RAM; DuckDB spills,
   but for multi-GB traces consider pre-filtering at capture (`-s`/`-x`) or with
-  `tools/ares-fold.py`.
+  `tools/anubee-fold.py`.
 - Result sizes are capped (200 rows / query) to protect the context window;
   `matched` tells the model the true count so it can narrow filters.
 - `sockets()` resolves peer addresses from the syscalls engine's sockaddr decode

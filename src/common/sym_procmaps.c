@@ -41,13 +41,13 @@ void read_proc_maps(struct procmaps *pm)
 
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		struct ares_map_line ml;
-		if (!ares_parse_maps_line(line, &ml))
+		struct anubee_map_line ml;
+		if (!anubee_parse_maps_line(line, &ml))
 			continue;
 
 		if (pm->n == pm->cap) {
 			size_t nc = pm->cap ? pm->cap * 2 : 256;
-			struct ares_map_line *nm = realloc(pm->m, nc * sizeof(*nm));
+			struct anubee_map_line *nm = realloc(pm->m, nc * sizeof(*nm));
 			if (!nm)
 				break;
 			pm->m = nm;
@@ -99,7 +99,7 @@ struct procmaps *pm_get(int pid)
 }
 
 // /proc/<pid>/maps is address-sorted and non-overlapping, so binary search.
-struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
+struct anubee_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 {
 	size_t lo = 0, hi = pm->n;
 	while (lo < hi) {
@@ -121,9 +121,9 @@ struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 // is common under capture-all where snapshots fire during early process launch.
 // Used by both the symbolizer (sym_resolve_uncached) and the CFI walk
 // (cfi_unwind_snapshot) so a stale cache can't dead-end the unwind at frame 0.
-struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
+struct anubee_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
 {
-	struct ares_map_line *hit = find_mapping(pm, addr);
+	struct anubee_map_line *hit = find_mapping(pm, addr);
 	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
 		read_proc_maps(pm);
 		hit = find_mapping(pm, addr);
@@ -146,10 +146,10 @@ void pm_reset_pid(int pid)
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
 // Also returns the base mapping's [start,end), used to reach the file via
 // /proc/<pid>/map_files when its path is deleted/anonymous.
-void module_base(struct procmaps *pm, struct ares_map_line *hit,
+void module_base(struct procmaps *pm, struct anubee_map_line *hit,
 			uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
 {
-	size_t i = ares_module_base_idx(pm->m, (size_t)(hit - pm->m));
+	size_t i = anubee_module_base_idx(pm->m, (size_t)(hit - pm->m));
 	*load_base = pm->m[i].start;
 	*elf_off   = pm->m[i].off;
 	*base_end  = pm->m[i].end;

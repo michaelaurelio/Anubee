@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Standalone self-asserting test for the span query tools (func_spans/span_syscalls).
-# Run: python3 tools/ares-mcp/test_spans.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_spans.py  (no pytest dependency)
 import os
 import sys
 

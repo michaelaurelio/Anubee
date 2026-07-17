@@ -3,8 +3,8 @@
 // failures, and the bump_dropped() helper that increments it. Include this once
 // per BPF object (not in a shared header that may be transitively included
 // multiple times — wrap with an include guard if needed).
-#ifndef __ARES_BPF_DROP_H
-#define __ARES_BPF_DROP_H
+#ifndef __ANUBEE_BPF_DROP_H
+#define __ANUBEE_BPF_DROP_H
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -21,4 +21,4 @@ static __always_inline void bump_dropped(void)
 		__sync_fetch_and_add(c, 1);
 }
 
-#endif /* __ARES_BPF_DROP_H */
+#endif /* __ANUBEE_BPF_DROP_H */

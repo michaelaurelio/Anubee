@@ -28,8 +28,8 @@ void sym_flush_pid(int pid);
  * never touches live target memory. If out_sps is non-NULL it receives each
  * frame's SP (the value used to unwind that frame), parallel to out_pcs — the
  * nterp namer needs the terminal frame's SP to locate its managed ArtMethod*. */
-struct ares_stack_snapshot;
-int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
+struct anubee_stack_snapshot;
+int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
 			uint64_t *out_pcs, int max, uint64_t *out_sps,
 			struct cfi_step_diag *out_diags);
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-// Vendored SHA-256 (FIPS 180-4). ARES links no crypto library, and the modcmp
-// record (`ares dump --check`) needs a stable digest of a module's executable
+// Vendored SHA-256 (FIPS 180-4). ANUBEE links no crypto library, and the modcmp
+// record (`anubee dump --check`) needs a stable digest of a module's executable
 // segments so a verdict can be correlated with a dumped artifact across runs.
 // Public-domain reference construction; no external deps, so host tests link it.
-#ifndef ARES_COMMON_SHA256_H
-#define ARES_COMMON_SHA256_H
+#ifndef ANUBEE_COMMON_SHA256_H
+#define ANUBEE_COMMON_SHA256_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -23,4 +23,4 @@ void sha256_update(struct sha256_ctx *c, const void *data, size_t len);
 // lives here once instead of being re-rolled at each call site.
 void sha256_final_hex(struct sha256_ctx *c, char out[65]);
 
-#endif /* ARES_COMMON_SHA256_H */
+#endif /* ANUBEE_COMMON_SHA256_H */

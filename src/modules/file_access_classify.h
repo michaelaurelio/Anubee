@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure classification logic for the `ares mod file-access` analyzer. No libbpf
+// Pure classification logic for the `anubee mod file-access` analyzer. No libbpf
 // deps (host-testable): given an opened path and the traced app's own package
 // name (or NULL if unknown), decide which malware-relevant categories it hits.
-#ifndef __ARES_FILE_ACCESS_CLASSIFY_H
-#define __ARES_FILE_ACCESS_CLASSIFY_H
+#ifndef __ANUBEE_FILE_ACCESS_CLASSIFY_H
+#define __ANUBEE_FILE_ACCESS_CLASSIFY_H
 
 // path is under /storage/emulated/... or /sdcard/...
 #define FA_EXTERNAL_STORAGE   (1u << 0)
@@ -31,4 +31,4 @@ unsigned classify_path(const char *path, const char *self_pkg);
 // flag is always emitted; 0 if max <= 0).
 int file_access_decode_flags(unsigned flags, const char *out[], int max);
 
-#endif /* __ARES_FILE_ACCESS_CLASSIFY_H */
+#endif /* __ANUBEE_FILE_ACCESS_CLASSIFY_H */

@@ -22,8 +22,8 @@ static int find_path_in_maps(pid_t pid, unsigned long long start, char *out, siz
 
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		struct ares_map_line ml;
-		if (!ares_parse_maps_line(line, &ml))
+		struct anubee_map_line ml;
+		if (!anubee_parse_maps_line(line, &ml))
 			continue;
 		if (ml.start == start) {
 			snprintf(out, outsz, "%s", ml.path);
@@ -101,7 +101,7 @@ static int path_cache_lookup(pid_t pid, const char *basename, char *out, size_t 
 	return -1;
 }
 
-int ares_libtrace_resolve_path(pid_t pid, unsigned long long start,
+int anubee_libtrace_resolve_path(pid_t pid, unsigned long long start,
                                const char *basename, char *out, size_t outsz)
 {
 	if (find_path_in_maps(pid, start, out, outsz) == 0) {
@@ -116,7 +116,7 @@ int ares_libtrace_resolve_path(pid_t pid, unsigned long long start,
 
 // ---- unified emitter ------------------------------------------------------
 
-void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_event *e,
+void anubee_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_event *e,
                               const char *fullpath, const char *soname)
 {
 	int n = snprintf(buf, bufsz,
@@ -128,12 +128,12 @@ void ares_libtrace_format_lib(char *buf, size_t bufsz, const struct lib_map_even
 		snprintf(buf + n, bufsz - (size_t)n, " -> %s", soname);
 }
 
-void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_map_event *e,
+void anubee_libtrace_emit_lib(struct anubee_sink *sink, int quiet, const struct lib_map_event *e,
                             const char *fullpath, const char *soname)
 {
 	if (!quiet) {
 		char line[512];
-		ares_libtrace_format_lib(line, sizeof(line), e, fullpath, soname);
+		anubee_libtrace_format_lib(line, sizeof(line), e, fullpath, soname);
 		ts_print("%s\n", line);  // SYM1 Phase 4b: was printf("%s\n", line)
 	}
 	if (sink && sink->f) {
@@ -151,11 +151,11 @@ void ares_libtrace_emit_lib(struct ares_sink *sink, int quiet, const struct lib_
 			jb_s(j, ",\"soname\":\""); jb_esc(j, soname); jb_c(j, '"');
 		}
 		jb_c(j, '}');
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 }
 
-void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct lib_unmap_event *e)
+void anubee_libtrace_emit_unlib(struct anubee_sink *sink, int quiet, const struct lib_unmap_event *e)
 {
 	if (!quiet)
 		// SYM1 Phase 4b: was printf(...).
@@ -169,11 +169,11 @@ void ares_libtrace_emit_unlib(struct ares_sink *sink, int quiet, const struct li
 		jb_s(j, ",\"start\":\"");                jb_hex(j, e->start); jb_c(j, '"');
 		jb_s(j, ",\"end\":\"");                  jb_hex(j, e->end);   jb_c(j, '"');
 		jb_c(j, '}');
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 }
 
-void ares_libtrace_emit_packed(struct ares_sink *sink, int quiet, const char *apk_path,
+void anubee_libtrace_emit_packed(struct anubee_sink *sink, int quiet, const char *apk_path,
                                const struct apk_so_ref *ref)
 {
 	if (!quiet)
@@ -187,6 +187,6 @@ void ares_libtrace_emit_packed(struct ares_sink *sink, int quiet, const char *ap
 		jb_s(j, ",\"offset\":");                         jb_u64(j, ref->data_start);
 		jb_s(j, ",\"size\":");                           jb_u64(j, ref->size);
 		jb_c(j, '}');
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 }

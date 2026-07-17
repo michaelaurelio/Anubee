@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod exfil-detect` — userspace analyzer for the sensitive-read-then-
+// `anubee mod exfil-detect` — userspace analyzer for the sensitive-read-then-
 // network-burst signal. Owns the exfil_detect BPF skeleton lifecycle; the
 // dispatcher in mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/exfil_detect.bpf.c. No classification module (unlike
@@ -68,7 +68,7 @@ static struct bpf_link        *close_link    = NULL;
 
 static int eb_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     if (hdr->type != MOD_EV_EXFIL_DETECT || sz < sizeof(struct exfil_detect_event))
@@ -91,7 +91,7 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
 
     if (mc->sink != NULL) {
         mod_emit_exfil_detect(&mc->sink->jb, e, dest_str, mc->verbose);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -99,7 +99,7 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *eb_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *eb_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = exfil_detect_bpf__open();
     if (!g_skel) {
@@ -160,7 +160,7 @@ static struct ring_buffer *eb_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        eb_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        eb_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!eb_ff) fprintf(stderr, "mod exfil-detect: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -218,7 +218,7 @@ static void eb_print_summary(void)
 
 // File twin of eb_print_summary: same tally, one
 // {"type":"exfil_detect_summary",...} record.
-static void eb_emit_summary(struct ares_sink *s)
+static void eb_emit_summary(struct anubee_sink *s)
 {
     if (eb_stat_count == 0) return;
 
@@ -238,17 +238,17 @@ static void eb_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long eb_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_exfil_detect = {
+const anubee_analyzer_t analyzer_exfil_detect = {
     .name          = "exfil-detect",
     .description   = "Detect a network byte-volume burst following a sensitive "
                       "media/credential file read (bulk exfiltration signal; "

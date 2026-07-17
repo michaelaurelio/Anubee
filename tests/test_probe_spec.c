@@ -281,7 +281,7 @@ int main(void)
     // trim, line numbers. Writes small temp spec files rather than depending
     // on repo fixtures, so these run regardless of cwd. ---
     {
-        char path[] = "/tmp/ares_test_probe_spec_loader.XXXXXX";
+        char path[] = "/tmp/anubee_test_probe_spec_loader.XXXXXX";
         int fd = mkstemp(path);
         CHECK(fd >= 0, "loader: mkstemp");
         if (fd >= 0) {

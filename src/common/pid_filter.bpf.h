@@ -4,8 +4,8 @@
 // membership on the running task's TGID. Source-shared across engines; pairs with
 // the `uid_matches() || pid_matches()` gate. follow_fork.bpf.h extends this map.
 // Include once per .bpf.c, before any use of pid_matches().
-#ifndef __ARES_PID_FILTER_BPF_H
-#define __ARES_PID_FILTER_BPF_H
+#ifndef __ANUBEE_PID_FILTER_BPF_H
+#define __ANUBEE_PID_FILTER_BPF_H
 
 // ponytail: 64 slots — covers a target PID set incl. followed children; bump if more.
 struct {
@@ -21,4 +21,4 @@ static __always_inline int pid_matches(void)
 	return bpf_map_lookup_elem(&target_pids, &tgid) != NULL;
 }
 
-#endif /* __ARES_PID_FILTER_BPF_H */
+#endif /* __ANUBEE_PID_FILTER_BPF_H */

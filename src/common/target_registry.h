@@ -6,15 +6,15 @@
 // attaching. Originally funcs-local (AA4's addr->target hash cache);
 // lifted to common so correlate's span-opening [func] lines can show the
 // same "mod!func @ 0xoffset" a human already sees on funcs' [event] lines,
-// instead of a bare address (ares correlate output-clarity rework).
+// instead of a bare address (anubee correlate output-clarity rework).
 //
 // funcs still owns bulk population through its existing probe_resolve_ctx
 // (its .targets/.target_count point straight at target_registry/
 // target_registry_count below — same arrays, same direct-write behavior as
 // before this file existed). correlate registers one target at a time via
 // target_registry_add() right after each successful uprobe attach.
-#ifndef __ARES_COMMON_TARGET_REGISTRY_H
-#define __ARES_COMMON_TARGET_REGISTRY_H
+#ifndef __ANUBEE_COMMON_TARGET_REGISTRY_H
+#define __ANUBEE_COMMON_TARGET_REGISTRY_H
 
 #include <stdbool.h>
 #include <linux/types.h>
@@ -38,4 +38,4 @@ bool target_registry_add(probe_target_t tgt);
 // direct (offset, mod_path) lookup fails. Thread-safe (own internal lock).
 probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *used_fallback);
 
-#endif /* __ARES_COMMON_TARGET_REGISTRY_H */
+#endif /* __ANUBEE_COMMON_TARGET_REGISTRY_H */

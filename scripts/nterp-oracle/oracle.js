@@ -9,7 +9,7 @@
 //   python3 run_oracle.py <out.jsonl>     # spawns $PKG, loads the bundle, drives UI
 //
 // (ART opens via open64/__openat, not the public openat export, so all three are hooked
-//  and normalized to syscall:"openat" to overlap ares' openat-named frames; faccessat/
+//  and normalized to syscall:"openat" to overlap anubee' openat-named frames; faccessat/
 //  readlinkat via libcore Os.* reliably carry the app Java caller.)
 import Java from 'frida-java-bridge';
 
@@ -46,7 +46,7 @@ function hook(name, pathArgIndex, label) {
 }
 
 // pathArgIndex matches the libc wrapper arg positions; label normalizes the open family
-// to "openat" so the (syscall, path) join key overlaps ares' openat frames.
+// to "openat" so the (syscall, path) join key overlaps anubee' openat frames.
 hook('openat', 1);              // public export (ART bypasses it, but keep for completeness)
 hook('__openat', 1, 'openat');  // bionic's actual openat bottleneck: __openat(dirfd, path, …)
 hook('open64', 0, 'openat');    // open()/open64 family: open64(path, oflag, …)

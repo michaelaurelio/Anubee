@@ -1,7 +1,7 @@
-# ARES user guide
+# ANUBEE user guide
 
-ARES is an Android RASP / malware analysis tracer: one static aarch64 binary
-(`ares`), seven subcommands, running on a rooted device over `adb`. It watches
+ANUBEE is an Android RASP / malware analysis tracer: one static aarch64 binary
+(`anubee`), seven subcommands, running on a rooted device over `adb`. It watches
 what an app does at the syscall, native-function, and library-load level via
 eBPF, with no injection required for most engines.
 
@@ -15,9 +15,9 @@ For build/architecture/internals see [`../README.md`](../README.md) and
 | [`getting-started.md`](getting-started.md) | Prerequisites, build, deploy, your first trace |
 | [`engines.md`](engines.md) | Which subcommand to pick, and how to use each: `syscalls`, `funcs`, `correlate`, `lib`, `dump`, `trace` |
 | [`probe-specs.md`](probe-specs.md) | The `[KIND:]TARGET[(ARGTYPES)][>RETTYPE]` grammar shared by `funcs`/`correlate`/`syscalls`/`dump`/`mod` |
-| [`analyzers.md`](analyzers.md) | `ares mod`: the 9 built-in analyzers, what each detects, how to run them |
+| [`analyzers.md`](analyzers.md) | `anubee mod`: the 9 built-in analyzers, what each detects, how to run them |
 | [`reading-traces.md`](reading-traces.md) | Output formats: JSONL record types, the `.stacks` sidecar, the coverage record |
-| [`mcp.md`](mcp.md) | Querying a trace (or driving a live device) from Claude via the `ares-mcp` server |
+| [`mcp.md`](mcp.md) | Querying a trace (or driving a live device) from Claude via the `anubee-mcp` server |
 
 ## Pick an engine
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef __ARES_COMMON_SYSCALL_ARGTYPES_H
-#define __ARES_COMMON_SYSCALL_ARGTYPES_H
+#ifndef __ANUBEE_COMMON_SYSCALL_ARGTYPES_H
+#define __ANUBEE_COMMON_SYSCALL_ARGTYPES_H
 
 #include <stddef.h>
 
@@ -16,21 +16,21 @@
 // falls back to past ARG_TBL_CAP - see syscalls.c's own arg_fd_mask/
 // arg_sock_index for that cache wrapper, unchanged and not moved here.
 
-struct ares_arg_mask_entry { long nr; unsigned char mask; };
-struct ares_arg_sock_entry { long nr; int arg; };
-struct ares_arg_count_entry { long nr; int count; };
+struct anubee_arg_mask_entry { long nr; unsigned char mask; };
+struct anubee_arg_sock_entry { long nr; int arg; };
+struct anubee_arg_count_entry { long nr; int count; };
 
 // Which arg holds a sockaddr* (connect/bind at arg1, sendto at arg4).
 // Exported (not static) so syscalls.c's build_arg_tables() can scatter this
 // into its own dense g_sockidx_by_nr[] cache; a _count sibling is needed
 // because an extern array of unknown bound is an incomplete type - a caller
 // in another translation unit can't sizeof() it directly.
-extern const struct ares_arg_sock_entry g_sock_args[];
+extern const struct anubee_arg_sock_entry g_sock_args[];
 extern const size_t g_sock_args_count;
 
 // Which args are a file descriptor (or *at dirfd) per syscall - bit i =>
 // args[i] is an fd. Same cross-TU visibility reason as g_sock_args above.
-extern const struct ares_arg_mask_entry g_fd_args[];
+extern const struct anubee_arg_mask_entry g_fd_args[];
 extern const size_t g_fd_args_count;
 
 // Mirror the string/fd/sockaddr tables into their BPF maps. Must run before
@@ -47,12 +47,12 @@ int arg_sock_index(unsigned long long nr);
 // arguments instead of leftover register values. Unknown syscalls return 6
 // (all of x0..x5). Moved here from src/syscalls/syscalls.c (which kept its
 // own copy of the { nr, count } table) so src/correlate/correlate.c's human
-// syscall-arg line can bound the same way (ares correlate output-clarity
+// syscall-arg line can bound the same way (anubee correlate output-clarity
 // rework) instead of always printing all 6 slots. syscalls.c layers its own
 // dense by-nr cache (arg_count_cached(), same reasoning as arg_fd_mask_cached/
 // arg_sock_index_cached above) on top of this plain linear-scan form.
-extern const struct ares_arg_count_entry g_arg_counts[];
+extern const struct anubee_arg_count_entry g_arg_counts[];
 extern const size_t g_arg_counts_count;
 int arg_count(unsigned long long nr);
 
-#endif /* __ARES_COMMON_SYSCALL_ARGTYPES_H */
+#endif /* __ANUBEE_COMMON_SYSCALL_ARGTYPES_H */

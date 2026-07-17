@@ -13,24 +13,24 @@
 
 // Identifier for different event types
 enum event_type {
-    ARES_EVENT_CALL = 1,
-    ARES_EVENT_MAP = 2,
-    ARES_EVENT_RETURN = 3,
-    ARES_EVENT_UNMAP = 4,
-    ARES_EVENT_SPAWN = 5,
-    ARES_EVENT_PROC_EXIT = 6,
-    ARES_EVENT_EXECVE = 7,
-    ARES_EVENT_PROP_READ = 8,  // __system_property_read_callback (per-property in foreach)
-    ARES_EVENT_PROP_GET  = 9,  // __system_property_get  (CALL is_ret=0, RET is_ret=1)
-    ARES_EVENT_PROP_FIND = 10, // __system_property_find (CALL is_ret=0, RET is_ret=1)
-    ARES_EVENT_PROP_SCAN = 11, // __system_property_foreach (entry only)
-    ARES_EVENT_STACK     = 12, // stack snapshot sidecar (first sight of each distinct stack)
+    ANUBEE_EVENT_CALL = 1,
+    ANUBEE_EVENT_MAP = 2,
+    ANUBEE_EVENT_RETURN = 3,
+    ANUBEE_EVENT_UNMAP = 4,
+    ANUBEE_EVENT_SPAWN = 5,
+    ANUBEE_EVENT_PROC_EXIT = 6,
+    ANUBEE_EVENT_EXECVE = 7,
+    ANUBEE_EVENT_PROP_READ = 8,  // __system_property_read_callback (per-property in foreach)
+    ANUBEE_EVENT_PROP_GET  = 9,  // __system_property_get  (CALL is_ret=0, RET is_ret=1)
+    ANUBEE_EVENT_PROP_FIND = 10, // __system_property_find (CALL is_ret=0, RET is_ret=1)
+    ANUBEE_EVENT_PROP_SCAN = 11, // __system_property_foreach (entry only)
+    ANUBEE_EVENT_STACK     = 12, // stack snapshot sidecar (first sight of each distinct stack)
 };
 
 
 #include "common/trace_schema.h"
 
-// Event for native function calls (ARES_EVENT_CALL) and returns (ARES_EVENT_RETURN).
+// Event for native function calls (ANUBEE_EVENT_CALL) and returns (ANUBEE_EVENT_RETURN).
 struct event {
     struct trace_event_header h;
     __u64 entry_addr;
@@ -49,14 +49,14 @@ struct event {
     __u8 sock[NUM_ARGS][SOCK_ADDR_MAX];  // raw sockaddr bytes for ARG_SOCKADDR args (see funcs.bpf.c sockaddr_capture)
     __u64 call_stack[STACK_DEPTH];
     __u32 stack_depth;
-    __u64 stack_id;   /* FNV-1a hash of call_stack; 0 = none. Links to ARES_EVENT_STACK sidecar. */
+    __u64 stack_id;   /* FNV-1a hash of call_stack; 0 = none. Links to ANUBEE_EVENT_STACK sidecar. */
     __u64 span_id;    /* monotonic per-call span id; emitted as "id". A CALL and its RETURN share it
                          (pairs the two records + orders the stream, like syscalls' "id"). 0 = the
                          span-depth cap was hit at entry, so this call is untracked/unpaired. */
 };
 
 
-// Event for process fork (ARES_EVENT_SPAWN).
+// Event for process fork (ANUBEE_EVENT_SPAWN).
 struct spawn_event {
     struct trace_event_header h;
     __u32 child_pid;
@@ -64,7 +64,7 @@ struct spawn_event {
 };
 
 
-// Event for process exit (ARES_EVENT_PROC_EXIT).
+// Event for process exit (ANUBEE_EVENT_PROC_EXIT).
 struct proc_exit_event {
     struct trace_event_header h;
     char comm[TASK_COMM_LEN];
@@ -72,7 +72,7 @@ struct proc_exit_event {
 };
 
 
-// Event for execve syscall (ARES_EVENT_EXECVE).
+// Event for execve syscall (ANUBEE_EVENT_EXECVE).
 struct execve_event {
     struct trace_event_header h;
     __u32 argc;

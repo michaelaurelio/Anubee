@@ -1,8 +1,8 @@
-#ifndef ARES_SYSCALLS_LIB_SEED_H
-#define ARES_SYSCALLS_LIB_SEED_H
+#ifndef ANUBEE_SYSCALLS_LIB_SEED_H
+#define ANUBEE_SYSCALLS_LIB_SEED_H
 
 #include <string.h>
-#include "common/maps.h"   // struct ares_map_line
+#include "common/maps.h"   // struct anubee_map_line
 #include "common/pattern_match.h"
 
 // Pure decision predicate for seeding the lib-filter from an already-open
@@ -27,7 +27,7 @@ static inline int lib_selector_matches_name(const char *base, const char *sel)
 // Returns 1 if `ml` is an executable, file-backed mapping whose basename
 // matches selector `sel`. Header-only, no I/O, so it's host-testable without
 // a maps file.
-static inline int lib_seed_line_arms(const struct ares_map_line *ml, const char *sel)
+static inline int lib_seed_line_arms(const struct anubee_map_line *ml, const char *sel)
 {
     if (!ml->exec || ml->path[0] == '\0')
         return 0;
@@ -50,7 +50,7 @@ static inline int lib_selector_matches_any(const char *base, const char *const *
     return 0;
 }
 
-static inline int lib_seed_line_arms_any(const struct ares_map_line *ml,
+static inline int lib_seed_line_arms_any(const struct anubee_map_line *ml,
                                           const char *const *sels, int n)
 {
     for (int i = 0; i < n; i++)
@@ -59,4 +59,4 @@ static inline int lib_seed_line_arms_any(const struct ares_map_line *ml,
     return 0;
 }
 
-#endif // ARES_SYSCALLS_LIB_SEED_H
+#endif // ANUBEE_SYSCALLS_LIB_SEED_H

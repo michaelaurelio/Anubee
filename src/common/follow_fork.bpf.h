@@ -3,14 +3,14 @@
 // first, plus vmlinux.h for the tracepoint ctx. When a tracked process forks, the
 // child's TGID is inserted into target_pids so PID-attach follows descendants.
 // No-op when target_pids is empty (launch/UID mode) → zero cost there. Userspace
-// attaches ares_follow_fork only in PID mode (pids.n > 0 && !no_follow).
-#ifndef __ARES_FOLLOW_FORK_BPF_H
-#define __ARES_FOLLOW_FORK_BPF_H
+// attaches anubee_follow_fork only in PID mode (pids.n > 0 && !no_follow).
+#ifndef __ANUBEE_FOLLOW_FORK_BPF_H
+#define __ANUBEE_FOLLOW_FORK_BPF_H
 
 // ponytail: child_pid == tgid for a process fork (the case we want); a new *thread*
 // inserts its tid harmlessly — never matched by the tgid-keyed gate.
 SEC("tp/sched/sched_process_fork")
-int ares_follow_fork(struct trace_event_raw_sched_process_fork *ctx)
+int anubee_follow_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
 	__u32 parent_tgid = bpf_get_current_pid_tgid() >> 32;
 	if (!bpf_map_lookup_elem(&target_pids, &parent_tgid))
@@ -21,4 +21,4 @@ int ares_follow_fork(struct trace_event_raw_sched_process_fork *ctx)
 	return 0;
 }
 
-#endif /* __ARES_FOLLOW_FORK_BPF_H */
+#endif /* __ANUBEE_FOLLOW_FORK_BPF_H */

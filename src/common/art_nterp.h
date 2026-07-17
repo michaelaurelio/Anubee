@@ -13,20 +13,20 @@
 // nothing. BuildID-gated: the version-coupled offsets are resolved from the target's
 // libart BuildID (art_buildid_offsets); an unrecognized build resolves nothing (the
 // caller keeps today's bare-offset terminal).
-#ifndef ARES_COMMON_ART_NTERP_H
-#define ARES_COMMON_ART_NTERP_H
+#ifndef ANUBEE_COMMON_ART_NTERP_H
+#define ANUBEE_COMMON_ART_NTERP_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-struct ares_stack_snapshot;   // full definition in common/stack_snapshot.h
+struct anubee_stack_snapshot;   // full definition in common/stack_snapshot.h
 struct art_offsets;           // full definition in common/art_buildid.h
 
 // Resolve the nterp-interpreted Java method whose managed frame sits at/above
 // `nterp_sp` (the recovered SP of the libart nterp_helper terminal frame). Writes
 // "pkg.Class.method" to out and returns 1 on success; returns 0 on unknown ART
 // version, faulting read, or no resolvable method in the scan window.
-int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+int nterp_name(int pid, const struct anubee_stack_snapshot *snap, uint64_t nterp_sp,
                char *out, size_t outsz);
 
 // ---- host-test seam ------------------------------------------------------------
@@ -62,7 +62,7 @@ int nterp_pick(art_reader rd, void *rc, const struct art_offsets *o,
 // Scans the frozen snapshot upward, emitting each dex_pc-corroborated method
 // (innermost-first, "pkg.Class.method+0x<dexpc>") into out[0..return). Returns the
 // count. Superset of nterp_name; uncorroborated frames are dropped.
-int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+int nterp_chain(int pid, const struct anubee_stack_snapshot *snap, uint64_t nterp_sp,
                 char out[][256], int max_frames);
 int nterp_chain_pick(art_reader rd, void *rc, const struct art_offsets *o,
                      const uint8_t *stack, uint64_t stack_base,
@@ -71,4 +71,4 @@ int nterp_chain_pick(art_reader rd, void *rc, const struct art_offsets *o,
 // Drop the cached DexFile image maps (host tests reset state between cases).
 void art_nterp_cache_reset(void);
 
-#endif /* ARES_COMMON_ART_NTERP_H */
+#endif /* ANUBEE_COMMON_ART_NTERP_H */

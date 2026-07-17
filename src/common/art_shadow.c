@@ -12,7 +12,7 @@
 #define MAX_SEG 8
 #define MAX_SF  64
 
-static int sf_dbg(void) { return getenv("ARES_CFI_DEBUG") != NULL; }
+static int sf_dbg(void) { return getenv("ANUBEE_CFI_DEBUG") != NULL; }
 #define SFD(...) do { if (sf_dbg()) fprintf(stderr, "[shadow] " __VA_ARGS__); } while (0)
 
 static int rd64(art_reader rd, void *rc, uint64_t va, uint64_t *out) {

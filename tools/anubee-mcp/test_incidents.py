@@ -2,7 +2,7 @@
 # Standalone self-asserting test for the mod-analyzer cross-analyzer incident
 # correlator: mod_events ingestion (load_structured) + TraceStore.incidents()
 # + the incidents() MCP tool wrapper in server.py.
-# Run: python3 tools/ares-mcp/test_incidents.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_incidents.py  (no pytest dependency)
 import os
 import sys
 

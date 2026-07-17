@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure classification logic for the `ares mod accessibility-detect` analyzer. No libbpf
+// Pure classification logic for the `anubee mod accessibility-detect` analyzer. No libbpf
 // deps (host-testable): given the touch_count from a BPF burst event and the
 // accessibility-grant check result, decide the alert bitmask. Mirrors
 // massdelete_detect_classify.h's shape, simpler -- no distinct-file estimation
 // needed here.
-#ifndef __ARES_ACCESSIBILITY_DETECT_CLASSIFY_H
-#define __ARES_ACCESSIBILITY_DETECT_CLASSIFY_H
+#ifndef __ANUBEE_ACCESSIBILITY_DETECT_CLASSIFY_H
+#define __ANUBEE_ACCESSIBILITY_DETECT_CLASSIFY_H
 
 #include "modules/mod_events.h"   // ACCESSIBILITY_DETECT_THRESHOLD
 
@@ -20,4 +20,4 @@
 // not granted, negative = unknown/unchecked).
 unsigned classify_accessibility(int touch_count, int granted);
 
-#endif /* __ARES_ACCESSIBILITY_DETECT_CLASSIFY_H */
+#endif /* __ANUBEE_ACCESSIBILITY_DETECT_CLASSIFY_H */

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Standalone self-asserting test for the coverage ingest path.
-# Run: python3 tools/ares-mcp/test_coverage_ingest.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_coverage_ingest.py  (no pytest dependency)
 import os
 import sys
 

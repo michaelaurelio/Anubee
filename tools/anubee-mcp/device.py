@@ -1,21 +1,21 @@
-"""On-device ares control for the MCP server.
+"""On-device anubee control for the MCP server.
 
-Drives the ares binary on a connected device over adb to (a) list the native
+Drives the anubee binary on a connected device over adb to (a) list the native
 libraries an app loads and (b) dump a (possibly decrypted) library from the app's
 live memory, pulling the rebuilt .so back to the host. Listing uses the stealthy
-`ares lib` engine (kprobe, injectionless); memory dumping uses `ares dump`. ares
+`anubee lib` engine (kprobe, injectionless); memory dumping uses `anubee dump`. anubee
 is run under `timeout -s INT <seconds>` so it traces for a bounded window and then
 receives the SIGINT that triggers its flush / exit-time memory dump.
 
 Configuration (environment):
-  ARES_ADB           adb executable (default: "adb")
-  ARES_BIN           ares path on device (default: /data/local/tmp/ares)
-  ARES_SHELL_PREFIX  wrap the device command, e.g. "su -c" on a Magisk device
-                     (ares needs root; set this if adbd isn't already root)
-  ARES_SERIAL        target a specific device (adb -s <serial>)
+  ANUBEE_ADB           adb executable (default: "adb")
+  ANUBEE_BIN           anubee path on device (default: /data/local/tmp/anubee)
+  ANUBEE_SHELL_PREFIX  wrap the device command, e.g. "su -c" on a Magisk device
+                     (anubee needs root; set this if adbd isn't already root)
+  ANUBEE_SERIAL        target a specific device (adb -s <serial>)
 
 The line parsers (`parse_lib_lines` / `parse_dump_lines`) are pure functions over
-ares's stdout/stderr and are unit-tested without a device.
+anubee's stdout/stderr and are unit-tested without a device.
 """
 
 import os
@@ -24,10 +24,10 @@ import shlex
 import subprocess
 import uuid
 
-ADB = os.environ.get("ARES_ADB", "adb")
-BIN = os.environ.get("ARES_BIN", "/data/local/tmp/ares")
-SHELL_PREFIX = os.environ.get("ARES_SHELL_PREFIX", "").strip()
-SERIAL = os.environ.get("ARES_SERIAL", "").strip()
+ADB = os.environ.get("ANUBEE_ADB", "adb")
+BIN = os.environ.get("ANUBEE_BIN", "/data/local/tmp/anubee")
+SHELL_PREFIX = os.environ.get("ANUBEE_SHELL_PREFIX", "").strip()
+SERIAL = os.environ.get("ANUBEE_SERIAL", "").strip()
 
 MAX_SECONDS = 120
 _PKG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
@@ -62,7 +62,7 @@ def _clamp_seconds(seconds):
 # ---- output parsing (pure) ------------------------------------------------
 
 def parse_lib_lines(text):
-    """Parse `ares lib` output into a list of per-segment mapping records."""
+    """Parse `anubee lib` output into a list of per-segment mapping records."""
     out = []
     for line in text.splitlines():
         m = _LIB_RE.match(line.strip())
@@ -80,7 +80,7 @@ def parse_lib_lines(text):
 
 
 def parse_dump_lines(text):
-    """Parse `ares dump` per-module `[dump]` lines into structured records."""
+    """Parse `anubee dump` per-module `[dump]` lines into structured records."""
     out = []
     for line in text.splitlines():
         m = _DUMP_RE.match(line.strip())
@@ -147,7 +147,7 @@ def _adb(args, timeout=120):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
-        raise RuntimeError(f"adb not found ({ADB!r}); set ARES_ADB")
+        raise RuntimeError(f"adb not found ({ADB!r}); set ANUBEE_ADB")
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"adb {args[0] if args else ''} timed out")
     if p.returncode != 0:
@@ -160,9 +160,9 @@ def _adb_shell(cmd_str, timeout=120):
     return _adb(["shell", cmd_str], timeout=timeout)
 
 
-def _run_ares(subcmd, args, seconds):
-    """Run `ares <subcmd> <args>` on the device for `seconds` (SIGINT-terminated
-    via timeout), as root if ARES_SHELL_PREFIX is set. Returns combined
+def _run_anubee(subcmd, args, seconds):
+    """Run `anubee <subcmd> <args>` on the device for `seconds` (SIGINT-terminated
+    via timeout), as root if ANUBEE_SHELL_PREFIX is set. Returns combined
     stdout+stderr."""
     inner = "timeout -s INT %d %s %s %s" % (
         seconds, shlex.quote(BIN), subcmd,
@@ -172,9 +172,9 @@ def _run_ares(subcmd, args, seconds):
     try:
         p = subprocess.run(full, capture_output=True, text=True, timeout=seconds + 45)
     except FileNotFoundError:
-        raise RuntimeError(f"adb not found ({ADB!r}); set ARES_ADB")
+        raise RuntimeError(f"adb not found ({ADB!r}); set ANUBEE_ADB")
     except subprocess.TimeoutExpired as e:
-        # timeout should have stopped ares device-side; return what we got
+        # timeout should have stopped anubee device-side; return what we got
         out = (e.stdout or "") + (e.stderr or "")
         return out if isinstance(out, str) else out.decode("utf-8", "replace")
     return (p.stdout or "") + (p.stderr or "")
@@ -183,12 +183,12 @@ def _run_ares(subcmd, args, seconds):
 # ---- public operations ----------------------------------------------------
 
 def list_libraries(package, seconds=8, activity=None):
-    """Launch the app via `ares lib` for `seconds`, then return the native
+    """Launch the app via `anubee lib` for `seconds`, then return the native
     libraries it loaded (one record per pid/library, with merged ranges)."""
     _check_pkg(package)
     secs = _clamp_seconds(seconds)
     args = [package] + ([activity] if activity else [])
-    log = _run_ares("lib", args, secs)
+    log = _run_anubee("lib", args, secs)
     segments = parse_lib_lines(log)
     libs = aggregate_libraries(segments)
     return {
@@ -202,7 +202,7 @@ def list_libraries(package, seconds=8, activity=None):
 
 
 def dump_library(package, pattern, seconds=12, activity=None, out_dir=None):
-    """Run `ares dump -d <dir> -q <package> <pattern>` on the device for
+    """Run `anubee dump -d <dir> -q <package> <pattern>` on the device for
     `seconds`, dumping every loaded library whose basename matches `pattern`
     (glob ok, e.g. 'e_*') from live memory on exit, then pull the rebuilt
     .so(s) to the host."""
@@ -210,15 +210,15 @@ def dump_library(package, pattern, seconds=12, activity=None, out_dir=None):
     if not isinstance(pattern, str) or not pattern or len(pattern) > 128:
         raise ValueError("pattern must be a non-empty string (<=128 chars)")
     secs = _clamp_seconds(seconds)
-    out_dir = os.path.abspath(out_dir or os.path.join(os.getcwd(), "ares-dumps"))
+    out_dir = os.path.abspath(out_dir or os.path.join(os.getcwd(), "anubee-dumps"))
     os.makedirs(out_dir, exist_ok=True)
 
-    devdir = "/data/local/tmp/ares-mcp-" + uuid.uuid4().hex[:12]
+    devdir = "/data/local/tmp/anubee-mcp-" + uuid.uuid4().hex[:12]
     _adb_shell("mkdir -p " + shlex.quote(devdir))
     try:
         args = ["-d", devdir, "-q", package, pattern] + \
                ([activity] if activity else [])
-        log = _run_ares("dump", args, secs)
+        log = _run_anubee("dump", args, secs)
         dumped = parse_dump_lines(log)
 
         listing = _adb_shell("ls -1 %s 2>/dev/null || true" % shlex.quote(devdir))
@@ -251,12 +251,12 @@ def _diagnose(log):
     """Best-effort hint when nothing was produced, surfaced to the model."""
     low = log.lower()
     if "not found" in low or "no such file" in low:
-        return ("ares not found on device — push it to %s "
-                "(make push) or set ARES_BIN" % BIN)
+        return ("anubee not found on device — push it to %s "
+                "(make push) or set ANUBEE_BIN" % BIN)
     if "run as root" in low or "permission denied" in low or "operation not permitted" in low:
-        return ("ares needs root — set ARES_SHELL_PREFIX='su -c' "
+        return ("anubee needs root — set ANUBEE_SHELL_PREFIX='su -c' "
                 "or run `adb root`")
     if "could not resolve uid" in low:
         return "package not installed or not launchable on this device"
     snippet = "\n".join(log.strip().splitlines()[-6:])
-    return "no output matched; tail of ares log:\n" + snippet if snippet else "no output from ares"
+    return "no output matched; tail of anubee log:\n" + snippet if snippet else "no output from anubee"

@@ -6,7 +6,7 @@
 # could never reach them. This calls the actual server.py tool functions
 # (not trace_store.py directly), proving the MCP wiring itself, not just the
 # store methods test_unified_ingest.py already covers.
-# Run: python3 tools/ares-mcp/test_mcp_structured_tools.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_mcp_structured_tools.py  (no pytest dependency)
 import os
 import sys
 

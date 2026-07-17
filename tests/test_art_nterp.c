@@ -91,9 +91,9 @@ static const struct art_offsets T_OFF = {
 
 // Method names used in the nterp_chain_pick test.
 // Indices from sample.dex: 0=<init> 1=add 2=greet 5=StringBuilder.append
-#define METHOD0_NAME "com.ares.Sample.add"
-#define METHOD1_NAME "com.ares.Sample.greet"
-#define METHOD2_NAME "com.ares.Sample.<init>"
+#define METHOD0_NAME "com.anubee.Sample.add"
+#define METHOD1_NAME "com.anubee.Sample.greet"
+#define METHOD2_NAME "com.anubee.Sample.<init>"
 #define STALE_NAME   "java.lang.StringBuilder.append"
 
 int main(int argc, char **argv)
@@ -102,7 +102,7 @@ int main(int argc, char **argv)
     size_t dexlen; uint8_t *dex = slurp(path, &dexlen);
     struct dex_method_map *probe = dex_map_build(dex, dexlen);
     CHECK(probe != NULL, "fixture builds");
-    uint32_t greet_idx = idx_of(probe, "com.ares.Sample.greet");
+    uint32_t greet_idx = idx_of(probe, "com.anubee.Sample.greet");
     dex_map_free(probe);
 
     // addresses: Class/DexCache are compressed (must fit in u32); DexFile/dex are
@@ -127,7 +127,7 @@ int main(int argc, char **argv)
     // Happy path: full chase resolves the method name.
     art_nterp_cache_reset();
     CHECK(art_method_resolve(memrd, &m, &T_OFF, AM, out, sizeof(out)) == 1 &&
-          strcmp(out, "com.ares.Sample.greet") == 0,
+          strcmp(out, "com.anubee.Sample.greet") == 0,
           "ArtMethod chase resolves greet");
 
     // TBI-tagged native pointers: DexCache.dex_file_ and DexFile.begin_ carry an
@@ -144,7 +144,7 @@ int main(int argc, char **argv)
         mt.r[3].data = df_t;
         art_nterp_cache_reset();
         CHECK(art_method_resolve(memrd, &mt, &T_OFF, AM, out, sizeof(out)) == 1 &&
-              strcmp(out, "com.ares.Sample.greet") == 0,
+              strcmp(out, "com.anubee.Sample.greet") == 0,
               "TBI-tagged DexFile/begin pointers untagged -> chase resolves");
     }
     art_nterp_cache_reset();
@@ -167,7 +167,7 @@ int main(int argc, char **argv)
 
     // Cached second lookup still resolves (exercises the DexFile image cache).
     CHECK(art_method_resolve(memrd, &m, &T_OFF, AM, out, sizeof(out)) == 1 &&
-          strcmp(out, "com.ares.Sample.greet") == 0,
+          strcmp(out, "com.anubee.Sample.greet") == 0,
           "second lookup hits dex cache, still resolves");
 
     // DexFile size sanity: a target-supplied size of 0 or an absurd size must be
@@ -186,7 +186,7 @@ int main(int argc, char **argv)
     // ---- nterp_pick: dex_pc corroboration picks the right method ----------------
     // Second synthetic ArtMethod resolving a DIFFERENT method (add) — the stale
     // pointer that must NOT win despite sitting closer to nterp_sp.
-    uint32_t add_i = idx_of2(dex, dexlen, "com.ares.Sample.add");
+    uint32_t add_i = idx_of2(dex, dexlen, "com.anubee.Sample.add");
     const uint64_t AM_ADD = 0x5000;
     uint8_t am_add[16] = {0};
     w32(am_add + O_DECL, (uint32_t)C);
@@ -204,7 +204,7 @@ int main(int argc, char **argv)
     char pk[256];
     art_nterp_cache_reset();
     CHECK(nterp_pick(memrd, &m, &T_OFF, stack, STK, sizeof(stack), NSP, pk, sizeof(pk)) == 1 &&
-          strcmp(pk, "com.ares.Sample.greet+0x6") == 0,
+          strcmp(pk, "com.anubee.Sample.greet+0x6") == 0,
           "nterp_pick corroborates greet (not stale add) + dexpc suffix");
 
     // Fallback: only the stale add ArtMethod*, no dex_pc anywhere -> bare name.
@@ -212,7 +212,7 @@ int main(int argc, char **argv)
     w64(stack2 + (size_t)((NSP + 0x10) - STK), AM_ADD);
     art_nterp_cache_reset();
     CHECK(nterp_pick(memrd, &m, &T_OFF, stack2, STK, sizeof(stack2), NSP, pk, sizeof(pk)) == 1 &&
-          strcmp(pk, "com.ares.Sample.add?") == 0,
+          strcmp(pk, "com.anubee.Sample.add?") == 0,
           "nterp_pick fallback name is marked unverified (trailing ?)");
 
     // No candidate at all -> miss.
@@ -233,7 +233,7 @@ int main(int argc, char **argv)
     w64(stack4 + (size_t)((NSP + 0x88) - STK), BEGIN + 0x190);  /* greet dex_pc -> +0x6 */
     art_nterp_cache_reset();
     CHECK(nterp_pick(memrd, &m, &T_OFF, stack4, STK, sizeof(stack4), NSP, pk, sizeof(pk)) == 1 &&
-          strcmp(pk, "com.ares.Sample.add+0x0") == 0,
+          strcmp(pk, "com.anubee.Sample.add+0x0") == 0,
           "nterp_pick: nearest corroborated (add+0x0) wins over farther corroborated (greet+0x6)");
 
     // ---- nterp_chain_pick: 3-frame chain with one interleaved stale ---------------

@@ -9,8 +9,8 @@
 //
 // The math below is pure and lives here as static inline (no .c, no queue, no
 // terminal needed) so it is host-testable - same rationale as snapshot_gate.h.
-#ifndef __ARES_COMMON_DRAIN_PROGRESS_H
-#define __ARES_COMMON_DRAIN_PROGRESS_H
+#ifndef __ANUBEE_COMMON_DRAIN_PROGRESS_H
+#define __ANUBEE_COMMON_DRAIN_PROGRESS_H
 
 #include <pthread.h>
 #include <stddef.h>
@@ -23,17 +23,17 @@
 // than size-triggered: self-calibrating across devices, and it fires exactly
 // when a human starts wondering if it hung. A fast drain prints nothing, so the
 // "do not interrupt" line keeps its meaning.
-#define ARES_DRAIN_SHOW_AFTER_NS  (300ULL * 1000000ULL)
+#define ANUBEE_DRAIN_SHOW_AFTER_NS  (300ULL * 1000000ULL)
 // Suppress the ETA until there is enough elapsed time for the rate to mean
 // something.
-#define ARES_DRAIN_ETA_AFTER_NS   (1000ULL * 1000000ULL)
-#define ARES_DRAIN_BAR_CELLS      16
+#define ANUBEE_DRAIN_ETA_AFTER_NS   (1000ULL * 1000000ULL)
+#define ANUBEE_DRAIN_BAR_CELLS      16
 
 // Show the UI at all? Zero backlog also guards drain_pct's divisor.
 static inline int drain_should_show(unsigned long long elapsed_ns,
                                     size_t total_bytes)
 {
-    return total_bytes > 0 && elapsed_ns >= ARES_DRAIN_SHOW_AFTER_NS;
+    return total_bytes > 0 && elapsed_ns >= ANUBEE_DRAIN_SHOW_AFTER_NS;
 }
 
 // Percent of the frozen backlog drained, from BYTES. Bytes rather than records
@@ -59,7 +59,7 @@ static inline int drain_pct(size_t total_bytes, size_t used)
 static inline long drain_eta_secs(size_t total_bytes, size_t used,
                                   unsigned long long elapsed_ns)
 {
-    if (elapsed_ns < ARES_DRAIN_ETA_AFTER_NS)
+    if (elapsed_ns < ANUBEE_DRAIN_ETA_AFTER_NS)
         return -1;
     if (used > total_bytes)
         return -1;
@@ -116,8 +116,8 @@ static inline void drain_fmt_duration(long secs, char *out, size_t cap)
 // loop has already exited, so no producer exists and q->used can only fall -
 // the denominator is exact, not an estimate. Holds under `trace` too, which
 // joins every run-thread before any teardown and tears down sequentially.
-struct ares_drain_progress {
-    struct ares_evq *q;
+struct anubee_drain_progress {
+    struct anubee_evq *q;
     const char      *label;        // engine name; disambiguates under `trace`
     size_t           total_bytes;  // q->used, frozen at begin
     unsigned long long total_recs; // q->pushed - q->popped, frozen at begin
@@ -129,13 +129,13 @@ struct ares_drain_progress {
 
 // Freeze the totals, start the clock, and mark a drain in flight (so a 2nd
 // Ctrl-C warns). Call BEFORE setting q->done.
-void ares_drain_progress_begin(struct ares_drain_progress *d,
-                               struct ares_evq *q, const char *label);
+void anubee_drain_progress_begin(struct anubee_drain_progress *d,
+                               struct anubee_evq *q, const char *label);
 
 // Render until the queue is empty, then join. Replaces a bare pthread_join:
-// ares_evq_pop exits exactly when used==0 && done, so once used hits 0 the
+// anubee_evq_pop exits exactly when used==0 && done, so once used hits 0 the
 // worker is already guaranteed to exit and the join blocks for at most one
 // record's processing. Clears the drain-active mark on return.
-void ares_drain_progress_join(struct ares_drain_progress *d, pthread_t worker);
+void anubee_drain_progress_join(struct anubee_drain_progress *d, pthread_t worker);
 
-#endif /* __ARES_COMMON_DRAIN_PROGRESS_H */
+#endif /* __ANUBEE_COMMON_DRAIN_PROGRESS_H */

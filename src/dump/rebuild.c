@@ -27,7 +27,7 @@
 #include "common/proc_mem.h"
 #include "common/maps.h"
 #include "common/pattern_match.h"
-#include "common/emit.h"        // SYM1 Phase 3: struct ares_sink, ares_sink_emit
+#include "common/emit.h"        // SYM1 Phase 3: struct anubee_sink, anubee_sink_emit
 #include "common/sha256.h"
 #include "common/sym_apk.h"     // apk_list_sos, struct apk_so_ref
 #include "dump/dump_emit.h"     // dump_emit_module
@@ -68,7 +68,7 @@ void dump_set_raw(int on) { g_raw = on; }
 
 // ---- /proc/<pid>/maps -----------------------------------------------------
 
-static int read_maps(int pid, struct ares_map_line **out)
+static int read_maps(int pid, struct anubee_map_line **out)
 {
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
@@ -79,16 +79,16 @@ static int read_maps(int pid, struct ares_map_line **out)
 		return -1;
 	}
 
-	struct ares_map_line *m = NULL;
+	struct anubee_map_line *m = NULL;
 	size_t n = 0, cap = 0;
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
-		struct ares_map_line ml;
-		if (!ares_parse_maps_line(line, &ml))
+		struct anubee_map_line ml;
+		if (!anubee_parse_maps_line(line, &ml))
 			continue;
 		if (n == cap) {
 			size_t nc = cap ? cap * 2 : 256;
-			struct ares_map_line *nm = realloc(m, nc * sizeof(*nm));
+			struct anubee_map_line *nm = realloc(m, nc * sizeof(*nm));
 			if (!nm)
 				break;
 			m = nm;
@@ -102,14 +102,14 @@ static int read_maps(int pid, struct ares_map_line **out)
 }
 
 // Walk back over the contiguous run of same-path mappings to the load base.
-static uint64_t load_base_of(const struct ares_map_line *m, int hit)
+static uint64_t load_base_of(const struct anubee_map_line *m, int hit)
 {
-	return m[ares_module_base_idx(m, (size_t)hit)].start;
+	return m[anubee_module_base_idx(m, (size_t)hit)].start;
 }
 
-static uint64_t load_off_of(const struct ares_map_line *m, int hit)
+static uint64_t load_off_of(const struct anubee_map_line *m, int hit)
 {
-	return m[ares_module_base_idx(m, (size_t)hit)].off;
+	return m[anubee_module_base_idx(m, (size_t)hit)].off;
 }
 
 static const char *basename_of(const char *p)
@@ -544,7 +544,7 @@ static int write_file(const char *outpath, const uint8_t *buf, size_t sz)
 }
 
 static int dump_one(int pid, int memfd, uint64_t base, const char *name, const char *outdir,
-		    uint64_t *covered_end, struct ares_sink *sink)
+		    uint64_t *covered_end, struct anubee_sink *sink)
 {
 	Elf64_Ehdr eh;
 	if (proc_mem_read(memfd, base, &eh, sizeof(eh)) != sizeof(eh) ||
@@ -693,7 +693,7 @@ static int dump_one(int pid, int memfd, uint64_t base, const char *name, const c
 	if (sink && sink->f) {
 		sink->jb.len = 0;
 		dump_emit_module(&sink->jb, bn, outpath, (unsigned long long)base, pid, g_raw);
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 	return 0;
 }
@@ -824,7 +824,7 @@ unsigned char *dump_read_apk_member(const char *apk, unsigned long long off, siz
 static int dump_check_cb(int pid, int memfd, unsigned long long base, const char *path,
 			 unsigned long long file_off, void *ctx, unsigned long long *covered_end)
 {
-	struct ares_sink *sink = (struct ares_sink *)ctx;
+	struct anubee_sink *sink = (struct anubee_sink *)ctx;
 	(void)covered_end;
 
 	char bn[DUMP_MAX_PATH];
@@ -877,7 +877,7 @@ static int dump_check_cb(int pid, int memfd, unsigned long long base, const char
 		dump_emit_modcmp(&sink->jb, bn, path, (unsigned long long)base, pid, state,
 				 mem_hex[0] ? mem_hex : NULL,
 				 file_hex[0] ? file_hex : NULL);
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 	printf("[dump] check: %s @0x%llx (pid %d) -> %s\n",
 	       bn, (unsigned long long)base, pid, state);
@@ -888,7 +888,7 @@ static int dump_check_cb(int pid, int memfd, unsigned long long base, const char
 }
 
 int dump_check_pid_modules(int pid, const struct dump_sel *sel,
-			   struct ares_sink *sink)
+			   struct anubee_sink *sink)
 {
 	return dump_walk_pid_modules(pid, sel, dump_check_cb, sink);
 }
@@ -908,7 +908,7 @@ int dump_sel_matches(const struct dump_sel *sel, const char *path,
 // The dump-on-exit / snapshot callback: rebuild one module to a file.
 struct dump_write_ctx {
 	const char       *outdir;
-	struct ares_sink *sink;
+	struct anubee_sink *sink;
 };
 
 static int dump_write_cb(int pid, int memfd, unsigned long long base, const char *path,
@@ -924,14 +924,14 @@ static int dump_write_cb(int pid, int memfd, unsigned long long base, const char
 }
 
 int dump_pid_modules(int pid, const char *const *pats, int npat,
-                     const char *outdir, struct ares_sink *sink, int *hit)
+                     const char *outdir, struct anubee_sink *sink, int *hit)
 {
 	struct dump_sel sel = { .pats = pats, .npat = npat, .hit = hit };
 	return dump_pid_modules_sel(pid, &sel, outdir, sink);
 }
 
 int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
-                         const char *outdir, struct ares_sink *sink)
+                         const char *outdir, struct anubee_sink *sink)
 {
 	struct dump_write_ctx ctx = { .outdir = outdir, .sink = sink };
 	return dump_walk_pid_modules(pid, sel, dump_write_cb, &ctx);
@@ -940,7 +940,7 @@ int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
 int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 			  dump_mod_fn fn, void *ctx)
 {
-	struct ares_map_line *m = NULL;
+	struct anubee_map_line *m = NULL;
 	int n = read_maps(pid, &m);
 	if (n < 0)
 		return -1;
@@ -1001,9 +1001,9 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 	return ok;
 }
 
-int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct ares_sink *sink)
+int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct anubee_sink *sink)
 {
-	struct ares_map_line *m = NULL;
+	struct anubee_map_line *m = NULL;
 	int n = read_maps(pid, &m);
 	if (n < 0)
 		return -1;

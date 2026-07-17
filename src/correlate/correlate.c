@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares correlate` — span-gated function->syscall correlation.
+// `anubee correlate` — span-gated function->syscall correlation.
 //
 // Attaches entry uprobes to spec'd functions (MODULE!FUNC) and a span-gated
 // do_el0_svc kprobe; every syscall issued while a probed function is on the
@@ -46,11 +46,11 @@ const char *argp_program_bug_address = "<michael.windarta@binus.ac.id>";
 
 // nr -> name table (generated for the device's arm64 ABI). R9 residual: table
 // data now lives once in common/syscall_table.c, shared with syscalls.c.
-static struct ares_sysindex g_sysidx;
+static struct anubee_sysindex g_sysidx;
 
 static const char *syscall_name(long nr)
 {
-    const char *n = ares_sysindex_name(&g_sysidx, nr);
+    const char *n = anubee_sysindex_name(&g_sysidx, nr);
     return n ? n : "?";
 }
 
@@ -61,7 +61,7 @@ static const char *syscall_name(long nr)
 
 static volatile sig_atomic_t exiting = 0;
 
-static struct ares_sink g_sink;
+static struct anubee_sink g_sink;
 static int              g_quiet = 0;
 static int              g_returns = 0;  // --returns: attach a uretprobe per target too
 
@@ -86,7 +86,7 @@ static void corr_print_summary(void)
            g_sum_returns_captured, g_sum_returns_captured == 1 ? "" : "s");
 }
 
-static void corr_emit_summary(struct ares_sink *s)
+static void corr_emit_summary(struct anubee_sink *s)
 {
     if (!s->f) return;
     if (!g_sum_spans_opened && !g_sum_syscalls_captured && !g_sum_returns_captured) return;
@@ -98,7 +98,7 @@ static void corr_emit_summary(struct ares_sink *s)
     jb_s(j, ",\"syscalls_captured\":"); jb_u64(j, g_sum_syscalls_captured);
     jb_s(j, ",\"returns_captured\":");  jb_u64(j, g_sum_returns_captured);
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 // Tracked uprobe links so teardown can bpf_link__destroy them (the syscall
@@ -136,7 +136,7 @@ static void log_stderr(const char *fmt, ...)
     va_end(ap);
 }
 
-// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
+// ponytail: libbpf_print_fn removed; anubee_libbpf_quiet from common/runtime.h used instead
 
 static int handle_event(void *ctx, void *data, size_t sz)
 {
@@ -154,7 +154,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
             // uprobe was attached at (via the shared target_registry, same
             // resolver funcs.c's [event] line uses) instead of showing a bare
             // address the reader has to cross-reference against [spec] lines
-            // by hand (ares correlate output-clarity rework).
+            // by hand (anubee correlate output-clarity rework).
             bool used_fallback = false;
             probe_target_t *target =
                 find_target_by_entry_addr(e->entry_addr, (pid_t)e->h.pid, &used_fallback);
@@ -174,7 +174,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
         }
         if (g_sink.f) {
             corr_emit_func(&g_sink.jb, e);
-            ares_sink_emit(&g_sink);
+            anubee_sink_emit(&g_sink);
         }
     } else if (h->type == CORR_EV_SYSCALL) {
         if (sz < sizeof(struct corr_syscall_event)) return 0;
@@ -195,7 +195,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
             // closing the sharpest stdout/file content gap (§3.3). Bounded to
             // the syscall's real arity (same arg_count() syscalls.c uses) so
             // leftover x0..x5 register values past the real args don't print
-            // as if they were arguments (ares correlate output-clarity rework).
+            // as if they were arguments (anubee correlate output-clarity rework).
             int nargs = arg_count(e->nr);
             for (int i = 0; i < nargs; i++) {
                 char dec[300];
@@ -207,7 +207,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
         }
         if (g_sink.f) {
             corr_emit_syscall(&g_sink.jb, e, name, fdmask, sockidx);
-            ares_sink_emit(&g_sink);
+            anubee_sink_emit(&g_sink);
         }
     } else if (h->type == CORR_EV_RETURN) {
         if (sz < sizeof(struct corr_return_event)) return 0;
@@ -220,21 +220,21 @@ static int handle_event(void *ctx, void *data, size_t sz)
                    (unsigned long long)e->elapsed_ns, (unsigned long long)e->entry_addr);
         if (g_sink.f) {
             corr_emit_return(&g_sink.jb, e);
-            ares_sink_emit(&g_sink);
+            anubee_sink_emit(&g_sink);
         }
     } else if (h->type == CORR_EV_MAP) {
         if (sz < sizeof(struct lib_map_event)) return 0;
         const struct lib_map_event *e = data;
         char path[256];
-        if (ares_libtrace_resolve_path(e->h.pid, e->start, e->name,
+        if (anubee_libtrace_resolve_path(e->h.pid, e->start, e->name,
                                        path, sizeof(path)) != 0)
             snprintf(path, sizeof(path), "%s", e->name);
         // emit self-gates: console line unless -q, {"type":"lib"} when -o set.
-        ares_libtrace_emit_lib(&g_sink, g_quiet, e, path, NULL);
+        anubee_libtrace_emit_lib(&g_sink, g_quiet, e, path, NULL);
     } else if (h->type == CORR_EV_UNMAP) {
         if (sz < sizeof(struct lib_unmap_event)) return 0;
         const struct lib_unmap_event *e = data;
-        ares_libtrace_emit_unlib(&g_sink, g_quiet, e);
+        anubee_libtrace_emit_unlib(&g_sink, g_quiet, e);
     }
     return 0;
 }
@@ -245,7 +245,7 @@ struct corr_dedup_entry { char path[256]; unsigned long off; };
 // Attach a single resolved custom-spec target, deduping via `done[]`. Shared
 // by both the exact-match spec path and the bulk /regex/ func-match path
 // (EPIC H12).
-static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
+static void attach_custom_spec_target(struct anubee_correlate *skel, pid_t pid,
                                        const char *path, probe_target_t tgt, int returns,
                                        struct corr_dedup_entry *done, int *ndone,
                                        int *attached, int *warned)
@@ -271,7 +271,7 @@ static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
     if (link) {
         track_uprobe_link(link);
         // Register so a later CORR_EV_FUNC's runtime entry_addr can be
-        // resolved back to this mod!func (ares correlate output-clarity
+        // resolved back to this mod!func (anubee correlate output-clarity
         // rework) — mirrors funcs.c registering into the same shared
         // target_registry at its own attach site. tgt.mod_path/pid are
         // already set by resolve_custom_spec_{for,matches}_for_path.
@@ -300,7 +300,7 @@ static void attach_custom_spec_target(struct ares_correlate *skel, pid_t pid,
 // g_custom_spec_resolved).
 static bool g_corr_spec_resolved[64];
 
-static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
+static int attach_uprobes_for_pid(struct anubee_correlate *skel, pid_t pid,
                                   const custom_probe_spec_t *specs, int nspec,
                                   int returns)
 {
@@ -318,8 +318,8 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        struct ares_map_line ml;
-        if (!ares_parse_maps_line(line, &ml)) continue;
+        struct anubee_map_line ml;
+        if (!anubee_parse_maps_line(line, &ml)) continue;
         if (ml.path[0] != '/' || !ml.exec) continue;
         const char *path = ml.path;
 
@@ -360,7 +360,7 @@ static int attach_uprobes_for_pid(struct ares_correlate *skel, pid_t pid,
     return attached;
 }
 
-static int install_uid(struct ares_correlate *skel, int uid)
+static int install_uid(struct anubee_correlate *skel, int uid)
 {
     if (uid <= 0) return -1;
     __u32 vuid = (__u32)uid, one = 1;
@@ -381,8 +381,8 @@ static void wait_for_target_mapped(pid_t pid, const custom_probe_spec_t *specs, 
         if (f) {
             char line[512];
             while (fgets(line, sizeof(line), f)) {
-                struct ares_map_line ml;
-                if (!ares_parse_maps_line(line, &ml)) continue;
+                struct anubee_map_line ml;
+                if (!anubee_parse_maps_line(line, &ml)) continue;
                 if (ml.path[0] != '/' || !ml.exec) continue;
                 for (int s = 0; s < nspec; s++)
                     if (custom_spec_matches_path(&specs[s], ml.path)) { fclose(f); return; }
@@ -400,10 +400,10 @@ static const char corr_doc[] =
     "Attach entry uprobes to spec'd functions + a span-gated syscall kprobe;\n"
     "emit each in-span syscall tagged with the enclosing function's span.\v"
     "Exactly one of -p or -P must be given. At least one of -e/-F is required.\n"
-    "Example: ares correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
+    "Example: anubee correlate -P com.example.app -e 'libnative.so!Java_*' -o out.jsonl";
 static const char corr_args_doc[] = "";
 
-#define ARES_KEY_RETURNS 0x200   // correlate-local long-only key (--returns)
+#define ANUBEE_KEY_RETURNS 0x200   // correlate-local long-only key (--returns)
 
 struct corr_args {
     struct common_args c;          // -o -v -q -J -b -Q (shared with funcs/syscalls)
@@ -421,7 +421,7 @@ static const struct argp_option corr_options[] = {
     { "spec",    'e', "SPEC",      0, "Probe spec MODULE!FUNC[(S|V,...)] (repeatable); MODULE/FUNC accept /regex/ for bulk matching", 0 },
     { "spec-file", 'F', "FILE",    0, "Load probe specs from a file (one per line, # = comment)", 0 },
     COMMON_ARGP_OPTIONS,
-    { "returns", ARES_KEY_RETURNS, NULL, 0,
+    { "returns", ANUBEE_KEY_RETURNS, NULL, 0,
       "Also attach uretprobes: return value + exact span timing (LOUD: adds a "
       "stack trampoline, a 2nd detection surface beyond the entry BRK)", 0 },
     { 0 }
@@ -434,8 +434,8 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
     case 'P': a->pkg = arg; break;
     case 'o': case 'v': case 'q': case 'b': case 'Q':
         return parse_common_arg(key, arg, state, &a->c);
-    case ARES_KEY_RETURNS: a->returns = 1; break;
-    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+    case ANUBEE_KEY_RETURNS: a->returns = 1; break;
+    case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case 'e':
         if (a->nspec >= 64)
@@ -473,7 +473,7 @@ static const struct argp corr_argp = { corr_options, corr_parse_opt, corr_args_d
 // at setup time, so setup attaches immediately and correlate_attach is a no-op.
 
 // Cross-phase state: published by correlate_setup, consumed by run/teardown/attach.
-static struct ares_correlate *g_skel;
+static struct anubee_correlate *g_skel;
 static struct bpf_link        *g_kp;
 static struct bpf_link        *g_ff;
 static struct bpf_link        *g_map_kp;    // shared lib_trace uprobe_mmap kprobe
@@ -540,7 +540,7 @@ static void print_never_resolved_report(void)
 // {"type":"lib"}/{"type":"unlib"} records. Attached before launch in -P mode (like
 // the UID install) so the target's startup library maps are captured, not just
 // later dlopens.
-static int attach_lib_kprobes(struct ares_correlate *skel)
+static int attach_lib_kprobes(struct anubee_correlate *skel)
 {
     g_map_kp = bpf_program__attach(skel->progs.on_uprobe_mmap);
     if (!g_map_kp) { fprintf(stderr, "correlate: attach uprobe_mmap kprobe failed\n"); return -1; }
@@ -549,9 +549,9 @@ static int attach_lib_kprobes(struct ares_correlate *skel)
     return 0;
 }
 
-int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
+int correlate_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
-    ares_sysindex_build(&g_sysidx, ares_syscall_table, ares_syscall_table_count);
+    anubee_sysindex_build(&g_sysidx, anubee_syscall_table, anubee_syscall_table_count);
     // Coordinator pre-fill (mirrors lib/dump/syscalls/funcs): lets trace drive
     // -P mode without repeating -P in the --correlate argv section.
     if (rc && rc->pkg)
@@ -562,17 +562,17 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
 
     g_quiet   = g_ca.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 
-    if (g_ca.c.output_file && ares_sink_open(&g_sink, g_ca.c.output_file, "event", 1) != 0) {
+    if (g_ca.c.output_file && anubee_sink_open(&g_sink, g_ca.c.output_file, "event", 1) != 0) {
         fprintf(stderr, "correlate: cannot open %s: %s\n", g_ca.c.output_file, strerror(errno));
         return 1;
     }
 
-    libbpf_set_print(ares_libbpf_quiet);
+    libbpf_set_print(anubee_libbpf_quiet);
 
-    struct ares_correlate *skel = ares_correlate__open();
+    struct anubee_correlate *skel = anubee_correlate__open();
     if (!skel) { fprintf(stderr, "correlate: open skeleton failed\n"); goto err_file; }
     bpf_program__set_autoattach(skel->progs.corr_uretprobe_ret, false);
-    if (ares_correlate__load(skel)) {
+    if (anubee_correlate__load(skel)) {
         fprintf(stderr, "correlate: BPF load failed (eBPF privileges / SELinux permissive?)\n");
         goto err_skel;
     }
@@ -584,7 +584,7 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         // doesn't need the target PID. Install UID before launch so the kprobe
         // gates from the start. The launch itself, and the post-launch uprobe
         // attach, are the caller's job now — see correlate_attach() below.
-        g_uid = ares_resolve_uid(g_ca.pkg);
+        g_uid = anubee_resolve_uid(g_ca.pkg);
         if (g_uid < 0) { fprintf(stderr, "correlate: cannot resolve UID for %s\n", g_ca.pkg); goto err_skel; }
         if (install_uid(skel, g_uid) != 0) { fprintf(stderr, "correlate: install UID failed\n"); goto err_skel; }
         // Attach lib_trace kprobes before launch so startup maps are captured.
@@ -597,13 +597,13 @@ int correlate_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             __u32 tgid = (__u32)g_ca.tgt.pids[i];
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
             if (g_ca.tgt.siblings) {
-                int uid = ares_get_pid_uid(g_ca.tgt.pids[i]);
+                int uid = anubee_get_pid_uid(g_ca.tgt.pids[i]);
                 if (uid > 0 && install_uid(skel, uid) != 0)
                     fprintf(stderr, "correlate: install UID for PID %d failed\n", g_ca.tgt.pids[i]);
             }
         }
         if (!g_ca.tgt.no_follow) {
-            g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+            g_ff = bpf_program__attach(skel->progs.anubee_follow_fork);
             if (!g_ff) fprintf(stderr, "correlate: follow-fork attach failed (non-fatal)\n");
         }
         // Already-running target: catches future maps/unmaps (dlopen/dlclose).
@@ -648,18 +648,18 @@ err_skel:
         g_ff = NULL;
     }
     destroy_uprobe_links();
-    ares_correlate__destroy(skel);
+    anubee_correlate__destroy(skel);
 err_file:
     if (g_sink.f) {
-        ares_sink_close(&g_sink);
-        ares_sink_report(&g_sink);
+        anubee_sink_close(&g_sink);
+        anubee_sink_report(&g_sink);
     }
     return 1;
 }
 
 // Post-launch uprobe attach for -P (launch) mode: the caller (standalone
 // cmd_correlate, or trace's coordinator) calls this right after its single
-// ares_launch_app succeeds, since uprobe attach needs the launched PID. No-op
+// anubee_launch_app succeeds, since uprobe attach needs the launched PID. No-op
 // if correlate_setup ran in -p attach mode (PIDs were already known and
 // attached during setup).
 int correlate_attach(pid_t pid)
@@ -682,7 +682,7 @@ int correlate_attach(pid_t pid)
 int correlate_run(volatile sig_atomic_t *stop)
 {
     printf("correlating %d uprobe(s) -> syscalls ... Ctrl-C to stop\n", g_total);
-    ares_rb_poll_until(g_rb, stop);
+    anubee_rb_poll_until(g_rb, stop);
     return 0;
 }
 
@@ -705,31 +705,31 @@ void correlate_teardown(void)
     destroy_uprobe_links();
     if (g_skel) {
         // Always report the final tally, so "no message" never means "didn't
-        // check". Subsumes the old ares_drops_report: ring/queue drops are
+        // check". Subsumes the old anubee_drops_report: ring/queue drops are
         // coverage fields here. No worker queue in correlate (ring drained
         // inline) -> queue_drops = 0.
-        struct ares_coverage cov = { .engine = "correlate" };
+        struct anubee_coverage cov = { .engine = "correlate" };
         int covfd = bpf_map__fd(g_skel->maps.coverage_stats);
-        cov.depth_capped   = ares_coverage_read(covfd, COV_DEPTH_CAP);
-        cov.ring_drops     = ares_drops_read(bpf_map__fd(g_skel->maps.dropped));
+        cov.depth_capped   = anubee_coverage_read(covfd, COV_DEPTH_CAP);
+        cov.ring_drops     = anubee_drops_read(bpf_map__fd(g_skel->maps.dropped));
         cov.queue_drops    = 0;
         cov.decode_partial = 0;   // string/fd/sockaddr/flags decode wired (see corr_emit.c)
         if (g_returns) {
             cov.returns_mode      = 1;
-            cov.spans_opened      = ares_coverage_read(covfd, COV_SPAN_OPEN);
-            cov.returns_captured  = ares_coverage_read(covfd, COV_URET_FIRED);
+            cov.spans_opened      = anubee_coverage_read(covfd, COV_SPAN_OPEN);
+            cov.returns_captured  = anubee_coverage_read(covfd, COV_URET_FIRED);
         }
-        ares_coverage_report(&g_sink, &cov);
+        anubee_coverage_report(&g_sink, &cov);
         // SYM1 Phase 5c: end-of-run content summary, same slot as coverage
         // (sink must still be open for emit_summary's JSON line).
         corr_print_summary();
         print_never_resolved_report();
         print_ignored_kind_warning(); // "after run" repeat, see correlate_setup's "before run" call
         corr_emit_summary(&g_sink);
-        ares_correlate__destroy(g_skel);
+        anubee_correlate__destroy(g_skel);
         g_skel = NULL;
     }
-    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+    if (g_sink.f) { anubee_sink_close(&g_sink); anubee_sink_report(&g_sink); }
 }
 
 // ---- entry point (thin standalone wrapper) --------------------------------
@@ -739,7 +739,7 @@ int cmd_correlate(int argc, char **argv)
     // MT1: argp_parse(ARGP_NO_EXIT) inside correlate_setup returns 0 on --help/
     // --usage (it only prints), so control would otherwise fall through into
     // attach/run.
-    if (ares_wants_help(argc, argv)) {
+    if (anubee_wants_help(argc, argv)) {
         argp_help(&corr_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
         return 0;
     }
@@ -750,11 +750,11 @@ int cmd_correlate(int argc, char **argv)
     // Standalone: tracing is armed (UID installed in setup for -P mode); in -P
     // mode launch now and attach uprobes to the fresh PID, in -p mode setup
     // already attached everything.
-    ares_install_stop_handler(&exiting);
+    anubee_install_stop_handler(&exiting);
     if (g_pkg) {
-        ares_launch_banner(g_pkg, g_uid);
+        anubee_launch_banner(g_pkg, g_uid);
         pid_t p;
-        if (ares_launch_app(g_pkg, NULL, &p) != 0) {
+        if (anubee_launch_app(g_pkg, NULL, &p) != 0) {
             fprintf(stderr, "correlate: launch failed for %s\n", g_pkg);
             correlate_teardown();
             return 1;

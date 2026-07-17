@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef ARES_MANAGED_FRAME_H
-#define ARES_MANAGED_FRAME_H
+#ifndef ANUBEE_MANAGED_FRAME_H
+#define ANUBEE_MANAGED_FRAME_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -8,10 +8,10 @@
 /* Max managed-chain fragment size (bytes incl. NUL) - the jcache slot size and the
  * size every caller's fragment buffer must use. Sized to hold typical Kotlin/Compose
  * chains whole (long dotted names); deeper chains truncate with a "..." marker in
- * ares_managed_chain_build rather than being dropped. */
-#define ARES_JCACHE_FRAG 512
+ * anubee_managed_chain_build rather than being dropped. */
+#define ANUBEE_JCACHE_FRAG 512
 
-struct ares_stack_snapshot;   /* full def in common/stack_snapshot.h */
+struct anubee_stack_snapshot;   /* full def in common/stack_snapshot.h */
 struct jbuf;                  /* full def in common/emit.h */
 struct cfi_step_diag;         /* full def in common/cfi_unwind.h (optional debug) */
 
@@ -20,7 +20,7 @@ struct cfi_step_diag;         /* full def in common/cfi_unwind.h (optional debug
 /* True if `sym` is one of ART's interpreter entrypoints (a Java method is being
  * interpreted; no native frame names it). Shared so syscalls.c and symbolize.c
  * use one definition. */
-int ares_is_interp_frame(const char *sym);
+int anubee_is_interp_frame(const char *sym);
 
 /* Build a JSON-array fragment of managed method names from `n` resolved frame
  * symbols (innermost-first). A frame is managed iff its symbol contains
@@ -29,7 +29,7 @@ int ares_is_interp_frame(const char *sym);
  * appended after the native-resolved managed frames. Writes a NUL-terminated
  * fragment (e.g. ["pkg.A.b","pkg.C.d"]) into out (<= cap). Returns the number
  * of methods; 0 => out is left untouched. */
-int ares_managed_chain_build(const char *const *syms, int n,
+int anubee_managed_chain_build(const char *const *syms, int n,
                              const char *const *nterp_names, int nterp_n,
                              char *out, size_t cap);
 
@@ -39,34 +39,34 @@ int ares_managed_chain_build(const char *const *syms, int n,
  *   holding the lock; returns 1 if found (out written), 0 on miss or cap-too-small
  *   (out untouched either way).
  * reset() clears all slots (test / teardown only). */
-void ares_jcache_put(uint64_t stack_id, const char *frag);
-int  ares_jcache_get(uint64_t stack_id, char *out, size_t cap);
-void ares_jcache_reset(void);
+void anubee_jcache_put(uint64_t stack_id, const char *frag);
+int  anubee_jcache_get(uint64_t stack_id, char *out, size_t cap);
+void anubee_jcache_reset(void);
 
 /* ---- IMPURE (symbolize.c; declared here, device-tested) ----------------- */
 
 /* Resolve the managed chain for an already-CFI-walked snapshot. pcs/sps/n come
  * from cfi_unwind_snapshot(). Detects an nterp or switch-interp terminal and
  * names it (ShadowFrame authoritative path, nterp guess-path fallback), then
- * calls ares_managed_chain_build. `syms`, if non-NULL, must hold >= n already-
+ * calls anubee_managed_chain_build. `syms`, if non-NULL, must hold >= n already-
  * resolved symbols for pcs (AA9: lets a caller that also calls
- * ares_emit_cfi_stack_json on the same snapshot resolve each frame once and
+ * anubee_emit_cfi_stack_json on the same snapshot resolve each frame once and
  * share it); NULL resolves internally as before. Returns method count. */
-int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
+int anubee_managed_chain(int pid, const struct anubee_stack_snapshot *s,
                        const uint64_t *pcs, const uint64_t *sps, int n,
                        const char *const *syms, char *out, size_t cap);
 
 /* Serialize a {"type":"cfi_stack",...} record (kind tags + nterp terminal
  * append) into j, from an already-walked pcs/sps/n. The single cfi_stack
  * serializer for BOTH engines. `syms`, if non-NULL, must hold >= n already-
- * resolved symbols for pcs (see ares_managed_chain); NULL resolves internally.
- * If diags != NULL, per-frame ARES_CFI_DEBUG fields are emitted (parallel to
+ * resolved symbols for pcs (see anubee_managed_chain); NULL resolves internally.
+ * If diags != NULL, per-frame ANUBEE_CFI_DEBUG fields are emitted (parallel to
  * pcs, length n); funcs passes NULL, syscalls passes its diag array when
- * ARES_CFI_DEBUG is set. */
-void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
-                              const struct ares_stack_snapshot *s,
+ * ANUBEE_CFI_DEBUG is set. */
+void anubee_emit_cfi_stack_json(struct jbuf *j, int pid,
+                              const struct anubee_stack_snapshot *s,
                               const uint64_t *pcs, const uint64_t *sps, int n,
                               const char *const *syms,
                               const struct cfi_step_diag *diags);
 
-#endif /* ARES_MANAGED_FRAME_H */
+#endif /* ANUBEE_MANAGED_FRAME_H */

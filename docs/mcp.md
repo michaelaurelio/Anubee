@@ -1,6 +1,6 @@
 # MCP server: query traces from Claude
 
-`tools/ares-mcp` exposes a captured trace (or a live device) to Claude Code /
+`tools/anubee-mcp` exposes a captured trace (or a live device) to Claude Code /
 Claude Desktop as **queryable tools**, backed by an in-memory DuckDB, so you
 analyze a multi-million-event trace by asking for small, pre-aggregated slices
 instead of pasting the whole file into context.
@@ -8,7 +8,7 @@ instead of pasting the whole file into context.
 ## Setup
 
 ```sh
-cd tools/ares-mcp
+cd tools/anubee-mcp
 python3 -m venv .venv
 . .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e .                # add [dev] for the test suite
@@ -17,8 +17,8 @@ pip install -e .                # add [dev] for the test suite
 Register it with Claude Code:
 
 ```sh
-claude mcp add ares -- /ABS/PATH/tools/ares-mcp/.venv/bin/python \
-                       /ABS/PATH/tools/ares-mcp/server.py
+claude mcp add anubee -- /ABS/PATH/tools/anubee-mcp/.venv/bin/python \
+                       /ABS/PATH/tools/anubee-mcp/server.py
 ```
 
 ...or add a `.mcp.json` in your project:
@@ -26,25 +26,25 @@ claude mcp add ares -- /ABS/PATH/tools/ares-mcp/.venv/bin/python \
 ```json
 {
   "mcpServers": {
-    "ares": {
-      "command": "/ABS/PATH/tools/ares-mcp/.venv/bin/python",
-      "args": ["/ABS/PATH/tools/ares-mcp/server.py"],
-      "env": { "ARES_TRACE": "/ABS/PATH/trace.jsonl" }
+    "anubee": {
+      "command": "/ABS/PATH/tools/anubee-mcp/.venv/bin/python",
+      "args": ["/ABS/PATH/tools/anubee-mcp/server.py"],
+      "env": { "ANUBEE_TRACE": "/ABS/PATH/trace.jsonl" }
     }
   }
 }
 ```
 
-`ARES_TRACE` is optional (preloads a trace); you can also call `load_trace` from
+`ANUBEE_TRACE` is optional (preloads a trace); you can also call `load_trace` from
 chat. For Claude Desktop, edit `claude_desktop_config.json`
 (`~/.config/Claude/` on Linux, `%APPDATA%\Claude\` on Windows) the same way, and
 restart the app after editing.
 
 ## What it can analyze
 
-- **`ares syscalls`** structured JSONL (`"type":"syscall"` records): the
+- **`anubee syscalls`** structured JSONL (`"type":"syscall"` records): the
   primary trace source.
-- **`ares funcs -o`** / **`ares correlate -o`** structured JSONL, via
+- **`anubee funcs -o`** / **`anubee correlate -o`** structured JSONL, via
   `load_structured(path)`: calls, returns, and span→syscall correlation.
 
 ## Tools (offline, over a loaded trace)
@@ -74,22 +74,22 @@ restart the app after editing.
 
 | Tool | Purpose |
 |---|---|
-| `mapped_libraries(package, seconds, activity)` | Launch via `ares lib`, return native libraries loaded; use to discover a randomized protector-payload name |
-| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `ares dump` for `seconds`, pull matching `.so`(s) rebuilt from live memory to the host |
+| `mapped_libraries(package, seconds, activity)` | Launch via `anubee lib`, return native libraries loaded; use to discover a randomized protector-payload name |
+| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `anubee dump` for `seconds`, pull matching `.so`(s) rebuilt from live memory to the host |
 
 Configure via env vars in the MCP client config's `env` block:
 
 | Var | Default | Meaning |
 |---|---|---|
-| `ARES_ADB` | `adb` | adb executable |
-| `ARES_BIN` | `/data/local/tmp/ares` | `ares` path on the device |
-| `ARES_SHELL_PREFIX` | *(empty)* | wrap the device command, e.g. `su -c`, if adbd isn't already root |
-| `ARES_SERIAL` | *(empty)* | target a specific device (`adb -s`) |
+| `ANUBEE_ADB` | `adb` | adb executable |
+| `ANUBEE_BIN` | `/data/local/tmp/anubee` | `anubee` path on the device |
+| `ANUBEE_SHELL_PREFIX` | *(empty)* | wrap the device command, e.g. `su -c`, if adbd isn't already root |
+| `ANUBEE_SERIAL` | *(empty)* | target a specific device (`adb -s`) |
 
 ## Example workflow
 
 ```
-capture on device: ares syscalls -a -q -b 64 -o /data/local/tmp/t.jsonl <pkg>
+capture on device: anubee syscalls -a -q -b 64 -o /data/local/tmp/t.jsonl <pkg>
 pull to host:       adb pull /data/local/tmp/t.jsonl
 in chat:  "load_trace('/path/t.jsonl'), give me the overview and hot loops,
            then show me everything from librasp that touches /proc or fails."
@@ -106,7 +106,7 @@ paths (e.g. a sudden `newfstatat('/sbin/su')`) point at the detection logic.
 - **Query results are capped at 200 rows.** `matched` in the response gives
   the true count so you can narrow filters instead of assuming truncation.
 - **An empty result from a live tool means check `error`**, not "nothing
-  found." It surfaces the common causes (`ares` not pushed, needs root,
+  found." It surfaces the common causes (`anubee` not pushed, needs root,
   package not installed).
 - **`recvfrom`/`accept` peer addresses aren't in `sockets()`** yet. Only
   `connect`/`bind`/`sendto` are resolved.

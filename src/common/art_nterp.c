@@ -261,7 +261,7 @@ int nterp_pick(art_reader rd, void *rc, const struct art_offsets *o,
     return 0;
 }
 
-int nterp_name(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+int nterp_name(int pid, const struct anubee_stack_snapshot *snap, uint64_t nterp_sp,
                char *out, size_t outsz)
 {
     if (!snap || !out || outsz == 0)
@@ -346,7 +346,7 @@ int nterp_chain_pick(art_reader rd, void *rc, const struct art_offsets *o,
     return nc;
 }
 
-int nterp_chain(int pid, const struct ares_stack_snapshot *snap, uint64_t nterp_sp,
+int nterp_chain(int pid, const struct anubee_stack_snapshot *snap, uint64_t nterp_sp,
                 char out[][256], int max_frames)
 {
     if (!snap || !out || max_frames <= 0)

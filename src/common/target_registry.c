@@ -91,8 +91,8 @@ probe_target_t *find_target_by_entry_addr(__u64 entry_addr, pid_t pid, bool *use
         if (f) {
             char line[512];
             while (fgets(line, sizeof(line), f) && !result) {
-                struct ares_map_line ml;
-                if (!ares_parse_maps_line(line, &ml)) continue;
+                struct anubee_map_line ml;
+                if (!anubee_parse_maps_line(line, &ml)) continue;
                 if (entry_addr < ml.start || entry_addr >= ml.end) continue;
                 if (!ml.exec || ml.path[0] != '/') continue;
 

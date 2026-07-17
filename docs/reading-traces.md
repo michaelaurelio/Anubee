@@ -6,7 +6,7 @@ a run, always present when `-o` is given, regardless of `-q`/`-v`). Treat the
 file as ground truth; the console is a convenience, not a subset guarantee.
 
 Every JSONL record carries a `"type"` field so a mixed stream (or a mixed
-capture from `ares trace`) can be consumed by one reader. Feed a trace to
+capture from `anubee trace`) can be consumed by one reader. Feed a trace to
 [`mcp.md`](mcp.md) to query it interactively instead of reading raw JSONL.
 
 ## Record types by engine

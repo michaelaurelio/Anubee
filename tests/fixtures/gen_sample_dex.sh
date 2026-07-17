@@ -6,7 +6,7 @@
 set -e
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 javac --release 8 -d "$dir" "$dir/Sample.java"
-d8 --min-api 21 --output "$dir" "$dir/com/ares/Sample.class"
+d8 --min-api 21 --output "$dir" "$dir/com/anubee/Sample.class"
 mv "$dir/classes.dex" "$dir/sample.dex"
 rm -rf "$dir/com"
 echo "wrote $dir/sample.dex"

@@ -3,8 +3,8 @@
 // value=1) BEFORE launch/attach; uid_matches() is set membership. Source-shared
 // across every engine's own BPF object (detectability firewall keeps objects
 // separate, not source). Include once per .bpf.c, before any use of uid_matches().
-#ifndef __ARES_UID_FILTER_BPF_H
-#define __ARES_UID_FILTER_BPF_H
+#ifndef __ANUBEE_UID_FILTER_BPF_H
+#define __ANUBEE_UID_FILTER_BPF_H
 
 // ponytail: 32 slots — ample for one app's UID set; bump only if tracking >32 UIDs.
 struct {
@@ -20,4 +20,4 @@ static __always_inline int uid_matches(void)
 	return bpf_map_lookup_elem(&target_uids, &uid) != NULL;
 }
 
-#endif /* __ARES_UID_FILTER_BPF_H */
+#endif /* __ANUBEE_UID_FILTER_BPF_H */

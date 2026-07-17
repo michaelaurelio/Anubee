@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod screencapture-detect` — userspace analyzer for MediaProjection
+// `anubee mod screencapture-detect` — userspace analyzer for MediaProjection
 // screen-capture session abuse. Owns the screencapture_detect BPF skeleton
 // lifecycle; the dispatcher in mod.c drives the poll loop and teardown
 // order. Kernel side: src/modules/screencapture_detect.bpf.c (passive Binder-call
@@ -67,7 +67,7 @@ static struct screencapture_detect_bpf *g_skel = NULL;
 static struct bpf_link            *mediaproj_ff = NULL;
 static struct bpf_link            *binder_link = NULL;
 static struct ring_buffer         *g_rb = NULL;
-static struct ares_mod_ctx        *g_mc = NULL;
+static struct anubee_mod_ctx        *g_mc = NULL;
 
 // ── system_server pid resolve (pre-attach, gates the passive BPF counter) ──
 
@@ -75,7 +75,7 @@ static void mediaproj_resolve_sys_server_pid(__u32 *out)
 {
     *out = 0;
     char out_buf[64];
-    if (ares_sh_exec("pidof system_server", out_buf, sizeof(out_buf)) < 0)
+    if (anubee_sh_exec("pidof system_server", out_buf, sizeof(out_buf)) < 0)
         return;
     *out = (__u32)strtoul(out_buf, NULL, 10);
 }
@@ -122,7 +122,7 @@ static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls)
     }
     if (g_mc->sink != NULL) {
         mod_emit_screencapture_detect(&g_mc->sink->jb, &e);
-        ares_sink_emit(g_mc->sink);
+        anubee_sink_emit(g_mc->sink);
     }
 }
 
@@ -150,7 +150,7 @@ static void *mediaproj_poll_loop(void *arg)
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "dumpsys activity services %s", g_mc->pkg);
         char out[8192];
-        if (ares_sh_exec(cmd, out, sizeof(out)) < 0) {
+        if (anubee_sh_exec(cmd, out, sizeof(out)) < 0) {
             g_mp_state = MP_UNKNOWN;
             continue;
         }
@@ -178,7 +178,7 @@ static void *mediaproj_poll_loop(void *arg)
 // ---- ring-buffer callback ---------------------------------------------------
 // Unused: detection flows through the poll thread above, not events_rb.
 // Kept only because ring_buffer__new() requires a non-NULL sample callback
-// and ares_analyzer_t.setup() must return a non-NULL ring_buffer* for the
+// and anubee_analyzer_t.setup() must return a non-NULL ring_buffer* for the
 // dispatcher's poll loop -- same precedent as fileless-detect's
 // fileless_handle_event.
 
@@ -190,7 +190,7 @@ static int mediaproj_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *mediaproj_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *mediaproj_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_mc = mc;
 
@@ -230,7 +230,7 @@ static struct ring_buffer *mediaproj_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        mediaproj_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        mediaproj_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!mediaproj_ff) fprintf(stderr, "mod screencapture-detect: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -294,7 +294,7 @@ static void mediaproj_print_summary(void)
            mediaproj_stat_count, mediaproj_stat_count == 1 ? "" : "es");
 }
 
-static void mediaproj_emit_summary(struct ares_sink *s)
+static void mediaproj_emit_summary(struct anubee_sink *s)
 {
     if (mediaproj_stat_count == 0) return;
 
@@ -314,7 +314,7 @@ static void mediaproj_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long mediaproj_drops(void)
@@ -326,7 +326,7 @@ static unsigned long long mediaproj_drops(void)
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_screencapture_detect = {
+const anubee_analyzer_t analyzer_screencapture_detect = {
     .name          = "screencapture-detect",
     .description   = "Detect an active MediaProjection screen-capture session "
                       "(live screen streaming to C2 -- the escalation behind "

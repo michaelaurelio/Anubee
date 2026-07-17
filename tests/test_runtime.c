@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for src/common/runtime.c (no BPF required).
-// Tests: ares_round_pow2, ares_drops_report (3 cases), ares_install_stop_handler.
+// Tests: anubee_round_pow2, anubee_drops_report (3 cases), anubee_install_stop_handler.
 #include "common/runtime.h"
 
 #include <stdio.h>
@@ -16,7 +16,7 @@ static int checks = 0, failures = 0;
     if (!(cond)) { failures++; printf("  FAIL: %s\n", msg); } \
 } while (0)
 
-// Capture one ares_drops_report(k, q) call; returns malloc'd NUL-terminated string.
+// Capture one anubee_drops_report(k, q) call; returns malloc'd NUL-terminated string.
 static char *capture_drops_report(unsigned long long k, unsigned long long q)
 {
     int pipefd[2];
@@ -24,7 +24,7 @@ static char *capture_drops_report(unsigned long long k, unsigned long long q)
     int saved = dup(STDERR_FILENO);
     dup2(pipefd[1], STDERR_FILENO);
     close(pipefd[1]);
-    ares_drops_report(k, q);
+    anubee_drops_report(k, q);
     fflush(stderr);
     dup2(saved, STDERR_FILENO);
     close(saved);
@@ -49,8 +49,8 @@ static int run_child_sigint(int n, int drain_active, char *errbuf, size_t errcap
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
         static volatile sig_atomic_t stop;
-        ares_install_stop_handler(&stop);
-        ares_drain_set_active(drain_active);
+        anubee_install_stop_handler(&stop);
+        anubee_drain_set_active(drain_active);
         for (int i = 0; i < n; i++)
             raise(SIGINT);
         _exit(7);   // reached only if the handler did NOT exit
@@ -66,17 +66,17 @@ static int run_child_sigint(int n, int drain_active, char *errbuf, size_t errcap
 
 int main(void)
 {
-    // --- ares_round_pow2 ---
-    CHECK(ares_round_pow2(0) == 1,               "pow2(0)==1");
-    CHECK(ares_round_pow2(1) == 1,               "pow2(1)==1");
-    CHECK(ares_round_pow2(2) == 2,               "pow2(2)==2");
-    CHECK(ares_round_pow2(3) == 4,               "pow2(3)==4");
-    CHECK(ares_round_pow2(4) == 4,               "pow2(4)==4");
-    CHECK(ares_round_pow2(5) == 8,               "pow2(5)==8");
-    CHECK(ares_round_pow2(1024*1024) == 1024*1024UL,   "pow2(1M)==1M");
-    CHECK(ares_round_pow2(1024*1024+1) == 2*1024*1024UL, "pow2(1M+1)==2M");
+    // --- anubee_round_pow2 ---
+    CHECK(anubee_round_pow2(0) == 1,               "pow2(0)==1");
+    CHECK(anubee_round_pow2(1) == 1,               "pow2(1)==1");
+    CHECK(anubee_round_pow2(2) == 2,               "pow2(2)==2");
+    CHECK(anubee_round_pow2(3) == 4,               "pow2(3)==4");
+    CHECK(anubee_round_pow2(4) == 4,               "pow2(4)==4");
+    CHECK(anubee_round_pow2(5) == 8,               "pow2(5)==8");
+    CHECK(anubee_round_pow2(1024*1024) == 1024*1024UL,   "pow2(1M)==1M");
+    CHECK(anubee_round_pow2(1024*1024+1) == 2*1024*1024UL, "pow2(1M+1)==2M");
 
-    // --- ares_drops_report ---
+    // --- anubee_drops_report ---
     {
         char *s = capture_drops_report(0, 0);
         CHECK(s && strcmp(s, "no events dropped\n") == 0, "drops zero");
@@ -96,10 +96,10 @@ int main(void)
         free(s);
     }
 
-    // --- ares_install_stop_handler ---
+    // --- anubee_install_stop_handler ---
     {
         static volatile sig_atomic_t flag = 0;
-        ares_install_stop_handler(&flag);
+        anubee_install_stop_handler(&flag);
         raise(SIGINT);
         CHECK(flag == 1, "stop_handler sets flag on SIGINT");
         signal(SIGINT,  SIG_DFL);   // restore so the process can be killed normally

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// ares trace — run the kprobe (syscalls), uprobe (funcs), and library-load (lib)
+// anubee trace — run the kprobe (syscalls), uprobe (funcs), and library-load (lib)
 // engines together from a SINGLE app launch. This is a thin coordinator: it
 // reuses each engine's setup/run/teardown phases unchanged, arms all requested
 // engines before the one launch, then drains their ring buffers concurrently.
@@ -13,7 +13,7 @@
 // (itself a funcs+syscalls fusion; needs a post-launch uprobe attach once the
 // child PID is known, so it doesn't fit "arm everything before the single
 // launch") and `dump` (a batch engine — rebuilt .so artifacts, not a JSONL
-// stream) are standalone-only (`ares correlate` / `ares dump`); composing them
+// stream) are standalone-only (`anubee correlate` / `anubee dump`); composing them
 // here would double-instrument the same targets. See BACKLOG.md.
 #include <stdio.h>
 #include <string.h>
@@ -22,8 +22,8 @@
 #include <unistd.h>
 #include <sys/types.h>
 
-#include "common/launch.h"   // struct ares_run_ctx, ares_resolve_uid, ares_launch_app
-#include "common/runtime.h"  // ares_install_stop_handler
+#include "common/launch.h"   // struct anubee_run_ctx, anubee_resolve_uid, anubee_launch_app
+#include "common/runtime.h"  // anubee_install_stop_handler
 #include "common/jsonl_merge.h"  // EPIC C5: combine each engine's own -o file into one
 #include "common/probe_resolve.h"      // custom_probe_spec_t, spec_kind_t, parse_custom_probe_spec
 #include "common/probe_spec_loader.h"  // load_probe_spec_file
@@ -79,7 +79,7 @@ static void usage(const char *argv0)
 		"\n"
 		"At least one engine must end up enabled (via a unique flag, a routed spec, or --lib).\n"
 		"\n"
-		"correlate and dump are standalone-only (`ares correlate` / `ares dump`) — not\n"
+		"correlate and dump are standalone-only (`anubee correlate` / `anubee dump`) — not\n"
 		"composable into trace.\n",
 		argv0);
 }
@@ -140,7 +140,7 @@ static int classify_spec(struct trace_args *ta, const struct trace_spec *spec,
 		trace_tok_push(ta->sys_toks, &ta->sys_ntok, "syscalls", spec->val);
 		break;
 	case SPEC_KIND_MOD:
-		fprintf(stderr, "trace: 'mod:' is not a trace engine; run `ares mod` standalone\n");
+		fprintf(stderr, "trace: 'mod:' is not a trace engine; run `anubee mod` standalone\n");
 		return -1;
 	}
 	return 0;
@@ -160,7 +160,7 @@ static void *run_thread(void *p)
 struct engine {
 	const char *name;    // argv[0] for the synthetic argv, and trace_build_argv's "engine"
 	const char *suffix;  // "<prefix>.<suffix>" output filename
-	int  (*setup)(int argc, char **argv, const struct ares_run_ctx *rc);
+	int  (*setup)(int argc, char **argv, const struct anubee_run_ctx *rc);
 	int  (*run)(volatile sig_atomic_t *stop);
 	void (*teardown)(void);
 
@@ -228,7 +228,7 @@ int cmd_trace(int argc, char **argv)
 
 	int uid = 0;
 	if (pkg) {
-		uid = ares_resolve_uid(pkg);
+		uid = anubee_resolve_uid(pkg);
 		if (uid < 0) {
 			fprintf(stderr, "trace: cannot resolve UID for '%s' (installed? run as root?)\n", pkg);
 			return 1;
@@ -236,7 +236,7 @@ int cmd_trace(int argc, char **argv)
 	}
 	// -p attach mode: rc stays zeroed — each engine reads "-p <pids>" from its own
 	// argv (injected below) and arms target_pids itself, same as standalone.
-	struct ares_run_ctx rc = { .uid = uid, .pkg = pkg };
+	struct anubee_run_ctx rc = { .uid = uid, .pkg = pkg };
 
 	// Build each engine's argv: ["<engine>", ("-o" file)?, <accumulated tokens...>].
 	// All engines read the package name from rc->pkg (pre-filled before argp_parse).
@@ -278,16 +278,16 @@ int cmd_trace(int argc, char **argv)
 		}
 	}
 
-	ares_install_stop_handler(&g_stop);
+	anubee_install_stop_handler(&g_stop);
 
 	if (pids) {
 		// -p attach mode: engines already armed target_pids in setup above; there
 		// is no launch (the target is already running).
 		printf("trace: attaching to pid(s) %s\n", pids);
 	} else {
-		ares_launch_banner(pkg, uid);
+		anubee_launch_banner(pkg, uid);
 		pid_t pid;
-		if (ares_launch_app(pkg, activity, &pid) != 0) {
+		if (anubee_launch_app(pkg, activity, &pid) != 0) {
 			fprintf(stderr, "trace: launch failed for '%s'\n", pkg);
 			for (int j = NUM_ENGINES - 1; j >= 0; j--)
 				if (engines[j].want) engines[j].teardown();

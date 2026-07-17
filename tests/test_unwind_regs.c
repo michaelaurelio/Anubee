@@ -1,18 +1,18 @@
 #include <assert.h>
 #include <string.h>
 #include <linux/types.h>
-#include "common/stack_snapshot.h"  /* struct ares_stack_snapshot + ares_unwind_regs */
+#include "common/stack_snapshot.h"  /* struct anubee_stack_snapshot + anubee_unwind_regs */
 
 int main(void)
 {
-    struct ares_stack_snapshot s;
+    struct anubee_stack_snapshot s;
     memset(&s, 0, sizeof(s));
     for (int i = 0; i < 31; i++)
         s.regs[i] = 0x1000ULL + i;       /* x0..x30 */
     s.sp = 0xdead0000ULL;
     s.pc = 0xbeef0000ULL;
 
-    struct ares_unwind_regs r;
+    struct anubee_unwind_regs r;
     unwind_regs_from_snapshot(&s, &r);
 
     for (int i = 0; i < 31; i++)

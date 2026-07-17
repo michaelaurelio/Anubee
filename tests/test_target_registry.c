@@ -17,12 +17,12 @@ int main(void) {
     FILE *f = fopen("/proc/self/maps", "r");
     if (!f) { printf("skip: /proc/self/maps unavailable\n"); return 0; }
 
-    struct ares_map_line ml;
+    struct anubee_map_line ml;
     int found = 0;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        struct ares_map_line cur;
-        if (!ares_parse_maps_line(line, &cur)) continue;
+        struct anubee_map_line cur;
+        if (!anubee_parse_maps_line(line, &cur)) continue;
         if (!cur.exec || cur.path[0] != '/') continue;
         ml = cur;
         found = 1;

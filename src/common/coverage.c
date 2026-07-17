@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-// ares_coverage_report: emit a per-engine coverage-health record on two channels
-// (stderr banner + JSON sink line). Pure C over struct ares_coverage - no libbpf,
+// anubee_coverage_report: emit a per-engine coverage-health record on two channels
+// (stderr banner + JSON sink line). Pure C over struct anubee_coverage - no libbpf,
 // host-testable.
 #include "common/coverage.h"
 #include "common/emit.h"
@@ -8,7 +8,7 @@
 
 // cfi_stop_reason -> short JSON key. Index by enum value; keep in lockstep with
 // cfi_unwind.h. CFI_OK and CFI_SNAP_PC_ZERO are clean terminals (see is_blind).
-static const char *const k_stop_name[ARES_CFI_STOP_N] = {
+static const char *const k_stop_name[ANUBEE_CFI_STOP_N] = {
 	[CFI_OK]                 = "ok",
 	[CFI_NO_FDE]             = "no_fde",
 	[CFI_RA_READFAULT]       = "ra_readfault",
@@ -20,18 +20,18 @@ static const char *const k_stop_name[ARES_CFI_STOP_N] = {
 	[CFI_SNAP_NO_MAPPING]    = "snap_no_mapping",
 	[CFI_SNAP_CFI_GET_NULL]  = "snap_cfi_get_null",
 };
-_Static_assert(ARES_CFI_STOP_N == 10,
+_Static_assert(ANUBEE_CFI_STOP_N == 10,
 	"cfi_stop_reason changed - update k_stop_name and this assert");
 
-const char *ares_cfi_stop_name(int reason)
+const char *anubee_cfi_stop_name(int reason)
 {
-	if (reason < 0 || reason >= ARES_CFI_STOP_N || !k_stop_name[reason])
+	if (reason < 0 || reason >= ANUBEE_CFI_STOP_N || !k_stop_name[reason])
 		return "unknown";
 	return k_stop_name[reason];
 }
 
 // True if the record carries any degradation signal at all.
-static int cov_degraded(const struct ares_coverage *c)
+static int cov_degraded(const struct anubee_coverage *c)
 {
 	if (c->snaps_truncated || c->ring_drops || c->queue_drops ||
 	    c->managed_naming_off || c->prearm_drops || c->depth_capped ||
@@ -39,14 +39,14 @@ static int cov_degraded(const struct ares_coverage *c)
 		return 1;
 	if (c->returns_mode && c->returns_captured < c->spans_opened)
 		return 1;
-	for (int i = 0; i < ARES_CFI_STOP_N; i++)
-		if (c->cfi_stop[i] && ares_cfi_stop_is_blind(i))
+	for (int i = 0; i < ANUBEE_CFI_STOP_N; i++)
+		if (c->cfi_stop[i] && anubee_cfi_stop_is_blind(i))
 			return 1;
 	return 0;
 }
 
 // ---- JSON line into the sink's jbuf ----
-static void cov_build_json(struct jbuf *j, const struct ares_coverage *c, int degraded)
+static void cov_build_json(struct jbuf *j, const struct anubee_coverage *c, int degraded)
 {
 	jb_s(j, "{\"type\":\"coverage\",\"engine\":\"");
 	jb_esc(j, c->engine ? c->engine : "?");
@@ -68,11 +68,11 @@ static void cov_build_json(struct jbuf *j, const struct ares_coverage *c, int de
 		jb_s(j, ",\"cfi\":{\"walks\":"); jb_u64(j, c->cfi_walks);
 		jb_s(j, ",\"stops\":{");
 		int first = 1;
-		for (int i = 0; i < ARES_CFI_STOP_N; i++) {
-			if (!c->cfi_stop[i] || !ares_cfi_stop_is_blind(i)) continue;
+		for (int i = 0; i < ANUBEE_CFI_STOP_N; i++) {
+			if (!c->cfi_stop[i] || !anubee_cfi_stop_is_blind(i)) continue;
 			if (!first) jb_c(j, ',');
 			first = 0;
-			jb_c(j, '"'); jb_s(j, ares_cfi_stop_name(i)); jb_s(j, "\":");
+			jb_c(j, '"'); jb_s(j, anubee_cfi_stop_name(i)); jb_s(j, "\":");
 			jb_u64(j, c->cfi_stop[i]);
 		}
 		jb_s(j, "}}");
@@ -93,7 +93,7 @@ static void cov_build_json(struct jbuf *j, const struct ares_coverage *c, int de
 }
 
 // ---- stderr banner ----
-static void cov_banner(const struct ares_coverage *c, int degraded)
+static void cov_banner(const struct anubee_coverage *c, int degraded)
 {
 	fprintf(stderr, "[coverage] %s: ", c->engine ? c->engine : "?");
 	if (!degraded) {
@@ -106,14 +106,14 @@ static void cov_banner(const struct ares_coverage *c, int degraded)
 		fprintf(stderr, "%llu/%llu snapshots truncated (stack >32KB)",
 			c->snaps_truncated, c->snaps_total); }
 	int anystop = 0;
-	for (int i = 0; i < ARES_CFI_STOP_N; i++)
-		if (c->cfi_stop[i] && ares_cfi_stop_is_blind(i)) anystop = 1;
+	for (int i = 0; i < ANUBEE_CFI_STOP_N; i++)
+		if (c->cfi_stop[i] && anubee_cfi_stop_is_blind(i)) anystop = 1;
 	if (anystop) { SEP(); fprintf(stderr, "CFI stops:");
 		int f = 1;
-		for (int i = 0; i < ARES_CFI_STOP_N; i++) {
-			if (!c->cfi_stop[i] || !ares_cfi_stop_is_blind(i)) continue;
+		for (int i = 0; i < ANUBEE_CFI_STOP_N; i++) {
+			if (!c->cfi_stop[i] || !anubee_cfi_stop_is_blind(i)) continue;
 			fprintf(stderr, "%s %llu %s", f ? "" : ",", c->cfi_stop[i],
-				ares_cfi_stop_name(i));
+				anubee_cfi_stop_name(i));
 			f = 0;
 		}
 	}
@@ -132,7 +132,7 @@ static void cov_banner(const struct ares_coverage *c, int degraded)
 	fprintf(stderr, "\n");
 }
 
-void ares_coverage_report(struct ares_sink *sink, const struct ares_coverage *cov)
+void anubee_coverage_report(struct anubee_sink *sink, const struct anubee_coverage *cov)
 {
 	// SYM1 Phase 5b: exempt is a distinct record shape, not a variant of
 	// "clean" -- an engine with no coverage surface (lib/dump) says so
@@ -150,7 +150,7 @@ void ares_coverage_report(struct ares_sink *sink, const struct ares_coverage *co
 			jb_s(j, "\",\"exempt\":true,\"reason\":\"");
 			jb_esc(j, reason);
 			jb_s(j, "\"}\n");
-			ares_sink_emit(sink);
+			anubee_sink_emit(sink);
 		}
 		return;
 	}
@@ -158,6 +158,6 @@ void ares_coverage_report(struct ares_sink *sink, const struct ares_coverage *co
 	cov_banner(cov, degraded);
 	if (sink && sink->f) {          // JSON line only when -o is active
 		cov_build_json(&sink->jb, cov, degraded);
-		ares_sink_emit(sink);
+		anubee_sink_emit(sink);
 	}
 }

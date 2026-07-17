@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 
-static void q_in(struct ares_evq *q, const void *src, size_t n)
+static void q_in(struct anubee_evq *q, const void *src, size_t n)
 {
     size_t f = q->cap - q->head;
     if (f > n) f = n;
@@ -14,7 +14,7 @@ static void q_in(struct ares_evq *q, const void *src, size_t n)
     q->used += n;
 }
 
-static void q_out(struct ares_evq *q, void *dst, size_t n)
+static void q_out(struct anubee_evq *q, void *dst, size_t n)
 {
     size_t f = q->cap - q->tail;
     if (f > n) f = n;
@@ -24,7 +24,7 @@ static void q_out(struct ares_evq *q, void *dst, size_t n)
     q->used -= n;
 }
 
-int ares_evq_init(struct ares_evq *q, size_t cap)
+int anubee_evq_init(struct anubee_evq *q, size_t cap)
 {
     q->buf = malloc(cap);
     if (!q->buf) return -1;
@@ -36,7 +36,7 @@ int ares_evq_init(struct ares_evq *q, size_t cap)
     return 0;
 }
 
-int ares_evq_push(struct ares_evq *q, const void *rec, size_t len)
+int anubee_evq_push(struct anubee_evq *q, const void *rec, size_t len)
 {
     uint32_t s = (uint32_t)len;
     size_t total = 4 + len;
@@ -56,7 +56,7 @@ int ares_evq_push(struct ares_evq *q, const void *rec, size_t len)
     return ret;
 }
 
-int ares_evq_pop(struct ares_evq *q, void *out, size_t outcap, size_t *actual_len)
+int anubee_evq_pop(struct anubee_evq *q, void *out, size_t outcap, size_t *actual_len)
 {
     pthread_mutex_lock(&q->m);
     for (;;) {
@@ -83,7 +83,7 @@ int ares_evq_pop(struct ares_evq *q, void *out, size_t outcap, size_t *actual_le
     }
 }
 
-void ares_evq_destroy(struct ares_evq *q)
+void anubee_evq_destroy(struct anubee_evq *q)
 {
     free(q->buf);
     q->buf = NULL;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod file-access` — userspace analyzer for sensitive openat/openat2
+// `anubee mod file-access` — userspace analyzer for sensitive openat/openat2
 // events. Owns the file_access BPF skeleton lifecycle; the dispatcher in
 // mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/file_access.bpf.c. Classification: src/modules/file_access_classify.c.
@@ -76,7 +76,7 @@ static struct bpf_link        *openat2_link = NULL;
 
 static int fa_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     if (hdr->type != MOD_EV_FILE_ACCESS || sz < sizeof(struct file_access_event))
@@ -97,7 +97,7 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
 
     if (mc->sink != NULL) {
         mod_emit_file_access(&mc->sink->jb, e, categories, flag_strs, n_flags);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -105,7 +105,7 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *fa_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *fa_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = file_access_bpf__open();
     if (!g_skel) {
@@ -143,7 +143,7 @@ static struct ring_buffer *fa_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        fa_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        fa_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!fa_ff) fprintf(stderr, "mod file-access: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -203,7 +203,7 @@ static void fa_print_summary(void)
 // record. Reuses the FA_* category names from mod_emit_file_access's tag table
 // (modules/mod_emit.c) so file and per-event records share one category
 // vocabulary. fa_stats is already sorted by fa_print_summary before this runs.
-static void fa_emit_summary(struct ares_sink *s)
+static void fa_emit_summary(struct anubee_sink *s)
 {
     if (fa_stat_count == 0) return;
 
@@ -245,17 +245,17 @@ static void fa_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long fa_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_file_access = {
+const anubee_analyzer_t analyzer_file_access = {
     .name          = "file-access",
     .description   = "Trace sensitive file opens: external storage, credential-shaped "
                       "filenames, foreign app data dirs (stealthy — kprobes, zero uprobes)",

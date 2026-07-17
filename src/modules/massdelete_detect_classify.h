@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure distinct-count + classification logic for the `ares mod
+// Pure distinct-count + classification logic for the `anubee mod
 // massdelete-detect` analyzer. No libbpf deps (host-testable): given the raw
 // hash ring + touch count from a BPF burst-candidate event, decide whether
 // it's a real burst (most touches were genuinely distinct files, not one
 // file hit repeatedly).
-#ifndef __ARES_MASSDELETE_DETECT_CLASSIFY_H
-#define __ARES_MASSDELETE_DETECT_CLASSIFY_H
+#ifndef __ANUBEE_MASSDELETE_DETECT_CLASSIFY_H
+#define __ANUBEE_MASSDELETE_DETECT_CLASSIFY_H
 
 #include "modules/mod_events.h"   // MASSDELETE_DETECT_THRESHOLD
 
@@ -29,4 +29,4 @@ int burst_distinct_count(const char paths[][FILE_PATH_LEN], int n);
 // 0 = checked and not granted, negative = unknown/unchecked).
 unsigned classify_burst(int touch_count, int distinct_count, int manage_ext_storage);
 
-#endif /* __ARES_MASSDELETE_DETECT_CLASSIFY_H */
+#endif /* __ANUBEE_MASSDELETE_DETECT_CLASSIFY_H */

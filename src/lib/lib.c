@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares lib` — trace every native library (.so) an Android app loads.
+// `anubee lib` — trace every native library (.so) an Android app loads.
 //
 // Launches the target package fresh under a UID filter installed before launch,
 // so every mapping is caught from the process's first thread (including forked
@@ -8,7 +8,7 @@
 // fresh-launch driver.
 //
 // The device/launch helpers (sh_exec/resolve_uid/resolve_component) are shared
-// from src/common/launch.{c,h} as ares_*; this module owns only library tracing.
+// from src/common/launch.{c,h} as anubee_*; this module owns only library tracing.
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -34,12 +34,12 @@
 
 static volatile sig_atomic_t exiting = 0;
 
-static struct ares_sink g_sink;
+static struct anubee_sink g_sink;
 static int              g_quiet   = 0;
 static int              g_verbose = 0;
 
 // Cross-phase state: published by lib_setup, consumed by lib_run/lib_teardown.
-static struct ares_lib   *g_skel;
+static struct anubee_lib   *g_skel;
 static struct ring_buffer *g_rb;
 static int                 g_uid;
 static const char         *g_pkg;
@@ -81,7 +81,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 		const struct lib_map_event *e = data;
 		char path[256];
 		const char *full = path;
-		if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
+		if (anubee_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 			full = e->name;     // fall back to the BPF-supplied basename
 
 		// MT3: extractNativeLibs=false apps map a stored .so straight out of
@@ -102,7 +102,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 			int n = apk_list_sos(full, refs, 32);
 			if (mark_apk_seen(full))
 				for (int i = 0; i < n; i++)
-					ares_libtrace_emit_packed(&g_sink, g_quiet, full, &refs[i]);
+					anubee_libtrace_emit_packed(&g_sink, g_quiet, full, &refs[i]);
 			// This mmap event covers one ELF segment, whose file offset is
 			// generally not the .so's own data_start (e.g. the exec segment
 			// starts partway in) — range-match instead of exact-match.
@@ -113,23 +113,23 @@ static int handle_event(void *ctx, void *data, size_t sz)
 				}
 			}
 		}
-		ares_libtrace_emit_lib(&g_sink, g_quiet, e, full, soname);
+		anubee_libtrace_emit_lib(&g_sink, g_quiet, e, full, soname);
 	} else if (h->type == LIB_EV_UNMAP) {
 		if (sz < sizeof(struct lib_unmap_event))
 			return 0;
-		ares_libtrace_emit_unlib(&g_sink, g_quiet || !g_verbose, data);
+		anubee_libtrace_emit_unlib(&g_sink, g_quiet || !g_verbose, data);
 	}
 	return 0;
 }
 
-// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
+// ponytail: libbpf_print_fn removed; anubee_libbpf_quiet from common/runtime.h used instead
 
 // ---- argp parser ----------------------------------------------------------
 
 static const char lib_doc[] =
     "Launch PACKAGE fresh and trace every native library (.so) it loads.\v"
     "PACKAGE and ACTIVITY can be passed as flags (-P/-A) or positionally.\n"
-    "Example: ares lib -P com.example.app -o libs.jsonl";
+    "Example: anubee lib -P com.example.app -o libs.jsonl";
 static const char lib_args_doc[] = "[PACKAGE [ACTIVITY]]";
 
 struct lib_args {
@@ -157,7 +157,7 @@ static error_t lib_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
-    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+    case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
         if      (!a->pkg && a->tgt.n == 0) a->pkg      = arg;
@@ -183,7 +183,7 @@ static const struct argp lib_argp = { lib_options, lib_parse_opt, lib_args_doc, 
 // `lib` alongside other engines from a single app launch. Cross-phase state lives
 // in the file-static g_* above. (cmd_lib below is the thin standalone wrapper.)
 
-int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
+int lib_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
     // ponytail: static so g_pkg/g_activity can alias la after setup returns.
     static struct lib_args la = { .c = COMMON_ARGS_INIT };
@@ -202,26 +202,26 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (la.tgt.n > 0) {
         g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
     } else {
-        g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+        g_uid = (rc && rc->uid > 0) ? rc->uid : anubee_resolve_uid(g_pkg);
         if (g_uid < 0) {
             fprintf(stderr, "lib: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
             return 1;
         }
     }
 
-    if (la.c.output_file && ares_sink_open(&g_sink, la.c.output_file, "lib", 1) != 0) {
+    if (la.c.output_file && anubee_sink_open(&g_sink, la.c.output_file, "lib", 1) != 0) {
         fprintf(stderr, "lib: cannot open '%s': %s\n", la.c.output_file, strerror(errno));
         return 1;
     }
 
-    libbpf_set_print(ares_libbpf_quiet);
+    libbpf_set_print(anubee_libbpf_quiet);
 
-    struct ares_lib *skel = ares_lib__open();
+    struct anubee_lib *skel = anubee_lib__open();
     if (!skel) {
         fprintf(stderr, "lib: failed to open BPF skeleton\n");
         goto err_file;
     }
-    if (ares_lib__load(skel)) {
+    if (anubee_lib__load(skel)) {
         fprintf(stderr, "lib: failed to load BPF (need eBPF privileges / SELinux permissive?)\n");
         goto err_skel;
     }
@@ -234,7 +234,7 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             __u32 tgid = (__u32)la.tgt.pids[i];
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
             if (la.tgt.siblings) {
-                int puid = ares_get_pid_uid(la.tgt.pids[i]);
+                int puid = anubee_get_pid_uid(la.tgt.pids[i]);
                 if (puid > 0) {
                     __u32 vuid = (__u32)puid;
                     bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
@@ -249,15 +249,15 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         }
     }
 
-    bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
+    bpf_program__set_autoattach(skel->progs.anubee_follow_fork, 0);
 
-    if (ares_lib__attach(skel)) {
+    if (anubee_lib__attach(skel)) {
         fprintf(stderr, "lib: failed to attach (uprobe_mmap in kallsyms?)\n");
         goto err_skel;
     }
 
     if (la.tgt.n > 0 && !la.tgt.no_follow) {
-        g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+        g_ff = bpf_program__attach(skel->progs.anubee_follow_fork);
         if (!g_ff) fprintf(stderr, "lib: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -276,11 +276,11 @@ int lib_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     return 0;
 
 err_skel:
-    ares_lib__destroy(skel);
+    anubee_lib__destroy(skel);
 err_file:
     if (g_sink.f) {
-        ares_sink_close(&g_sink);
-        ares_sink_report(&g_sink);
+        anubee_sink_close(&g_sink);
+        anubee_sink_report(&g_sink);
     }
     return 1;
 }
@@ -289,7 +289,7 @@ int lib_run(volatile sig_atomic_t *stop)
 {
     printf("tracing uid %d (library loads) ... Ctrl-C to stop\n", g_uid);
     // ponytail: no drops ticker — lib.bpf.c has no dropped map / worker queue.
-    ares_rb_poll_until(g_rb, stop);
+    anubee_rb_poll_until(g_rb, stop);
     return 0;
 }
 
@@ -304,17 +304,17 @@ void lib_teardown(void)
         g_ff = NULL;
     }
     if (g_skel) {
-        ares_lib__destroy(g_skel);
+        anubee_lib__destroy(g_skel);
         g_skel = NULL;
     }
     // SYM1 Phase 5b: explicit "not applicable" record instead of silence --
     // lib has no drop map or snapshot path to report on. Must run before the
-    // sink closes below (matches every other engine's ares_coverage_report
-    // call, always before its own ares_sink_close).
-    struct ares_coverage cov = { .engine = "lib", .exempt = 1,
+    // sink closes below (matches every other engine's anubee_coverage_report
+    // call, always before its own anubee_sink_close).
+    struct anubee_coverage cov = { .engine = "lib", .exempt = 1,
         .exempt_reason = "no drop map or snapshot path for this engine" };
-    ares_coverage_report(&g_sink, &cov);
-    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }
+    anubee_coverage_report(&g_sink, &cov);
+    if (g_sink.f) { anubee_sink_close(&g_sink); anubee_sink_report(&g_sink); }
 }
 
 // ---- entry point (thin standalone wrapper) --------------------------------
@@ -323,7 +323,7 @@ int cmd_lib(int argc, char **argv)
 {
     // MT1: argp_parse(ARGP_NO_EXIT) inside lib_setup returns 0 on --help/--usage
     // (it only prints), so control would otherwise fall through into attach/run.
-    if (ares_wants_help(argc, argv)) {
+    if (anubee_wants_help(argc, argv)) {
         argp_help(&lib_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
         return 0;
     }
@@ -332,10 +332,10 @@ int cmd_lib(int argc, char **argv)
         return 1;
 
     // Standalone: tracing is armed; in -P mode launch, in -p mode just run.
-    ares_install_stop_handler(&exiting);
+    anubee_install_stop_handler(&exiting);
     if (g_pkg) {
-        ares_launch_banner(g_pkg, g_uid);
-        if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+        anubee_launch_banner(g_pkg, g_uid);
+        if (anubee_launch_app(g_pkg, g_activity, NULL) != 0) {
             fprintf(stderr, "lib: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
             lib_teardown();
             return 1;

@@ -1,8 +1,8 @@
-# Analyzer catalog for `ares mod`. mod:-only. `ares mod` runs every mod:
+# Analyzer catalog for `anubee mod`. mod:-only. `anubee mod` runs every mod:
 # line concurrently (cap 16), so this file is directly runnable:
-#   ares mod -P com.example.app -F specs/common-mod.spec
+#   anubee mod -P com.example.app -F specs/common-mod.spec
 # Trim to a subset for a focused run, or pass -m NAME instead of -F.
-# Full grammar: docs/probe-specs.md. Analyzer list: `ares mod --list`.
+# Full grammar: docs/probe-specs.md. Analyzer list: `anubee mod --list`.
 #
 # NOTE: unlike funcs:/syscall:/lib:, a mod: line has no trailing-comment or
 # inline-annotation support (the loader only strips whole-line '#' comments,

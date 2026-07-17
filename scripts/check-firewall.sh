@@ -112,7 +112,7 @@ is_loud() {
 
 check_attach_whitelist() {
   local o owner
-  # Enumerate ARES-owned objects only (exclude vendored libbpf, BPF objs, and
+  # Enumerate ANUBEE-owned objects only (exclude vendored libbpf, BPF objs, and
   # .part.o aggregates which duplicate their members' refs).
   while IFS= read -r o; do
     "$NM" --undefined-only "$o" 2>/dev/null | grep -qE 'bpf_program__attach_(uprobe|usdt)' || continue

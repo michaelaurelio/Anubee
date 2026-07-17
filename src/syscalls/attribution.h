@@ -16,8 +16,8 @@
 //
 // Deeper frames are transitive callers, not the issuer, and are intentionally
 // not scanned.
-#ifndef ARES_SYSCALLS_ATTRIBUTION_H
-#define ARES_SYSCALLS_ATTRIBUTION_H
+#ifndef ANUBEE_SYSCALLS_ATTRIBUTION_H
+#define ANUBEE_SYSCALLS_ATTRIBUTION_H
 
 #include "syscalls.h"   // struct syscalls_lib_ranges, SYSC_MAX_RANGES
 
@@ -47,4 +47,4 @@ static __always_inline int sysc_issuer_hit(const struct syscalls_lib_ranges *lr,
     return 0;
 }
 
-#endif // ARES_SYSCALLS_ATTRIBUTION_H
+#endif // ANUBEE_SYSCALLS_ATTRIBUTION_H

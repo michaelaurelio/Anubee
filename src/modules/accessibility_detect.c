@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod accessibility-detect` — userspace analyzer for the Binder-transaction-burst
+// `anubee mod accessibility-detect` — userspace analyzer for the Binder-transaction-burst
 // signal. Owns the accessibility_detect BPF skeleton lifecycle; the dispatcher in mod.c
 // drives the poll loop and teardown order. Kernel side:
 // src/modules/accessibility_detect.bpf.c. Classification:
@@ -59,7 +59,7 @@ static void a11y_resolve_sys_server_pid(__u32 *out)
 {
     *out = 0;
     char out_buf[64];
-    if (ares_sh_exec("pidof system_server", out_buf, sizeof(out_buf)) < 0)
+    if (anubee_sh_exec("pidof system_server", out_buf, sizeof(out_buf)) < 0)
         return;
     *out = (__u32)strtoul(out_buf, NULL, 10);
 }
@@ -74,7 +74,7 @@ static void a11y_check_service_granted(const char *pkg)
 {
     if (!pkg) return;
     char out[512];
-    if (ares_sh_exec("settings get secure enabled_accessibility_services", out, sizeof(out)) < 0)
+    if (anubee_sh_exec("settings get secure enabled_accessibility_services", out, sizeof(out)) < 0)
         return;
     g_a11y_granted = strstr(out, pkg) ? 1 : 0;
 }
@@ -102,7 +102,7 @@ static struct bpf_link       *binder_link = NULL;
 
 static int a11y_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     if (hdr->type != MOD_EV_ACCESSIBILITY_DETECT || sz < sizeof(struct accessibility_detect_event))
@@ -119,7 +119,7 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
 
     if (mc->sink != NULL) {
         mod_emit_accessibility_detect(&mc->sink->jb, e, g_a11y_granted);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -127,7 +127,7 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *a11y_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = accessibility_detect_bpf__open();
     if (!g_skel) {
@@ -176,7 +176,7 @@ static struct ring_buffer *a11y_setup(int uid, struct ares_mod_ctx *mc)
         printf("[accessibility-detect] target holds a granted Accessibility Service\n");
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        a11y_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        a11y_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!a11y_ff) fprintf(stderr, "mod accessibility-detect: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -220,7 +220,7 @@ static void a11y_print_summary(void)
            a11y_stat_count, a11y_stat_count == 1 ? "" : "es");
 }
 
-static void a11y_emit_summary(struct ares_sink *s)
+static void a11y_emit_summary(struct anubee_sink *s)
 {
     if (a11y_stat_count == 0) return;
 
@@ -240,17 +240,17 @@ static void a11y_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long a11y_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_accessibility_detect = {
+const anubee_analyzer_t analyzer_accessibility_detect = {
     .name          = "accessibility-detect",
     .description   = "Detect Binder-transaction bursts to system_server while the traced "
                       "app holds a granted Accessibility Service (dominant technique in "

@@ -68,8 +68,8 @@ int main(void)
     // output of every engine's console, so the sticky-line path must be inert
     // until a bar is actually set.
     {
-        char op[] = "/tmp/ares_ho_out_XXXXXX";
-        char ep[] = "/tmp/ares_ho_err_XXXXXX";
+        char op[] = "/tmp/anubee_ho_out_XXXXXX";
+        char ep[] = "/tmp/anubee_ho_err_XXXXXX";
         int ofd = mkstemp(op), efd = mkstemp(ep);
         if (ofd < 0 || efd < 0) { perror("mkstemp"); return 1; }
         close(ofd); close(efd);

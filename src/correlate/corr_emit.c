@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure structured-record builders for ares correlate (no libbpf deps, so the
+// Pure structured-record builders for anubee correlate (no libbpf deps, so the
 // host test links them). Built on the shared serializer + flag decoder. The
 // syscall-name lookup is passed in by the caller (the generated table lives in
 // correlate.c), keeping this unit free of syscalls_gen.h.

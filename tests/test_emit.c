@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host unit tests for the shared JSON buffer serializer and ares_sink.
+// Host unit tests for the shared JSON buffer serializer and anubee_sink.
 #include "common/emit.h"
 
 #include <stdio.h>
@@ -71,28 +71,28 @@ int main(void)
         free(bad.b);
     }
 
-    // ares_sink: JSONL mode — each record on its own line, no array framing.
+    // anubee_sink: JSONL mode — each record on its own line, no array framing.
     {
         const char *path = "/tmp/test_sink_jsonl.jsonl";
-        struct ares_sink s = {0};
-        CHECK(ares_sink_open(&s, path, "event", 1) == 0, "sink jsonl open");
-        jb_s(&s.jb, "{\"a\":1}"); ares_sink_emit(&s);
-        jb_s(&s.jb, "{\"b\":2}"); ares_sink_emit(&s);
-        ares_sink_close(&s);
+        struct anubee_sink s = {0};
+        CHECK(anubee_sink_open(&s, path, "event", 1) == 0, "sink jsonl open");
+        jb_s(&s.jb, "{\"a\":1}"); anubee_sink_emit(&s);
+        jb_s(&s.jb, "{\"b\":2}"); anubee_sink_emit(&s);
+        anubee_sink_close(&s);
         CHECK(s.count == 2, "sink jsonl count");
         char *got = slurp(path);
         CHECK(got && strcmp(got, "{\"a\":1}\n{\"b\":2}\n") == 0, "sink jsonl content");
         free(got);
     }
 
-    // ares_sink: array mode — JSON array with comma-sep records.
+    // anubee_sink: array mode — JSON array with comma-sep records.
     {
         const char *path = "/tmp/test_sink_array.json";
-        struct ares_sink s = {0};
-        CHECK(ares_sink_open(&s, path, "syscall", 0) == 0, "sink array open");
-        jb_s(&s.jb, "{\"x\":1}"); ares_sink_emit(&s);
-        jb_s(&s.jb, "{\"x\":2}"); ares_sink_emit(&s);
-        ares_sink_close(&s);
+        struct anubee_sink s = {0};
+        CHECK(anubee_sink_open(&s, path, "syscall", 0) == 0, "sink array open");
+        jb_s(&s.jb, "{\"x\":1}"); anubee_sink_emit(&s);
+        jb_s(&s.jb, "{\"x\":2}"); anubee_sink_emit(&s);
+        anubee_sink_close(&s);
         CHECK(s.count == 2, "sink array count");
         char *got = slurp(path);
         CHECK(got && strcmp(got, "[\n  {\"x\":1},\n  {\"x\":2}\n]\n") == 0, "sink array content");
@@ -102,12 +102,12 @@ int main(void)
     // GA3: write errors latch instead of vanishing silently.
     {
         char tiny[16];
-        struct ares_sink s = {0};
+        struct anubee_sink s = {0};
         s.f = fmemopen(tiny, sizeof tiny, "w");
         s.jsonl = 1; s.path = "<mem>"; s.noun = "event";
         CHECK(s.f != NULL, "ga3: fmemopen");
-        for (int i = 0; i < 10; i++) { jb_s(&s.jb, "{\"x\":1234567890}"); ares_sink_emit(&s); }
-        ares_sink_flush(&s);  // force the overflow through the flush path too
+        for (int i = 0; i < 10; i++) { jb_s(&s.jb, "{\"x\":1234567890}"); anubee_sink_emit(&s); }
+        anubee_sink_flush(&s);  // force the overflow through the flush path too
         CHECK(s.werr != 0, "ga3: write error latched on overflow");
         fclose(s.f); free(s.jb.b);
     }

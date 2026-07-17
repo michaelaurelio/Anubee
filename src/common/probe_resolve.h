@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef __ARES_COMMON_PROBE_RESOLVE_H
-#define __ARES_COMMON_PROBE_RESOLVE_H
+#ifndef __ANUBEE_COMMON_PROBE_RESOLVE_H
+#define __ANUBEE_COMMON_PROBE_RESOLVE_H
 
 #include <sys/types.h>
 #include <stdbool.h>
@@ -106,4 +106,4 @@ struct load_seg { unsigned long vaddr, offset, filesz; };
 unsigned long seg_vaddr_to_off(const struct load_seg *segs, int n,
                                 unsigned long vaddr);
 
-#endif /* __ARES_COMMON_PROBE_RESOLVE_H */
+#endif /* __ANUBEE_COMMON_PROBE_RESOLVE_H */

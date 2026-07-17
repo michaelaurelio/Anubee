@@ -24,7 +24,7 @@
 
 int main(int argc, char **argv)
 {
-    const char *dir = argc > 1 ? argv[1] : "/sdcard/.ares_exfil_test/DCIM";
+    const char *dir = argc > 1 ? argv[1] : "/sdcard/.anubee_exfil_test/DCIM";
     char cmd[300];
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", dir);
     system(cmd);

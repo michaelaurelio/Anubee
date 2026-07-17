@@ -1,5 +1,5 @@
-#ifndef ARES_SYSCALLS_SNAPSHOT_GATE_H
-#define ARES_SYSCALLS_SNAPSHOT_GATE_H
+#ifndef ANUBEE_SYSCALLS_SNAPSHOT_GATE_H
+#define ANUBEE_SYSCALLS_SNAPSHOT_GATE_H
 
 // Pure decision predicates for the syscalls stack-snapshot gate. Kept in a
 // header of static-inline functions (no .c, no BPF skeleton dependency) so the
@@ -24,4 +24,4 @@ static inline int sysc_snapshot_firehose_warn(int want_snap, int capture_all,
     return want_snap && capture_all && syscall_mode == 0;
 }
 
-#endif // ARES_SYSCALLS_SNAPSHOT_GATE_H
+#endif // ANUBEE_SYSCALLS_SNAPSHOT_GATE_H

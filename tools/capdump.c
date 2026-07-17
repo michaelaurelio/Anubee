@@ -9,7 +9,7 @@
 int main(void)
 {
     int n = 0;
-    const struct ares_bpf_object *objs = ares_bpf_objects(&n);
+    const struct anubee_bpf_object *objs = anubee_bpf_objects(&n);
     for (int i = 0; i < n; i++)
         printf("%s\t%d\n", objs[i].name, objs[i].writes_target_memory ? 1 : 0);
     return 0;

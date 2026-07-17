@@ -11,8 +11,8 @@
 //   - a BPF_MAP_TYPE_RINGBUF map (referenced via LIBTRACE_EVENTS_RB, default `events`)
 //   - static __always_inline int uid_matches(void)
 // It MAY define LIBTRACE_ON_DROP() to account for a failed ring-buffer reservation.
-#ifndef ARES_COMMON_LIB_TRACE_BPF_H
-#define ARES_COMMON_LIB_TRACE_BPF_H
+#ifndef ANUBEE_COMMON_LIB_TRACE_BPF_H
+#define ANUBEE_COMMON_LIB_TRACE_BPF_H
 
 #ifndef LIBTRACE_EVENTS_RB
 #define LIBTRACE_EVENTS_RB events
@@ -123,4 +123,4 @@ int BPF_KPROBE(on_uprobe_munmap, struct vm_area_struct *vma, unsigned long start
 	return 0;
 }
 
-#endif /* ARES_COMMON_LIB_TRACE_BPF_H */
+#endif /* ANUBEE_COMMON_LIB_TRACE_BPF_H */

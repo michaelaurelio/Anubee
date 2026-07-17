@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Device acceptance smoke test for ares — the device tier of the testing flow.
-# Pushes the freshly-built build/ares to the attached rooted device and asserts
+# Device acceptance smoke test for anubee — the device tier of the testing flow.
+# Pushes the freshly-built build/anubee to the attached rooted device and asserts
 # each capability still ATTACHES and emits REAL tracer output (not just help
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
@@ -8,44 +8,44 @@
 #   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
-#   ARES_TEST_PKG=<package>    target app   (default: com.android.deskclock)
-#   ARES_TEST_TIMEOUT=<secs>   per-run window (default: 10)
+#   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
+#   ANUBEE_TEST_TIMEOUT=<secs>   per-run window (default: 10)
 #
-# WHY each ares run gets its OWN `su -c`: chaining `am force-stop ...; ares ...`
-# inside a single `su -c` runs ares under an intermediate shell in a reduced
-# context and the BPF load fails with -EPERM. A direct `su -c "<ares ...>"`
+# WHY each anubee run gets its OWN `su -c`: chaining `am force-stop ...; anubee ...`
+# inside a single `su -c` runs anubee under an intermediate shell in a reduced
+# context and the BPF load fails with -EPERM. A direct `su -c "<anubee ...>"`
 # execs the binary in the root domain with the caps eBPF needs. Keep them split.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="$ROOT/build/ares"
-DEVICE_PATH="/data/local/tmp/ares"
-PKG="${ARES_TEST_PKG:-com.android.deskclock}"
-TIMEOUT="${ARES_TEST_TIMEOUT:-10}"
+BINARY="$ROOT/build/anubee"
+DEVICE_PATH="/data/local/tmp/anubee"
+PKG="${ANUBEE_TEST_PKG:-com.android.deskclock}"
+TIMEOUT="${ANUBEE_TEST_TIMEOUT:-10}"
 WHAT="${1:-all}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 info() { echo "  $*"; }
 
-# ares runs in its OWN su -c (see header). Host expands the vars; the single
+# anubee runs in its OWN su -c (see header). Host expands the vars; the single
 # quotes reach the device shell so `su -c '<one string>'` execs the binary.
-# ares handles both SIGINT and SIGTERM via the shared 2-stage stop handler.
+# anubee handles both SIGINT and SIGTERM via the shared 2-stage stop handler.
 # -s INT matches the interactive Ctrl-C path; -k 3 keeps the SIGKILL backstop.
-ares()      { adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*'" 2>&1; }
+anubee()      { adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*'" 2>&1; }
 forcestop() { adb shell "su -c 'am force-stop $PKG'" >/dev/null 2>&1; }
 # A run orphaned by an adb disconnect keeps holding the binary -> ETXTBSY on the
-# next push/exec. Clear any lingering ares before we push.
-kill_ares() { adb shell "su -c 'pkill -INT -f $DEVICE_PATH; sleep 1; pkill -KILL -f $DEVICE_PATH'" >/dev/null 2>&1 || true; }
+# next push/exec. Clear any lingering anubee before we push.
+kill_anubee() { adb shell "su -c 'pkill -INT -f $DEVICE_PATH; sleep 1; pkill -KILL -f $DEVICE_PATH'" >/dev/null 2>&1 || true; }
 
 # --- preflight ------------------------------------------------------------
-[ -f "$BINARY" ] || fail "no build/ares — run ./scripts/build.sh first"
+[ -f "$BINARY" ] || fail "no build/anubee — run ./scripts/build.sh first"
 adb get-state >/dev/null 2>&1 || fail "no device via adb (check 'adb devices')"
 [ "$(adb shell "su -c 'id -u'" 2>/dev/null | tr -d '\r')" = "0" ] \
-    || fail "device root unavailable (su -c) — ares needs root for eBPF"
+    || fail "device root unavailable (su -c) — anubee needs root for eBPF"
 adb shell "su -c 'ls /sys/kernel/btf/vmlinux'" >/dev/null 2>&1 \
     || fail "kernel BTF missing (/sys/kernel/btf/vmlinux) — CO-RE eBPF can't load"
 adb shell "pm path $PKG" >/dev/null 2>&1 \
-    || fail "test package not installed: $PKG (set ARES_TEST_PKG)"
+    || fail "test package not installed: $PKG (set ANUBEE_TEST_PKG)"
 
 # --- push fresh binary (skip when the device copy already matches) ---------
 # adb push over a flaky USB link can stall for minutes; skipping an identical
@@ -56,7 +56,7 @@ if [ "$host_sum" = "$dev_sum" ]; then
     echo "=== on-device binary up to date (md5 ${host_sum%${host_sum#????????????}}), skipping push ==="
 else
     echo "=== pushing $(basename "$BINARY") -> $DEVICE_PATH ==="
-    kill_ares
+    kill_anubee
     adb push "$BINARY" "$DEVICE_PATH" >/dev/null || fail "adb push failed"
     adb shell "chmod 755 $DEVICE_PATH"
 fi
@@ -68,7 +68,7 @@ test_lib() {
     forcestop
     # here-strings (not echo|grep): grep -q exits on first match and would
     # SIGPIPE the writer, which `set -o pipefail` then reports as failure.
-    local out; out="$(ares "lib $PKG")"
+    local out; out="$(anubee "lib $PKG")"
     # SYM1 Phase 4b put emit_lib/unlib on ts_print, which prepends "HH:MM:SS "
     # ahead of the tag -- tolerate that optional prefix rather than anchoring
     # to a bare "[lib]" line start.
@@ -84,7 +84,7 @@ test_lib() {
 test_syscalls() {
     echo "=== syscalls (kprobe) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -104,7 +104,7 @@ test_syscalls() {
 test_syscalls_jit() {
     echo "=== syscalls JIT symbolization ([JIT]! frames) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-jit: BPF load failed"
     fi
@@ -125,7 +125,7 @@ test_syscalls_jit() {
 test_syscalls_vdso() {
     echo "=== syscalls vDSO symbolization ([vdso]! frames) ==="
     forcestop
-    local out; out="$(ares "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-vdso: BPF load failed"
     fi
@@ -146,10 +146,10 @@ test_syscalls_vdso() {
 test_syscalls_regs() {
     echo "=== syscalls register file (regs[0..30] in stack sidecar) ==="
     forcestop
-    local out_file="/data/local/tmp/ares_regs_test.jsonl"
+    local out_file="/data/local/tmp/anubee_regs_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "syscalls -l libc.so -s openat --snapshot -o $out_file -P $PKG")"
+    local out; out="$(anubee "syscalls -l libc.so -s openat --snapshot -o $out_file -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-regs: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -185,13 +185,13 @@ test_syscalls_regs() {
 test_syscalls_cfi() {
     echo "=== syscalls CFI cross-trampoline unwind (cfi_stack sidecar) ==="
     forcestop
-    local out_file="/data/local/tmp/ares_cfi_test.jsonl"
+    local out_file="/data/local/tmp/anubee_cfi_test.jsonl"
     local stacks_file="${out_file}.stacks"
     adb shell "su -c 'rm -f $out_file $stacks_file'" >/dev/null 2>&1 || true
-    # Run with ARES_CFI_DEBUG=1 so per-step diag fields (incl. stop_reason) land in
+    # Run with ANUBEE_CFI_DEBUG=1 so per-step diag fields (incl. stop_reason) land in
     # the sidecar — the PAC RUN_FAIL guard below greps that debug-only field. Own
-    # su -c (the load-bearing gotcha); mirrors the ares() wrapper + the env prefix.
-    local out; out="$(adb shell "su -c 'ARES_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -a -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
+    # su -c (the load-bearing gotcha); mirrors the anubee() wrapper + the env prefix.
+    local out; out="$(adb shell "su -c 'ANUBEE_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -a -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -212,7 +212,7 @@ test_syscalls_cfi() {
     # itself is worse than no guard.
     #
     # Asserts syscalls_summary only, not coverage: in syscalls_teardown
-    # ares_coverage_report runs before sysc_emit_summary (src/syscalls/syscalls.c
+    # anubee_coverage_report runs before sysc_emit_summary (src/syscalls/syscalls.c
     # :1655 then :1659, same g_worker_started block), so a summary record present
     # already implies coverage was emitted. The coverage record has its own
     # assertion further down; no need to duplicate it.
@@ -249,14 +249,14 @@ test_syscalls_cfi() {
     else
         echo "  NOTE: no snapshot exceeded 8192 in this window — chunked tail not exercised (W3-window unproven this run)"
     fi
-    echo "  NOTE: re-run with ARES_CFI_DEBUG=1 to enrich cfi_stack frames with per-step"
+    echo "  NOTE: re-run with ANUBEE_CFI_DEBUG=1 to enrich cfi_stack frames with per-step"
     echo "        CFI internals (module_pc/load_base/fde_pc_lo..hi/cfa/ra_slot/ra_value/stop_reason)"
     # PAC regression guard: before the negate_ra_state fix the CFI walk failed in
     # every PAC-built ART apex lib with terminal stop_reason 6 (CFI_RUN_FAIL) —
     # ~83% of stacks on a real RASP target. Post-fix that count should be ~0. The
     # numeric enum (not the name) is emitted in the sidecar. Soft NOTE only.
     if ! grep -q '"stop_reason":' <<<"$stacks"; then
-        echo "  NOTE: no stop_reason in sidecar (ARES_CFI_DEBUG off?) — PAC RUN_FAIL guard skipped"
+        echo "  NOTE: no stop_reason in sidecar (ANUBEE_CFI_DEBUG off?) — PAC RUN_FAIL guard skipped"
     else
         local nrunfail; nrunfail="$(grep -o '"stop_reason":6' <<<"$stacks" | grep -c . || true)"
         if [ "$nrunfail" -gt 0 ]; then
@@ -371,9 +371,9 @@ test_funcs_structured() {
         pid="$(adb shell "su -c 'pidof $PKG'" 2>/dev/null | tr -d '\r')"
     fi
     [ -n "$pid" ] || { echo "  SKIP: could not get pid for $PKG (funcs --structured)"; return; }
-    local out_file="/data/local/tmp/ares_funcs_structured_test.jsonl"
+    local out_file="/data/local/tmp/anubee_funcs_structured_test.jsonl"
     adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
-    ares "funcs -p $pid -e 'libc.so!open' -J --snapshot -o $out_file" >/dev/null 2>&1 || true
+    anubee "funcs -p $pid -e 'libc.so!open' -J --snapshot -o $out_file" >/dev/null 2>&1 || true
     local content; content="$(adb shell "su -c 'cat $out_file 2>/dev/null'" 2>/dev/null | tr -d '\r')"
     grep -q '"type":"call"' <<<"$content" \
         || { echo "  out: $content" >&2; fail "funcs --structured: no {\"type\":\"call\"} record in $out_file"; }
@@ -392,7 +392,7 @@ test_funcs_structured() {
 test_mod_file_access() {
     echo "=== mod file-access (stealthy openat/openat2 kprobes) ==="
     forcestop
-    local out; out="$(ares "mod file-access -P $PKG")"
+    local out; out="$(anubee "mod file-access -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "mod-file-access: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -408,7 +408,7 @@ test_mod_file_access() {
 }
 
 # mod massdelete-detect: deterministic trigger via a compiled single-process
-# generator (scripts/ares_massdelete_gen.c), attached by PID (-p gates on
+# generator (scripts/anubee_massdelete_gen.c), attached by PID (-p gates on
 # target_pids regardless of the generator's UID, so this doesn't need it to
 # run as the traced app). Hard-fail, not SKIP: we control the trigger, unlike
 # file-access's timing-dependent natural app behavior.
@@ -418,7 +418,7 @@ test_mod_file_access() {
 #     touches split across 25 short-lived subprocesses never accumulate to
 #     MASSDELETE_DETECT_THRESHOLD — each subprocess only ever contributes one touch.
 #   - nohup+setsid: a bare `cmd & echo $!` backgrounded inside `su -c '...'`
-#     gets killed with the su session on some devices' su/shell before ares
+#     gets killed with the su session on some devices' su/shell before anubee
 #     ever attaches (confirmed via `ps` — the pid was gone within ~1s, well
 #     inside its own pre-touch sleep). Detaching from the session is what
 #     keeps it alive to be traced.
@@ -427,23 +427,23 @@ test_massdelete_detect() {
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
         || fail "massdelete-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
-    local gen_bin="$ROOT/build/ares_massdelete_gen"
-    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_massdelete_gen.c" \
+    local gen_bin="$ROOT/build/anubee_massdelete_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/anubee_massdelete_gen.c" \
         || fail "massdelete-detect: failed to compile mass-delete generator"
-    local gen="/data/local/tmp/ares_massdelete_gen"
+    local gen="/data/local/tmp/anubee_massdelete_gen"
     adb push "$gen_bin" "$gen" >/dev/null || fail "massdelete-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
-    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
         fail "massdelete-detect: could not start burst-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod massdelete-detect -p $loop_pid")"
+    local out; out="$(anubee "mod massdelete-detect -p $loop_pid")"
 
     local loop_pid2
-    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_massdelete_test >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -n "$loop_pid2" ] && [ "$loop_pid2" -gt 0 ] 2>/dev/null; then
         adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH mod massdelete-detect -p $loop_pid2 -v -o /data/local/tmp/massdelete_verbose.jsonl -q'" >/dev/null 2>&1
         local verbose_out
@@ -456,7 +456,7 @@ test_massdelete_detect() {
         fi
     fi
 
-    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_massdelete_test'" >/dev/null 2>&1 || true
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.anubee_massdelete_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "massdelete-detect: BPF load failed (root/SELinux/own-su-c?)"
@@ -472,7 +472,7 @@ test_massdelete_detect() {
 }
 
 # mod exfil-detect: deterministic trigger via a compiled single-process
-# generator (scripts/ares_exfil_gen.c), attached by PID (-p gates on
+# generator (scripts/anubee_exfil_gen.c), attached by PID (-p gates on
 # target_pids regardless of the generator's UID). Hard-fail, not SKIP: we
 # control the trigger. Same single-process rationale as massdelete-detect's
 # generator (a forked write()-per-call pattern would split byte-volume
@@ -486,23 +486,23 @@ test_exfil_detect() {
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
         || fail "exfil-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
-    local gen_bin="$ROOT/build/ares_exfil_gen"
-    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_exfil_gen.c" \
+    local gen_bin="$ROOT/build/anubee_exfil_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/anubee_exfil_gen.c" \
         || fail "exfil-detect: failed to compile exfil generator"
-    local gen="/data/local/tmp/ares_exfil_gen"
+    local gen="/data/local/tmp/anubee_exfil_gen"
     adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-detect: push failed"
     adb shell "chmod 755 $gen"
 
     local loop_pid
-    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -z "$loop_pid" ] || ! [ "$loop_pid" -gt 0 ] 2>/dev/null; then
         fail "exfil-detect: could not start exfil-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod exfil-detect -p $loop_pid")"
+    local out; out="$(anubee "mod exfil-detect -p $loop_pid")"
 
     local loop_pid2
-    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.ares_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    loop_pid2="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_exfil_test/DCIM >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     if [ -n "$loop_pid2" ] && [ "$loop_pid2" -gt 0 ] 2>/dev/null; then
         adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH mod exfil-detect -p $loop_pid2 -v -o /data/local/tmp/exfil_verbose.jsonl -q'" >/dev/null 2>&1
         local verbose_out
@@ -515,7 +515,7 @@ test_exfil_detect() {
         fi
     fi
 
-    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.ares_exfil_test'" >/dev/null 2>&1 || true
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.anubee_exfil_test'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "exfil-detect: BPF load failed (root/SELinux/own-su-c?)"
@@ -536,7 +536,7 @@ test_exfil_detect() {
 # dialog by writing the secure settings directly via su, confirmed working)
 # and its genuine accessibility traffic to system_server is driven by a
 # host-side loop of `input keyevent` calls run concurrently with the blocking
-# ares call (avoids nested su -c / device-shell quoting for an on-device
+# anubee call (avoids nested su -c / device-shell quoting for an on-device
 # loop). Prior accessibility settings state is saved and restored
 # unconditionally, even on failure — never leave the device in a different
 # accessibility configuration than it started in. Hard-fail, not SKIP: we
@@ -579,7 +579,7 @@ test_accessibility_detect() {
     ) &
     local stim_pid=$!
 
-    local out; out="$(ares "mod accessibility-detect -p $tb_pid")"
+    local out; out="$(anubee "mod accessibility-detect -p $tb_pid")"
     wait "$stim_pid" 2>/dev/null || true
     restore_a11y
 
@@ -595,7 +595,7 @@ test_accessibility_detect() {
 }
 
 # mod fileless-detect: deterministic trigger via a compiled single-process
-# generator (scripts/ares_fileless_gen.c) that performs one raw
+# generator (scripts/anubee_fileless_gen.c) that performs one raw
 # mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
 # of normal operation, so (like massdelete-detect/exfil-detect) this needs a
 # purpose-built native binary rather than driving a real app. Hard-fail, not
@@ -609,10 +609,10 @@ test_fileless_detect() {
     forcestop
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
         || fail "fileless-detect: aarch64-linux-gnu-gcc not found (see README prereqs)"
-    local gen_bin="$ROOT/build/ares_fileless_gen"
-    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/ares_fileless_gen.c" \
+    local gen_bin="$ROOT/build/anubee_fileless_gen"
+    aarch64-linux-gnu-gcc -static -O2 -o "$gen_bin" "$ROOT/scripts/anubee_fileless_gen.c" \
         || fail "fileless-detect: failed to compile fileless generator"
-    local gen="/data/local/tmp/ares_fileless_gen"
+    local gen="/data/local/tmp/anubee_fileless_gen"
     adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-detect: push failed"
     adb shell "chmod 755 $gen"
 
@@ -622,7 +622,7 @@ test_fileless_detect() {
         fail "fileless-detect: could not start fileless-generator (no pid captured)"
     fi
 
-    local out; out="$(ares "mod fileless-detect -p $loop_pid")"
+    local out; out="$(anubee "mod fileless-detect -p $loop_pid")"
     adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
@@ -642,7 +642,7 @@ test_fileless_detect() {
         fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
     fi
 
-    local jit_out; jit_out="$(ares "mod fileless-detect -P $PKG")"
+    local jit_out; jit_out="$(anubee "mod fileless-detect -P $PKG")"
     forcestop
     local jit_lines
     jit_lines="$(grep -c '^\[fileless-detect\] PID:' <<<"$jit_out")"
@@ -664,17 +664,17 @@ test_fileless_detect() {
 # Trigger order is service-first, then attach via -p <pid> (NOT -P <pkg>):
 # this package has a MAIN-action activity but no LAUNCHER category, so `cmd
 # package resolve-activity --brief` returns "No activity found" on this
-# device and -P's ares_launch_app() (src/common/launch.c) hard-fails before
+# device and -P's anubee_launch_app() (src/common/launch.c) hard-fails before
 # the dumpsys poll thread ever starts polling -- confirmed on-device, not a
 # timing issue. -p <pid> against the already-running service process skips
 # that resolve-activity step entirely, same precedent as accessibility-detect's
-# already-running-process attach. The ares() call below is synchronous
+# already-running-process attach. The anubee() call below is synchronous
 # (blocking, like accessibility-detect/fileless-detect), not backgrounded: this file's
-# own header note applies here too -- ares's stdio is fully buffered once
+# own header note applies here too -- anubee's stdio is fully buffered once
 # it isn't a tty, so killing it early from the host side (pkill on the local
 # adb shell client doesn't even reach the remote process -- see
-# testing-ares-on-device gotchas) loses whatever hadn't flushed yet.
-# Blocking for the device-side `timeout -s INT $TIMEOUT` window lets ares
+# testing-anubee-on-device gotchas) loses whatever hadn't flushed yet.
+# Blocking for the device-side `timeout -s INT $TIMEOUT` window lets anubee
 # exit cleanly and flush before the capture completes.
 test_screencapture_detect() {
     echo "=== mod screencapture-detect (active MediaProjection session via dumpsys poll) ==="
@@ -697,7 +697,7 @@ test_screencapture_detect() {
         fail "screencapture-detect: $svc did not start (no pid) after start-foreground-service"
     fi
 
-    local out; out="$(ares "mod screencapture-detect -p $svc_pid")"
+    local out; out="$(anubee "mod screencapture-detect -p $svc_pid")"
     adb shell am stopservice -n "$svc" >/dev/null 2>&1
 
     if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
@@ -721,9 +721,9 @@ test_screencapture_detect() {
 test_correlate_returns() {
     echo "=== correlate --returns (uretprobe + elapsed_ns timing) ==="
     forcestop
-    local out_file="/data/local/tmp/ares_correlate_returns_test.jsonl"
+    local out_file="/data/local/tmp/anubee_correlate_returns_test.jsonl"
     adb shell "su -c 'rm -f $out_file'" >/dev/null 2>&1 || true
-    local out; out="$(ares "correlate -P $PKG -e 'libc.so!open' --returns -o $out_file")"
+    local out; out="$(anubee "correlate -P $PKG -e 'libc.so!open' --returns -o $out_file")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "correlate-returns: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -744,10 +744,10 @@ test_correlate_returns() {
 test_lib_records() {
     echo "=== lib records to -o sink (syscalls + correlate) ==="
     forcestop
-    local of="/data/local/tmp/ares_librec_test.jsonl"
+    local of="/data/local/tmp/anubee_librec_test.jsonl"
 
     adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
-    local so; so="$(ares "syscalls -a -s openat -o $of -P $PKG")"
+    local so; so="$(anubee "syscalls -a -s openat -o $of -P $PKG")"
     grep -qi 'BPF load failed\|-EPERM' <<<"$so" \
         && { tail -5 <<<"$so" >&2; fail "lib-records/syscalls: BPF load failed"; }
     local sc; sc="$(adb shell "su -c 'cat $of 2>/dev/null'" 2>/dev/null | tr -d '\r')"
@@ -757,7 +757,7 @@ test_lib_records() {
 
     forcestop
     adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
-    local co; co="$(ares "correlate -P $PKG -e 'libc.so!open' -o $of")"
+    local co; co="$(anubee "correlate -P $PKG -e 'libc.so!open' -o $of")"
     grep -qi 'BPF load failed\|-EPERM' <<<"$co" \
         && { tail -5 <<<"$co" >&2; fail "lib-records/correlate: BPF load failed"; }
     local cc; cc="$(adb shell "su -c 'cat $of 2>/dev/null'" 2>/dev/null | tr -d '\r')"
@@ -769,15 +769,15 @@ test_lib_records() {
 
 # dump --now: assert the pure-/proc snapshot path (--base) exits 0, and that
 # --check reports a real verdict for the reference app's APK-embedded
-# libsentinel.so. dev.ares.detector ships extractNativeLibs=false: libsentinel.so
+# libsentinel.so. dev.anubee.detector ships extractNativeLibs=false: libsentinel.so
 # is mapped straight out of base.apk, not extracted to disk, so this also pins
 # dump_read_apk_member's stored-ZIP-member resolution end to end.
 #
-# Own package (not $PKG): this needs dev.ares.detector specifically, same
+# Own package (not $PKG): this needs dev.anubee.detector specifically, same
 # precedent as accessibility-detect/screencapture-detect hardcoding their own
 # fixed target app rather than the generic $PKG.
 #
-# pid+base discovery: the natural, lowest-friction source is `ares lib -P`'s
+# pid+base discovery: the natural, lowest-friction source is `anubee lib -P`'s
 # own [lib] line (it already resolves the APK-embedded module's friendly name),
 # so no extra /proc/<pid>/maps parsing is needed on the host side.
 #
@@ -791,9 +791,9 @@ test_lib_records() {
 # emitted modcmp record's "module" field is correspondingly "base.apk" -- the
 # record is identified by base address, not by name.
 run_dump_now() {
-    # Same on-device timeout guard as ares() (own su -c; -s INT / -k 3 backstop)
+    # Same on-device timeout guard as anubee() (own su -c; -s INT / -k 3 backstop)
     # -- if --now ever regressed into the old wait-for-Ctrl-C behavior this
-    # still bounds the run -- but unlike ares(), this also surfaces the real
+    # still bounds the run -- but unlike anubee(), this also surfaces the real
     # exit status: --now's whole point is exiting 0 instead of hanging until a
     # signal, so the status IS the assertion, not just the output.
     #
@@ -805,17 +805,17 @@ run_dump_now() {
     # --preserve-status. Verified on-device: `timeout -s INT -k 3 2 sleep 10`
     # exits 124.
     local raw
-    raw="$(adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*; echo ARES_EXIT:\$?'" 2>&1 | tr -d '\r')"
-    RUN_DUMP_NOW_STATUS="$(sed -n 's/.*ARES_EXIT:\([0-9]*\)$/\1/p' <<<"$raw" | tail -1)"
-    RUN_DUMP_NOW_OUT="$(sed '/^ARES_EXIT:[0-9]*$/d' <<<"$raw")"
+    raw="$(adb shell "su -c 'timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH $*; echo ANUBEE_EXIT:\$?'" 2>&1 | tr -d '\r')"
+    RUN_DUMP_NOW_STATUS="$(sed -n 's/.*ANUBEE_EXIT:\([0-9]*\)$/\1/p' <<<"$raw" | tail -1)"
+    RUN_DUMP_NOW_OUT="$(sed '/^ANUBEE_EXIT:[0-9]*$/d' <<<"$raw")"
 }
 test_dump_now() {
     echo "=== dump --now (pure /proc snapshot, no BPF) + --check (APK-embedded baseline) ==="
-    local dpkg="dev.ares.detector"
+    local dpkg="dev.anubee.detector"
     adb shell "pm path $dpkg" >/dev/null 2>&1 \
         || fail "dump-now: $dpkg not installed on this device"
     forcestop
-    local lib_out; lib_out="$(ares "lib -P $dpkg")"
+    local lib_out; lib_out="$(anubee "lib -P $dpkg")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$lib_out"; then
         tail -5 <<<"$lib_out" >&2; fail "dump-now: lib (pid+base discovery) BPF load failed"
     fi
@@ -826,7 +826,7 @@ test_dump_now() {
     [ -n "$pid" ] && [ -n "$base" ] || fail "dump-now: could not parse pid/base from: $sline"
     info "dump-now: discovered pid=$pid base=$base for libsentinel.so"
 
-    local devdir="/data/local/tmp/ares_dumpnow_test"
+    local devdir="/data/local/tmp/anubee_dumpnow_test"
     adb shell "su -c 'rm -rf $devdir; mkdir -p $devdir'" >/dev/null 2>&1
 
     # --- Assertion A: --now --base dumps and exits 0 --------------------------
@@ -896,5 +896,5 @@ case "$WHAT" in
 esac
 
 forcestop
-kill_ares
-echo "PASS: ares device smoke ($WHAT) on $PKG"
+kill_anubee
+echo "PASS: anubee device smoke ($WHAT) on $PKG"

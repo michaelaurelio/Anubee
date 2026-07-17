@@ -72,7 +72,7 @@ int main(void)
     /* read_build_id_hex — malformed shentsize must fail closed, not read
      * uninitialized section-header bytes (SW1 hardening). */
     {
-        char path[] = "/tmp/ares_test_buildid_XXXXXX";
+        char path[] = "/tmp/anubee_test_buildid_XXXXXX";
         int fd = mkstemp(path);
         CHECK(fd >= 0, "shentsize test: temp file created");
         if (fd >= 0) {

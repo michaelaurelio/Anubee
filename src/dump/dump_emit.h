@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-#ifndef ARES_DUMP_EMIT_H
-#define ARES_DUMP_EMIT_H
+#ifndef ANUBEE_DUMP_EMIT_H
+#define ANUBEE_DUMP_EMIT_H
 
 struct jbuf;  /* common/emit.h */
 
@@ -39,4 +39,4 @@ void dump_emit_modcmp(struct jbuf *j, const char *module, const char *path,
                       unsigned long long base, int pid, const char *state,
                       const char *mem_sha256, const char *file_sha256);
 
-#endif /* ARES_DUMP_EMIT_H */
+#endif /* ANUBEE_DUMP_EMIT_H */

@@ -7,12 +7,12 @@
  * reconstruction, relative-relocation un-applying (incl. DT_RELR), and .dynamic
  * de-rebasing. aarch64 (ELF64) only.
  */
-#ifndef ARES_DUMP_REBUILD_H
-#define ARES_DUMP_REBUILD_H
+#ifndef ANUBEE_DUMP_REBUILD_H
+#define ANUBEE_DUMP_REBUILD_H
 
 #include <stddef.h>   /* size_t, for dump_check_image */
 
-struct ares_sink;  /* common/emit.h */
+struct anubee_sink;  /* common/emit.h */
 
 /* When set, emit only the phdr-fixed raw memory image (no section-header
  * reconstruction, no relocation un-applying) — a fallback for exotic packers
@@ -63,7 +63,7 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 /* Selector-driven form of dump_pid_modules (which is a thin wrapper over this
  * with bases empty). Same return contract. */
 int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
-                         const char *outdir, struct ares_sink *sink);
+                         const char *outdir, struct anubee_sink *sink);
 
 /* Dump every currently-mapped module of `pid` whose mapped path matches ANY of
  * `pats` (glob on basename, else substring of full path) into `outdir`. Each
@@ -76,13 +76,13 @@ int dump_pid_modules_sel(int pid, const struct dump_sel *sel,
  * (must have npat elements if non-NULL); see dump_name_matches_any_track.
  * Pass NULL if the caller doesn't need it. */
 int dump_pid_modules(int pid, const char *const *pats, int npat,
-                     const char *outdir, struct ares_sink *sink, int *hit);
+                     const char *outdir, struct anubee_sink *sink, int *hit);
 
 /* Dump the single module whose load range contains virtual address `addr` (the
  * start of a just-mapped executable segment) into `outdir`, labelling the output
  * with `name`. Returns 0 on success, -1 on failure. (Dump-on-map path.)
  * sink: see dump_pid_modules above. */
-int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct ares_sink *sink);
+int dump_one_at(int pid, unsigned long long addr, const char *name, const char *outdir, struct anubee_sink *sink);
 
 /* Does `path` match `pattern`? Glob (fnmatch on basename, " (deleted)" stripped)
  * when `pattern` has glob metacharacters, else substring-of-full-path. */
@@ -121,7 +121,7 @@ const char *dump_check_image(const unsigned char *mem, size_t memlen,
  * Returns the number of modules checked, or -1 if the process maps could not be
  * read. (dump --check path.) */
 int dump_check_pid_modules(int pid, const struct dump_sel *sel,
-                           struct ares_sink *sink);
+                           struct anubee_sink *sink);
 
 /* Read the stored .so that begins at byte offset `off` inside the APK at `path`,
  * returning a malloc'd buffer the caller frees and setting *len to its size.
@@ -137,4 +137,4 @@ int dump_check_pid_modules(int pid, const struct dump_sel *sel,
 unsigned char *dump_read_apk_member(const char *path, unsigned long long off,
                                     size_t *len);
 
-#endif /* ARES_DUMP_REBUILD_H */
+#endif /* ANUBEE_DUMP_REBUILD_H */

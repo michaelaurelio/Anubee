@@ -3,8 +3,8 @@
 // (truncation, depth-cap, pre-arm drop) and cov_bump() to increment a slot.
 // Include once per BPF object (mirrors bpf_drop.bpf.h). Firewall: this is a data
 // map - no uprobe section - so including it in a quiet object keeps it quiet.
-#ifndef __ARES_COVERAGE_BPF_H
-#define __ARES_COVERAGE_BPF_H
+#ifndef __ANUBEE_COVERAGE_BPF_H
+#define __ANUBEE_COVERAGE_BPF_H
 
 #include "common/coverage_slots.h"
 
@@ -22,4 +22,4 @@ static __always_inline void cov_bump(__u32 slot)
 		__sync_fetch_and_add(c, 1);
 }
 
-#endif /* __ARES_COVERAGE_BPF_H */
+#endif /* __ANUBEE_COVERAGE_BPF_H */

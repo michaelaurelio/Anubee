@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod execve` — userspace analyzer for execve/execveat syscall events.
+// `anubee mod execve` — userspace analyzer for execve/execveat syscall events.
 // Owns the execve BPF skeleton lifecycle; the dispatcher in mod.c drives
 // the poll loop and teardown order. Kernel side: src/modules/execve.bpf.c.
 #include <stdio.h>
@@ -81,7 +81,7 @@ static struct bpf_link    *exec_link     = NULL;
 
 static int ex_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     if (hdr->type != MOD_EV_EXECVE || sz < sizeof(struct execve_event))
@@ -138,7 +138,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
             syms[i] = symbuf[i];
         }
         mod_emit_execve(&mc->sink->jb, e, syms);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -146,7 +146,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *ex_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = execve_bpf__open();
     if (!g_skel) {
@@ -188,7 +188,7 @@ static struct ring_buffer *ex_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        ex_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        ex_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!ex_ff) fprintf(stderr, "mod execve: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -274,10 +274,10 @@ static void ex_print_summary(void)
 }
 
 // File twin of ex_print_summary: same tally, one {"type":"execve_summary",...}
-// record so ares-mcp can consume the exec tally without re-deriving it from
+// record so anubee-mcp can consume the exec tally without re-deriving it from
 // the per-event stream. Not sorted (print_summary's qsort already ran on
 // exec_stats in-place by the time this is called).
-static void ex_emit_summary(struct ares_sink *s)
+static void ex_emit_summary(struct anubee_sink *s)
 {
     if (exec_stat_count == 0) return;
 
@@ -305,17 +305,17 @@ static void ex_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long ex_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_execve = {
+const anubee_analyzer_t analyzer_execve = {
     .name          = "execve",
     .description   = "Trace execve syscalls with full argv and call stack",
     .setup         = ex_setup,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for `ares dump`: trace every native library (.so) an app loads so
+// BPF object for `anubee dump`: trace every native library (.so) an app loads so
 // the loader can dump matching modules from live memory.
 //
 // Per-engine BPF (detectability firewall): this is its own object, not the

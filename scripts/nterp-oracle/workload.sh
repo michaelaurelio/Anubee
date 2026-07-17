@@ -2,11 +2,11 @@
 # Deterministic detector workload for the nterp precision oracle.
 # Installs the unobfuscated APK (once), launches, drives every detector tab.
 set -euo pipefail
-PKG="${ARES_TEST_PKG:-${PKG:-icu.nullptr.applistdetector}}"
-APK_FILE="${APK_PATH:-$(cat "$(dirname "$0")/../../ares-nterp-oracle/apk-path.txt" 2>/dev/null || true)}"
+PKG="${ANUBEE_TEST_PKG:-${PKG:-icu.nullptr.applistdetector}}"
+APK_FILE="${APK_PATH:-$(cat "$(dirname "$0")/../../anubee-nterp-oracle/apk-path.txt" 2>/dev/null || true)}"
 
 if ! adb shell pm list packages | grep -q "package:$PKG"; then
-  [ -n "$APK_FILE" ] || { echo "no APK; run ../ares-nterp-oracle/build.sh" >&2; exit 1; }
+  [ -n "$APK_FILE" ] || { echo "no APK; run ../anubee-nterp-oracle/build.sh" >&2; exit 1; }
   adb install -r -g "$APK_FILE"
 fi
 

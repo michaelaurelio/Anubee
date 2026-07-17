@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""ares-mcp — an MCP server exposing an ares trace to an LLM client
+"""anubee-mcp — an MCP server exposing an anubee trace to an LLM client
 (Claude Code / Claude Desktop) as queryable tools.
 
-Today it analyzes the structured syscall JSONL emitted by `ares syscalls`
+Today it analyzes the structured syscall JSONL emitted by `anubee syscalls`
 (records with "type":"syscall"). The trace schema is type-discriminated, so a
-future release adds tools for `ares funcs` structured records ("type":"call" etc.)
+future release adds tools for `anubee funcs` structured records ("type":"call" etc.)
 to this same server — see DOCUMENTATION.md "Unified trace schema".
 
 The model drives analysis by retrieval: start broad (overview, hot_loops,
@@ -13,7 +13,7 @@ pre-aggregated data so a multi-million-event trace stays analyzable without
 flooding the context window.
 
 Run:  python server.py            (stdio transport)
-      ARES_TRACE=/path.jsonl python server.py    (preload a trace)
+      ANUBEE_TRACE=/path.jsonl python server.py    (preload a trace)
 """
 
 import os
@@ -25,15 +25,15 @@ from mcp.server.fastmcp import FastMCP
 import device
 from trace_store import TraceStore
 
-mcp = FastMCP("ares")
+mcp = FastMCP("anubee")
 store = TraceStore()
 
 
 @mcp.tool()
 def load_trace(path: str) -> dict:
-    """Load an ares trace file (JSON array or JSONL) and make it the active
+    """Load an anubee trace file (JSON array or JSONL) and make it the active
     trace, switching away from any previously loaded one. Returns an overview.
-    Call this first (or set ARES_TRACE)."""
+    Call this first (or set ANUBEE_TRACE)."""
     return store.load(path)
 
 
@@ -214,7 +214,7 @@ def incidents(rules_path: Optional[str] = None, top: int = 50) -> list:
     window) into higher-confidence incident records carrying the raw matched
     events as evidence -- no baked severity, judge from the fields. rules_path
     optionally points at a custom rule-chain JSON file for this engagement
-    instead of the bundled default (tools/ares-mcp/correlation_rules.json)."""
+    instead of the bundled default (tools/anubee-mcp/correlation_rules.json)."""
     return store.incidents(rules_path, top)
 
 
@@ -231,8 +231,8 @@ def mod_events(kind: Optional[str] = None, pid: Optional[int] = None, top: int =
 
 @mcp.tool()
 def diff_calls(baseline: str, compare: str, top: int = 50) -> dict:
-    """Compare two correlate/funcs structured traces (JSONL from `ares funcs -J`
-    or `ares correlate -o`) and report call-sites and in-span syscalls seen ONLY
+    """Compare two correlate/funcs structured traces (JSONL from `anubee funcs -J`
+    or `anubee correlate -o`) and report call-sites and in-span syscalls seen ONLY
     in `compare` — the diff_traces analog for funcs-span data. `new_calls` are
     (module, symbol) call-sites absent from `baseline`; `new_span_syscalls` are
     syscall names that appeared only inside compare's spans. Both files are
@@ -309,17 +309,17 @@ def diff_traces(baseline: str, compare: str, top: int = 50,
     return store.diff(baseline=baseline, compare=compare, top=top, via=via)
 
 
-# ---- on-device operations (require adb + ares on the device) ----------
+# ---- on-device operations (require adb + anubee on the device) ----------
 
 @mcp.tool()
 def mapped_libraries(package: str, seconds: int = 8,
                      activity: Optional[str] = None) -> dict:
-    """Launch the app on the connected device (via `ares lib`) for
+    """Launch the app on the connected device (via `anubee lib`) for
     `seconds`, then return the native libraries (.so) it loaded — one record per
     (pid, library) with the merged address range, segment count and inode. Use
     this to discover what's loaded (and the exact/randomized name of a protector
-    payload) before dump_library. Needs adb + ares on the device; see the
-    ARES_* env in the README. Returns {libraries, error}: check `error` if
+    payload) before dump_library. Needs adb + anubee on the device; see the
+    ANUBEE_* env in the README. Returns {libraries, error}: check `error` if
     `library_count` is 0."""
     return device.list_libraries(package, seconds=seconds, activity=activity)
 
@@ -329,7 +329,7 @@ def dump_library(package: str, pattern: str, seconds: int = 12,
                  activity: Optional[str] = None,
                  out_dir: Optional[str] = None) -> dict:
     """Dump a (possibly decrypted/unpacked) native library from the app's LIVE
-    memory and pull the rebuilt .so to the host. Runs `ares dump <package>
+    memory and pull the rebuilt .so to the host. Runs `anubee dump <package>
     <pattern>` on the device for `seconds` — long enough to decrypt the library
     — then on exit dumps every loaded library whose basename matches `pattern`
     and rebuilds a loadable ELF. `pattern` is a glob over the basename, e.g.
@@ -342,14 +342,14 @@ def dump_library(package: str, pattern: str, seconds: int = 12,
 
 
 def main():
-    preload = os.environ.get("ARES_TRACE")
+    preload = os.environ.get("ANUBEE_TRACE")
     if preload:
         try:
             store.load(preload)
         except Exception as e:
             # Don't abort startup, but don't fail silently either — a typo'd
-            # ARES_TRACE is otherwise an invisible mystery.
-            print(f"ares-mcp: failed to preload ARES_TRACE={preload!r}: {e}",
+            # ANUBEE_TRACE is otherwise an invisible mystery.
+            print(f"anubee-mcp: failed to preload ANUBEE_TRACE={preload!r}: {e}",
                   file=sys.stderr)
     mcp.run()
 

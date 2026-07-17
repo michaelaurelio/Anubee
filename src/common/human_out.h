@@ -3,14 +3,14 @@
 // only engine with a thread-safe out/err/timestamp trio; every engine that
 // prints from more than one thread — funcs' worker+drain, syscalls' worker —
 // needs the same line-serialization). One process-wide lock is correct here:
-// no two engines are meant to interleave mid-line either (ares trace runs
+// no two engines are meant to interleave mid-line either (anubee trace runs
 // several engines as concurrent threads in one process — see trace.c).
 //
 // human_detail() generalizes funcs' "         [event]   | " continuation-line
 // prefix so other engines can reuse the same indented-detail-line convention
 // under their own tag word (docs/sym1-output-asymmetry.md §4.4 fix).
-#ifndef __ARES_COMMON_HUMAN_OUT_H
-#define __ARES_COMMON_HUMAN_OUT_H
+#ifndef __ANUBEE_COMMON_HUMAN_OUT_H
+#define __ANUBEE_COMMON_HUMAN_OUT_H
 
 void out_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void err_print(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -29,4 +29,4 @@ void human_detail(const char *tag, const char *fmt, ...) __attribute__((format(p
 // mid-bar. Inert until a line is set, so ordinary output stays byte-identical.
 void human_progress_set(const char *line);
 
-#endif /* __ARES_COMMON_HUMAN_OUT_H */
+#endif /* __ANUBEE_COMMON_HUMAN_OUT_H */

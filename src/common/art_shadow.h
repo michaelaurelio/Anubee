@@ -3,8 +3,8 @@
 // walking ART's live Thread -> ManagedStack -> ShadowFrame chain out of process. Fires at a
 // cfi_stack switch-interp terminal, parallel to nterp_chain at an nterp_helper terminal.
 // Firewall: /proc/<pid>/mem reads only. BuildID-gated (default-off on unknown ART).
-#ifndef ARES_COMMON_ART_SHADOW_H
-#define ARES_COMMON_ART_SHADOW_H
+#ifndef ANUBEE_COMMON_ART_SHADOW_H
+#define ANUBEE_COMMON_ART_SHADOW_H
 
 #include <stdint.h>
 #include "common/art_nterp.h"     // art_reader

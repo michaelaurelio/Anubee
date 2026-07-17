@@ -1,13 +1,13 @@
-"""DuckDB-backed store for ares syscall traces.
+"""DuckDB-backed store for anubee syscall traces.
 
 Loads a trace (JSON array or JSONL) into an in-memory DuckDB database and exposes
 aggregation/filter queries used by the MCP server. Everything returns small,
 bounded Python structures — never the raw firehose — so results stay token-cheap
 for an LLM client.
 
-Schema note: ares trace records are type-discriminated ("type":"syscall" for
-`ares syscalls`; "stack" for stack snapshots; future "call"/"return"/etc. for
-`ares funcs`). This store currently models the syscall records; the explicit
+Schema note: anubee trace records are type-discriminated ("type":"syscall" for
+`anubee syscalls`; "stack" for stack snapshots; future "call"/"return"/etc. for
+`anubee funcs`). This store currently models the syscall records; the explicit
 column list below reads only those fields, and any record without an `id`
 (stack snapshots, future funcs events) is dropped as a non-syscall row. Adding
 funcs analysis means loading those types into their own tables — see

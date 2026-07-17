@@ -124,10 +124,10 @@ int main(void)
 
 	cfi_section_free(&s);
 
-	/* ares_pac_strip: clears PAC bits above the 48-bit user VA; no-op when clear. */
-	assert(ares_pac_strip(0x0000007405ccb054ull) == 0x0000007405ccb054ull); /* unsigned -> unchanged */
-	assert(ares_pac_strip(0x00bd007405ccb054ull) == 0x0000007405ccb054ull); /* signed   -> stripped  */
-	assert(ares_pac_strip(0xffff007405ccb054ull) == 0x0000007405ccb054ull); /* all high -> stripped  */
+	/* anubee_pac_strip: clears PAC bits above the 48-bit user VA; no-op when clear. */
+	assert(anubee_pac_strip(0x0000007405ccb054ull) == 0x0000007405ccb054ull); /* unsigned -> unchanged */
+	assert(anubee_pac_strip(0x00bd007405ccb054ull) == 0x0000007405ccb054ull); /* signed   -> stripped  */
+	assert(anubee_pac_strip(0xffff007405ccb054ull) == 0x0000007405ccb054ull); /* all high -> stripped  */
 
 	/* 0x2d no longer aborts the program; CFA/cols intact; ra_signed tracked. */
 	{

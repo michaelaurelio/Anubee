@@ -1,8 +1,8 @@
-# ARES: Android RASP and Malware Analysis Tracer for Security Researchers
+# ANUBEE: All-Seeing Eye for Android Apps
 
 <p align="center" width="100">
 
-<img src="assets/banner.png" alt="ARES banner" width="800">
+<img src="assets/banner.png" alt="Anubee banner" width="800">
 
 </p>
 
@@ -15,27 +15,27 @@
   <a href="#"><img src="https://img.shields.io/badge/Focus-Android%20RASP%20%2F%20Malware%20Analysis-red"></a>
 </p>
 
-<p align="justify">ARES inspects what an app does at both the Java and native
-layers, using eBPF, by combining several tracing engines in one static
-binary (<code>ares</code>). It's built for reverse engineers and malware analysts who
-need to see past a target's own tamper checks, the kind enforced by RASP
-(Runtime Application Self-Protection) layers or built into malware itself.
-An optional host-side MCP server (<code>tools/ares-mcp</code>) lets an LLM client
-(Claude Code / Claude Desktop) query a captured trace and drive on-device
-library dumping.</p>
+---
+
+**Anubee watches everything an Android app actually does — Java and native, down to the syscalls — including the parts it built specifically to stay hidden. And it never tips the app off.**
+
+Some of that is ordinary obfuscation. Some is malware that goes quiet the moment it senses a debugger. Some is a RASP layer built specifically to stop tools like this one. Anubee doesn't care which.
+
+**Built for reverse engineers and malware analysts.** If you've ever hit an app that fights back the moment you start looking, you're in the right place.
+
+Most tracing tools force a choice: hook deep and risk getting caught, or stay hidden and see less. Anubee refuses that trade. It's one static binary packing multiple tracing engines, kept as separate subcommands — so going stealthy or going deep is a decision you make per run, not a limitation of the tool.
 
 ---
 
 ## Table of Contents
 
-- [ARES: Android RASP and Malware Analysis Tracer for Security Researchers](#ares-android-rasp-and-malware-analysis-tracer-for-security-researchers)
+- [ANUBEE: All-Seeing Eye for Android Apps](#anubee-all-seeing-eye-for-android-apps)
   - [Table of Contents](#table-of-contents)
-  - [Features](#features)
-  - [Motivation](#motivation)
-  - [Capabilities](#capabilities)
+  - [Why Anubee?](#why-anubee)
   - [Quick start](#quick-start)
+  - [Capabilities](#capabilities)
   - [Demo](#demo)
-  - [Designed to Pair With ARES](#designed-to-pair-with-ares)
+  - [Designed to Pair With Anubee](#designed-to-pair-with-anubee)
   - [Documentation](#documentation)
   - [Detectability](#detectability)
   - [Testing](#testing)
@@ -45,58 +45,15 @@ library dumping.</p>
 
 ---
 
-## Features
+## Why Anubee?
 
-- Dual-layer tracing: captures Java and native (C/C++) behavior from one
-  static binary, using eBPF.
-- Zero-instrumentation syscall tracing: the `syscalls` engine hooks the
-  kernel dispatcher only, writing nothing into the target process.
-- Live memory dump: pulls a decrypted or packed native library straight
-  out of a running process and rebuilds it into a loadable ELF.
-- Built-in detection modules: ready-made `mod` analyzers for common
-  malicious behavior, including fileless code execution, screen-capture
-  abuse, and unauthorized system-property reads.
-- Build-gated detectability guarantee: every quiet engine is verified at
-  compile time (`make check-firewall`) to load zero instrumentation into the
-  target.
-- Coverage-health reporting: every engine reports its own known gaps
-  explicitly at teardown instead of failing silently, so a partial trace is
-  never mistaken for a complete one.
-- LLM-assisted trace analysis: an optional MCP server lets Claude Code or
-  Claude Desktop query a captured trace directly.
-
----
-
-## Motivation
-
-<p align="justify">Security researchers and malware analysts studying an Android app that
-resists tampering, or one that is outright malicious, keep coming back to the
-same question: what is this code actually doing, at both the Java and native
-layers, without tipping the app off that it's being watched? Most Android
-tracing tooling forces analysts into a binary choice between depth (hooking
-functions, which a target's own integrity checks can detect) and stealth
-(kernel-only tracing, which sees less). ARES refuses that tradeoff: it packs
-both approaches into one static binary, kept as separate subcommands on
-purpose, so choosing depth over stealth is a decision you make per run, not a
-limitation of the tool.</p>
-
----
-
-## Capabilities
-
-| Subcommand | What it sees | Footprint |
-|---|---|---|
-| `ares syscalls` | Every syscall a target library makes, decoded args + backtraces | Injectionless (nothing written into the target, `TracerPid` stays 0) |
-| `ares funcs` | Individual function calls: typed args, return values, timing | Detectable (inserts a `BRK` into the target's code) |
-| `ares correlate` | Which syscalls a probed function triggers, tagged with that function's span | Detectable (entry uprobe `BRK`), loud by design |
-| `ares lib` | Every native library (`.so`) an app loads | Injectionless (kprobe only) |
-| `ares dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | Injectionless (kprobe only) |
-| `ares trace` | `syscalls` + `funcs`/`lib` together from one launch (`correlate`/`dump` are standalone-only) | Loud only if `funcs` is enabled |
-| `ares mod` | A packaged detection built for one behavior (mass-deletion, exfil, accessibility abuse, ...) | Depends on analyzer |
-
-> **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
-> RASP triage (e.g. clean-vs-rooted diffing). `funcs` is more granular, but
-> detectable.
+- **Sees both layers.** Java and native (C/C++) behavior, captured from one static binary, using eBPF.
+- **Zero-instrumentation option.** The `syscalls` engine hooks the kernel dispatcher only — nothing is ever written into the target process.
+- **Pulls code out of hiding.** Live memory dump grabs a decrypted or packed native library straight out of a running process and rebuilds it into a loadable ELF.
+- **Ships with ready-made detections.** Built-in `mod` analyzers catch common malicious behavior out of the box — fileless code execution, screen-capture abuse, unauthorized system-property reads.
+- **Proves its own stealth.** Every quiet engine is checked at compile time (`make check-firewall`) to guarantee it loads zero instrumentation into the target — not a promise, a build gate.
+- **Never fails silently.** Every engine reports its own known coverage gaps at teardown, so a partial trace is never mistaken for a complete one.
+- **Speaks LLM.** An optional MCP server lets Claude Code or Claude Desktop query a captured trace directly.
 
 ---
 
@@ -108,19 +65,39 @@ Native build and first-trace walkthrough:
 
 ```sh
 # Grab the prebuilt binary from Releases, or build it (container, no host setup):
-git clone --recurse-submodules <repo-url> ares
-cd ares
-./scripts/build.sh            # -> build/ares
+git clone --recurse-submodules <repo-url> anubee
+cd anubee
+./scripts/build.sh            # -> build/anubee
 
-./scripts/deploy.sh           # adb push build/ares + specs to /data/local/tmp
+./scripts/deploy.sh           # adb push build/anubee + specs to /data/local/tmp
 
 # First trace: every syscall com.example.app's librasp.so makes
-adb shell "su -c '/data/local/tmp/ares syscalls -P com.example.app -l librasp.so \
+adb shell "su -c '/data/local/tmp/anubee syscalls -P com.example.app -l librasp.so \
                    -o /data/local/tmp/trace.jsonl'"
 ```
 
 The [Releases](../../releases) page has the prebuilt static binary. Most
 users never need to build.
+
+---
+
+## Capabilities
+
+Here's exactly what each subcommand sees, and what it costs you to use it:
+
+| Subcommand | What it sees | Footprint |
+|---|---|---|
+| `anubee syscalls` | Every syscall a target library makes, decoded args + backtraces | Injectionless (nothing written into the target, `TracerPid` stays 0) |
+| `anubee funcs` | Individual function calls: typed args, return values, timing | Detectable (inserts a `BRK` into the target's code) |
+| `anubee correlate` | Which syscalls a probed function triggers, tagged with that function's span | Detectable (entry uprobe `BRK`), loud by design |
+| `anubee lib` | Every native library (`.so`) an app loads | Injectionless (kprobe only) |
+| `anubee dump` | A rebuilt loadable ELF of a live (possibly decrypted/packed) library | Injectionless (kprobe only) |
+| `anubee trace` | `syscalls` + `funcs`/`lib` together from one launch (`correlate`/`dump` are standalone-only) | Loud only if `funcs` is enabled |
+| `anubee mod` | A packaged detection built for one behavior (mass-deletion, exfil, accessibility abuse, ...) | Depends on analyzer |
+
+> **Pick the right engine for the job.** `syscalls` is stealthy and ideal for
+> RASP triage (e.g. clean-vs-rooted diffing). `funcs` is more granular, but
+> detectable.
 
 ---
 
@@ -130,23 +107,13 @@ Coming soon.
 
 ---
 
-## Designed to Pair With ARES
+## Designed to Pair With Anubee
 
-ARES captures the trace. It isn't built to be the whole workflow by itself:
-two companion projects complete it.
+Anubee gives you the trace. What you do with a few million lines of syscalls and bare hex addresses next is a different problem entirely — one Anubee was never built to solve alone. Two companion projects exist because of exactly that gap.
 
-[ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop) is the
-intended way to read a trace. A raw capture is millions of syscalls and bare
-addresses, unreadable by hand. Load it into ARES-Desktop instead, and follow
-the exact chain from Java method to native function to system call, down to
-the address you would open in a disassembler. It can also drive `ares`
-directly against a connected device.
+**[ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop)** — a trace is worthless if you can't read it back. Once you have one, you're staring down millions of syscalls and raw addresses, cross-referencing every meaningful hit in a disassembler by hand. ARES-Desktop closes that loop: load the trace, and follow the whole chain — from Java method call, to native function, to the exact address you'd open in a disassembler. It can drive `anubee` directly against a connected device too, so it stays the one place you actually work from.
 
-[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is the
-intended way to test ARES itself. It's an open-source reference RASP, built
-to run real anti-tamper checks and turn its screen red the instant any tool,
-including ARES's own loud engines, writes into its memory. Point a "quiet"
-capability at it, and the absence of a red screen is the proof.
+**[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector)** — "detectability firewall" is a nice claim, but a claim isn't proof. So how do you know the quiet engines are actually as quiet as we say? Don't take our word for it — check it yourself. ARES-Detector is a genuine reference RASP: real anti-tamper checks, a UI that turns red the instant any tool writes into its memory, including Anubee's own loud engines. Point a quiet capability at it and watch the screen stay clean. That absence is the proof.
 
 ---
 
@@ -155,7 +122,7 @@ capability at it, and the absence of a red screen is the proof.
 - [`docs/getting-started.md`](docs/getting-started.md): prerequisites, build, deploy
 - [`docs/engines.md`](docs/engines.md): which subcommand to pick, full flag reference
 - [`docs/probe-specs.md`](docs/probe-specs.md): the probe-spec grammar shared by every engine
-- [`docs/analyzers.md`](docs/analyzers.md): `ares mod`'s built-in analyzers
+- [`docs/analyzers.md`](docs/analyzers.md): `anubee mod`'s built-in analyzers
 - [`docs/reading-traces.md`](docs/reading-traces.md): output formats, the coverage record
 - [`docs/mcp.md`](docs/mcp.md): querying a trace (or driving a live device) from Claude
 - [`DOCUMENTATION.md`](DOCUMENTATION.md): architecture and internals
@@ -164,7 +131,7 @@ capability at it, and the absence of a red screen is the proof.
 
 ## Detectability
 
-ARES keeps its stealthy and detectable engines as separate subcommands
+Anubee keeps its stealthy and detectable engines as separate subcommands
 deliberately:
 
 - `syscalls` is injectionless: it hooks the kernel syscall dispatcher,
@@ -198,8 +165,8 @@ make device-test     # on-device smoke: pushes the binary, asserts each capabili
   checks the custom probe-spec grammar parser. CI (`.github/workflows/ci.yml`)
   runs this plus the containerized cross-build on every PR.
 - `make device-test` runs `scripts/device-test.sh [lib|syscalls|all]`. Override
-  the target app with `ARES_TEST_PKG=<package>` and the per-capability window
-  with `ARES_TEST_TIMEOUT=<secs>` (default 10). It needs a rooted device with
+  the target app with `ANUBEE_TEST_PKG=<package>` and the per-capability window
+  with `ANUBEE_TEST_TIMEOUT=<secs>` (default 10). It needs a rooted device with
   kernel BTF.
 - `scripts/massdeleteapp/build.sh install` (manual, not wired into `make`) builds a
   minimal real app for verifying `mod massdelete-detect` against genuine

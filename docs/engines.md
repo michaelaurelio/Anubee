@@ -1,6 +1,6 @@
 # Engines: which to pick, and how to use each
 
-ARES ships seven subcommands. Six are engines (`syscalls`, `funcs`, `correlate`,
+ANUBEE ships seven subcommands. Six are engines (`syscalls`, `funcs`, `correlate`,
 `lib`, `dump`, `trace`); the seventh (`mod`) runs packaged analyzers, see
 [`analyzers.md`](analyzers.md). All spec-driven engines (`funcs`, `correlate`,
 `syscalls`, `dump`, `mod`) share one probe-spec grammar, see
@@ -53,13 +53,13 @@ Every engine below takes exactly one of:
 
 ```sh
 # Syscalls that pass through a specific library:
-ares syscalls -P com.example.app -l librasp.so -o trace.jsonl
+anubee syscalls -P com.example.app -l librasp.so -o trace.jsonl
 
 # Capture ALL of an app's syscalls (no library filter):
-ares syscalls -P com.example.app -a -o trace.jsonl
+anubee syscalls -P com.example.app -a -o trace.jsonl
 
 # Stack snapshots + CFI-unwind into Java callers (capture-all reaches JNI stacks):
-ares syscalls -P com.example.app -a -s openat --snapshot -o trace.jsonl
+anubee syscalls -P com.example.app -a -s openat --snapshot -o trace.jsonl
 ```
 
 | Flag | Meaning |
@@ -79,16 +79,16 @@ records) alongside `-o <file>`; see [`reading-traces.md`](reading-traces.md).
 
 ```sh
 # Trace functions from a spec file against a spawned app:
-ares funcs -P com.example.app -F specs/common-file.spec
+anubee funcs -P com.example.app -F specs/common-file.spec
 
 # Attach to a running PID, bulk-match by regex:
-ares funcs -p 12345 -e 'libfoo.so!/^encrypt/'
+anubee funcs -p 12345 -e 'libfoo.so!/^encrypt/'
 
 # Inline spec with typed args (S=string, V=value, F=fd, A=sockaddr):
-ares funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
+anubee funcs -P com.example.app -e 'libc.so!strcmp(S,S)>V'
 
 # Structured JSONL: one record per CALL/RETURN into -o:
-ares funcs -p 12345 -e 'libc.so!open' -o trace.jsonl
+anubee funcs -p 12345 -e 'libc.so!open' -o trace.jsonl
 ```
 
 | Flag | Meaning |
@@ -111,13 +111,13 @@ with that function's `span`. Nested probed functions get a `parent_span` chain.
 
 ```sh
 # Which syscalls does libc.so!open make, in a launched app:
-ares correlate -P com.example.app -e 'libc.so!open'
+anubee correlate -P com.example.app -e 'libc.so!open'
 
 # Attach to a running PID, multiple specs (quote specs containing parens):
-ares correlate -p 12345 -e 'libssl.so!SSL_write(S)' -e 'libc.so!open'
+anubee correlate -p 12345 -e 'libssl.so!SSL_write(S)' -e 'libc.so!open'
 
 # Also capture retval + exact elapsed time per call (adds a uretprobe, louder):
-ares correlate -P com.example.app -e 'libc.so!open' --returns -o corr.jsonl
+anubee correlate -P com.example.app -e 'libc.so!open' --returns -o corr.jsonl
 ```
 
 | Flag | Meaning |
@@ -134,9 +134,9 @@ records join on `span`; `--returns` adds `{"type":"return",...}`.
 Launches an app fresh and lists every native library it loads.
 
 ```sh
-ares lib com.example.app                         # Ctrl-C to stop
-ares lib com.example.app com.example.app/.MainActivity   # explicit launcher activity
-ares lib -o libs.jsonl com.example.app            # also write structured JSONL
+anubee lib com.example.app                         # Ctrl-C to stop
+anubee lib com.example.app com.example.app/.MainActivity   # explicit launcher activity
+anubee lib -o libs.jsonl com.example.app            # also write structured JSONL
 ```
 
 | Flag | Meaning |
@@ -156,24 +156,24 @@ out of `/proc/<pid>/mem` into a loadable ELF.
 
 ```sh
 # Dump every loaded library whose basename matches a glob, on exit:
-ares dump -d /data/local/tmp com.example.app 'libpacked.so'
+anubee dump -d /data/local/tmp com.example.app 'libpacked.so'
 
 # Catch a randomized-name library the moment it maps:
-ares dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
+anubee dump --on-map -d /data/local/tmp com.example.app 'e_[0-9]*'
 
 # Snapshot an already-running process's currently-mapped modules right away -
 # a pure /proc read, no BPF skeleton, no attach, nothing injected into the
 # target at all:
-ares dump -p 12345 -d /data/local/tmp --now 'libpacked.so'
+anubee dump -p 12345 -d /data/local/tmp --now 'libpacked.so'
 
 # Select by exact load address instead of by name - immune to a library that
 # randomizes its on-disk name per run, which defeats -l by construction:
-ares dump -p 12345 -d /data/local/tmp --now --base 0x7281a0000
+anubee dump -p 12345 -d /data/local/tmp --now --base 0x7281a0000
 
 # Compare a module's live executable memory against its on-disk baseline
 # instead of dumping (writes modcmp records, no .so files); --base also
 # reaches an APK-embedded library, which -l cannot select at all:
-ares dump -p 12345 --now --check --base 0x7281a0000 -o check.jsonl
+anubee dump -p 12345 --now --check --base 0x7281a0000 -o check.jsonl
 ```
 
 | Flag | Meaning |
@@ -232,7 +232,7 @@ No section markers — every flag routes itself to the engine(s) that
 understand it, and its presence enables that engine:
 
 ```sh
-ares trace -P com.example.app -o /data/local/tmp/run \
+anubee trace -P com.example.app -o /data/local/tmp/run \
            -a \
            -e 'libc.so!open' -e 'libc.so!/^encrypt/'
 ```

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-// Shared event schema for the `ares correlate` engine. Included by both the BPF
+// Shared event schema for the `anubee correlate` engine. Included by both the BPF
 // object (after vmlinux.h) and the userspace loader (after libbpf headers), so it
 // must not pull in its own <linux/types.h> (would clash with vmlinux.h).
-#ifndef __ARES_CORRELATE_H
-#define __ARES_CORRELATE_H
+#ifndef __ANUBEE_CORRELATE_H
+#define __ANUBEE_CORRELATE_H
 
 #define CORR_NUM_ARGS 8      // saved function-entry args
 #define CORR_SYS_ARGS 6      // aarch64 syscall args x0..x5
@@ -78,4 +78,4 @@ void corr_emit_return(struct jbuf *j, const struct corr_return_event *e);
 int corr_decode_arg(const struct corr_syscall_event *e, int i,
                     unsigned fdmask, int sockidx, char *dec, unsigned long decsz);
 
-#endif /* __ARES_CORRELATE_H */
+#endif /* __ANUBEE_CORRELATE_H */

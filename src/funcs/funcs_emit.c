@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure structured-record builders for ares funcs (no libbpf/skeleton deps, so
+// Pure structured-record builders for anubee funcs (no libbpf/skeleton deps, so
 // the host test can link them). Built on the shared serializer + schema.
 #include <linux/types.h>
 #include <stdbool.h>            // struct event uses bool (exit_event); not transitively guaranteed
@@ -10,7 +10,7 @@
 #include "funcs/funcs.h"
 
 // Structured record builders (opt-in --structured mode). One self-describing
-// JSON object per event into j, on the shared schema/serializer so ares-mcp can
+// JSON object per event into j, on the shared schema/serializer so anubee-mcp can
 // analyze funcs traces with the same field-level tools it uses for syscalls.
 //
 // target may be NULL (unresolved entry addr) — all resolved fields are omitted.

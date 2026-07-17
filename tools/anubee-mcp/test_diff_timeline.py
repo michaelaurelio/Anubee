@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Standalone self-asserting test for diff_calls and span_timeline.
-# Run: python3 tools/ares-mcp/test_diff_timeline.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_diff_timeline.py  (no pytest dependency)
 import json
 import os
 import sys

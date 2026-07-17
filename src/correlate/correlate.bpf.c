@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for `ares correlate`: span-gated function->syscall correlation.
+// BPF object for `anubee correlate`: span-gated function->syscall correlation.
 //
 // Entry uprobes (attached by the loader at spec'd function offsets) push a per-tid
 // span and emit a FUNC event. A kprobe on do_el0_svc tags each syscall issued

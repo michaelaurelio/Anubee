@@ -6,5 +6,5 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-ares-dumps/
+anubee-dumps/
 tests/

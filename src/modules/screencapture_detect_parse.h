@@ -5,8 +5,8 @@
 // beyond <string.h> -- host-testable. The exact `types=0x..` field was
 // confirmed against real device output (see REAL_FIXTURE in
 // tests/test_screencapture_detect_parse.c).
-#ifndef __ARES_SCREENCAPTURE_DETECT_PARSE_H
-#define __ARES_SCREENCAPTURE_DETECT_PARSE_H
+#ifndef __ANUBEE_SCREENCAPTURE_DETECT_PARSE_H
+#define __ANUBEE_SCREENCAPTURE_DETECT_PARSE_H
 
 // FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION, from the public
 // android.content.pm.ServiceInfo API surface (AOSP frameworks/base). Not a
@@ -32,4 +32,4 @@
 // caller doesn't need it.
 int screencapture_detect_parse_dumpsys(const char *buf, const char *pkg, int *out_pid);
 
-#endif /* __ARES_SCREENCAPTURE_DETECT_PARSE_H */
+#endif /* __ANUBEE_SCREENCAPTURE_DETECT_PARSE_H */

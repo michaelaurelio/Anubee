@@ -4,8 +4,8 @@
  * prot/flags, prctl option, signal numbers, socket domain/type, ...) plus
  * sockaddr parsing and fd-path rendering.
  */
-#ifndef __ARES_DECODE_H
-#define __ARES_DECODE_H
+#ifndef __ANUBEE_DECODE_H
+#define __ANUBEE_DECODE_H
 
 #include <stddef.h>
 
@@ -23,4 +23,4 @@ void render_fd(int pid, unsigned long long val, char *out, size_t outsz);
 /* Invalidate the fd-path cache entry for (pid, fd); call on close(fd)==0. */
 void fdc_drop(int pid, int fd);
 
-#endif /* __ARES_DECODE_H */
+#endif /* __ANUBEE_DECODE_H */

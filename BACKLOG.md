@@ -1,4 +1,4 @@
-# ARES backlog
+# ANUBEE backlog
 
 Forward-looking work and known tech debt. The **current** state of each engine
 lives in [DOCUMENTATION.md](DOCUMENTATION.md); this file holds what's left to do
@@ -82,7 +82,7 @@ device-verified (see Resolved/Done). What remains is breadth, not a new wall:
   `struct art_offsets` (`art_buildid_offsets`); the `/apex` `KNOWN_ART_APEX` gate is
   retired. Unknown build → clean dual no-op + a one-time notice. Device-verified on
   apex `370549100` (naming preserved; BuildID resolves). **Remaining breadth:**
-  (B) candidate-row iteration — **DONE #3-B (2026-07-02):** `ARES_ART_OFFSETS=<file>` loads a
+  (B) candidate-row iteration — **DONE #3-B (2026-07-02):** `ANUBEE_ART_OFFSETS=<file>` loads a
   `key=value` row (BuildID + 13 offsets) that overrides `k_table` for a matching BuildID
   (fail-closed otherwise), so a new build's offsets iterate against the oracle without a
   recompile, then bake into `k_table`; (C) formal
@@ -185,7 +185,7 @@ item above with a strategic critique.
   gates *all* Java naming, keyed on the exact libart BuildID. ART is an apex (mainline)
   module updated ~monthly; every ART update / vendor rebuild / new release → BuildID miss
   → managed naming **silently returns nothing** (bare `nterp_helper` terminal, Java frames
-  vanish). The `ARES_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
+  vanish). The `ANUBEE_ART_OFFSETS` override + Frida oracle (#3-B/C) softens onboarding but
   it is still one row of manual labor per device per ART build. Tracked under the CFI
   Major item above. **Data point (2026-07-08):** the POCO C85 (A15) took an OTA that
   rebuilt libart (`1f156fc6...` to `cecb684d...`); a new `k_table` row was needed for
@@ -194,7 +194,7 @@ item above with a strategic critique.
   offsets, not a re-derivation; only a genuine ART version bump shifts the layout.
   Softens the treadmill (key churn is not offset churn) but does not remove it.
 - **ShadowFrame parity in the compact chain — fixed 2026-07-08.** The compact `managed[]`
-  fragment shared by both engines (`ares_managed_chain`, `src/common/symbolize.c`) only
+  fragment shared by both engines (`anubee_managed_chain`, `src/common/symbolize.c`) only
   ever tried the nterp guess-path, even at an `ExecuteSwitchImpl` (switch-interpreter)
   terminal — the authoritative ShadowFrame walk (`art_shadow.c`) was reachable only from
   the full `cfi_stack` JSON emitter, not the compact fragment used for the jcache. Both
@@ -274,7 +274,7 @@ driver duplication (`funcs`'s `apply_custom_specs_for_file` vs `correlate`'s
 targets). That's a BPF-attach-path change, not an argument/spec-system change; noted here
 as a natural follow-on once SPEC1 lands.
 
-Tracked with concrete tasks in `ares-project/TODO.md` EPIC H. `tests/test_probe_spec.c`
+Tracked with concrete tasks in `anubee-project/TODO.md` EPIC H. `tests/test_probe_spec.c`
 is the grammar regression guard and must gain KIND/glob/regex cases while every existing
 case (including the 6 malformed-input rejections) keeps passing unchanged.
 
@@ -313,21 +313,21 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   *returns* — control falls through into attach/run. `mod` (flags `0`, `mod.c:124`)
   aborts correctly and is the reference. Fix: treat help/usage/parse-error as abort
   (handle `-h`/`--help` before parse, or check for the help/usage request and return
-  nonzero). Repro: `ares funcs -P dev.ares.detector --help` still attaches.
+  nonzero). Repro: `anubee funcs -P dev.anubee.detector --help` still attaches.
   **Fixed 2026-07-13** (commit `0eb21b5`): bad args already aborted (`argp_parse`'s
   `!= 0` check catches them) — only help/usage leaked, since argp prints and returns
-  `0` under `ARGP_NO_EXIT`. New shared `ares_wants_help()` (`common/engine_args.h`)
+  `0` under `ARGP_NO_EXIT`. New shared `anubee_wants_help()` (`common/engine_args.h`)
   detects `-h`/`--help`/`-?`/`--usage` before each standalone `cmd_*` calls `*_setup`,
   and calls `argp_help()` + returns 0 itself. Deliberately *not* switched to `mod`-style
   `flags 0` — the five `*_setup` functions are also called directly by the `trace`
   coordinator (`trace.c:241-263`), which relies on a nonzero return (not `exit()`) to
   tear down already-armed sibling engines on a parse failure.
 - **MT2 — `mod` analyzer listing gap.** `list_analyzers()` only fires on an *unknown*
-  name (`mod.c:90`); bare `ares mod` and `ares mod --help` don't list analyzers, though
+  name (`mod.c:90`); bare `anubee mod` and `anubee mod --help` don't list analyzers, though
   `main.c` usage claims `--help` does. Wire `list_analyzers()` into `--help` / no-arg.
   **Fixed 2026-07-13** (commit `c5b8a16`): `cmd_mod` now calls `list_analyzers()` on
-  bare `ares mod` (`argc < 2`, returns 0) and augments `--help` with it (via the MT1
-  `ares_wants_help()`) before argp prints its own usage — makes `main.c:44`'s claim true.
+  bare `anubee mod` (`argc < 2`, returns 0) and augments `--help` with it (via the MT1
+  `anubee_wants_help()`) before argp prints its own usage — makes `main.c:44`'s claim true.
 - **MT3 — `lib` misses in-APK natives (e.g. `libsentinel.so`).** With
   `extractNativeLibs=false` the lib maps as a `base.apk` region, not a standalone `.so`;
   lib enumerates maps only. Add APK(zip) enumeration of `lib/*/*.so` so packed natives
@@ -336,7 +336,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   (`common/sym_apk.{h,c}`) enumerates every packed `lib/*/*.so` in an APK, reusing the
   existing ZIP central-directory parser (`apk_parse`/`apk_get`, previously only exposed
   the single-offset `apk_so_name` reverse lookup). `lib.c` emits the full packed list
-  once per APK (new `lib_packed` record/`ares_libtrace_emit_packed`) and range-matches
+  once per APK (new `lib_packed` record/`anubee_libtrace_emit_packed`) and range-matches
   `[data_start, data_start+size)` — not exact-offset — to label the actually-loaded
   segment's `soname` on the existing `lib` record. Offset derived as
   `e->pgoff * sysconf(_SC_PAGESIZE)` (correct on 4K *and* 16K-page devices; `vm_pgoff`
@@ -346,7 +346,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 - **CR5 follow-on: `dump` coverage field.** `dump`/`lib` are exempt from CR5 v1
   (no drop map, single-shot read). `dump`'s live-memory read
   (`src/dump/rebuild.c`) can still hit partial `/proc/<pid>/mem` reads or an ELF
-  rebuild gap (missing section, truncated segment); a minimal `ares_coverage`
+  rebuild gap (missing section, truncated segment); a minimal `anubee_coverage`
   record for `dump` (no snapshot/CFI/managed fields, just a "the rebuilt ELF is
   incomplete" signal) would close that exemption without inventing new schema.
 
@@ -354,7 +354,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   JIT-compiled Java frames (`[anon]` / `[anon_shmem:dalvik-jit-code-cache]`) between
   a framework lib and `art_jni_trampoline` have no file-backed FDE; `cfi_get` skips
   pseudo paths → NULL → unwind stops. ART publishes per-method unwind info as
-  in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ARES already
+  in-memory mini-ELFs (with `.eh_frame`) via the GDB JIT interface — ANUBEE already
   reads these for *symbols* (`jit_resolve` / `art_refresh`); extend that path to
   `cfi_load_elf` the mini-ELF and feed `cfi_get`. Demoted: JIT `[anon]` frames appear
   in only 9/201 stacks on the measured RASP target post-fix. Technically reachable
@@ -410,7 +410,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 - `mod accessibility-detect` known v1 limitations (shipped 2026-07-12): no transaction-code
   decode — the analyzer proves "high Binder call volume to `system_server` while
   Accessibility-granted," not *which* privileged action fired (parked, same version-
-  treadmill risk shape as ART's `k_table`/`ARES_ART_OFFSETS`). Only gates on
+  treadmill risk shape as ART's `k_table`/`ANUBEE_ART_OFFSETS`). Only gates on
   `system_server` as the destination — misses accessibility routing through any
   OEM-specific separate framework process. Grant check
   (`enabled_accessibility_services`) is a package-substring match against a
@@ -442,7 +442,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   full-screen lock overlays + data-destruction threats rather than actual file
   encryption. This item previously assumed the whole category (Window Manager /
   `SYSTEM_ALERT_WINDOW` / accessibility-service abuse) was "not file syscalls" and
-  therefore out of `ares`'s reach — that premise no longer holds for the
+  therefore out of `anubee`'s reach — that premise no longer holds for the
   accessibility-service-abuse slice: `mod accessibility-detect` (shipped 2026-07-12) proves
   Binder-mediated behavior is kernel-observable via the `binder_transaction`
   tracepoint. What remains genuinely open is the Window-Manager/overlay-specific
@@ -465,7 +465,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   - **Liveness tightening (optional)** — the chain is read live at drain (best-effort;
     the thread may have unwound by then). A future variant could capture the
     `ManagedStack` top-of-chain pointer in BPF at the syscall instant for exactness.
-  - **`ARES_CFI_DEBUG` `[shadow]` diagnostics** are intentional (match CFI diag
+  - **`ANUBEE_CFI_DEBUG` `[shadow]` diagnostics** are intentional (match CFI diag
     convention); keep unless a dedicated verbosity split is wanted.
 
 
@@ -478,7 +478,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   (R3/R4/X2 — host tests pass, device tier not yet run).
 
 - **`funcs` uprobe fails to load on the current test device (pre-existing, not CR5).**
-  On the test device (A15 kernel) `ares funcs -e libc.so!open -J --snapshot -P <pkg>`
+  On the test device (A15 kernel) `anubee funcs -e libc.so!open -J --snapshot -P <pkg>`
   fails the BPF load: `uprobe_open` is rejected with `reg type unsupported for arg#0
   function uprobe_open#N` (-EACCES). Isolated to a pre-existing issue by building the
   pre-CR5 base and reproducing the identical failure (only the subprog index shifts,
@@ -500,13 +500,13 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   (deferred).** Source: 2026-07-07 graph-informed audit.
   - **Double symbolization — fixed 2026-07-08.** `emit_cfi_backtrace`/its `funcs`
     equivalent symbolized every frame twice per snapshot **event** (not just per distinct
-    stack, since `ares_managed_chain` ran unconditionally before the jcache put — the
-    audit's "once per distinct CFI stack" framing undersold it): `ares_emit_cfi_stack_json`
-    resolved each frame and `ares_managed_chain` resolved the same frames again, each
+    stack, since `anubee_managed_chain` ran unconditionally before the jcache put — the
+    audit's "once per distinct CFI stack" framing undersold it): `anubee_emit_cfi_stack_json`
+    resolved each frame and `anubee_managed_chain` resolved the same frames again, each
     under `g_lock` with its own `snprintf`. Both public functions
     (`src/common/managed_frame.h`) now take an optional pre-resolved `syms` array; both
     call sites (`src/funcs/funcs.c`, `src/syscalls/syscalls.c`) resolve once and share it.
-  - **8 KB alloc churn — deferred, not fixed.** `ares_managed_chain_build`
+  - **8 KB alloc churn — deferred, not fixed.** `anubee_managed_chain_build`
     (`managed_frame.c`) still heap-allocates a `jbuf` that floors its first grow at
     8192 bytes for an output fragment capped at `JC_FRAG=208`. The obvious fixes both have
     a real cost: building directly into the caller's `out` buffer breaks the documented
@@ -562,7 +562,7 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-07-15
 
-- **`ares-mcp` full mod-event ingestion (shipped 2026-07-15).** Closes the
+- **`anubee-mcp` full mod-event ingestion (shipped 2026-07-15).** Closes the
   ingestion-gap follow-up logged when the cross-analyzer incident correlator
   shipped. `load_structured()` now ingests all 10 per-event mod-analyzer
   record types (the original 5 plus `spawn`/`proc_exit`/`execve`/`prop`/
@@ -576,13 +576,13 @@ is in DOCUMENTATION.md and the referenced specs.
   classification (that logic lives only in the summary-aggregation path).
 
 - **`mod` cross-analyzer incident correlator (shipped 2026-07-15) — known
-  limitations.** `ares-mcp`'s `TraceStore.incidents()` / `incidents` MCP tool
+  limitations.** `anubee-mcp`'s `TraceStore.incidents()` / `incidents` MCP tool
   fuses ordered two-step analyzer-type chains (`accessibility_detect`/
   `screencapture_detect` → `exfil_detect`, `exfil_detect` →
   `massdelete_detect`, `fileless_detect` → `exfil_detect`) on the same pid
   within a per-rule time window into evidence-carrying incident records.
   Checked first: neither ARES-Desktop (never parses `mod` output at all) nor
-  `ares-mcp` (only ingested five stale `*_summary` teardown types) already
+  `anubee-mcp` (only ingested five stale `*_summary` teardown types) already
   did this.
   - **Same-pid grouping only** — a chain split across a dropper process and
     a spawned worker process under the same app won't correlate.
@@ -602,8 +602,8 @@ is in DOCUMENTATION.md and the referenced specs.
     nondeterministic, and forcing a long drain needs a test-only hook in the hot
     path of every production trace. Covered by host unit tests (all pct/ETA/format
     logic is pure + inline in `drain_progress.h`) plus a manual eyeball step in the
-    `testing-ares-on-device` skill. Revisit if the rendering ever regresses unseen.
-  - **Flush cadence stays coarse.** `ARES_FLUSH_MASK` is `0x3fff`, so the explicit
+    `testing-anubee-on-device` skill. Revisit if the rendering ever regresses unseen.
+  - **Flush cadence stays coarse.** `ANUBEE_FLUSH_MASK` is `0x3fff`, so the explicit
     flush fires every 16,384th record, and stdio's ~4KB buffer is what actually
     bounds loss - so an aborted run can end either the `.jsonl` or the `.stacks`
     sidecar on an incomplete line. Consciously accepted: it is a rounding error
@@ -652,10 +652,10 @@ is in DOCUMENTATION.md and the referenced specs.
     abort-on-malformed-line behavior; `DOCUMENTATION.md` §2 updated to match
     in this same pass.
 - **`mod` analyzer-listing rework** (`0cb60b4`, follow-on to MT2): bare
-  `ares mod` and `ares mod --list`/`-l` print every registered analyzer with a
+  `anubee mod` and `anubee mod --list`/`-l` print every registered analyzer with a
   `[LOUD]`/`[stealth]` tag from the same `capabilities.c` lookup the
   dispatcher itself consults, replacing the earlier flat name list.
-- **`funcs --snapshot` BPF load fix** (`067f45f`): `ares_hash_stack` unrolled
+- **`funcs --snapshot` BPF load fix** (`067f45f`): `anubee_hash_stack` unrolled
   a fixed 32-iteration FNV loop against `funcs`'s 16-entry `call_stack`,
   reading 16 slots past the array into the ringbuf reservation — the verifier
   rejected the OOB read (`-EACCES`), so `funcs --snapshot` never loaded on any
@@ -712,9 +712,9 @@ is in DOCUMENTATION.md and the referenced specs.
   exfil-volume corroboration (proves a session was active, not that data
   left the device).
 
-- **Repeatable `-m` (mod) / `-l` (dump).** `dc530a7`: `ares mod -m NAME` is now
+- **Repeatable `-m` (mod) / `-l` (dump).** `dc530a7`: `anubee mod -m NAME` is now
   repeatable, running several analyzers concurrently in one process (the
-  single-analyzer positional form still works). `0050c21`: `ares dump -l
+  single-analyzer positional form still works). `0050c21`: `anubee dump -l
   PATTERN` is now repeatable and OR'd (cap 64), on top of the legacy
   positional `PATTERN`; a `-F` file's `lib:` lines are all folded in when
   none is given via `-l`/positionally, not just the first.
@@ -728,7 +728,7 @@ is in DOCUMENTATION.md and the referenced specs.
   uniformly across `syscalls`/`funcs`/`lib`/`correlate`/`dump`/`mod`. Phased,
   11 commits (Phase 0 through 5c), each independently gated and buildable —
   see `docs/sym1-output-asymmetry.md` for the original gap analysis this
-  closes, and `ares-project/TODO.md` for phase-by-phase notes.
+  closes, and `anubee-project/TODO.md` for phase-by-phase notes.
   - **Dual-channel-always** (Phase 1): dropped the old `-o` ⇒ `-q` coupling —
     `-o FILE` now writes JSON *and* prints stdout simultaneously; `-q` is the
     sole, independent stdout silencer. `trace`'s 5 concurrent child engines
@@ -819,7 +819,7 @@ is in DOCUMENTATION.md and the referenced specs.
   regex-matching code path before removal), and the now-fully-dead `mod_matches`/
   `resolve_targets`/`resolve_targets_for_file` were purged from
   `common/probe_resolve.c`. EPIC H is complete. Tracked in
-  `ares-project/TODO.md` EPIC H (H1-H12 done — complete).
+  `anubee-project/TODO.md` EPIC H (H1-H12 done — complete).
 
 ### 2026-07-10
 
@@ -849,10 +849,10 @@ is in DOCUMENTATION.md and the referenced specs.
   syscall arg) so length is always the fixed max. `make test` full suite green
   (all pre-existing checks unaffected — pure addition, existing `S/V/F` specs
   byte-identical). **Pending:** the `sock[]` field grows `struct event`, so the
-  checked-in `src/funcs/ares-tracer.skel.h` is stale and needs `bpftool`
+  checked-in `src/funcs/anubee-tracer.skel.h` is stale and needs `bpftool`
   regeneration (unavailable here — same blocker as the file-access/
   massdelete-detect drop-telemetry entry below); on-device confirmation that
-  `ares funcs -c 'libc.so!connect(F,A,V)'` renders `ip:port` folds into the
+  `anubee funcs -c 'libc.so!connect(F,A,V)'` renders `ip:port` folds into the
   standing pending-on-device-verification item.
 
 - **MCP richness follow-on: span query tools.** Added `spans` (flat `func_spans`
@@ -897,7 +897,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `massdelete_detect.bpf.c`'s `record_touch()` re-arm branch — the deliberate
   `bpf_ringbuf_discard` path-gate-reject paths are untouched, not drops), and a
   `*_drops()` accessor (needed adding `common/runtime.h`, previously unincluded
-  in these two files) wired into each `ares_analyzer_t.drops` field. Their
+  in these two files) wired into each `anubee_analyzer_t.drops` field. Their
   already-emitted `coverage` record's `ring_drops` field goes from always-`0` to
   accurate. `make build/{file_access,massdelete_detect}.bpf.o` compile clean;
   `make test` green (33+ existing checks incl. both classify suites, unaffected).
@@ -906,7 +906,7 @@ is in DOCUMENTATION.md and the referenced specs.
   this dev env; on-device confirmation that `ring_drops` reports nonzero under
   ring pressure folds into the standing pending-on-device-verification item.
 
-- **CR5 follow-on: MCP `coverage` ingest + tool.** `tools/ares-mcp/trace_store.py`'s
+- **CR5 follow-on: MCP `coverage` ingest + tool.** `tools/anubee-mcp/trace_store.py`'s
   `load_structured` gained a `coverage` bucket (a flat, nullable `coverage` table,
   one row per engine record, flattening the sparse omitted-when-zero
   `snaps`/`cfi`/`drops`/`returns` JSON) and a `coverage()` query method; `server.py`
@@ -928,14 +928,14 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **Dev-env note:** `python3 -m venv` failed here (`ensurepip` missing, no root to
   `apt install python3-venv`); worked around via `--without-pip` + bootstrapping pip
-  from `get-pip.py`, then normal `pip install -e tools/ares-mcp`. `duckdb`+`mcp` now
-  importable via `tools/ares-mcp/.venv` — the long-standing "no python3 duckdb
+  from `get-pip.py`, then normal `pip install -e tools/anubee-mcp`. `duckdb`+`mcp` now
+  importable via `tools/anubee-mcp/.venv` — the long-standing "no python3 duckdb
   module" environment gap (see tiered-audit-fix-plan memory) is resolved for this
   venv, not the bare system `python3`.
 
 ### 2026-07-09
 
-- **Engine file-output symmetry with `ares syscalls` (stdout/file asymmetry closed).**
+- **Engine file-output symmetry with `anubee syscalls` (stdout/file asymmetry closed).**
   `syscalls`'s `-o` file was the reference (superset of stdout); `funcs` and `mod`
   had real gaps. `funcs`: CALL/RETURN backtrace frames were addr-only (the earlier
   "funcs JSON backtrace" entry below), no `ppid`/module-relative `offset`, and
@@ -945,7 +945,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `funcs_emit_return` (mirrors the `execve.c` pattern); `test_funcs_emit` extended
   (29 checks). `mod`: each analyzer's teardown summary table (exec tallies, RASP
   flags, file-access categories, burst stats, fork/exit counts) printed to stdout
-  only. New optional `emit_summary(sink)` hook on `ares_analyzer_t`
+  only. New optional `emit_summary(sink)` hook on `anubee_analyzer_t`
   (`src/common/analyzer.h`), called from `mod.c` before the coverage footer; each
   analyzer emits one `{"type":"<name>_summary",...}` record from the same tally
   `print_summary` already reads. Scope: `dump` deliberately excluded (writes binary
@@ -962,7 +962,7 @@ is in DOCUMENTATION.md and the referenced specs.
   reliably `libc!__openat`. Fixed by seeding `lib_ranges` from a one-time
   `/proc/<pid>/maps` scan (`seed_lib_ranges_from_maps`, `src/syscalls/syscalls.c`)
   the moment the target pid is known — attach (`-p`) and just-launched (`-P`,
-  now passes `out_pid` to `ares_launch_app`) — before the event loop starts.
+  now passes `out_pid` to `anubee_launch_app`) — before the event loop starts.
   Live mmap arming is unchanged for libraries loaded later; `push_lib_range`
   already dedups by `[start,end)` so overlap with the seed is a no-op. The
   glob/substring match predicate (`lib_name_matches`) is now shared with the
@@ -990,12 +990,12 @@ is in DOCUMENTATION.md and the referenced specs.
   `-p PID[,...]` attach mode. Added a top-level `-p` to `trace_args` (mutually
   exclusive with `-P`), which `trace` injects as `-p <csv>` into each requested
   engine's own built argv and uses to skip the launch entirely — no
-  `ares_run_ctx`/`launch.h` change needed, since each engine already fully
+  `anubee_run_ctx`/`launch.h` change needed, since each engine already fully
   self-arms `target_pids` from its own `-p` parsing when `rc` is zeroed.
 - **GA2 — `dump` and `correlate` wired into `trace` (Tier 7, landed).** Completes
   the GA2 major item (`lib` wiring landed earlier, 2026-06-26).
   - **`dump`**: purely additive — `dump_run` already fit the coordinator's
-    `run_thread` model (`ares_rb_poll_until` + on-exit rescan), so this was just
+    `run_thread` model (`anubee_rb_poll_until` + on-exit rescan), so this was just
     a `--dump` section in `trace_args` and slotting `dump_setup`/`_run`/
     `_teardown` into the existing arm/launch/drain/teardown blocks. `dump`'s
     `argp` requires an explicit `-P`/`-p` (stricter than syscalls/funcs/lib), so
@@ -1011,7 +1011,7 @@ is in DOCUMENTATION.md and the referenced specs.
     `correlate_attach(pid)`, does the post-launch uprobe attach
     (`wait_for_target_mapped` + `attach_uprobes_for_pid`), called by both
     `cmd_correlate` (standalone `-P` mode) and `trace`'s coordinator right after
-    their own `ares_launch_app` succeeds. No-op in `-p` attach mode, where PIDs
+    their own `anubee_launch_app` succeeds. No-op in `-p` attach mode, where PIDs
     are already known at setup time and attached there instead — verified
     byte-for-byte identical call order/behavior in both standalone modes
     against the pre-refactor code (regression audit, load-bearing per the
@@ -1054,7 +1054,7 @@ is in DOCUMENTATION.md and the referenced specs.
     `compat_syscall_<nr>` (`sysname()`) and skips `arg_count`/`arg_fd_mask`/
     `arg_sock_index`/`flags_decode_arg` (same arm64-keyed reasoning) — args
     shown raw. Attach is non-fatal (`bpf_program__set_autoattach(...,false)` +
-    manual `bpf_program__attach`, mirroring the existing `ares_follow_fork`
+    manual `bpf_program__attach`, mirroring the existing `anubee_follow_fork`
     pattern) since kernels without `CONFIG_COMPAT` have no
     `do_el0_svc_compat` symbol and the skeleton's blanket `syscalls__attach()`
     fails whole-hog if any autoattach program can't attach. Deliberately
@@ -1094,12 +1094,12 @@ is in DOCUMENTATION.md and the referenced specs.
 - **Tier 4 — ART/managed-frame batch (CR4 parity fix, AA9 double-symbolization, SW1
   hardening — fixed).** Three items from the 2026-07-07 graph-informed audit, all
   touching the same managed-frame naming surface, landed together:
-  - **CR4 — ShadowFrame parity in the compact managed chain.** `ares_managed_chain`
+  - **CR4 — ShadowFrame parity in the compact managed chain.** `anubee_managed_chain`
     (`src/common/symbolize.c`) — the compact `managed[]` fragment shared by both engines
     and cached in the jcache — only ever tried the nterp guess-path, even at an
     `ExecuteSwitchImpl` (switch-interpreter) terminal; the authoritative ShadowFrame walk
     (`art_shadow.c`) was reachable only from the full `cfi_stack` JSON emitter
-    (`ares_emit_cfi_stack_json`). Added the missing `ExecuteSwitchImpl` branch calling
+    (`anubee_emit_cfi_stack_json`). Added the missing `ExecuteSwitchImpl` branch calling
     `shadow_frame_chain`, mirroring the JSON path exactly — no reordering across
     terminals (nterp and switch-interp are distinct terminals reading different
     `ManagedStack` fields, so one can't substitute for the other; see the Major CR4 item
@@ -1108,7 +1108,7 @@ is in DOCUMENTATION.md and the referenced specs.
     `tls_base==0`, so the nterp branch runs exactly as before whenever shadow doesn't
     apply.
   - **AA9 — double frame symbolization.** `funcs.c`/`syscalls.c` each called
-    `ares_emit_cfi_stack_json` then `ares_managed_chain` back-to-back on the same
+    `anubee_emit_cfi_stack_json` then `anubee_managed_chain` back-to-back on the same
     snapshot, each re-resolving all `n` frames independently under `g_lock`. Both public
     functions (`src/common/managed_frame.h`) gained an optional pre-resolved `syms`
     array (NULL = resolve internally, preserving existing host-test call shape); both
@@ -1203,7 +1203,7 @@ is in DOCUMENTATION.md and the referenced specs.
     on a hash hit. AA1's `pm_get` hoist was the other half of AA5; this closes it.
   - **AA7** — `syscalls.c`'s `arg_count`/`arg_fd_mask`/`arg_sock_index` were per-event
     linear scans. Added `by_nr[512]` dense arrays (`build_arg_tables()`, called once
-    at setup alongside the existing `ares_sysindex_build`), mirroring the R9 pattern.
+    at setup alongside the existing `anubee_sysindex_build`), mirroring the R9 pattern.
     Also fixed `json_emit`'s redundant re-scan of `arg_fd_mask` per argument (now
     reuses the already-hoisted `fdm`), and hoisted the same two lookups in
     `render_arg` (found during the audit, not in the original BACKLOG text — its
@@ -1211,21 +1211,21 @@ is in DOCUMENTATION.md and the referenced specs.
     `handle_syscall`).
   - **R9 residual** — `g_sys[]` (`syscalls.c`) and `syscall_names[]` (`correlate.c`)
     were two separate compilations of the same generated `syscalls_gen.h` data.
-    Collapsed into a new shared `src/common/syscall_table.{c,h}` (`ares_syscall_table`/
-    `ares_syscall_table_count`), consumed by both engines' `ares_sysindex_build` calls
+    Collapsed into a new shared `src/common/syscall_table.{c,h}` (`anubee_syscall_table`/
+    `anubee_syscall_table_count`), consumed by both engines' `anubee_sysindex_build` calls
     and `syscalls.c`'s `sysnr()`. Required Makefile changes: added the new file to
     `COMMON_CSRC`, both new symbols to `COMMON_API`'s `--keep-global-symbol` list,
     `-I$(BUILD)` to `COMMON_CFLAGS`, and an explicit `$(SYSCALLS_TBL)` prerequisite
     on `syscall_table.o` (mirroring `syscalls.o`/`correlate.o`'s existing explicit
     deps, since auto-deps only catch this after a first successful compile).
   - **N1** — `funcs.c`'s STACK-event CFI walk (`cfi_unwind_snapshot`) and managed-chain
-    build (`ares_managed_chain`) ran inline on the drain thread; moved into
+    build (`anubee_managed_chain`) ran inline on the drain thread; moved into
     `process_call_return` so they run on the worker thread instead, mirroring
     `syscalls.c` exactly. Confirmed via `syscalls.c`'s own `g_cov` comment
     ("mutated only on the worker thread ... no lock needed") that no new locking
     was needed here either — the old `funcs.c` comment's speculation that a lock
     would be required was itself the thing to correct, not a real requirement.
-    Worker's scratch buffer enlarged to fit a `struct ares_stack_snapshot`.
+    Worker's scratch buffer enlarged to fit a `struct anubee_stack_snapshot`.
   - **AA6** — MCP `load_structured`'s four per-row `con.execute(INSERT...)` loops
     replaced with `con.executemany(...)` (one round-trip per table instead of per
     row), preserving the existing Python-side type-bucketing/skip-counting rather
@@ -1234,9 +1234,9 @@ is in DOCUMENTATION.md and the referenced specs.
     list per writable mapping; replaced with `bisect.bisect_left` + local-window
     merge (only the interval immediately before/after the insertion point).
   - **C8 "duplicate vmlinux.h"** — investigated directly: only one `vmlinux.h`
-    exists in ARES's own build graph (repo root); the only other file by that name
+    exists in ANUBEE's own build graph (repo root); the only other file by that name
     is vendored libbpf's own CI action (`third_party/libbpf/.github/...`),
-    unreferenced by ARES's Makefile. Closing as stale rather than inventing a fix
+    unreferenced by ANUBEE's Makefile. Closing as stale rather than inventing a fix
     for a problem that isn't there; reopen with a concrete file:line if the
     original concern resurfaces.
 
@@ -1256,12 +1256,12 @@ is in DOCUMENTATION.md and the referenced specs.
   full-rebuild's output exactly.
 
 - **CR5 follow-on: `mod` coverage (fixed) — closes Tier 2.** `mod.c` now builds a
-  minimal `struct ares_coverage { .engine = <analyzer name>, .ring_drops = <count> }`
-  at teardown and reports it via `ares_coverage_report(&g_sink, &cov)`, replacing the
-  legacy `ares_drops_report` call the drop-telemetry-parity fix added — `mod` now
+  minimal `struct anubee_coverage { .engine = <analyzer name>, .ring_drops = <count> }`
+  at teardown and reports it via `anubee_coverage_report(&g_sink, &cov)`, replacing the
+  legacy `anubee_drops_report` call the drop-telemetry-parity fix added — `mod` now
   emits the same `{"type":"coverage",...}` JSON line (when `-o` is set) and
   `[coverage] <analyzer>: ...` stderr banner syscalls/funcs/correlate already do.
-  `ares_coverage_report`'s own `if (sink && sink->f)` guard makes passing `&g_sink`
+  `anubee_coverage_report`'s own `if (sink && sink->f)` guard makes passing `&g_sink`
   safe even when `-o` was never given (banner only, no JSON). `DOCUMENTATION.md` §7.5
   updated: `mod` moved out of the "exempt in v1" list into its own minimal-variant
   note (no snapshot/CFI/managed-naming/decode surface, only `drops.ring`).
@@ -1271,22 +1271,22 @@ is in DOCUMENTATION.md and the referenced specs.
   This closes out Tier 2 (tasks #6–#10) of the 2026-07-07 graph-informed audit
   entirely.
 
-- **`mod` drop-telemetry parity (fixed).** `ares_analyzer_t` (`src/common/analyzer.h`)
+- **`mod` drop-telemetry parity (fixed).** `anubee_analyzer_t` (`src/common/analyzer.h`)
   gains a `drops()` accessor; all 3 analyzer BPF objects (`proc_event.bpf.c`,
   `execve.bpf.c`, `prop_read.bpf.c`) now `#include "common/bpf_drop.bpf.h"` and call
   `bump_dropped()` at every `bpf_ringbuf_reserve` failure (mirroring
   syscalls/funcs/correlate's existing pattern; `prop_read` needed only one call site
   since every event path already funnels through its shared `reserve_prop_event()`
   helper). Each analyzer's `.c` gets a matching `*_drops()` accessor
-  (`ares_drops_read(bpf_map__fd(g_skel->maps.dropped))`) wired into its registration
+  (`anubee_drops_read(bpf_map__fd(g_skel->maps.dropped))`) wired into its registration
   struct. `mod.c` reads the drop count via `an->drops()` **before** `an->teardown()`
   destroys the skeleton (the fd goes with it), then reports via the still-live
-  `ares_drops_report` — `mod` previously had no drop signal at all. CR5 follow-on
-  (swap that report call for `ares_coverage_report`) is the natural next step, tracked
+  `anubee_drops_report` — `mod` previously had no drop signal at all. CR5 follow-on
+  (swap that report call for `anubee_coverage_report`) is the natural next step, tracked
   separately in Major. Host-verified (`make test` unchanged); `mod.c` syntax-checked
   clean directly. `proc_event.c`/`execve.c` couldn't be syntax-checked against the
   committed `build/*.skel.h` skeletons — those predate the entire PID-attach feature
-  (dated 2026-06-28 vs. source's 2026-07-07; missing `target_pids`/`ares_follow_fork`
+  (dated 2026-06-28 vs. source's 2026-07-07; missing `target_pids`/`anubee_follow_fork`
   entirely, not just the new `dropped` map), a pre-existing build-artifact staleness
   unrelated to this change, confirmed by the same "missing member" errors appearing on
   untouched pre-existing lines. `prop_read.c` blocked by missing `libelf-dev`. All are
@@ -1297,7 +1297,7 @@ is in DOCUMENTATION.md and the referenced specs.
 - **AA10/AA11/AA12 — engine setup/teardown parity batch (fixed).** Three small
   cross-engine inconsistencies closed together (Tier 2 of the graph-informed audit):
   **AA10** — `funcs.c`'s `--siblings` loop (`:1068-1076`) no longer installs UID 0
-  when `ares_get_pid_uid` returns `0`; `correlate.c`'s equivalent loop (`:325-329`)
+  when `anubee_get_pid_uid` returns `0`; `correlate.c`'s equivalent loop (`:325-329`)
   now guards `install_uid` with `uid > 0` so a deliberate skip no longer prints
   `"install UID for PID N failed"` — both aligned to the silent-skip pattern
   syscalls/lib/dump already used. `install_uid()`'s body is untouched, preserving its
@@ -1306,7 +1306,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `err_skel:` block now `bpf_link__destroy(g_ff)` before falling through (previously
   only normal teardown did, which isn't reached on setup failure). **AA12** — (a)
   `syscalls.c`, `lib.c`, and `correlate.c`'s setup-failure paths now call
-  `ares_sink_report()` after `ares_sink_close()`, matching `funcs`' existing behavior,
+  `anubee_sink_report()` after `anubee_sink_close()`, matching `funcs`' existing behavior,
   so `"wrote 0 events to X"` now prints uniformly on a genuine setup failure instead
   of only for `funcs`; (b) `mod.c`'s own setup-fail and launch-fail paths do the same
   close+report pairing its success path already did; (c) `correlate.c`'s redundant
@@ -1318,13 +1318,13 @@ is in DOCUMENTATION.md and the referenced specs.
   plus manual brace-balance review of the composed regions, not a full build.
 
 - **AA2 — detectability-firewall runtime classifier fails open + dead enforcement fn
-  (fixed).** `ares_object_writes_target` (`src/common/capabilities.c`) now returns
+  (fixed).** `anubee_object_writes_target` (`src/common/capabilities.c`) now returns
   `true` (loud) for a `NULL` or unregistered capability name instead of `false`
   (quiet) — fail closed. `src/modules/mod.c`'s loudness classify+print now happens
   right after `find_analyzer()` succeeds, before `an->setup()` can load or attach
   any BPF object (previously classified only after setup). The classify call itself
-  now goes through `ares_quiet_config_ok(&mod_key, 1)` instead of the direct
-  `ares_object_writes_target` call, giving the previously-dead runtime-assertion
+  now goes through `anubee_quiet_config_ok(&mod_key, 1)` instead of the direct
+  `anubee_object_writes_target` call, giving the previously-dead runtime-assertion
   helper a real caller. `tests/test_capabilities.c`'s `unknown -> false` assertion
   updated to `unknown -> true (fail closed)` — the one behavior change the fix makes;
   every other registered capability's classification is unchanged.
@@ -1407,20 +1407,20 @@ is in DOCUMENTATION.md and the referenced specs.
 - **CR5 - per-run coverage-health record.** Every degradation site (truncated
   32 KB snapshot, blind CFI stop, ring/queue drop, unknown ART build, stack-
   depth cap, the CR2 pre-arm window, undecoded/raw syscall args) used to fail
-  silently. `struct ares_coverage` (`src/common/coverage.h`/`.c`) plus
-  `ares_coverage_report` now emit exactly one record per engine at teardown on
+  silently. `struct anubee_coverage` (`src/common/coverage.h`/`.c`) plus
+  `anubee_coverage_report` now emit exactly one record per engine at teardown on
   two channels: a `[coverage] <engine>: ...` stderr banner (human) and a
   `{"type":"coverage","engine":...}` JSON line into the `-o` sink
   (machine/MCP), collapsing to `{"clean":true}` on a clean run. Wired into
   `syscalls`, `funcs`, and `correlate` (each with its own field subset - see
-  DOCUMENTATION.md §7.5); subsumes the old `ares_drops_report` (drops are now
+  DOCUMENTATION.md §7.5); subsumes the old `anubee_drops_report` (drops are now
   coverage fields). `lib`/`dump`/`mod` are exempt in v1 (follow-on rows below).
   Generalizes the "silence never means didn't check" contract from a
   drops-only guarantee to the whole tracer.
 
 ### 2026-07-02
 
-- **#3-B — `ARES_ART_OFFSETS` runtime offset-override seam.** A `key=value` row file
+- **#3-B — `ANUBEE_ART_OFFSETS` runtime offset-override seam.** A `key=value` row file
   (`buildid=` + the 13 unified offsets; `#` comments/whitespace tolerated) parsed by the pure
   host-tested `art_offsets_parse`; `art_buildid_offsets` consults it once per process and
   returns the override **only when its BuildID matches** the running libart (else fall through
@@ -1455,7 +1455,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `vmlinux.h` + `libbpf.a` stay explicit for first-build ordering. Guarded by
   `scripts/check-build-deps.sh` (touches `stack_snapshot.h`, asserts the BPF object,
   the userspace reader, and the final link all go out of date) wired into the CI
-  cross-build via `ARES_CHECK_DEPS=1`. `make clean && make` is no longer required
+  cross-build via `ANUBEE_CHECK_DEPS=1`. `make clean && make` is no longer required
   after a shared-header change.
 
 - **Full interpreted-chain naming (`nterp_chain`) + TBI-tagged DexFile fix.** The nterp
@@ -1464,8 +1464,8 @@ is in DOCUMENTATION.md and the referenced specs.
   upward from the nterp terminal and emit every dex_pc-corroborated frame (innermost-first,
   `+0x<dexpc>` suffix) as consecutive `"kind":"interp"` cfi_stack frames; uncorroborated
   candidates are dropped (precision over recall). `nterp_name` stays the single-frame
-  fallback (naming never regresses). Wired at both `symbolize.c` sites (`ares_managed_chain`,
-  `ares_emit_cfi_stack_json`); `ares_managed_chain_build` now takes a chain of names.
+  fallback (naming never regresses). Wired at both `symbolize.c` sites (`anubee_managed_chain`,
+  `anubee_emit_cfi_stack_json`); `anubee_managed_chain_build` now takes a chain of names.
   **Root-cause fix shipped alongside:** `art_method_chase` did not strip the Android
   top-byte pointer tag (TBI) from the native `DexCache.dex_file_` / `DexFile.begin_`
   pointers, so on targets that tag them the chase read a tagged address (`/proc/mem`
@@ -1487,7 +1487,7 @@ is in DOCUMENTATION.md and the referenced specs.
 ### 2026-07-01
 
 - **`java_stack` inline managed chain + funcs `cfi_stack` parity (Tasks 1–5).** Shared
-  `ares_managed_frame_chain_build` extractor + `ares_jcache_{put,get,reset}` `stack_id`
+  `anubee_managed_frame_chain_build` extractor + `anubee_jcache_{put,get,reset}` `stack_id`
   cache (thread-safe via mutex), both engines' CFI walks populate the cache on STACK
   events. `syscalls` and `funcs` CALL/RETURN records now carry optional `"java_stack":[...]`
   field (innermost-first, native frames elided) when a managed caller resolves; emitted
@@ -1497,7 +1497,7 @@ is in DOCUMENTATION.md and the referenced specs.
   authoritative full native+managed walk stays in the `.stacks` sidecar, joinable by
   `stack_id`. **Residuals (resolve later):** (a) `correlate` not covered; (b) both `syscalls`
   and `funcs` each walk CFI on the STACK event (funcs' walk is net-new); (c) `java_stack`
-  inherits nterp precision limits; (d) `ares_jcache_get` returns an internal pointer released
+  inherits nterp precision limits; (d) `anubee_jcache_get` returns an internal pointer released
   before the caller copies it — a rare torn-string race under concurrent same-slot access,
   worth hardening later.
 
@@ -1527,7 +1527,7 @@ is in DOCUMENTATION.md and the referenced specs.
   dumper). **`mod` still silent** — see Minor.
 
 - **Drop the 6 MB committed `vmlinux.btf`.** Untracked + gitignored; `make regen-vmlinux
-  ARES_VMLINUX_BTF=<btf>` regenerates the committed `vmlinux.h` (default
+  ANUBEE_VMLINUX_BTF=<btf>` regenerates the committed `vmlinux.h` (default
   `/sys/kernel/btf/vmlinux`). Regen guide in DOCUMENTATION.md.
 
 ### 2026-06-30
@@ -1535,17 +1535,17 @@ is in DOCUMENTATION.md and the referenced specs.
 - **Global PID-attach mode — Phases 1–3 (all 6 standalone engines).** Real per-process
   PID-attach across every standalone engine (`funcs`, `correlate`, `dump`, `syscalls`, `lib`,
   `mod`). Shared infrastructure in `src/common/`: `pid_filter.bpf.h` (TGID-keyed
-  `target_pids` map + `pid_matches()`), `follow_fork.bpf.h` (`ares_follow_fork` tracepoint
+  `target_pids` map + `pid_matches()`), `follow_fork.bpf.h` (`anubee_follow_fork` tracepoint
   self-propagates tracked TGIDs to forked children), `engine_args.h` (`struct target_args`,
   `TARGET_ARGP_OPTIONS`, `parse_target_arg` — `-p`/`--siblings`/`--no-follow-fork`). BPF
   gate in every engine is now `uid_matches() || pid_matches()`. Semantics: `-p` is precise
   (only listed TGIDs + forked children); `--siblings` also arms the PID's UID (widen);
   `--no-follow-fork` disables child-following. Phase 3d (coordinator-wide `-p` in `trace`)
   deferred — see Minor. Supersedes the old broken per-engine `-p` (F2) and the launch-only
-  `ares mod` design (F1). Host-covered by `test_target_args`.
+  `anubee mod` design (F1). Host-covered by `test_target_args`.
 
 - **CFI-misstep (module_base gapped walk-back) — device-verified.**
-  `ares_module_base_idx` (`src/common/maps.c`) now bridges gaps between inter-segment
+  `anubee_module_base_idx` (`src/common/maps.c`) now bridges gaps between inter-segment
   mappings using a monotonic offset walk-back (commit `73a9ceb`) and skips `[page size
   compat]` filler mappings (commit `e8fd9e2`). Root cause: `cfi_get` was handed
   `elf_off = 0xe0000` / exec-segment `load_base` instead of `0` / RO start, because the
@@ -1560,7 +1560,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `libnativeloader`, `libartbase`, `libdexfile`) are PAC-built and emit
   `DW_CFA_AARCH64_negate_ra_state` (opcode `0x2d`); the CFI program interpreter previously
   hit `default: return -1` → terminal `CFI_RUN_FAIL` (dominant failure: 167/201, 83%).
-  Fix: `c905f78` (`ares_pac_strip` helper), `e2e026a` (handle opcode `0x2d` + `ra_signed`
+  Fix: `c905f78` (`anubee_pac_strip` helper), `e2e026a` (handle opcode `0x2d` + `ra_signed`
   row state through remember/restore), `655314f` (PAC-strip recovered RA in `cfi_step`),
   `63f1570` (device-test arm asserts 0 `CFI_RUN_FAIL`). Measured on a real RASP-protected
   target: `CFI_RUN_FAIL` **167/201 → 0**; `art_jni_trampoline` crossings **59 → 131**;
@@ -1570,10 +1570,10 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **W3-window — chunked fault-tolerant stack-snapshot capture (+ re-diagnosis of the JNI
   cross blocker).** Replaced the all-or-nothing 3-tier `bpf_probe_read_user` in
-  `ares_emit_stack_snapshot` (`src/common/stack_snapshot.bpf.h`) with a bounded,
-  fully-unrolled, no-`break` per-chunk loop (`ARES_SNAP_CHUNK` = 4 KB, `stack_snapshot.h`
+  `anubee_emit_stack_snapshot` (`src/common/stack_snapshot.bpf.h`) with a bounded,
+  fully-unrolled, no-`break` per-chunk loop (`ANUBEE_SNAP_CHUNK` = 4 KB, `stack_snapshot.h`
   + `_Static_assert`) that stops at the first faulting page and keeps the full contiguous
-  prefix; `truncated` redefined to `snap_len == ARES_SNAP_MAX`. Host guard test for non-tier
+  prefix; `truncated` redefined to `snap_len == ANUBEE_SNAP_MAX`. Host guard test for non-tier
   `snap_len` round-trip (`tests/test_stack_snapshot.c`); device-test CFI arm asserts
   `snap_len>8192` + `jni-trampoline` reach. On-device: `snap_len` went bimodal-8192/32768 →
   4096→32768 spread (238/312 records >8 KB). **Key result — the window was never the cross
@@ -1606,17 +1606,17 @@ is in DOCUMENTATION.md and the referenced specs.
   `src/modules/prop_read.c`. Tally now always runs; `pr_print_summary` prints correctly
   whether or not `-o` is active.
 
-- **proc-event/execve/prop-read → `ares mod` migration (Phases 1–3).** SPAWN/PROC_EXIT/EXECVE/PROP
-  events migrated from the open `funcs` module-events backlog to the `ares mod` analyzer subsystem
+- **proc-event/execve/prop-read → `anubee mod` migration (Phases 1–3).** SPAWN/PROC_EXIT/EXECVE/PROP
+  events migrated from the open `funcs` module-events backlog to the `anubee mod` analyzer subsystem
   (proc-event, execve, prop-read); output channel in `src/modules/mod_emit.c`. Closes the
   SPAWN/PROC_EXIT/EXECVE/PROP deferred item and retires B2 as moot.
 
 - **funcs structured records — module events.** CALL/RETURN + MAP/UNMAP (via
-  `ares_libtrace_emit_lib/unlib` under `g_sink_lock`, Option A) + SPAWN/PROC_EXIT/EXECVE/PROP
-  (via the `ares mod` migration above). B2 (worker-queue convergence) moot — module events no
+  `anubee_libtrace_emit_lib/unlib` under `g_sink_lock`, Option A) + SPAWN/PROC_EXIT/EXECVE/PROP
+  (via the `anubee mod` migration above). B2 (worker-queue convergence) moot — module events no
   longer route through the funcs worker queue.
 
-- **`ares mod` audit (F1/F2/F3/F4, U1/U2/U3, O1/O2/O3).** Audit closed 2026-06-28.
+- **`anubee mod` audit (F1/F2/F3/F4, U1/U2/U3, O1/O2/O3).** Audit closed 2026-06-28.
   UX: `mod_options` hand-picks `-o/-v/-q` (U1); `-v` scoped execve-only (U2); per-analyzer
   banners removed (U3). Output: execve prefix `[exec]` (O1); structured execve backtrace
   symbolized via `mod_emit_execve(..., syms)` (O2); prop SCAN fields trimmed to
@@ -1635,28 +1635,28 @@ is in DOCUMENTATION.md and the referenced specs.
   unwinding from 1 frame to the full 18-frame libc→linker64 chain.
 
 - **W4 — snapshot window 8 KB → 32 KB + 3-tier fault fallback.** Deep frames' spilled-RA
-  slots sat past `sp+8192`; `ARES_SNAP_MAX` raised to 32768 with a `MAX → MID(8192) →
+  slots sat past `sp+8192`; `ANUBEE_SNAP_MAX` raised to 32768 with a `MAX → MID(8192) →
   SMALL(2048)` read cascade (fault on the big read still yields a useful window).
   **Superseded 2026-06-29 by W3-window** — on-device the 32 KB read itself faults to 8 KB in
   259/307 cases, so chunked capture became the required fix, not this fallback.
 
-- **GA6 (keystone) — `ares_launch_app` returns the launched PID; `correlate` dedups its
-  inline launcher.** Added `pid_t *out_pid` out-param to `ares_launch_app` (`launch.{c,h}`);
+- **GA6 (keystone) — `anubee_launch_app` returns the launched PID; `correlate` dedups its
+  inline launcher.** Added `pid_t *out_pid` out-param to `anubee_launch_app` (`launch.{c,h}`);
   polls `pidof` after `am start -S` when non-NULL. `correlate_setup` replaces ~14 lines of
-  duplicated force-stop/resolve-component/am-start/pidof with a single `ares_launch_app(pkg, NULL, &p)`
+  duplicated force-stop/resolve-component/am-start/pidof with a single `anubee_launch_app(pkg, NULL, &p)`
   call. Five other callers add `, NULL` — interface contract unchanged.
 - **GA7 — `probe_resolve` no-PT_LOAD sentinel.** `seg_vaddr_to_off` and `vaddr_to_file_off` now
   return `SEG_VADDR_BAD` (`(unsigned long)-1`) instead of the raw vaddr when no PT_LOAD segment
   contains the address. All four callers guard the sentinel and skip+warn rather than attaching
   a uprobe at a wrong file offset. Commit `7995126`.
 - **GA5 — `trace` coordinator SIGTERM.** Replaced the hand-rolled `on_sigint` in `trace.c`
-  with `ares_install_stop_handler(&g_stop)`. `trace` now responds to SIGTERM identically to
+  with `anubee_install_stop_handler(&g_stop)`. `trace` now responds to SIGTERM identically to
   SIGINT. Bundled in commit `97c827f` with GA4.
-- **GA4 — event-queue pop desync.** `ares_evq_pop` now loops: reads the 4-byte length, copies
+- **GA4 — event-queue pop desync.** `anubee_evq_pop` now loops: reads the 4-byte length, copies
   if it fits, else advances `tail` by the full `sz` (keeping the ring framed), increments
   `dropped`, and fetches the next record — never handing back a truncated record.
   `test_evqueue` extended (26 checks). Bundled in commit `97c827f`.
-- **GA3 — sink write errors.** `ares_sink_emit` latches `errno` into `s->werr` on `ferror` and
+- **GA3 — sink write errors.** `anubee_sink_emit` latches `errno` into `s->werr` on `ferror` and
   periodic `fflush`; `_flush`/`_close` latch on failure; `_report` prints a WARNING if set.
   `setvbuf` malloc leak fixed. `test_emit` extended (23 checks). Commit `478c679`.
 
@@ -1664,7 +1664,7 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **GA1 — `jbuf` OOM path is a heap overflow (fixed).** Added `int err` field to
   `struct jbuf` (`emit.h`); `jb_need` sets it on failed `realloc`; every `jb_*` writer
-  bails early when set; `ares_sink_emit` drops and resets a poisoned record. Regression
+  bails early when set; `anubee_sink_emit` drops and resets a poisoned record. Regression
   test in `tests/test_emit.c` (21 checks total).
 - **GA2 (core) — Engine lifecycle symmetry + `lib`→`trace` wiring.** `dump.c` and `correlate.c`
   each split into `<engine>_setup` / `_run` / `_teardown` + thin `cmd_*` wrapper, fully
@@ -1684,13 +1684,13 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **W2+W3 — Shared snapshot extraction + funcs stack snapshot.** Moved the register-file +
   stack snapshot into a shared core: `src/common/stack_snapshot.{h,bpf.h,c}`
-  (`struct ares_stack_snapshot`, `ARES_SNAP_MAX/SMALL/NREG`, `ares_hash_stack`,
-  `ares_emit_stack_snapshot`, `ares_stack_snapshot_emit_json`, `ares_unwind_regs`). Both
+  (`struct anubee_stack_snapshot`, `ANUBEE_SNAP_MAX/SMALL/NREG`, `anubee_hash_stack`,
+  `anubee_emit_stack_snapshot`, `anubee_stack_snapshot_emit_json`, `anubee_unwind_regs`). Both
   `syscalls` (kprobe) and `funcs` (uprobe) `#include` the shared BPF helpers via the
-  `ARES_SNAPSHOT_RB` macro idiom. W3 closed: `unwind_regs.h` deleted from `src/syscalls/`,
+  `ANUBEE_SNAPSHOT_RB` macro idiom. W3 closed: `unwind_regs.h` deleted from `src/syscalls/`,
   adapter now engine-neutral in `common/stack_snapshot.h`. `funcs` gains `--snapshot`
   (requires `-o`): deduped by FNV-1a hash, sidecar `<output>.stacks` (JSONL), `"stack_id"`
-  on CALL records for join. `ARES_EVENT_STACK=12` added. New host tests: `test_stack_snapshot`,
+  on CALL records for join. `ANUBEE_EVENT_STACK=12` added. New host tests: `test_stack_snapshot`,
   `test_unwind_regs` (migrated), `test_funcs_emit` (17 checks).
 
 ### 2026-06-26 (session 1)
@@ -1701,7 +1701,7 @@ is in DOCUMENTATION.md and the referenced specs.
   search), CFI rule interpreter (`cfi_run_program`), and single-frame stepper (`cfi_step`).
   `syscalls_stack_snapshot` extended: adds `regs[31]` (x0..x30 full GP file, CFI initial
   state) and `truncated` flag; JSON gains `"regs":[…]` (31 elements) and `"truncated":0/1`.
-  `src/syscalls/unwind_regs.h`: `struct ares_unwind_regs` + `unwind_regs_from_snapshot()`.
+  `src/syscalls/unwind_regs.h`: `struct anubee_unwind_regs` + `unwind_regs_from_snapshot()`.
   Four new host tests (`test_dwarf`, `test_cfi_parse`, `test_cfi_step`, `test_unwind_regs`).
   CFI wiring to runtime + generalization deferred → W1–W3.
 
@@ -1710,8 +1710,8 @@ is in DOCUMENTATION.md and the referenced specs.
 - **Thin presets keystone — `lib` phase split (coordinator-ready).** `cmd_lib`
   refactored into `lib_setup(argc, argv, rc)` / `lib_run(stop)` / `lib_teardown()` +
   thin `cmd_lib` wrapper, fully symmetric with `syscalls` and `funcs`. Accepts
-  `struct ares_run_ctx` so a future coordinator can pre-resolve the UID. `on_sigint`
-  retired for the shared `ares_install_stop_handler`. No behaviour change.
+  `struct anubee_run_ctx` so a future coordinator can pre-resolve the UID. `on_sigint`
+  retired for the shared `anubee_install_stop_handler`. No behaviour change.
 
 ### 2026-06-25 (session 2)
 
@@ -1722,29 +1722,29 @@ is in DOCUMENTATION.md and the referenced specs.
 - **Y3 — live drop ticker for funcs.** `funcs_drops_tick` mirrors `syscalls_drops_tick`
   (~1 s cadence); wired into `funcs_run`.
 - **Y4 (map/unmap) — funcs structured lib/unlib records.** funcs emits `{"type":"lib",...}` /
-  `{"type":"unlib",...}` via the shared `ares_libtrace_emit_lib`/`emit_unlib`. Threading:
+  `{"type":"unlib",...}` via the shared `anubee_libtrace_emit_lib`/`emit_unlib`. Threading:
   Option A — new `g_sink_lock` serializes drain-thread lib/unlib writes against worker-thread
   call/return writes. Console `[lib]`/`[unlib]` lines gated on `-v`.
 
 ### 2026-06-25 (session 1)
 
 - **C3 Phase 2 — shared `/proc/<pid>/maps` line parser + symbolizer cache bounds.**
-  `src/common/maps.{c,h}` adds `ares_parse_maps_line` (the one canonical `sscanf`),
-  `ares_module_base_idx` (load-base walk-back), and `ares_map_files_path`. All six consumers
-  migrated; `struct mapping` and `struct dmap` collapsed into `struct ares_map_line`.
+  `src/common/maps.{c,h}` adds `anubee_parse_maps_line` (the one canonical `sscanf`),
+  `anubee_module_base_idx` (load-base walk-back), and `anubee_map_files_path`. All six consumers
+  migrated; `struct mapping` and `struct dmap` collapsed into `struct anubee_map_line`.
   Correctness fix: paths with embedded spaces no longer truncate. Symbolizer cache bounded:
   LRU eviction at `PM_MAX_PIDS=128`, `SC_MAX_CAP=256k`; `sym_flush_pid` wired to
-  `ARES_EVENT_PROC_EXIT`. 25 host-unit checks in `tests/test_maps.c`.
+  `ANUBEE_EVENT_PROC_EXIT`. 25 host-unit checks in `tests/test_maps.c`.
 
 ### 2026-06-24
 
 - **`correlate` hardening — R3 + R4 + X2 (correlate half).** R3: uprobe `bpf_link`s tracked
   and destroyed on teardown + ring-buffer-fail path. R4: `-p`/`-e`/`-F`/per-pid-dedup caps
-  warn instead of silently truncating. X2: output migrated to the shared `ares_sink`. **R5
+  warn instead of silently truncating. X2: output migrated to the shared `anubee_sink`. **R5
   closed as stale** — the `jstr_args` `snprintf` underflow path no longer exists.
-- **X2 (lib half) — `lib` migrated to `ares_sink`.** `ares_libtrace_emit_lib/unlib` signatures
-  changed from `FILE *jsonl` to `struct ares_sink *sink`. New test `tests/test_lib_trace_emit.c`.
-- **F1 — FD & string resolution in `ares funcs`.** `funcs_emit_call`/`funcs_emit_return`
+- **X2 (lib half) — `lib` migrated to `anubee_sink`.** `anubee_libtrace_emit_lib/unlib` signatures
+  changed from `FILE *jsonl` to `struct anubee_sink *sink`. New test `tests/test_lib_trace_emit.c`.
+- **F1 — FD & string resolution in `anubee funcs`.** `funcs_emit_call`/`funcs_emit_return`
   accept a `probe_target_t *target` and emit `string_args`, `fd_args` (FD→path via `render_fd`),
   `retval_str`, `out_args`. `test_funcs_emit` extended (15 checks).
 - **CLI consistency / argp (A.0, A5, R6, F3, F4, U3).** All six engines on GNU argp;
@@ -1753,7 +1753,7 @@ is in DOCUMENTATION.md and the referenced specs.
 - **BPF de-dup + arg-parse normalization (C4, C8).** `uid_filter.bpf.h` (`target_uids` +
   `uid_matches()`); `bpf_drop.bpf.h` (`dropped` map + `bump_dropped()`);
   `struct trace_event_header` replaces the `syscalls_hdr` alias; `engine_args.h`
-  (`common_args` + `COMMON_ARGP_OPTIONS`). `ares_libbpf_quiet` replaces three local copies.
+  (`common_args` + `COMMON_ARGP_OPTIONS`). `anubee_libbpf_quiet` replaces three local copies.
 - **Managed-frame symbolization Phase 2a + 2b (DEX core + on-device spike).** Phase 2a:
   version-stable DEX offset→method core (`src/common/dex.{c,h}`, host-tested). Phase 2b:
   PARK both frame types — on A15/AOT captured `classes.vdex+0x..` offsets land in DEX data,
@@ -1764,16 +1764,16 @@ is in DOCUMENTATION.md and the referenced specs.
 - **Engine unification round 2.** Phase A: `src/common/runtime.{c,h}` (shared
   stop-handler / drops-report / pow2). Phase B: `funcs -b/--bufsize`. Phase C1:
   `src/common/evqueue.{c,h}` SPSC byte-queue. Phase C2: `funcs` decoupled drain on a worker
-  thread. All five engines on `ares_rb_poll_until`/`_cb`.
-- **Shared `ares_sink` + funcs output unification (C1).** `emit.h` exports `struct ares_sink`;
+  thread. All five engines on `anubee_rb_poll_until`/`_cb`.
+- **Shared `anubee_sink` + funcs output unification (C1).** `emit.h` exports `struct anubee_sink`;
   `syscalls` and `funcs` migrated; legacy wrapper + CSV removed. 6 sink host tests.
 - **R2** — `vaddr_to_file_off()` in `probe_resolve.c`. **R7** — `FUNC_CFLAGS` aligned to
   `-Wall -Wextra`.
 
 ### 2026-06-22
 
-- **`ares trace` runner — Phases 1–4.** Shared `ares_launch_app()`; engine setup/run/teardown
-  split + `struct ares_run_ctx`; `src/trace/trace.c` coordinator (one launch, two drain
+- **`anubee trace` runner — Phases 1–4.** Shared `anubee_launch_app()`; engine setup/run/teardown
+  split + `struct anubee_run_ctx`; `src/trace/trace.c` coordinator (one launch, two drain
   threads, per-engine `-o` files); `trace_args.c` argv-section split (host-tested). Inherently
   LOUD.
 - **`trace` audit fixes** — second Ctrl-C force-quit; warn on missing `-o`; ring drain bails
@@ -1802,10 +1802,10 @@ is in DOCUMENTATION.md and the referenced specs.
   the `correlate` engine (entry uprobes + span-gated `do_el0_svc` kprobe, flat
   `func`/`syscall` JSONL joined on `span`). Detectability firewall **reframed**: the one
   invariant is "a stealthy run attaches zero uprobes".
-- **Unified `ares-mcp` ingest (Task 3)** — `load_structured` + `correlate_spans` (join
+- **Unified `anubee-mcp` ingest (Task 3)** — `load_structured` + `correlate_spans` (join
   syscalls by `span`); host-tested. Richness follow-on → Minor.
 
 ### 2026-06-16
 
-- **`ares dump` engine (C6)** — replaced the syscalls/funcs dumpers; ELF rebuild in
+- **`anubee dump` engine (C6)** — replaced the syscalls/funcs dumpers; ELF rebuild in
   `src/dump/rebuild.c`; `/proc/<pid>/mem` reader lifted to `src/common/proc_mem`.

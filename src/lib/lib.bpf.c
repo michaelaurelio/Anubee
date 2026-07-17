@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for `ares lib`: trace every native library (.so) an app loads.
+// BPF object for `anubee lib`: trace every native library (.so) an app loads.
 //
 // Gating is by UID, installed by the loader BEFORE the app is launched, so every
 // thread of the freshly forked app is seen from its first mapping (same approach

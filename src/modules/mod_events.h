@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-// Shared event structs for the ares mod analyzers. Included by both BPF
+// Shared event structs for the anubee mod analyzers. Included by both BPF
 // programs (after vmlinux.h, before any libc headers) and userspace analyzer
 // files. Must NOT pull <linux/types.h> or libc headers — vmlinux.h already
 // provides __u32/__u64; userspace callers include <linux/types.h> first.
 //
 // MOD_EV_* are BPF-side type tags local to the analyzers. Userspace emitters
 // map them to TRACE_* (trace_schema.h) for the stable output schema.
-#ifndef __ARES_MOD_EVENTS_H
-#define __ARES_MOD_EVENTS_H
+#ifndef __ANUBEE_MOD_EVENTS_H
+#define __ANUBEE_MOD_EVENTS_H
 
 #include "common/trace_schema.h"   // struct trace_event_header, TRACE_*
 
@@ -188,4 +188,4 @@ struct screencapture_detect_event {
     __u64  binder_calls_context;
 };
 
-#endif /* __ARES_MOD_EVENTS_H */
+#endif /* __ANUBEE_MOD_EVENTS_H */

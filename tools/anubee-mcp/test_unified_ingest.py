@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Standalone self-asserting test for the unified (funcs/correlate) ingest path.
-# Run: python3 tools/ares-mcp/test_unified_ingest.py  (no pytest dependency)
+# Run: python3 tools/anubee-mcp/test_unified_ingest.py  (no pytest dependency)
 import os
 import sys
 

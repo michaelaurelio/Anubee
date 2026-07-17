@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the mod structured record builders. Pins the exact JSON
-// for known events so the schema is stable for ares-mcp ingest.
+// for known events so the schema is stable for anubee-mcp ingest.
 #include <linux/types.h>
 #include <stdio.h>
 #include <string.h>

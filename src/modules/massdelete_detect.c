@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod massdelete-detect` — userspace analyzer for the rename/unlink
+// `anubee mod massdelete-detect` — userspace analyzer for the rename/unlink
 // burst signal. Owns the massdelete_detect BPF skeleton lifecycle; the
 // dispatcher in mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/massdelete_detect.bpf.c. Classification:
@@ -69,7 +69,7 @@ static void rb_check_manage_ext_storage(const char *pkg)
     if (!pkg) return;
     char cmd[320], out[256];
     snprintf(cmd, sizeof(cmd), "appops get %s MANAGE_EXTERNAL_STORAGE", pkg);
-    if (ares_sh_exec(cmd, out, sizeof(out)) < 0) return;
+    if (anubee_sh_exec(cmd, out, sizeof(out)) < 0) return;
     if (strstr(out, "allow"))
         g_manage_ext_storage = 1;
     else if (strstr(out, "deny") || strstr(out, "ignore") || strstr(out, "default"))
@@ -97,7 +97,7 @@ static struct bpf_link             *unlinkat_link  = NULL;
 
 static int rb_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     if (hdr->type != MOD_EV_MASSDELETE_DETECT || sz < sizeof(struct massdelete_detect_event))
@@ -117,7 +117,7 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
 
     if (mc->sink != NULL) {
         mod_emit_massdelete_detect(&mc->sink->jb, e, distinct, g_manage_ext_storage, mc->verbose);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -125,7 +125,7 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *rb_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = massdelete_detect_bpf__open();
     if (!g_skel) {
@@ -176,7 +176,7 @@ static struct ring_buffer *rb_setup(int uid, struct ares_mod_ctx *mc)
         printf("[massdelete-detect] target holds MANAGE_EXTERNAL_STORAGE (All files access)\n");
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        rb_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        rb_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!rb_ff) fprintf(stderr, "mod massdelete-detect: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -226,7 +226,7 @@ static void rb_print_summary(void)
 
 // File twin of rb_print_summary: same tally, one
 // {"type":"massdelete_detect_summary",...} record.
-static void rb_emit_summary(struct ares_sink *s)
+static void rb_emit_summary(struct anubee_sink *s)
 {
     if (rb_stat_count == 0) return;
 
@@ -247,17 +247,17 @@ static void rb_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 static unsigned long long rb_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_massdelete_detect = {
+const anubee_analyzer_t analyzer_massdelete_detect = {
     .name          = "massdelete-detect",
     .description   = "Detect rename/unlink bursts on external storage (rapid rename+delete "
                       "across many distinct files -- classic crypto-ransomware signal; "

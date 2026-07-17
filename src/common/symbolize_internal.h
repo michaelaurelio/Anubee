@@ -3,13 +3,13 @@
 // sym_elf.c, sym_jit.c, sym_vdso.c, sym_apk.c). NOT a public API — every symbol
 // here is localized at the common.part.o link step. See symbolize.h for the 5
 // exported symbols.
-#ifndef ARES_SYMBOLIZE_INTERNAL_H
-#define ARES_SYMBOLIZE_INTERNAL_H
+#ifndef ANUBEE_SYMBOLIZE_INTERNAL_H
+#define ANUBEE_SYMBOLIZE_INTERNAL_H
 
 #include <stddef.h>
 #include <stdint.h>
 #include <elf.h>
-#include "common/maps.h"        // struct ares_map_line
+#include "common/maps.h"        // struct anubee_map_line
 #include "common/cfi_unwind.h"  // struct cfi_section
 #include "common/sym_apk.h"     // apk_so_name/apk_list_sos (public; also used by lib.c)
 
@@ -26,7 +26,7 @@ void display_name(const char *path, char *buf, size_t n); // sym_elf.c
 // ---- procmaps (sym_procmaps.c) --------------------------------------------
 struct procmaps {
 	int pid;
-	struct ares_map_line *m;
+	struct anubee_map_line *m;
 	size_t n, cap;
 	long long last_read_ms;
 	long long last_used_ms;
@@ -34,9 +34,9 @@ struct procmaps {
 };
 struct procmaps *pm_get(int pid);
 void read_proc_maps(struct procmaps *pm);
-struct ares_map_line *find_mapping(struct procmaps *pm, uint64_t addr);
-struct ares_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr);
-void module_base(struct procmaps *pm, struct ares_map_line *hit,
+struct anubee_map_line *find_mapping(struct procmaps *pm, uint64_t addr);
+struct anubee_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr);
+void module_base(struct procmaps *pm, struct anubee_map_line *hit,
                  uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end);
 // Force a reread of pid's cached maps on next resolve. Used by sym_flush_pid.
 void pm_reset_pid(int pid);
@@ -80,4 +80,4 @@ int  vdso_resolve(int pid, uint64_t addr, uint64_t base, uint64_t end,
 void vdso_reset_pid(int pid);                                         // sym_vdso.c
 // apk_so_name/apk_list_sos: see common/sym_apk.h (public, included above).
 
-#endif /* ARES_SYMBOLIZE_INTERNAL_H */
+#endif /* ANUBEE_SYMBOLIZE_INTERNAL_H */

@@ -10,9 +10,9 @@ static int failures;
     else { printf("  FAIL: %s\n", #cond); failures++; } \
 } while (0)
 
-static struct ares_map_line line(const char *path, int exec)
+static struct anubee_map_line line(const char *path, int exec)
 {
-    struct ares_map_line ml = {0};
+    struct anubee_map_line ml = {0};
     ml.exec = exec;
     snprintf(ml.path, sizeof(ml.path), "%s", path);
     return ml;
@@ -20,7 +20,7 @@ static struct ares_map_line line(const char *path, int exec)
 
 int main(void)
 {
-    struct ares_map_line l;
+    struct anubee_map_line l;
 
     // Executable libc.so, exact substring selector -> arms.
     l = line("/apex/com.android.runtime/lib64/bionic/libc.so", 1);

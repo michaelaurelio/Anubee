@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build ares (static aarch64) inside a container — the only host requirement is
+# Build anubee (static aarch64) inside a container — the only host requirement is
 # Docker or Podman. The container runs the project Makefile against the mounted
-# source tree, so the binary appears at build/ares on the host.
+# source tree, so the binary appears at build/anubee on the host.
 #
 # Extra args are forwarded to make, e.g.:  ./scripts/build.sh clean
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="ares-cross-arm64"
+IMAGE="anubee-cross-arm64"
 
 RUNTIME="${CONTAINER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
@@ -47,7 +47,7 @@ fi
 # removes the host-owned artifacts this script now produces. (A build/ left
 # root-owned by an older version of this script needs a one-time `sudo rm -rf
 # build`.)
-STAMP="$ROOT/.ares-image-stamp"
+STAMP="$ROOT/.anubee-image-stamp"
 DOCKERFILE_HASH="$(sha1sum "$ROOT/misc/Dockerfile" | awk '{print $1}')"
 NEEDS_CLEAN=0
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$DOCKERFILE_HASH" ]; then
@@ -62,17 +62,17 @@ if [ "$NEEDS_CLEAN" = 1 ]; then
     "$RUNTIME" run --rm ${RUN_USER[@]+"${RUN_USER[@]}"} -v "$ROOT:/workspace" "$IMAGE" clean
 fi
 
-echo "=== compiling ares (static aarch64) ==="
+echo "=== compiling anubee (static aarch64) ==="
 "$RUNTIME" run --rm "${RUN_USER[@]}" -v "$ROOT:/workspace" "$IMAGE" "$@"
 
 # Record the toolchain identity for the stale-artifact guard above.
 echo "$DOCKERFILE_HASH" > "$STAMP"
 
-if [ "${ARES_CHECK_DEPS:-0}" = 1 ]; then
+if [ "${ANUBEE_CHECK_DEPS:-0}" = 1 ]; then
     echo "=== verifying build dependency graph (BLD1) ==="
     "$RUNTIME" run --rm ${RUN_USER[@]+"${RUN_USER[@]}"} -v "$ROOT:/workspace" \
         --entrypoint bash "$IMAGE" scripts/check-build-deps.sh
 fi
 
 echo "=== done ==="
-ls -lh "$ROOT/build/ares" 2>/dev/null || true
+ls -lh "$ROOT/build/anubee" 2>/dev/null || true

@@ -7,8 +7,8 @@
 // already merge-sorts every engine's records by the shared `ktime` field
 // rather than by physical file position — see EPIC C3/C4) gets exactly that
 // without needing to know about the per-engine suffixed files underneath.
-#ifndef ARES_JSONL_MERGE_H
-#define ARES_JSONL_MERGE_H
+#ifndef ANUBEE_JSONL_MERGE_H
+#define ANUBEE_JSONL_MERGE_H
 
 // Concatenate src_paths[0..n_srcs) in order into dst_path (overwritten). A
 // source path that doesn't exist or can't be opened is silently skipped —
@@ -17,4 +17,4 @@
 // couldn't be opened for writing.
 int jsonl_merge(const char *dst_path, const char *const *src_paths, int n_srcs);
 
-#endif /* ARES_JSONL_MERGE_H */
+#endif /* ANUBEE_JSONL_MERGE_H */

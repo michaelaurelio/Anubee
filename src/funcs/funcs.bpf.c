@@ -40,8 +40,8 @@ struct {
     __type(value, __u8);
 } stack_seen SEC(".maps");
 
-// Shared snapshot helpers (ares_hash_stack + ares_emit_stack_snapshot).
-#define ARES_SNAPSHOT_RB events_rb
+// Shared snapshot helpers (anubee_hash_stack + anubee_emit_stack_snapshot).
+#define ANUBEE_SNAPSHOT_RB events_rb
 #include "common/stack_snapshot.bpf.h"
 
 // Determine if a value is a user-space pointer (heuristic)
@@ -90,7 +90,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     // Fill event data
     task = (struct task_struct *)bpf_get_current_task();
 
-    e->h.type = ARES_EVENT_CALL;
+    e->h.type = ANUBEE_EVENT_CALL;
     e->h.pid = pid;
     e->h.tid = tid;
 	e->h._pad = 0;
@@ -124,11 +124,11 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
     // stack_id so the consumer can join. CALL-entry only (returns share the stack).
     e->stack_id = 0;
     if (snapshot_enabled && e->stack_depth > 0) {
-        __u64 sid = ares_hash_stack(e->call_stack, e->stack_depth, pid, STACK_DEPTH);
+        __u64 sid = anubee_hash_stack(e->call_stack, e->stack_depth, pid, STACK_DEPTH);
         if (!bpf_map_lookup_elem(&stack_seen, &sid)) {
             __u8 one = 1;
             bpf_map_update_elem(&stack_seen, &sid, &one, BPF_ANY);
-            ares_emit_stack_snapshot(ctx, pid, tid, sid, ARES_EVENT_STACK);
+            anubee_emit_stack_snapshot(ctx, pid, tid, sid, ANUBEE_EVENT_STACK);
         }
         e->stack_id = sid;
     }
@@ -188,7 +188,7 @@ int BPF_KRETPROBE(uretprobe_open)
         return 0;
     }
 
-    e->h.type     = ARES_EVENT_RETURN;
+    e->h.type     = ANUBEE_EVENT_RETURN;
     e->h.pid      = pid;
     e->h.tid      = tid;
     e->h._pad     = 0;

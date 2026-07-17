@@ -4,8 +4,8 @@
 // BPF object that #includes this gets its own compiled copy, so this has no
 // effect on the detectability firewall (that's about attached programs, not
 // shared code).
-#ifndef __ARES_PATH_GATE_BPF_H
-#define __ARES_PATH_GATE_BPF_H
+#ifndef __ANUBEE_PATH_GATE_BPF_H
+#define __ANUBEE_PATH_GATE_BPF_H
 
 // Bounded prefix compare: path is a fixed-size local/ringbuf buffer (always
 // >= 32 bytes), so indexing up to 31 is always safe regardless of prefix
@@ -47,4 +47,4 @@ static __always_inline int path_has_component(const char *path, const char *need
     return 0;
 }
 
-#endif /* __ARES_PATH_GATE_BPF_H */
+#endif /* __ANUBEE_PATH_GATE_BPF_H */

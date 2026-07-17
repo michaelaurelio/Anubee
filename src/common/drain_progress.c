@@ -32,8 +32,8 @@ static unsigned long long now_ns(void)
     return ts_to_ns(&ts);
 }
 
-void ares_drain_progress_begin(struct ares_drain_progress *d,
-                               struct ares_evq *q, const char *label)
+void anubee_drain_progress_begin(struct anubee_drain_progress *d,
+                               struct anubee_evq *q, const char *label)
 {
     memset(d, 0, sizeof *d);
     d->q     = q;
@@ -54,13 +54,13 @@ void ares_drain_progress_begin(struct ares_drain_progress *d,
 
     // Independent of the 300ms UI timer on purpose: a fast double-tap must
     // still get the warning even when the bar never had time to appear.
-    ares_drain_set_active(1);
+    anubee_drain_set_active(1);
 }
 
 // The header names the BACKLOG, not the run total. A user who traced 200k
 // events must not read "8,192" as "where did my other records go" - they are
 // already written and safe; this is only what the worker had not caught up on.
-static void render_header(struct ares_drain_progress *d)
+static void render_header(struct anubee_drain_progress *d)
 {
     char tbuf[32];
     drain_fmt_count(d->total_recs, tbuf, sizeof tbuf);
@@ -70,7 +70,7 @@ static void render_header(struct ares_drain_progress *d)
     d->shown = 1;
 }
 
-static void render(struct ares_drain_progress *d, size_t used,
+static void render(struct anubee_drain_progress *d, size_t used,
                    unsigned long long popped, unsigned long long elapsed_ns)
 {
     char nbuf[32], tbuf[32], dbuf[24];
@@ -91,10 +91,10 @@ static void render(struct ares_drain_progress *d, size_t used,
     // pct is bytes-based while (nbuf/tbuf) is record-based, so the two
     // deliberately advance at different rates - see drain_pct's comment. Not a
     // bug: the drain can be 47% through the work and 38% through the records.
-    char bar[ARES_DRAIN_BAR_CELLS * 4 + 1];
-    int  filled = pct * ARES_DRAIN_BAR_CELLS / 100;
+    char bar[ANUBEE_DRAIN_BAR_CELLS * 4 + 1];
+    int  filled = pct * ANUBEE_DRAIN_BAR_CELLS / 100;
     int  bi = 0;
-    for (int i = 0; i < ARES_DRAIN_BAR_CELLS; i++) {
+    for (int i = 0; i < ANUBEE_DRAIN_BAR_CELLS; i++) {
         const char *cell = (i < filled) ? "█" : "░";
         bi += snprintf(bar + bi, sizeof bar - (size_t)bi, "%s", cell);
     }
@@ -112,7 +112,7 @@ static void render(struct ares_drain_progress *d, size_t used,
     human_progress_set(line);
 }
 
-void ares_drain_progress_join(struct ares_drain_progress *d, pthread_t worker)
+void anubee_drain_progress_join(struct anubee_drain_progress *d, pthread_t worker)
 {
     for (;;) {
         pthread_mutex_lock(&d->q->m);
@@ -120,7 +120,7 @@ void ares_drain_progress_join(struct ares_drain_progress *d, pthread_t worker)
         unsigned long long popped = d->q->popped;
         pthread_mutex_unlock(&d->q->m);
 
-        // ares_evq_pop returns 0 exactly when used==0 && done, and done was set
+        // anubee_evq_pop returns 0 exactly when used==0 && done, and done was set
         // before this loop started - so an empty queue means the worker is
         // already on its way out. The join below then blocks for at most the
         // last record's processing.
@@ -152,5 +152,5 @@ void ares_drain_progress_join(struct ares_drain_progress *d, pthread_t worker)
         drain_fmt_duration((long)(elapsed / 1000000000ULL), dbuf, sizeof dbuf);
         err_print("[drain:%s] done: %s events in %s\n", d->label, tbuf, dbuf);
     }
-    ares_drain_set_active(0);
+    anubee_drain_set_active(0);
 }

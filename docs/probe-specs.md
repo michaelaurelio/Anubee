@@ -1,10 +1,10 @@
 # Probe specs: one selector grammar for every engine
 
-`ares` has five engines that select targets: `funcs`, `correlate`, `syscalls`, `dump`, `mod`.
+`anubee` has five engines that select targets: `funcs`, `correlate`, `syscalls`, `dump`, `mod`.
 All five read the same spec grammar, via `-e SPEC` (inline, repeatable) and `-F FILE` (spec
 file, repeatable). A spec file can mix targets for several engines. Each engine reads only
 the lines it understands and skips the rest. That's what lets one `.spec` file drive a whole
-`ares trace` capture across engines.
+`anubee trace` capture across engines.
 
 For per-engine flags (`-p`, `-P`, `-o`, ...) see `README.md` / `DOCUMENTATION.md`.
 
@@ -86,7 +86,7 @@ selected library. `syscall:LIBPATTERN!NAME` binds a library specifically to one 
 different syscalls can come from different libraries in the same run:
 
 ```
-ares syscalls -P com.example.app -e 'syscall:libc.so!openat' -e 'syscall:libfoo.so!openat' \
+anubee syscalls -P com.example.app -e 'syscall:libc.so!openat' -e 'syscall:libfoo.so!openat' \
                                   -e 'syscall:libsentinel.so!read'
 ```
 
@@ -96,7 +96,7 @@ Here `openat` is captured only when issued from `libc.so` or `libfoo.so` (multip
 `/regex/`) and splits on the first `!`, same rule as `funcs:`'s `MODULE!FUNC`. So
 `syscall:libc.so!openat` visually parallels `funcs:libc.so!open`.
 
-This is enforced in userspace, not the kernel: `ares syscalls` has no in-kernel notion of
+This is enforced in userspace, not the kernel: `anubee syscalls` has no in-kernel notion of
 "which library issued which syscall," so a scoped run still captures the broader union
 in-kernel (every scoped syscall, from every scoped library) and then silently drops any
 captured event whose own syscall's scope isn't satisfied, using the same stack-based
@@ -143,14 +143,14 @@ lib:libfoo.so                 # read by syscalls (selector) and dump (pattern)
 ```
 
 ```
-ares funcs    -P com.example.app -F myapp.spec -o funcs.jsonl      # reads the fopen line
-ares syscalls -P com.example.app -F myapp.spec -o syscalls.jsonl   # reads syscall:/lib: lines
-ares dump     -P com.example.app -F myapp.spec -o dump.jsonl       # reads the lib: line
+anubee funcs    -P com.example.app -F myapp.spec -o funcs.jsonl      # reads the fopen line
+anubee syscalls -P com.example.app -F myapp.spec -o syscalls.jsonl   # reads syscall:/lib: lines
+anubee dump     -P com.example.app -F myapp.spec -o dump.jsonl       # reads the lib: line
 ```
 
 Real examples: `specs/common-file.spec` and `specs/common-network.spec` mix `funcs:` lines
 with `syscall:` lines. `ARES-Detector/sim/rasp-checks.spec` mixes all three kinds to drive a whole
-`ares trace` run from one file.
+`anubee trace` run from one file.
 
 ## Flag reference
 

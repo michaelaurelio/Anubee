@@ -1,4 +1,4 @@
-# ares — unified Android RASP / malware-analysis tracer.
+# anubee — unified Android RASP / malware-analysis tracer.
 #
 # Single static aarch64 binary with two tracing engines (syscalls = kprobe,
 # funcs = uprobe) behind a subcommand dispatcher. The BPF objects + skeletons are
@@ -13,12 +13,12 @@
 #   sudo apt install libelf-dev:arm64 zlib1g-dev:arm64 libzstd-dev:arm64 liblzma-dev:arm64
 #   git submodule update --init --recursive      # vendored libbpf
 #
-#   make            # build build/ares
+#   make            # build build/anubee
 #   make push       # adb push to /data/local/tmp
-#   make regen-vmlinux   # rebuild vmlinux.h from kernel BTF (ARES_VMLINUX_BTF)
+#   make regen-vmlinux   # rebuild vmlinux.h from kernel BTF (ANUBEE_VMLINUX_BTF)
 #
 # Why partial-link + objcopy: the two engines were independent programs that each
-# own the global namespace (ares exposes bare globals like `verbose`, `skel`,
+# own the global namespace (anubee exposes bare globals like `verbose`, `skel`,
 # `out_print`). We `ld -r` each engine's objects into one relocatable object and
 # localize every symbol except its single `cmd_*` entry, so they coexist in one
 # binary without collisions and with near-zero source edits.
@@ -56,7 +56,7 @@ LIBBPF_DEST := $(abspath $(BUILD)/libbpf)
 LIBBPF_A    := $(LIBBPF_DEST)/lib/libbpf.a
 LIBBPF_INC  := $(LIBBPF_DEST)/include
 
-BIN         := $(BUILD)/ares
+BIN         := $(BUILD)/anubee
 
 # ---- BPF objects + skeletons ----------------------------------------------
 SYSC_BPF_OBJ := $(BUILD)/syscalls.bpf.o
@@ -96,7 +96,7 @@ SYSC_CSRC := $(SRC)/syscalls/syscalls.c
 FUNC_CSRC := $(SRC)/funcs/funcs.c $(SRC)/funcs/funcs_emit.c
 
 # shared library-load tracing module (src/common), linked once; exports only its
-# ares_libtrace_* API (everything else localized, like the engines).
+# anubee_libtrace_* API (everything else localized, like the engines).
 COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/launch.c \
                $(SRC)/common/probe_resolve.c $(SRC)/common/probe_spec_loader.c $(SRC)/common/trace_schema.c \
                $(SRC)/common/emit.c $(SRC)/common/decode.c $(SRC)/common/capabilities.c \
@@ -115,13 +115,13 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
-COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
-               ares_libtrace_emit_lib ares_libtrace_emit_unlib \
-               ares_libtrace_emit_packed apk_list_sos \
+COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
+               anubee_libtrace_emit_lib anubee_libtrace_emit_unlib \
+               anubee_libtrace_emit_packed apk_list_sos \
                proc_mem_open proc_mem_read nterp_name \
-               ares_sh_exec ares_resolve_uid ares_get_pid_uid ares_resolve_component \
-               ares_resolve_pkg_from_pid \
-               ares_launch_app ares_launch_banner \
+               anubee_sh_exec anubee_resolve_uid anubee_get_pid_uid anubee_resolve_component \
+               anubee_resolve_pkg_from_pid \
+               anubee_launch_app anubee_launch_banner \
                is_duplicate \
                parse_custom_probe_spec parse_custom_probe_spec_ex load_probe_spec_file \
                spec_describe \
@@ -129,24 +129,24 @@ COMMON_API  := ares_libtrace_resolve_path ares_libtrace_format_lib \
                resolve_custom_spec_matches_for_path custom_spec_matches_path \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
-               ares_sink_open ares_sink_emit ares_sink_flush \
-               ares_sink_close ares_sink_report \
-               ares_drops_report ares_install_stop_handler ares_round_pow2 \
-               ares_evq_init ares_evq_push ares_evq_pop ares_evq_destroy \
-               ares_drain_progress_begin ares_drain_progress_join \
+               anubee_sink_open anubee_sink_emit anubee_sink_flush \
+               anubee_sink_close anubee_sink_report \
+               anubee_drops_report anubee_install_stop_handler anubee_round_pow2 \
+               anubee_evq_init anubee_evq_push anubee_evq_pop anubee_evq_destroy \
+               anubee_drain_progress_begin anubee_drain_progress_join \
                sha256_init sha256_update sha256_final_hex \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
-               ares_bpf_objects ares_object_writes_target ares_quiet_config_ok \
+               anubee_bpf_objects anubee_object_writes_target anubee_quiet_config_ok \
                seg_vaddr_to_off \
                sym_resolve sym_flush_pid cfi_unwind_snapshot \
-               ares_parse_maps_line ares_module_base_idx ares_map_files_path \
-               ares_stack_snapshot_emit_json \
-               ares_managed_chain_build ares_jcache_put ares_jcache_get \
-               ares_jcache_reset ares_managed_chain ares_emit_cfi_stack_json \
-               ares_is_interp_frame \
-               ares_coverage_report ares_cfi_stop_name \
-               ares_art_naming_disabled \
-               ares_syscall_table ares_syscall_table_count \
+               anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
+               anubee_stack_snapshot_emit_json \
+               anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \
+               anubee_jcache_reset anubee_managed_chain anubee_emit_cfi_stack_json \
+               anubee_is_interp_frame \
+               anubee_coverage_report anubee_cfi_stop_name \
+               anubee_art_naming_disabled \
+               anubee_syscall_table anubee_syscall_table_count \
                validate_pid_or_package validate_have_selector \
                pm_is_glob pm_is_regex pm_match pm_regex \
                install_arg_types install_sock_args arg_fd_mask arg_sock_index arg_count \
@@ -206,11 +206,11 @@ all: $(BIN)
 # ---- vmlinux.h (committed; regenerate manually only on kernel change) ------
 # vmlinux.h is checked in and is the build input; no auto-rule regenerates it.
 # Source BTF defaults to the host's live kernel. Override with a pulled device BTF:
-#   make regen-vmlinux ARES_VMLINUX_BTF=./vmlinux-device.btf
+#   make regen-vmlinux ANUBEE_VMLINUX_BTF=./vmlinux-device.btf
 # See DOCUMENTATION.md — "Regenerating vmlinux.h (kernel BTF)".
-ARES_VMLINUX_BTF ?= /sys/kernel/btf/vmlinux
+ANUBEE_VMLINUX_BTF ?= /sys/kernel/btf/vmlinux
 regen-vmlinux:
-	$(BPFTOOL) btf dump file $(ARES_VMLINUX_BTF) format c > vmlinux.h
+	$(BPFTOOL) btf dump file $(ANUBEE_VMLINUX_BTF) format c > vmlinux.h
 
 # ---- vendored libbpf, cross-built static ----------------------------------
 $(LIBBPF_A):
@@ -242,7 +242,7 @@ $(LIB_BPF_OBJ): $(SRC)/lib/lib.bpf.c vmlinux.h $(LIBBPF_A)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/lib -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(LIB_SKEL): $(LIB_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name ares_lib > $@
+	$(BPFTOOL) gen skeleton $< name anubee_lib > $@
 
 # correlate engine BPF: span stack + entry uprobe + span-gated do_el0_svc kprobe.
 $(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c vmlinux.h $(LIBBPF_A)
@@ -250,7 +250,7 @@ $(CORR_BPF_OBJ): $(SRC)/correlate/correlate.bpf.c vmlinux.h $(LIBBPF_A)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/correlate -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(CORR_SKEL): $(CORR_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name ares_correlate > $@
+	$(BPFTOOL) gen skeleton $< name anubee_correlate > $@
 
 # dump engine BPF: minimal maps + uid gate, then #includes the shared probe.
 $(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c vmlinux.h $(LIBBPF_A)
@@ -258,7 +258,7 @@ $(DUMP_BPF_OBJ): $(SRC)/dump/dump.bpf.c vmlinux.h $(LIBBPF_A)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/dump -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
 $(DUMP_SKEL): $(DUMP_BPF_OBJ)
-	$(BPFTOOL) gen skeleton $< name ares_dump > $@
+	$(BPFTOOL) gen skeleton $< name anubee_dump > $@
 
 # proc-event analyzer BPF: own ring buffer + uid gate + fork/exit tracepoints.
 $(PROC_EVENT_BPF_OBJ): $(SRC)/modules/proc_event.bpf.c vmlinux.h $(LIBBPF_A)
@@ -435,13 +435,13 @@ $(BIN): $(MAIN_OBJ) $(COMMON_PART) $(SYSC_PART) $(FUNC_PART) $(LIB_PART) $(CORR_
 	@echo "built $@"; file $@ 2>/dev/null || true
 
 push: $(BIN)
-	adb push $(BIN) /data/local/tmp/ares
-	adb shell chmod 755 /data/local/tmp/ares
+	adb push $(BIN) /data/local/tmp/anubee
+	adb shell chmod 755 /data/local/tmp/anubee
 
 # Device-tier smoke: push fresh binary, assert each capability attaches + emits
-# real output on the attached rooted device. ARES_TEST_PKG / ARES_TEST_TIMEOUT
+# real output on the attached rooted device. ANUBEE_TEST_PKG / ANUBEE_TEST_TIMEOUT
 # override target + window. See scripts/device-test.sh and the
-# testing-ares-on-device skill.
+# testing-anubee-on-device skill.
 device-test: $(BIN)
 	scripts/device-test.sh $(CAP)
 
@@ -575,11 +575,11 @@ test:
 	$(BUILD)/test_target_registry
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
-	  python3 tools/ares-mcp/test_unified_ingest.py; \
-	  python3 tools/ares-mcp/test_mcp_structured_tools.py; \
-	  python3 tools/ares-mcp/test_incidents.py; \
+	  python3 tools/anubee-mcp/test_unified_ingest.py; \
+	  python3 tools/anubee-mcp/test_mcp_structured_tools.py; \
+	  python3 tools/anubee-mcp/test_incidents.py; \
 	 else \
-	  echo "skip: python3+duckdb not available for ares-mcp ingest test"; \
+	  echo "skip: python3+duckdb not available for anubee-mcp ingest test"; \
 	 fi
 
 clean:

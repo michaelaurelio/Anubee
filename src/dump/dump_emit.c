@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure structured-record builder for ares dump (no libbpf deps, so the host
+// Pure structured-record builder for anubee dump (no libbpf deps, so the host
 // test can link it). SYM1 Phase 3: dump previously had no machine channel at
 // all — see docs/sym1-output-asymmetry.md §3.5.
 #include <linux/types.h>

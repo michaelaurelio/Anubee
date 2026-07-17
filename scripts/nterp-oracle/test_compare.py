@@ -7,11 +7,11 @@ class TestFrameName(unittest.TestCase):
     def test_bare_name_authoritative(self):
         self.assertEqual(compare.parse_frame_name("n0.h$a.a"), ("n0.h$a.a", "auth"))
     def test_unverified_marker_stripped(self):
-        self.assertEqual(compare.parse_frame_name("com.ares.Sample.add?"), ("com.ares.Sample.add", "unverified"))
+        self.assertEqual(compare.parse_frame_name("com.anubee.Sample.add?"), ("com.anubee.Sample.add", "unverified"))
     def test_dexpc_suffix_is_corroborated(self):
         self.assertEqual(compare.parse_frame_name("Foo.bar+0x1a"), ("Foo.bar", "corr"))
 
-class TestLoadAres(unittest.TestCase):
+class TestLoadAnubee(unittest.TestCase):
     def _write(self, lines):
         f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
         for o in lines:
@@ -31,7 +31,7 @@ class TestLoadAres(unittest.TestCase):
                 {"frame":2,"addr":"0x0","symbol":"Detector.run","kind":"interp"},
             ]},
         ])
-        recs = compare.load_ares(events, stacks)
+        recs = compare.load_anubee(events, stacks)
         os.unlink(events); os.unlink(stacks)
         self.assertEqual(len(recs), 1)
         r = recs[0]
@@ -43,7 +43,7 @@ class TestLoadAres(unittest.TestCase):
     def test_syscall_without_stack_id_skipped(self):
         events = self._write([{"type":"syscall","tid":1,"syscall":"read","string_args":{}}])
         stacks = self._write([])
-        recs = compare.load_ares(events, stacks)
+        recs = compare.load_anubee(events, stacks)
         os.unlink(events); os.unlink(stacks)
         self.assertEqual(recs, [])
 

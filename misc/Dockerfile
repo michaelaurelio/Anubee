@@ -1,4 +1,4 @@
-# Hermetic cross-compile environment for ares (static aarch64).
+# Hermetic cross-compile environment for anubee (static aarch64).
 #
 # Base is Debian bookworm because its elfutils still ships a self-contained
 # static libelf.a. (Newer Debian/sid/trixie split helpers into an internal

@@ -13,8 +13,8 @@
 // Also pulls in common/coverage.bpf.h (CR5) for cov_bump()/coverage_stats,
 // used below to count span-depth-cap rejects. Include-guarded, so it's safe
 // even if the including engine TU also includes it directly.
-#ifndef __ARES_SPAN_STACK_BPF_H
-#define __ARES_SPAN_STACK_BPF_H
+#ifndef __ANUBEE_SPAN_STACK_BPF_H
+#define __ANUBEE_SPAN_STACK_BPF_H
 
 #include "common/coverage.bpf.h"
 
@@ -179,4 +179,4 @@ static __always_inline __u64 span_stack_top_id(__u32 tid, __u64 cur_sp)
     return f ? f->span_id : 0;
 }
 
-#endif /* __ARES_SPAN_STACK_BPF_H */
+#endif /* __ANUBEE_SPAN_STACK_BPF_H */

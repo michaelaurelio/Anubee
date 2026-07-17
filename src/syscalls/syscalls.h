@@ -8,16 +8,16 @@
 #define SYSCALLS_H
 
 #include "common/trace_schema.h"
-#include "common/stack_snapshot.h"  /* struct ares_stack_snapshot + ARES_SNAP_* */
+#include "common/stack_snapshot.h"  /* struct anubee_stack_snapshot + ANUBEE_SNAP_* */
 
 #define SYSC_MAX_STACK_DEPTH 32
 #define SYSC_MAX_RANGES      8
 #define SYSC_SYSCALL_NARGS   6
 
 /* SYSC_SNAP_MAX/SMALL kept as aliases for any downstream code that used the old
- * names; the canonical constants are now ARES_SNAP_MAX/SMALL in stack_snapshot.h. */
-#define SYSC_SNAP_MAX   ARES_SNAP_MAX
-#define SYSC_SNAP_SMALL ARES_SNAP_SMALL
+ * names; the canonical constants are now ANUBEE_SNAP_MAX/SMALL in stack_snapshot.h. */
+#define SYSC_SNAP_MAX   ANUBEE_SNAP_MAX
+#define SYSC_SNAP_SMALL ANUBEE_SNAP_SMALL
 
 /* Inline capture of string (const char *) arguments. We resolve at most the
  * first SYSC_STR_SLOTS args (covers every path-taking syscall), each up to
@@ -59,9 +59,9 @@ struct syscalls_syscall_event {
 			    * keyed on arm64 numbers (CR2). */
 };
 
-/* One stack snapshot — now the shared struct ares_stack_snapshot from
+/* One stack snapshot — now the shared struct anubee_stack_snapshot from
  * common/stack_snapshot.h. Alias kept so old callers in this engine still compile. */
-typedef struct ares_stack_snapshot syscalls_stack_snapshot;
+typedef struct anubee_stack_snapshot syscalls_stack_snapshot;
 
 /* Executable file-backed mappings (uprobe_mmap) and unmaps (uprobe_munmap) are
  * captured by the shared probe in common/lib_trace.bpf.h and arrive as

@@ -7,13 +7,13 @@ set -eu
 root=$(dirname "$0")/..
 
 # Symbols the header declares, from two shapes:
-#  1. ARES_ENGINE_DRIVER(e) invocations -> e_setup/e_run/e_teardown.
+#  1. ANUBEE_ENGINE_DRIVER(e) invocations -> e_setup/e_run/e_teardown.
 #     (excludes the macro's own #define line, which also matches the pattern)
 #  2. Standalone prototypes at column 0, e.g. "int correlate_attach(pid_t pid);"
 #     (the macro's own body lines are indented, so this doesn't double-count them)
 hdr_engines=$(grep -v '^#define' "$root/src/common/engine_driver.h" \
-              | grep -oE 'ARES_ENGINE_DRIVER\([a-z]+\)' \
-              | sed -E 's/ARES_ENGINE_DRIVER\(([a-z]+)\)/\1/')
+              | grep -oE 'ANUBEE_ENGINE_DRIVER\([a-z]+\)' \
+              | sed -E 's/ANUBEE_ENGINE_DRIVER\(([a-z]+)\)/\1/')
 hdr_macro_syms=$(for e in $hdr_engines; do printf '%s_setup\n%s_run\n%s_teardown\n' "$e" "$e" "$e"; done)
 hdr_standalone_syms=$(grep -E '^(int|void)[[:space:]]' "$root/src/common/engine_driver.h" \
               | sed -E 's/^(int|void)[[:space:]]+\**([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\(.*/\2/')

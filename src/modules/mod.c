@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod` — dispatcher for named analyzers.
+// `anubee mod` — dispatcher for named analyzers.
 //
 // Owns arg-parse, uid resolve, sink, stop handler, app launch, ring-poll,
 // and teardown order. Each analyzer owns only its own BPF skeleton + event
@@ -22,11 +22,11 @@
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
 
 static volatile sig_atomic_t exiting = 0;
-static struct ares_sink g_sink;
+static struct anubee_sink g_sink;
 
 // ---- analyzer registry -------------------------------------------------------
 
-static const ares_analyzer_t *const registry[] = {
+static const anubee_analyzer_t *const registry[] = {
     &analyzer_proc_event,
     &analyzer_execve,
     &analyzer_prop_read,
@@ -39,7 +39,7 @@ static const ares_analyzer_t *const registry[] = {
     NULL,
 };
 
-static const ares_analyzer_t *find_analyzer(const char *name)
+static const anubee_analyzer_t *find_analyzer(const char *name)
 {
     for (int i = 0; registry[i]; i++)
         if (strcmp(registry[i]->name, name) == 0)
@@ -48,19 +48,19 @@ static const ares_analyzer_t *find_analyzer(const char *name)
 }
 
 // MT3: out to `out` so callers can choose stdout (explicit discovery: bare
-// `ares mod`, --list, --help) vs stderr (error paths, e.g. unknown analyzer
+// `anubee mod`, --list, --help) vs stderr (error paths, e.g. unknown analyzer
 // name). Loudness reuses the same capabilities.c lookup the dispatcher itself
 // consults before running an analyzer (see the LOUD/stealthy print below) —
 // one source of truth, not a second copy of the loud/quiet table.
 static void list_analyzers(FILE *out)
 {
-    fprintf(out, "available analyzers — run 'ares mod <name>' "
-                  "('ares mod <name> --help' for flags):\n\n");
+    fprintf(out, "available analyzers — run 'anubee mod <name>' "
+                  "('anubee mod <name> --help' for flags):\n\n");
     for (int i = 0; registry[i]; i++) {
         char mod_key[64];
         snprintf(mod_key, sizeof(mod_key), "mod:%s", registry[i]->name);
         fprintf(out, "  %-16s %s\n    %s\n\n", registry[i]->name,
-                ares_object_writes_target(mod_key) ? "[LOUD]" : "[stealth]",
+                anubee_object_writes_target(mod_key) ? "[LOUD]" : "[stealth]",
                 registry[i]->description);
     }
 }
@@ -68,9 +68,9 @@ static void list_analyzers(FILE *out)
 // ---- argp parser -------------------------------------------------------------
 
 static const char mod_doc[] =
-    "Run an ares analyzer by name. Each analyzer is a self-contained specialized\n"
+    "Run an anubee analyzer by name. Each analyzer is a self-contained specialized\n"
     "tracing package with its own BPF object.\v"
-    "Run 'ares mod <name> --help' for per-analyzer detail.\n";
+    "Run 'anubee mod <name> --help' for per-analyzer detail.\n";
 static const char mod_args_doc[] = "NAME [options]";
 
 struct mod_args {
@@ -119,7 +119,7 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
         if (a->nname < 16) a->names[a->nname++] = arg;
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
-    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+    case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_END:
         if (a->nname == 0)               // pull ALL mod: specs, not just the first
@@ -165,7 +165,7 @@ static void print_ignored_kind_warning(const custom_probe_spec_t *specs, int nsp
 }
 
 // MT3: -l/--list needs to short-circuit before argp_parse, same reason
-// ares_wants_help (engine_args.h) is pre-scanned rather than handled purely
+// anubee_wants_help (engine_args.h) is pre-scanned rather than handled purely
 // via argp's own dispatch — ARGP_KEY_END below rejects a run with no analyzer
 // name, which --list-alone would otherwise trip.
 static bool mod_wants_list(int argc, char **argv)
@@ -180,20 +180,20 @@ static bool mod_wants_list(int argc, char **argv)
 
 int cmd_mod(int argc, char **argv)
 {
-    // MT2/MT3: bare `ares mod`, `ares mod --list`, and `ares mod --help` used
+    // MT2/MT3: bare `anubee mod`, `anubee mod --list`, and `anubee mod --help` used
     // to give no reliable indication of what NAME can be (main.c's usage text
     // claims --help lists analyzers, but argp has no visibility into
     // registry[] to do that itself). List up front, to stdout since this is
     // explicit discovery, not an error path. For --help, argp still runs
     // afterward and prints its own usage/options.
     if (argc < 2 || mod_wants_list(argc, argv)) { list_analyzers(stdout); return 0; }
-    if (ares_wants_help(argc, argv)) list_analyzers(stdout);
+    if (anubee_wants_help(argc, argv)) list_analyzers(stdout);
 
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
     print_ignored_kind_warning(ma.specs, ma.nspec); // "before run"
 
-    const ares_analyzer_t *ans[16];
+    const anubee_analyzer_t *ans[16];
     int nan = ma.nname;
     for (int i = 0; i < nan; i++) {
         ans[i] = find_analyzer(ma.names[i]);
@@ -206,14 +206,14 @@ int cmd_mod(int argc, char **argv)
 
     // AA2 fix: classify + print loudness here, before anything below can load or
     // attach a BPF object — so a LOUD analyzer's uprobe is never live before the
-    // operator sees the warning. ares_quiet_config_ok (not the direct
-    // ares_object_writes_target call) so the one runtime-assertion helper in
+    // operator sees the warning. anubee_quiet_config_ok (not the direct
+    // anubee_object_writes_target call) so the one runtime-assertion helper in
     // capabilities.h has a real caller.
     for (int i = 0; i < nan; i++) {
         char mod_key[64];
         snprintf(mod_key, sizeof(mod_key), "mod:%s", ans[i]->name);
         const char *loaded[1] = { mod_key };
-        if (!ares_quiet_config_ok(loaded, 1))
+        if (!anubee_quiet_config_ok(loaded, 1))
             printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ans[i]->name);
         else
             printf("[mod]   > stealthy: %s uses kernel-only probes\n", ans[i]->name);
@@ -222,9 +222,9 @@ int cmd_mod(int argc, char **argv)
     int uid;
     if (ma.tgt.n > 0) {
         // ponytail: siblings → grab UID from first PID; precise → uid=0 (BPF gate uses TGID)
-        uid = ma.tgt.siblings ? ares_get_pid_uid(ma.tgt.pids[0]) : 0;
+        uid = ma.tgt.siblings ? anubee_get_pid_uid(ma.tgt.pids[0]) : 0;
     } else {
-        uid = ares_resolve_uid(ma.pkg);
+        uid = anubee_resolve_uid(ma.pkg);
         if (uid < 0) {
             fprintf(stderr, "mod: could not resolve UID for '%s' (installed? run as root?)\n", ma.pkg);
             return 1;
@@ -234,17 +234,17 @@ int cmd_mod(int argc, char **argv)
     const char *pkg_for_ctx = ma.pkg;
     char resolved_pkg[256];
     if (!pkg_for_ctx && ma.tgt.n > 0) {
-        if (ares_resolve_pkg_from_pid(ma.tgt.pids[0], resolved_pkg, sizeof(resolved_pkg)) == 0)
+        if (anubee_resolve_pkg_from_pid(ma.tgt.pids[0], resolved_pkg, sizeof(resolved_pkg)) == 0)
             pkg_for_ctx = resolved_pkg;
     }
 
-    if (ma.c.output_file && ares_sink_open(&g_sink, ma.c.output_file, "event", 1) != 0) {
+    if (ma.c.output_file && anubee_sink_open(&g_sink, ma.c.output_file, "event", 1) != 0) {
         fprintf(stderr, "mod: cannot open '%s': %s\n", ma.c.output_file, strerror(errno));
         return 1;
     }
 
     int quiet = ma.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
-    struct ares_mod_ctx mc = {
+    struct anubee_mod_ctx mc = {
         .sink    = ma.c.output_file ? &g_sink : NULL,
         .quiet   = quiet,
         .verbose = ma.c.verbose,
@@ -252,7 +252,7 @@ int cmd_mod(int argc, char **argv)
         .pkg     = pkg_for_ctx,
     };
 
-    libbpf_set_print(ares_libbpf_quiet);
+    libbpf_set_print(anubee_libbpf_quiet);
 
     struct ring_buffer *rbs[16];
     int nrb = 0;
@@ -263,24 +263,24 @@ int cmd_mod(int argc, char **argv)
             for (int j = nrb - 1; j >= 0; j--)
                 ans[j]->teardown();
             if (ma.c.output_file) {
-                ares_sink_close(&g_sink);
-                ares_sink_report(&g_sink);
+                anubee_sink_close(&g_sink);
+                anubee_sink_report(&g_sink);
             }
             return 1;
         }
         nrb++;
     }
 
-    ares_install_stop_handler(&exiting);
+    anubee_install_stop_handler(&exiting);
     if (ma.pkg) {
-        ares_launch_banner(ma.pkg, uid);
-        if (ares_launch_app(ma.pkg, ma.activity, NULL) != 0) {
+        anubee_launch_banner(ma.pkg, uid);
+        if (anubee_launch_app(ma.pkg, ma.activity, NULL) != 0) {
             fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
             for (int j = nrb - 1; j >= 0; j--)
                 ans[j]->teardown();
             if (ma.c.output_file) {
-                ares_sink_close(&g_sink);
-                ares_sink_report(&g_sink);
+                anubee_sink_close(&g_sink);
+                anubee_sink_report(&g_sink);
             }
             return 1;
         }
@@ -288,7 +288,7 @@ int cmd_mod(int argc, char **argv)
 
     printf("tracing uid %d (%d analyzer%s) ... Ctrl-C to stop\n",
            uid, nan, nan == 1 ? "" : "s");
-    ares_rb_poll_multi(rbs, nrb, &exiting);
+    anubee_rb_poll_multi(rbs, nrb, &exiting);
 
     for (int i = nan - 1; i >= 0; i--) {
         // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE
@@ -299,15 +299,15 @@ int cmd_mod(int argc, char **argv)
         if (ans[i]->print_summary) ans[i]->print_summary();
         if (ans[i]->emit_summary && g_sink.f) ans[i]->emit_summary(&g_sink);
 
-        struct ares_coverage cov = { .engine = ans[i]->name };
+        struct anubee_coverage cov = { .engine = ans[i]->name };
         cov.ring_drops = drops;
-        ares_coverage_report(&g_sink, &cov);
+        anubee_coverage_report(&g_sink, &cov);
     }
     print_ignored_kind_warning(ma.specs, ma.nspec); // "after run" repeat, see the "before run" call above
 
     if (ma.c.output_file) {
-        ares_sink_close(&g_sink);
-        ares_sink_report(&g_sink);
+        anubee_sink_close(&g_sink);
+        anubee_sink_report(&g_sink);
     }
 
     return 0;

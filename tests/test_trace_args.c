@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Host check for the `ares trace` flat flag router and argv builder.
+// Host check for the `anubee trace` flat flag router and argv builder.
 // Markers (--syscalls/--funcs/--lib sections) are gone: every flag is
 // recognized by its own letter/name; KIND-routing of -e/-F specs (which
 // engine funcs:/syscall:/lib:/mod: land on) happens in trace.c, which links

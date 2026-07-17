@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Pure managed-frame chain builder + bounded stack_id cache. No libbpf/symbolizer
-// deps so the host test links it directly. The impure resolver ares_managed_chain
-// and ares_emit_cfi_stack_json live in symbolize.c (they need sym_resolve/CFI).
+// deps so the host test links it directly. The impure resolver anubee_managed_chain
+// and anubee_emit_cfi_stack_json live in symbolize.c (they need sym_resolve/CFI).
 #include "common/managed_frame.h"
 #include "common/emit.h"
 #include <stdlib.h>
@@ -17,7 +17,7 @@ static const char *managed_method(const char *sym)
     // The JNI bridge lives in boot.oat, so it resolves as
     // "boot.oat!art_jni_trampoline+.." and would match the .oat! test below — but
     // it is a native->managed bridge, not a Java method. Exclude it, mirroring the
-    // kind-classifier precedence in ares_emit_cfi_stack_json (jni-trampoline first).
+    // kind-classifier precedence in anubee_emit_cfi_stack_json (jni-trampoline first).
     if (strstr(sym, "art_jni_trampoline")) return NULL;
     if (!strstr(sym, ".oat!") && !strstr(sym, ".odex!") && !strstr(sym, ".vdex!"))
         return NULL;
@@ -27,7 +27,7 @@ static const char *managed_method(const char *sym)
 
 // ART interpreter entrypoints — a Java method is being interpreted here and has
 // no native frame of its own. Shared by syscalls.c and symbolize.c.
-int ares_is_interp_frame(const char *sym)
+int anubee_is_interp_frame(const char *sym)
 {
     return sym && (strstr(sym, "ToInterpreterBridge") ||
                    strstr(sym, "nterp_helper")         ||
@@ -36,7 +36,7 @@ int ares_is_interp_frame(const char *sym)
                    strstr(sym, "artInterpreterToCompiledCodeBridge"));
 }
 
-int ares_managed_chain_build(const char *const *syms, int n,
+int anubee_managed_chain_build(const char *const *syms, int n,
                              const char *const *nterp_names, int nterp_n,
                              char *out, size_t cap)
 {
@@ -86,12 +86,12 @@ int ares_managed_chain_build(const char *const *syms, int n,
 // footprint; guarded by a mutex because the snapshot-drain thread writes while
 // the record-emit thread reads.
 #define JC_SLOTS 8192u          // power of two
-#define JC_FRAG  ARES_JCACHE_FRAG   // max fragment bytes incl. NUL (see managed_frame.h)
+#define JC_FRAG  ANUBEE_JCACHE_FRAG   // max fragment bytes incl. NUL (see managed_frame.h)
 struct jc_ent { uint64_t id; int used; char frag[JC_FRAG]; };
 static struct jc_ent g_jc[JC_SLOTS];
 static pthread_mutex_t g_jc_lock = PTHREAD_MUTEX_INITIALIZER;
 
-void ares_jcache_put(uint64_t stack_id, const char *frag)
+void anubee_jcache_put(uint64_t stack_id, const char *frag)
 {
     if (!frag) return;
     size_t len = strlen(frag);
@@ -104,7 +104,7 @@ void ares_jcache_put(uint64_t stack_id, const char *frag)
     pthread_mutex_unlock(&g_jc_lock);
 }
 
-int ares_jcache_get(uint64_t stack_id, char *out, size_t cap)
+int anubee_jcache_get(uint64_t stack_id, char *out, size_t cap)
 {
     int found = 0;
     pthread_mutex_lock(&g_jc_lock);
@@ -120,7 +120,7 @@ int ares_jcache_get(uint64_t stack_id, char *out, size_t cap)
     return found;
 }
 
-void ares_jcache_reset(void)
+void anubee_jcache_reset(void)
 {
     pthread_mutex_lock(&g_jc_lock);
     memset(g_jc, 0, sizeof(g_jc));

@@ -1,5 +1,5 @@
-#ifndef ARES_CFI_UNWIND_H
-#define ARES_CFI_UNWIND_H
+#ifndef ANUBEE_CFI_UNWIND_H
+#define ANUBEE_CFI_UNWIND_H
 #include <stdint.h>
 #include <stddef.h>
 
@@ -123,7 +123,7 @@ struct cfi_step_diag {
  * bits. Masking to the low 48 bits recovers a signed pointer AND is a no-op on an
  * unsigned one (high bits already clear) — so it is safe to apply unconditionally
  * whenever the CFI row marks the RA as signed. */
-static inline uint64_t ares_pac_strip(uint64_t ptr) { return ptr & 0x0000FFFFFFFFFFFFull; }
+static inline uint64_t anubee_pac_strip(uint64_t ptr) { return ptr & 0x0000FFFFFFFFFFFFull; }
 
 /* CFA + per-register rules at one PC row. CFA = regval(cfa_reg) + cfa_off,
  * where regval(31)=sp, regval(r)=x[r] otherwise. */

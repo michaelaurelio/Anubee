@@ -1,14 +1,14 @@
-# `ares mod`: analyzers
+# `anubee mod`: analyzers
 
-`ares mod <name>` runs a detection package built for one behavior: a
+`anubee mod <name>` runs a detection package built for one behavior: a
 lightweight, standalone BPF object, instead of a general-purpose tracer
 you'd have to hand-build with `funcs`/`correlate` specs.
 
 ```sh
-ares mod --list                                        # list available analyzers
-ares mod massdelete-detect -P com.example.app -o out.jsonl
-ares mod execve -p 12345                                # attach to a running PID
-ares mod file-access -m file-access -m execve -P com.example.app   # run several at once
+anubee mod --list                                        # list available analyzers
+anubee mod massdelete-detect -P com.example.app -o out.jsonl
+anubee mod execve -p 12345                                # attach to a running PID
+anubee mod file-access -m file-access -m execve -P com.example.app   # run several at once
 ```
 
 | Flag | Meaning |
@@ -47,7 +47,7 @@ builds and installs a minimal trigger app for this; it needs **two terminals**:
 
 **Terminal A** (leave it running: it blocks with no output until Terminal B kills it, that's expected):
 ```sh
-adb shell "su -c '/data/local/tmp/ares mod massdelete-detect -P dev.ares.massdeleteapp -o /data/local/tmp/burst.jsonl'"
+adb shell "su -c '/data/local/tmp/anubee mod massdelete-detect -P dev.anubee.massdeleteapp -o /data/local/tmp/burst.jsonl'"
 ```
 
 **Terminal B:**
@@ -56,15 +56,15 @@ adb shell "su -c '/data/local/tmp/ares mod massdelete-detect -P dev.ares.massdel
 scripts/massdeleteapp/build.sh install
 
 # 2. push the trigger binary
-adb push build/ares_massdelete_gen /data/local/tmp/ares_massdelete_gen
-adb shell chmod 755 /data/local/tmp/ares_massdelete_gen
+adb push build/anubee_massdelete_gen /data/local/tmp/anubee_massdelete_gen
+adb shell chmod 755 /data/local/tmp/anubee_massdelete_gen
 
 # 3. find the PID Terminal A is running as (NOT the UID from step 1)
-adb shell "su -c 'ps -ef | grep \"ares mod\" | grep -v grep'"
+adb shell "su -c 'ps -ef | grep \"anubee mod\" | grep -v grep'"
 
 # 4. trigger the burst AS the app's own UID
 adb shell "su -c 'mkdir -p /sdcard/Download/burst_test'"
-adb shell "su -c 'su <UID> -c \"/data/local/tmp/ares_massdelete_gen /sdcard/Download/burst_test\"'"
+adb shell "su -c 'su <UID> -c \"/data/local/tmp/anubee_massdelete_gen /sdcard/Download/burst_test\"'"
 
 # 5. stop Terminal A by PID (Ctrl-C doesn't reliably reach a non-pty adb shell)
 adb shell "su -c 'kill -INT <PID>'"

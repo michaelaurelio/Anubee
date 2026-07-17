@@ -1,13 +1,13 @@
-# ares — technical documentation
+# anubee — technical documentation
 
-Maintainer-facing notes on how ares is put together, how each engine works, the
+Maintainer-facing notes on how anubee is put together, how each engine works, the
 trace schema, the MCP server, and the roadmap for consolidating duplicated code.
 For user-facing build/usage instructions see [README.md](README.md).
 
-ares is the merger of two previously separate tools — a kprobe syscall tracer
-(formerly *heimdall*) and a uprobe function tracer (formerly *ares-tracer*) — into
+anubee is the merger of two previously separate tools — a kprobe syscall tracer
+(formerly *heimdall*) and a uprobe function tracer (formerly *anubee-tracer*) — into
 one binary with a shared build, a type-discriminated trace schema, and one MCP
-server. The syscalls engine now uses `ARES_*` naming and `syscalls.*` source files
+server. The syscalls engine now uses `ANUBEE_*` naming and `syscalls.*` source files
 (rename completed).
 
 ---
@@ -16,7 +16,7 @@ server. The syscalls engine now uses `ARES_*` naming and `syscalls.*` source fil
 
 ```mermaid
 flowchart TD
-    ares["ares — single static aarch64 binary"]
+    anubee["anubee — single static aarch64 binary"]
     main["src/main.c — subcommand dispatch"]
     syscalls["syscalls — src/syscalls/<br/>kprobe syscall engine<br/>+ own BPF skeleton"]
     funcs["funcs — src/funcs/<br/>uprobe function engine<br/>+ own BPF skeleton"]
@@ -25,11 +25,11 @@ flowchart TD
     correlate["correlate — src/correlate/<br/>uprobe + span-gated do_el0_svc kprobe<br/>(LOUD) + own BPF skeleton"]
     tracecmd["trace — src/trace/<br/>coordinator: drives syscalls+funcs+lib<br/>from one launch (LOUD if funcs used, no own BPF)"]
     mod["mod — src/modules/<br/>analyzer dispatcher (proc-event · execve · prop-read)<br/>each analyzer owns its own BPF skeleton"]
-    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + ares_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter)<br/>cfi_unwind_snapshot (CFI-unwind a frozen snapshot across modules; emits cfi_stack records)"]
+    common["src/common — shared core<br/>lib_trace (mmap/maps/'[lib]') · proc_mem · launch (UID/spawn)<br/>probe_resolve (spec→target) · span_stack.bpf.h (per-tid spans)<br/>emit (JSON serializer + anubee_sink file output)<br/>runtime.h (stop/drops/rb-poll) · uid_filter.bpf.h (BPF UID gating)<br/>maps (shared /proc/&lt;pid&gt;/maps line parser — all 6 consumers)<br/>symbolize (call-stack resolver: dynsym/debugdata/JIT/vDSO/APK · LRU-bounded · PROC_EXIT-flushed)<br/>stack_snapshot (shared BPF snapshot + JSON emitter — used by syscalls + funcs)<br/>dwarf + cfi_unwind (DWARF .debug_frame parser + CFI rule interpreter)<br/>cfi_unwind_snapshot (CFI-unwind a frozen snapshot across modules; emits cfi_stack records)"]
     trace["JSONL trace"]
-    mcp["host: tools/ares-mcp (DuckDB + MCP)"]
+    mcp["host: tools/anubee-mcp (DuckDB + MCP)"]
 
-    ares --> main
+    anubee --> main
     main --> syscalls
     main --> funcs
     main --> lib
@@ -74,19 +74,19 @@ flowchart TD
   once in `src/common/lib_trace.*` and are used by all five engines. The BPF probe
   is *source*-shared (`#include`d into each engine's own skeleton, preserving the
   per-engine-BPF firewall); the userspace half is linked once as `common.part.o`,
-  exporting only its `ares_libtrace_*` API. See §9.
+  exporting only its `anubee_libtrace_*` API. See §9.
 - **Engine-runtime plumbing is shared, not duplicated.** `src/common/runtime.{c,h}`
-  provides `ares_install_stop_handler` (2-stage SIGINT/SIGTERM → flag/`_exit(130)`),
-  `ares_drops_report` (unified teardown tally), `ares_round_pow2` (BPF ring sizing),
-  and the BPF-dependent inline helpers `ares_libbpf_quiet` / `ares_drops_read` /
-  `ares_rb_poll_until` / `ares_rb_poll_until_cb` (all gated on `__LIBBPF_LIBBPF_H` so
-  the header is host-testable without libbpf). `ares_rb_poll_until_cb` is the shared
+  provides `anubee_install_stop_handler` (2-stage SIGINT/SIGTERM → flag/`_exit(130)`),
+  `anubee_drops_report` (unified teardown tally), `anubee_round_pow2` (BPF ring sizing),
+  and the BPF-dependent inline helpers `anubee_libbpf_quiet` / `anubee_drops_read` /
+  `anubee_rb_poll_until` / `anubee_rb_poll_until_cb` (all gated on `__LIBBPF_LIBBPF_H` so
+  the header is host-testable without libbpf). `anubee_rb_poll_until_cb` is the shared
   ring-buffer poll loop used by all five engines: it accepts an optional per-iteration
   tick callback for periodic work (e.g. the `syscalls` drops report) and returns the
-  final poll error. `ares_rb_poll_until` is the no-callback wrapper used by the three
+  final poll error. `anubee_rb_poll_until` is the no-callback wrapper used by the three
   simple engines (`lib`/`dump`/`correlate`).
 - **The decoupled drain queue is shared, not duplicated.** `src/common/evqueue.{c,h}`
-  provides `struct ares_evq` — a SPSC byte ring with `[4-byte len][payload]` framing,
+  provides `struct anubee_evq` — a SPSC byte ring with `[4-byte len][payload]` framing,
   cond-var handoff, and a `dropped` counter. Both the `syscalls` and `funcs` engines
   use it to decouple the ring-buffer drain thread from the heavy per-event work
   (symbolization, JSON emit). The kernel ring stays empty; bursts are absorbed in RAM.
@@ -101,9 +101,9 @@ flowchart TD
   refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
   (prevents unbounded growth on fork-heavy traces); the LRU bound is the always-on
   eviction backstop. For prompt per-exit flushing via `sym_flush_pid`, run
-  `ares mod proc-event` alongside. The symbol result hash
+  `anubee mod proc-event` alongside. The symbol result hash
   is bounded at `SC_MAX_CAP=256k` entries (clears and rebuilds at the ceiling).
-  The line parser is shared: `src/common/maps.{c,h}` exposes `ares_parse_maps_line`
+  The line parser is shared: `src/common/maps.{c,h}` exposes `anubee_parse_maps_line`
   and is used by all six `/proc/<pid>/maps` consumers across the codebase.
   `funcs` previously had a simpler local resolver (`lookup_caller`) that only
   produced module+offset with no symbol names; the merge gives `funcs` real function
@@ -121,11 +121,11 @@ flowchart TD
   take `-P` directly.
 - **The device/launch layer is shared, not duplicated.** `sh_exec` (run an Android
   shell command), `resolve_uid` (app UID from its data dir), `resolve_component`
-  (launchable activity), and `ares_launch_app` (the canonical clean relaunch:
+  (launchable activity), and `anubee_launch_app` (the canonical clean relaunch:
   force-stop → wait-for-stop → `am start -S -n <component>`; optionally writes
   the launched PID into a `pid_t *out_pid` out-param) live once in
-  `src/common/launch.*` as `ares_*` and are used by all five engines. They are
-  linked once into `common.part.o`, exporting only the `ares_*` API (see
+  `src/common/launch.*` as `anubee_*` and are used by all five engines. They are
+  linked once into `common.part.o`, exporting only the `anubee_*` API (see
   `COMMON_API` in the Makefile).
 - **All five tracing engines are split into setup/run/teardown phases.**
   Each engine's `cmd_<engine>` entry is a thin wrapper over
@@ -133,21 +133,21 @@ flowchart TD
   *before* the app launch), `<engine>_run(stop)` (the ring-buffer poll loop, exits
   when the shared `volatile sig_atomic_t *stop` is set), and
   `<engine>_teardown()`. The launch is owned by the caller (the wrapper standalone,
-  or a combined runner) via `ares_launch_app`, and `struct ares_run_ctx`
+  or a combined runner) via `anubee_launch_app`, and `struct anubee_run_ctx`
   (`src/common/launch.h`) carries a pre-resolved UID + package name into each
   `*_setup`. Standalone behavior is unchanged; the split exists so engines can be
   armed, launched once, and polled together. The `trace` runner drives
   `syscalls` + `funcs` + `lib` + `dump` concurrently from one launch, or one
   PID-attach via top-level `-p` (Phase 3d: `trace` injects `-p <csv>` into each
   requested engine's own argv and skips the launch — each engine already arms
-  `target_pids` itself from `-p`, so no `ares_run_ctx`/`launch.h` change was
+  `target_pids` itself from `-p`, so no `anubee_run_ctx`/`launch.h` change was
   needed). `correlate` is now wired into `trace` too (GA2 complete): unlike the
   other four, its uprobe attach needs the launched PID, only known post-launch,
   so `correlate_setup` no longer launches internally — it now honors `rc->pkg`
   pre-fill like the others and arms everything PID-independent, and a 5th public
   function, `correlate_attach(pid)`, does the post-launch uprobe attach. Both
   `cmd_correlate` (standalone) and `trace`'s coordinator call
-  `ares_launch_app(..., &pid)` themselves and then `correlate_attach(pid)` right
+  `anubee_launch_app(..., &pid)` themselves and then `correlate_attach(pid)` right
   after — `correlate_attach` is a no-op in `-p` attach mode, where PIDs are
   already known at setup time and attached there instead.
   The driver contract itself (`<engine>_setup`/`_run`/`_teardown` signatures) is
@@ -191,9 +191,9 @@ former `main()` to its `cmd_*` name.
 2. **BPF objects + skeletons** — built with host clang (BPF is arch-neutral; CO-RE
    relocates against the device kernel at load). One skeleton per engine (five):
    - `build/syscalls.skel.h` (name `syscalls`)
-   - `build/lib.skel.h` (name `ares_lib`)
-   - `build/correlate.skel.h` (name `ares_correlate`)
-   - `build/dump.skel.h` (name `ares_dump`)
+   - `build/lib.skel.h` (name `anubee_lib`)
+   - `build/correlate.skel.h` (name `anubee_correlate`)
+   - `build/dump.skel.h` (name `anubee_dump`)
    - `build/funcs.skel.h` (name `funcs_bpf`) — `funcs.c` includes it via
      `"funcs.skel.h"` (resolved by `-I$(BUILD)`). (`funcs.bpf.c` `#include`s the
      module `.bpf.c` files, so it is a single BPF compilation unit.)
@@ -224,10 +224,10 @@ do not. Check on the device:
 
     adb shell ls -l /sys/kernel/btf/vmlinux
 
-**From the target device (recommended — types match the kernel ARES runs on):**
+**From the target device (recommended — types match the kernel ANUBEE runs on):**
 
     adb pull /sys/kernel/btf/vmlinux vmlinux-device.btf
-    make regen-vmlinux ARES_VMLINUX_BTF=vmlinux-device.btf
+    make regen-vmlinux ANUBEE_VMLINUX_BTF=vmlinux-device.btf
 
 **From the host kernel** (most modern distros — Ubuntu 20.10+, Debian 11+, Fedora —
 expose `/sys/kernel/btf/vmlinux`):
@@ -238,7 +238,7 @@ expose `/sys/kernel/btf/vmlinux`):
 DWARF, using `pahole` (Debian/Ubuntu `dwarves` package), then point the override at it:
 
     pahole --btf_encode_detached vmlinux.btf vmlinux
-    make regen-vmlinux ARES_VMLINUX_BTF=vmlinux.btf
+    make regen-vmlinux ANUBEE_VMLINUX_BTF=vmlinux.btf
 
 **CO-RE note:** prefer the device kernel's BTF. CO-RE relocations tolerate a
 host/target type mismatch as long as every field the BPF code reads exists in the BTF
@@ -267,10 +267,10 @@ expensive one:
    adb link doesn't stall the run) and per capability asserts it attaches and emits
    real output: `lib` → `[lib]` lines including bionic `libc.so`; `syscalls` → the
    attach banner or live `[syscall] > [CALL]`/`[RET]` events (SYM1, was `==>`/`<==`).
-   Knobs: `ARES_TEST_PKG`,
-   `ARES_TEST_TIMEOUT`. Three non-obvious device facts are baked in (and documented
-   in the `testing-ares-on-device` skill): run ares in its **own** `su -c` (chaining
-   `am force-stop; ares` drops it into a reduced context → BPF `-EPERM`); ares handles
+   Knobs: `ANUBEE_TEST_PKG`,
+   `ANUBEE_TEST_TIMEOUT`. Three non-obvious device facts are baked in (and documented
+   in the `testing-anubee-on-device` skill): run anubee in its **own** `su -c` (chaining
+   `am force-stop; anubee` drops it into a reduced context → BPF `-EPERM`); anubee handles
    both **SIGINT and SIGTERM** via the shared 2-stage stop handler (`runtime.c`);
    `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
@@ -279,13 +279,13 @@ expensive one:
    `make device-test`) — for capabilities where a synthetic trigger's fidelity to
    the real threat model is itself in question (`mod massdelete-detect`: does a
    real app's file mutation, not a purpose-built binary, actually get seen?).
-   `scripts/massdeleteapp/build.sh install` builds and installs `dev.ares.massdeleteapp`, a
+   `scripts/massdeleteapp/build.sh install` builds and installs `dev.anubee.massdeleteapp`, a
    minimal code-free APK (`android:hasCode="false"`, references the stock
    `android.app.Activity` by name — no dex compiler needed, see the script's
    header for why one isn't available in this toolchain), grants it
    `MANAGE_EXTERNAL_STORAGE`, and prints its UID. Attach with
-   `ares mod massdelete-detect -P dev.ares.massdeleteapp -o <file>`, then trigger file
-   activity as that exact UID with `su <uid> -c scripts/ares_massdelete_gen
+   `anubee mod massdelete-detect -P dev.anubee.massdeleteapp -o <file>`, then trigger file
+   activity as that exact UID with `su <uid> -c scripts/anubee_massdelete_gen
    <target-dir>` (root allows arbitrary-UID exec directly — no `run-as` dance).
    This is also how the MediaStore-trash blind spot noted in §6.6 was found:
    real file managers routing "delete" through `IS_TRASHED` never reached
@@ -297,7 +297,7 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
 `src/common/engine_args.h` (`struct target_args`, `TARGET_ARGP_OPTIONS`, `parse_target_arg`):
 
 - **`-P PACKAGE`** (launch mode, default): resolves the package UID, arms `target_uids`
-  (or `target_pids` if `-p` accompanies), then calls `ares_launch_app` to force-stop and
+  (or `target_pids` if `-p` accompanies), then calls `anubee_launch_app` to force-stop and
   relaunch the app. Every event from the first thread is captured.
 - **`-p PID[,PID...]`** (PID mode): arms `target_pids` (key = TGID, value = 1) for each
   listed PID. No app launch. The BPF gate is `uid_matches() || pid_matches()`, so running
@@ -306,7 +306,7 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
 - **`--siblings`** (opt-in widen): when used with `-p`, also resolves each PID's UID and
   arms `target_uids`, so processes sharing the same app UID are included. Implemented in
   userspace (the `||` gate makes it a map-fill choice).
-- **Follow-fork** (`src/common/follow_fork.bpf.h`): in PID mode an `ares_follow_fork`
+- **Follow-fork** (`src/common/follow_fork.bpf.h`): in PID mode an `anubee_follow_fork`
   program on `sched/sched_process_fork` inserts a child's TGID into `target_pids` when its
   parent is tracked. On by default; `--no-follow-fork` disables it. Zero cost when
   `target_pids` is empty (launch/UID mode).
@@ -350,7 +350,7 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   own `[syscall]` tag, indented `args[N]`/backtrace continuation lines). The
   same mmap/munmap probes that feed the stack-origin filter also emit
   `{"type":"lib",...}` / `{"type":"unlib",...}` records for every executable
-  load/unload **to the `-o` sink** (via the shared `ares_libtrace_emit_lib/unlib`);
+  load/unload **to the `-o` sink** (via the shared `anubee_libtrace_emit_lib/unlib`);
   the `-v` `map`/`unmap` trace lines are the stdout echo, now on the same
   timestamped grammar (`[syscall] > [MAP] ...`). At teardown, a
   `syscalls_summary` record (per-syscall-name call counts) prints to stdout
@@ -359,11 +359,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
   one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
   syscalls). The BPF program captures up to
-  `ARES_SNAP_MAX` bytes from `sp` upward in **`ARES_SNAP_CHUNK` (4 KB) page-sized chunks**,
+  `ANUBEE_SNAP_MAX` bytes from `sp` upward in **`ANUBEE_SNAP_CHUNK` (4 KB) page-sized chunks**,
   stopping at the first faulting (unmapped) chunk so the full contiguous stack prefix from
   `sp` is kept instead of an all-or-nothing read (W3-window, 2026-06-29). Also captures the
   **full GP register file** (x0..x30, `regs[31]`), pc/sp/fp/lr (legacy mirror), and a
-  `truncated` flag — **redefined**: `1` means `snap_len == ARES_SNAP_MAX` (the window filled
+  `truncated` flag — **redefined**: `1` means `snap_len == ANUBEE_SNAP_MAX` (the window filled
   without faulting, so the stack may extend beyond what was captured = genuinely incomplete);
   `0` means a chunk faulted, i.e. capture reached `stack_base` = all mapped stack captured =
   complete. `snap_len` is now any multiple of 4 KB (on-device: a 4096→32768 spread), not the
@@ -383,7 +383,7 @@ by `stack_id`.
 
 ```mermaid
 flowchart LR
-    snap["struct ares_stack_snapshot\n(regs + snap[] window)"]
+    snap["struct anubee_stack_snapshot\n(regs + snap[] window)"]
     unwind["cfi_unwind_snapshot(pid, snap)\nsrc/common/symbolize.c"]
     step["cfi_step(sec, module_pc, regs, &sp, &pc,\n  snap->snap, snap->sp, snap->snap_len)\ncfi_unwind.c — reads only the frozen window"]
     sym["sym_resolve(pid, pc, sym)\nsymbolize.c"]
@@ -424,7 +424,7 @@ unwind stops at frame 0. With it, native unwinding walks the full chain (verifie
 libs — the ART apex set (`libart`, `libjavacore`, `libnativeloader`, `libartbase`,
 `libdexfile`) — emit `DW_CFA_AARCH64_negate_ra_state` (opcode `0x2d`) to toggle the
 `ra_signed` column in the CFI row state; `remember`/`restore` correctly preserves
-`ra_signed` across nested CIE state. `cfi_step` calls `ares_pac_strip` to mask PAC bits
+`ra_signed` across nested CIE state. `cfi_step` calls `anubee_pac_strip` to mask PAC bits
 from the recovered RA before use. Without this, these libs produced a terminal
 `CFI_RUN_FAIL` (dominant failure on a real RASP-protected target app: 167/201 stacks, 83%).
 Fixed in commits `c905f78`, `e2e026a`, `655314f`.
@@ -469,7 +469,7 @@ nothing on tagged-DexFile targets. Device-verified on a real target: the interpr
 reaches 13+ frames deep. See BACKLOG Resolved/Done for full detail. **W5** (JIT `[anon]` code-cache mini-ELF CFI) is technically
 reachable but ≈0 payoff on measured workloads (9/201 stacks); not the immediate priority.
 
-**Diagnostic flag (`ARES_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
+**Diagnostic flag (`ANUBEE_CFI_DEBUG=1`).** When set, `emit_cfi_backtrace` enriches each
 `cfi_stack` frame with per-step CFI internals (`module_pc`, `load_base`, `elf_off`, `fde_found`,
 `fde_pc_lo/hi`, `cfa`, `ra_slot`, `ra_value`, and a `stop_reason` — `CFI_OK`/`NO_FDE`/
 `RA_READFAULT`/…/`SNAP_NO_MAPPING`/`SNAP_CFI_GET_NULL`). Off by default → the sidecar schema is
@@ -490,11 +490,11 @@ located the module-base bug and stays available for future CFI diagnosis.
   reads the target BuildID and returns the matching `k_table` row (both the ShadowFrame and
   nterp offset families in one `struct art_offsets`); an unrecognized build is a clean
   default-off no-op. To add a device/ART build without recompiling per iteration, set
-  `ARES_ART_OFFSETS=<file>` to a `key=value` row (`buildid=` + the 13 offsets, `#` comments and
+  `ANUBEE_ART_OFFSETS=<file>` to a `key=value` row (`buildid=` + the 13 offsets, `#` comments and
   whitespace tolerated); it overrides `k_table` **only when its BuildID matches** the running
   libart (else it is ignored and `k_table` is used — fail-closed). Workflow: pin the offsets
   from AOSP `platform/art` + `platform/bionic` at the matching release → write the row →
-  run ares with `ARES_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
+  run anubee with `ANUBEE_ART_OFFSETS` **and** the `scripts/nterp-oracle/` Frida/ART oracle →
   iterate the offsets until the oracle confirms the names → bake the confirmed row into
   `k_table`. Reads-only (own-process file); no target write.
   - **Known builds / source-bound offsets.** `k_table` carries two rows for the same
@@ -511,7 +511,7 @@ located the module-base bug and stays available for future CFI diagnosis.
 - All capture behavior is flag-driven via GNU argp
   (`-P`/`-p`/`-l`/`-A`/`-a`/`-s`/`-x`/`-e`/`-F`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/
   `--siblings`/`--no-follow-fork`); option ordering does not matter; `--help` is
-  auto-generated; `--version` prints `ares syscalls`. The library selector `-l <selector>`
+  auto-generated; `--version` prints `anubee syscalls`. The library selector `-l <selector>`
   is repeatable and OR'd (each `-l` adds to the match set, not last-wins); with
   **neither `-l` nor `-a`, capture-all is the default** (`-s`/`-x` still narrow the
   syscall set). `-s`/`-x`
@@ -525,7 +525,7 @@ located the module-base bug and stays available for future CFI diagnosis.
   keep the universal `funcs:` default regardless of engine. A malformed line in a `-F`
   file aborts loading the whole file rather than being silently skipped
   (`src/common/probe_spec_loader.c`).
-  The sole runtime env var is `ARES_DEBUG=1`, which surfaces libbpf's verbose
+  The sole runtime env var is `ANUBEE_DEBUG=1`, which surfaces libbpf's verbose
   load/relocation logging (otherwise suppressed) — the first thing to check on a BPF
   load `-EPERM` or CO-RE/relocation error.
 
@@ -548,7 +548,7 @@ located the module-base bug and stays available for future CFI diagnosis.
   absorbs bursts without dropping events at the BPF side.
 - **Decoupled drain:** MAP/UNMAP/module events are handled inline on the poll
   thread (they attach uprobes and must race the just-mmap'd library). CALL and
-  RETURN events are pushed into a configurable `struct ares_evq` userspace queue
+  RETURN events are pushed into a configurable `struct anubee_evq` userspace queue
   (default 256 MiB, `-Q MB`) and
   processed on a dedicated worker thread, so the kernel ring stays drained
   regardless of symbolization/JSON latency. Synchronized with three mutexes:
@@ -558,7 +558,7 @@ located the module-base bug and stays available for future CFI diagnosis.
   the drain thread (lib/unlib records) and the worker thread (call/return records).
 - Output: human-readable text to stdout unless `-q` is given (`-q` suppresses console
   output). When `-o FILE` is passed, structured records for CALL and RETURN events are
-  written via the shared `ares_sink` (see §3.1 and §7) **in addition to** console
+  written via the shared `anubee_sink` (see §3.1 and §7) **in addition to** console
   output — `-o` and stdout are independent channels (SYM1 dual-channel-always,
   consistent with all other engines); pass `-q` alongside `-o` for file-only output.
   Output is always JSONL (one record per line, no enclosing `[...]`) — SYM1
@@ -573,7 +573,7 @@ located the module-base bug and stays available for future CFI diagnosis.
   `process_call_return` (the `ts_print`/`out_print` CALL/RETURN/stack blocks).
 - **Stack snapshot** (`--snapshot`, requires `-o`): mirrors the `syscalls` `--snapshot`
   feature. At each CALL entry the BPF program captures the full GP register file
-  (x0..x30) and a frozen stack window (up to `ARES_SNAP_MAX` bytes), deduped by an
+  (x0..x30) and a frozen stack window (up to `ANUBEE_SNAP_MAX` bytes), deduped by an
   FNV-1a hash of `call_stack[]`. Deduplicated `{"type":"stack",...}` records are written
   to `<output>.stacks` (a sidecar JSONL file, identical schema to `syscalls` — see §7).
   Each CALL record in the main `.jsonl` carries `"stack_id"` linking it to the sidecar.
@@ -581,7 +581,7 @@ located the module-base bug and stays available for future CFI diagnosis.
 
 ### 3.1 Structured JSONL output (`-o`)
 
-`-o FILE` opens a shared `ares_sink` (8 MB buffered, JSONL) and emits one
+`-o FILE` opens a shared `anubee_sink` (8 MB buffered, JSONL) and emits one
 structured record per CALL or RETURN event. Human-readable stdout text is
 unchanged; no legacy `{ts,stream,tag,message}` wrapper is written to the file.
 Output is always JSONL; `-J`/`--jsonl` is accepted for backward compatibility
@@ -622,8 +622,8 @@ couldn't be resolved.
 
 The `module` field is the library basename (no path). `args` always has `NUM_ARGS`
 (8) elements in hex. `elapsed_ns` is 0 if the uretprobe was not attached. These
-records share the same `type` discriminator as `ares syscalls` / `ares lib` output
-(see §7), making them directly compatible with downstream ares-mcp ingest.
+records share the same `type` discriminator as `anubee syscalls` / `anubee lib` output
+(see §7), making them directly compatible with downstream anubee-mcp ingest.
 
 **Implementation notes:**
 - Builders live in `src/funcs/funcs_emit.c` (pure file, no libbpf/skeleton deps)
@@ -631,17 +631,17 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   cross-toolchain.
 - Builders are declared in `src/funcs/funcs-priv.h` and called from
   `process_call_return` in `src/funcs/funcs.c`, which runs on the worker
-  thread. Emit builds directly into `g_sink.jb` then calls `ares_sink_emit`.
+  thread. Emit builds directly into `g_sink.jb` then calls `anubee_sink_emit`.
   `g_sink` is multi-writer: the drain thread emits lib/unlib records and the worker
   thread emits call/return records; all writes are serialized by `g_sink_lock`.
   MAP/UNLIB records (library load/unload) are **done** — emitted as
-  `{"type":"lib",...}` / `{"type":"unlib",...}` via `ares_libtrace_emit_lib/unlib`.
+  `{"type":"lib",...}` / `{"type":"unlib",...}` via `anubee_libtrace_emit_lib/unlib`.
   SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
 
 ## 4. The `lib` engine (kprobe, library-load only)
 
 - Launches the target package fresh under a UID filter installed *before* launch
-  via `ares_launch_app` (force-stop → wait-for-stop → `am start -S`), so every
+  via `anubee_launch_app` (force-stop → wait-for-stop → `am start -S`), so every
   executable, file-backed mapping is seen from the process's first thread, including
   forked app processes.
 - The thinnest engine: it adds only a ring buffer, the target-UID map, and
@@ -649,12 +649,12 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   and the emitter are the shared `src/common/lib_trace` module (§1). No syscall hook
   and no uprobes — nothing is written into the target, so it sits on the stealthy
   side of the detectability firewall (§9).
-- **CLI:** `ares lib {-P PACKAGE | PACKAGE | -p PID[,PID...]} [-A ACTIVITY] [-o FILE] [-v] [-q] [--siblings] [--no-follow-fork]`.
+- **CLI:** `anubee lib {-P PACKAGE | PACKAGE | -p PID[,PID...]} [-A ACTIVITY] [-o FILE] [-v] [-q] [--siblings] [--no-follow-fork]`.
   `-p` attaches to a running process (skips launch); `-P` or a positional PACKAGE launches fresh.
   Package and activity can also be given as positional arguments (back-compat). `--help`, `--usage`,
-  and `--version` (`ares lib`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
+  and `--version` (`anubee lib`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - Output: the unified, timestamp-prefixed `HH:MM:SS [lib] pid <N> <fullpath>
-  [start,end) off=.. inode=.. ppid=..` line (via the shared `ares_libtrace_emit_lib`,
+  [start,end) off=.. inode=.. ppid=..` line (via the shared `anubee_libtrace_emit_lib`,
   `common/lib_trace.c` — also used by `funcs`/`correlate` for their own `[lib]`/
   `[unlib]` lines, SYM1 Phase 4b), plus structured JSONL via `-o`
   (`{"type":"lib",...}` / `{"type":"unlib",...}`; see §7) **simultaneously** —
@@ -667,7 +667,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
 - **Packed-in-APK natives (MT3).** An `extractNativeLibs=false` app maps its
   `.so`s straight out of `base.apk` instead of standalone files. On the first
   mmap event whose backing path ends `.apk`, `apk_list_sos` (`common/sym_apk.c`)
-  parses the ZIP central directory and `ares_libtrace_emit_packed`
+  parses the ZIP central directory and `anubee_libtrace_emit_packed`
   (`common/lib_trace.c`) surfaces every packed native inside up front (not just
   the one segment that particular event covers): a `[lib-packed] <apk> ->
   <soname> @0x<offset> (<size> b)` console line and a
@@ -680,12 +680,12 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
 
 ## 5. The `dump` engine (kprobe, live-memory dump)
 
-- **Stealthy fresh launch**, same approach as `ares lib`: installs a UID filter
-  *before* launch, then calls `ares_launch_app` (force-stop → wait-for-stop →
+- **Stealthy fresh launch**, same approach as `anubee lib`: installs a UID filter
+  *before* launch, then calls `anubee_launch_app` (force-stop → wait-for-stop →
   `am start -S`), using the shared `src/common/lib_trace` probe (mmap/munmap capture +
   `/proc/<pid>/maps` resolver) to track every library mapping. No uprobes — nothing
   written into the target.
-- **CLI:** `ares dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-l PATTERN] [--base ADDR] [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--now] [--check] [--raw] [-q] [--siblings] [--no-follow-fork]`.
+- **CLI:** `anubee dump {-P PACKAGE | PACKAGE | -p PID[,PID...]} PATTERN [-l PATTERN] [--base ADDR] [-F FILE] [-A ACTIVITY] [-d DIR] [-o FILE] [--on-map] [--now] [--check] [--raw] [-q] [--siblings] [--no-follow-fork]`.
   `-l PATTERN` is repeatable (cap 64) and OR'd with the legacy positional `PATTERN`.
   `-F FILE` loads probe specs from a file; every `lib:` line in it supplies a PATTERN
   when none is given via `-l`/positionally, not just the first (`dump_name_matches_any`
@@ -695,7 +695,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   is reported ("N pattern(s) never matched any module this run") after.
   `-p` attaches to a running process (skips launch); `-P` or a positional PACKAGE launches fresh.
   Package and activity also accept positional arguments (back-compat). `--help`, `--usage`, and
-  `--version` (`ares dump`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
+  `--version` (`anubee dump`) are auto-generated by argp. See [Attach modes](#attach-modes-launch--p-vs-pid--p).
 - **Machine-readable manifest** (`-o FILE`, SYM1 Phase 3 — `dump` previously had
   no `-o`/JSON output of any kind). Hand-rolled, not `COMMON_ARGP_OPTIONS`
   (`dump` already owns `-q`/`-d`, and has no `-v`/`-b`/`-Q` concept); always
@@ -703,11 +703,11 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   "pid":..,"raw":bool}` record per module actually written (`dump_emit.c`,
   emitted right after `write_file()` succeeds in `rebuild.c`), printed to
   console **and** the sink simultaneously — same dual-channel-always rule as
-  every other engine. This is also what made `ares trace -o <prefix>
+  every other engine. This is also what made `anubee trace -o <prefix>
   --dump ...`'s `<prefix>.dump.jsonl` real; before Phase 3 that injected flag
   was dead code (`dump` had no `-o` to receive it). Historical note: `dump`
   (along with `correlate`) was later removed from `trace` entirely (§6.5) —
-  this fix's `-o`/manifest work stands on its own for standalone `ares dump`.
+  this fix's `-o`/manifest work stands on its own for standalone `anubee dump`.
   `dump` has no drop map
   or run-long coverage surface either (single-shot read) — its `[coverage]`
   line is an explicit `{"exempt":true,"reason":"..."}` record (Phase 5b, §7).
@@ -741,7 +741,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   instead of by name.** A `-l` pattern matches the library's mapped *path*; a
   packer or RASP that randomizes a library's on-disk name per run defeats that
   by construction. `--base` instead selects whichever module is actually
-  mapped at an address the caller already observed (e.g. from a prior `ares
+  mapped at an address the caller already observed (e.g. from a prior `anubee
   lib` run), so a renamed-per-run library cannot hide from it. `-l` and
   `--base` OR together in the same invocation (`dump_sel_matches`,
   `src/dump/rebuild.c`). `dump_parse_base` (`src/dump/dump_args.c`) rejects a
@@ -784,7 +784,7 @@ records share the same `type` discriminator as `ares syscalls` / `ares lib` outp
   `.so` files are stored uncompressed inside `base.apk` and mapped straight
   out of it, never landing on disk as standalone files. `--check` resolves
   the correct baseline by reading the APK's ZIP central directory
-  (`apk_list_sos`, shared with `ares lib`'s packed-library enumeration) and
+  (`apk_list_sos`, shared with `anubee lib`'s packed-library enumeration) and
   matching the module's mapped file offset against a stored member's exact
   `data_start` (`dump_read_apk_member`, `src/dump/rebuild.c`). The `apk` state
   above is reported only when that lookup fails, not merely because the
@@ -825,7 +825,7 @@ flowchart TD
 ```
 
 - **Device-verified** (`scripts/device-test.sh`'s `dump-now` tier, commit
-  `e9a8d30`) against the reference app `dev.ares.detector`: `--now --base`
+  `e9a8d30`) against the reference app `dev.anubee.detector`: `--now --base`
   exits 0 and rebuilds its APK-embedded library into a loadable `.so`;
   `--now --check --base` reports `match` for that same library
   (`libsentinel.so`). `differ` is not exercised on-device by this tier -
@@ -927,7 +927,7 @@ parsing of bytes the caller already holds), and is host-tested against a committ
 `.dex` fixture (`tests/test_dex.c`, `tests/fixtures/sample.dex`).
 
 **Not yet wired into any capability** — the resolver has no caller, so it is
-compiled only by `make test` and is absent from `build/ares`. The
+compiled only by `make test` and is absent from `build/anubee`. The
 vdex-container locate, anonymous-region wiring, and `symbolize.c` integration
 (emitting `base.vdex!pkg.Class.method+0x..`) land in Phases 2c/2d; CompactDex
 (`cdex001`) is deferred to the code-item-decode seam. See
@@ -962,7 +962,7 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   `src/common/probe_resolve`; installs the target UID(s), attaches the entry uprobe
   (+ return uretprobe under `-R`) per resolved `(path,offset)` plus the one shared
   kprobe, then drains the ring. Uses GNU argp (`--help`/`--usage`/`--version` —
-  prints `ares correlate`); flags: `-p PID[,…]` (precise, follow-fork by default;
+  prints `anubee correlate`); flags: `-p PID[,…]` (precise, follow-fork by default;
   `--siblings` to widen to same-UID), `-P PACKAGE`, `--siblings`, `--no-follow-fork`,
   `-e SPEC`, `-F FILE`, `-R`/`--returns`,
   `-o FILE`, `-q`. See [Attach modes](#attach-modes-launch--p-vs-pid--p). `-P`
@@ -978,7 +978,7 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   shared `common/human_out.c` grammar (`ts_print`, own `[func]`/`[syscall]`/
   `[return]` tags — Phase 4d), and `syscalls_summary`-style teardown output
   exists here too as `correlate_summary` (spans opened / syscalls captured /
-  returns captured — see §7). `-o FILE` opens the shared `ares_sink` (8 MB
+  returns captured — see §7). `-o FILE` opens the shared `anubee_sink` (8 MB
   buffered, periodic flush, `wrote N event(s)` report at teardown), matching
   `syscalls`/`funcs` — no per-event `fflush`. `func` records:
   `{"type":"func","span":N,"parent_span":M,"pid":...,"tid":...,"entry_addr":"0x...","args":["0x...",...]}`
@@ -1009,7 +1009,7 @@ kprobe, sharing the per-tid span stack from `src/common/span_stack.bpf.h`:
   mirror the engine's filter), emitting `{"type":"lib",...}` / `{"type":"unlib",...}`
   for every executable load/unload — to the `-o` sink, plus a timestamped
   `[lib]`/`[unlib]` console line unless `-q` (via the same shared
-  `ares_libtrace_emit_lib/unlib` `lib`/`funcs` use — SYM1 Phase 4b). These are
+  `anubee_libtrace_emit_lib/unlib` `lib`/`funcs` use — SYM1 Phase 4b). These are
   kprobes only, so the loud/quiet firewall class is unchanged.
 - **Robustness**: each uprobe `bpf_link` (entry and return) is tracked and
   `bpf_link__destroy`'d on teardown (not leaked to process exit). The fixed input
@@ -1066,7 +1066,7 @@ entry uprobe.
 
 ## 6.5 The `trace` runner (combined kprobe + uprobe, loud if `funcs` enabled)
 
-`ares trace` runs the `syscalls` (kprobe), `funcs` (uprobe), and `lib` (kprobe)
+`anubee trace` runs the `syscalls` (kprobe), `funcs` (uprobe), and `lib` (kprobe)
 engines together from a **single app launch** (or a single PID attach via
 `-p`), emitting each engine's full output as an independent stream
 (`syscalls`/`funcs` are not cross-correlated with each other by `trace`
@@ -1081,11 +1081,11 @@ of a block per engine.
 did compose them; both were removed — see BACKLOG.md's dump/correlate-removal
 entry). `correlate` is itself a funcs+syscalls fusion — joining it into this
 same launch would double-instrument the same targets, and it needs a
-post-launch uprobe attach (the PID is only known after `ares_launch_app`
+post-launch uprobe attach (the PID is only known after `anubee_launch_app`
 returns) that doesn't fit `trace`'s "arm every engine before the one launch"
 invariant. `dump` is a batch engine — rebuilt `.so` files, not a JSONL event
 stream, so it never fit the "drain ring buffers concurrently" model either.
-Run either standalone (`ares correlate` / `ares dump`) alongside `trace` if
+Run either standalone (`anubee correlate` / `anubee dump`) alongside `trace` if
 you need them.
 
 - **Why a coordinator (not a fused probe):** each real engine keeps all its
@@ -1094,11 +1094,11 @@ you need them.
   launch race — each force-stops + relaunches the app and arms its UID filter
   before launch. `trace` resolves the UID once (or skips resolution entirely in
   `-p` PID-attach mode), calls each requested engine's `*_setup` (arms
-  probes/UID but **does not** launch), then `ares_launch_app` **once** (skipped
+  probes/UID but **does not** launch), then `anubee_launch_app` **once** (skipped
   in `-p` mode — the target is already running), then drains all ring buffers
   on one pthread per engine against a shared `volatile sig_atomic_t` stop flag,
   and tears all of them down.
-- **Coordinator mode plumbing:** `struct ares_run_ctx` (`src/common/launch.h`)
+- **Coordinator mode plumbing:** `struct anubee_run_ctx` (`src/common/launch.h`)
   carries the pre-resolved UID + package into each `*_setup`; the engines pre-fill
   their package name from `rc->pkg` before calling `argp_parse`, so no `-P` flag
   appears in any engine's own argv in launch mode. In `-p` attach mode `rc`
@@ -1120,7 +1120,7 @@ you need them.
   (`-v`/`-q`/`--siblings`/`--no-follow-fork`) broadcast to every enabled
   engine; `-b`/`-Q`/`--snapshot` broadcast to `syscalls`/`funcs` only (`lib`
   has neither). See `docs/engines.md` for the full flag table.
-- **CLI:** `ares trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [-A <act>]
+- **CLI:** `anubee trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [-A <act>]
   [-v] [-q] [-b MB] [-Q MB] [-e SPEC]... [-F FILE]... [-l PATTERN]... [-a] [-s
   LIST] [-x LIST] [-S] [-c] [--snapshot|--no-snapshot] [--lib]`. With `-o`,
   each engine writes its own file (`<prefix>.syscalls.jsonl` /
@@ -1139,13 +1139,13 @@ you need them.
   `capabilities.c` marks `trace` as writing target memory whenever `funcs` is
   armed.
 
-## 6.6 The `mod` analyzers (`ares mod`)
+## 6.6 The `mod` analyzers (`anubee mod`)
 
-`ares mod <name>` runs a lightweight standalone analyzer that owns its own BPF
+`anubee mod <name>` runs a lightweight standalone analyzer that owns its own BPF
 object — no shared skeleton with `funcs`. Available analyzers:
 
 - **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Wires
-  `sym_flush_pid` on `ARES_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
+  `sym_flush_pid` on `ANUBEE_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
 - **`execve`** — execve kprobes (stealthy: zero uprobes). Captures exec events for
   child-process correlation.
 - **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
@@ -1193,7 +1193,7 @@ object — no shared skeleton with `funcs`. Available analyzers:
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
 - **`accessibility-detect`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
-  `ares` code to touch Binder). Gated to outbound calls (not replies) addressed to
+  `anubee` code to touch Binder). Gated to outbound calls (not replies) addressed to
   `system_server`; per-process sliding-window counter flags a burst of 50 calls within
   5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
   see whether the traced app holds a granted Accessibility Service — the dominant
@@ -1256,7 +1256,7 @@ grace window), since that's the more accurate instant. `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
 separate runs or as wall-clock time.
 
-**Structured output** (`-o FILE`) comes for free — each analyzer feeds `ares_sink_t`
+**Structured output** (`-o FILE`) comes for free — each analyzer feeds `anubee_sink_t`
 via `mod_emit_*` in `src/modules/mod_emit.c`, using the same shared emit path as the
 other engines (see §7).
 
@@ -1265,7 +1265,7 @@ stdout at teardown (per-binary exec counts, RASP-flagged property reads,
 file-access categories, per-pid burst stats, fork/exit totals). When `-o` is
 active, the same tally is additionally written as one final `*_summary` record
 (before the `coverage` footer, via the analyzer's `emit_summary` hook in
-`ares_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
+`anubee_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
 longer lost from the file:
 - `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
@@ -1294,11 +1294,11 @@ key (see §9). `proc-event`, `execve`, `file-access`, `massdelete-detect`, `exfi
 `accessibility-detect`, `fileless-detect`, and `screencapture-detect` are kprobe/tracepoint — stealthy;
 `prop-read` is a libc uprobe — loud.
 
-**Usage:** `ares mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
+**Usage:** `anubee mod <name> {-P <pkg> | -p PID[,PID...]}` (optionally `-o <file>` for structured JSONL
 output; `--siblings`/`--no-follow-fork` apply in `-p` mode). `-p` skips the app launch;
 `-P` launches fresh. See [Attach modes](#attach-modes-launch--p-vs-pid--p). `-m NAME` is
 repeatable to run several analyzers concurrently in one process (`<name>` positionally is
-still accepted for the single-analyzer case). Bare `ares mod` and `ares mod --list`/`-l`
+still accepted for the single-analyzer case). Bare `anubee mod` and `anubee mod --list`/`-l`
 print the available analyzers to stdout, one per line, each tagged `[LOUD]` or `[stealth]`
 (the same `capabilities.c` lookup the dispatcher itself consults). Matching
 `funcs`/`syscalls`/`dump`/`correlate`'s idiom, a non-`mod:` spec line in a `-F` file is
@@ -1322,7 +1322,7 @@ don't assume "what printed" equals "what's in the file." (See BACKLOG.md U1/U2 f
 the separate, explicitly-not-recommended idea of also unifying console *styling*
 across engines — a cosmetic concern, distinct from this content-parity question.)
 
-- `ares syscalls` emits **structured** records:
+- `anubee syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
@@ -1332,7 +1332,7 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   inherit the documented precision/hit-rate limits (see BACKLOG). Both interpreter terminals are named
   inline, matching the `.stacks` sidecar: nterp (`nterp_chain`) and the switch interpreter
   (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the latter is what carries app Kotlin, so it must not be
-  omitted from the inline chain. The fragment is bounded by `ARES_JCACHE_FRAG` (512 B); a chain that
+  omitted from the inline chain. The fragment is bounded by `ANUBEE_JCACHE_FRAG` (512 B); a chain that
   overflows is truncated innermost-first with a trailing `"..."` marker (never dropped whole). The
   authoritative full, untruncated native+managed walk stays in the `.stacks` sidecar `cfi_stack` record,
   joinable by `stack_id`. Stack snapshot schema:
@@ -1340,13 +1340,13 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   "regs":["0x..",…],"snap_len":N,"truncated":0,"snapshot":"<base64>"}`.
   `regs` is a 31-element array of hex strings (x0..x30) representing the full GP
   register file at the trap point — the CFI initial state. `truncated` is 1 when
-  `snap_len == ARES_SNAP_MAX` (the chunked capture filled the whole window without
+  `snap_len == ANUBEE_SNAP_MAX` (the chunked capture filled the whole window without
   faulting, so the stack may extend beyond what was captured = incomplete); 0 when a
   chunk faulted first (capture reached `stack_base` = all mapped stack = complete).
-  `snap_len` is any multiple of `ARES_SNAP_CHUNK` (4 KB). This schema is **shared** between `syscalls` (sidecar
+  `snap_len` is any multiple of `ANUBEE_SNAP_CHUNK` (4 KB). This schema is **shared** between `syscalls` (sidecar
   `<output>.stacks`) and `funcs` (`--snapshot`, sidecar `<output>.stacks`); the same
   `cfi_step` runtime driver can consume either.
-- `ares funcs` emits **structured** records into the `-o` sink:
+- `anubee funcs` emits **structured** records into the `-o` sink:
   `{"type":"call","id":..,"pid":..,"tid":..,"ppid":..,"module":..,"symbol":..,"entry_addr":..,
   "offset":..,"args":[..],"backtrace":[{"frame":0,"addr":"0x..","symbol":".."},..],
   "java_stack":[...]}` and `{"type":"return","id":..,"pid":..,"tid":..,"module":..,"symbol":..,
@@ -1368,7 +1368,7 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   is accepted but a no-op.
   MAP/UNLIB records are emitted as `{"type":"lib",...}` / `{"type":"unlib",...}` (see §3.1).
   SPAWN/PROC_EXIT/EXECVE/PROP structured records are a follow-on.
-- `ares correlate` emits **structured** records into the `-o` sink (full prose description,
+- `anubee correlate` emits **structured** records into the `-o` sink (full prose description,
   including the console-line grammar, in §6): a `func` record per span opened —
   `{"type":"func","span":..,"parent_span":..,"pid":..,"tid":..,"entry_addr":"0x..",
   "ktime":..,"args":["0x..",...]}`; a `syscall` record per syscall attributed to the
@@ -1386,12 +1386,12 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   `func` records instead. MAP/UNMAP records are the same shared `{"type":"lib",...}` /
   `{"type":"unlib",...}` as `lib`/`funcs` (see §3.1). The end-of-run
   `{"type":"correlate_summary",...}` record is covered in the shared summary bullet below.
-- `ares lib` emits **structured** library-load records via `-o` (from the
+- `anubee lib` emits **structured** library-load records via `-o` (from the
   shared emitter, also used by `funcs`/`correlate` for their own MAP/UNMAP
   events):
   `{"type":"lib","pid":..,"tid":..,"ppid":..,"library":..,"start":..,"end":..,
   "pgoff":..,"inode":..}` and `{"type":"unlib","pid":..,"tid":..,"start":..,
-  "end":..}`. (`ares dump` uses the same shared `lib_trace` probe internally
+  "end":..}`. (`anubee dump` uses the same shared `lib_trace` probe internally
   for path resolution, but does not itself emit `lib`/`unlib` JSON records —
   see the `dump` manifest schema below instead. This correction is
   independent of SYM1: the doc previously claimed `dump` also emitted
@@ -1403,11 +1403,11 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   that APK, deduped per-APK via `mark_apk_seen`. The triggering `lib` record
   itself still carries the normal mapping fields, with `soname` resolved when
   the mapped file offset range-matches a known packed entry.
-- `ares dump` emits **structured** manifest records via `-o` (SYM1 Phase 3 —
+- `anubee dump` emits **structured** manifest records via `-o` (SYM1 Phase 3 —
   `dump` previously had no `-o`/JSON output at all): one
   `{"type":"dump","module":..,"path":..,"base":"0x..","pid":..,"raw":bool}`
   record per module actually written to disk (`dump_emit.c`), always JSONL.
-- `ares syscalls`/`ares funcs`/`ares correlate` each emit one end-of-run
+- `anubee syscalls`/`anubee funcs`/`anubee correlate` each emit one end-of-run
   **summary** record at teardown (SYM1 Phase 5c, mirrors `mod`'s
   `*_summary` records — §6.6 — but plain text on stdout, no per-name tally
   MCP tool is wired for these yet, see §8):
@@ -1418,13 +1418,13 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   (counts only, no per-name breakdown — unlike the other two). All three are
   omitted entirely when nothing happened, same rule as `mod`'s summaries.
 
-**Shared output sink (`src/common/emit.h` — `struct ares_sink`):** all file
-output for `syscalls` and `funcs` is now routed through `ares_sink_open` /
-`ares_sink_emit` / `ares_sink_close` / `ares_sink_report`. The sink owns the
+**Shared output sink (`src/common/emit.h` — `struct anubee_sink`):** all file
+output for `syscalls` and `funcs` is now routed through `anubee_sink_open` /
+`anubee_sink_emit` / `anubee_sink_close` / `anubee_sink_report`. The sink owns the
 `FILE*`, an 8 MB `_IOFBF` write buffer, the reused `jbuf`, the record count, the
 JSONL/array framing, periodic flush, and the "wrote N records to PATH" report.
 On any write/flush/close failure the first error is latched in `s->werr`;
-`ares_sink_report` prints `WARNING: write error on … output is incomplete` at
+`anubee_sink_report` prints `WARNING: write error on … output is incomplete` at
 teardown if set (GA3).
 `syscalls` is single-writer (drain thread only). `funcs` is multi-writer (drain
 thread: lib/unlib; worker thread: call/return) — all `g_sink` access serialized by
@@ -1440,7 +1440,7 @@ shorter or partial output with no signal that anything was missed. An analyst
 reading a trace afterward can't tell "the app made no such call" from "the
 tracer missed it"; absence of evidence quietly reads as evidence of absence.
 
-`ares_coverage_report` (`src/common/coverage.h` / `coverage.c`) closes that gap:
+`anubee_coverage_report` (`src/common/coverage.h` / `coverage.c`) closes that gap:
 at teardown, **every engine** (`syscalls`, `funcs`, `correlate`, `mod`, and —
 since SYM1 Phase 5b — `lib`/`dump` too) emits exactly **one** coverage-health
 record on **two channels**:
@@ -1463,7 +1463,7 @@ coverage surface at all; see below.
 |---|---|---|---|---|
 | `snaps.total` / `snaps.truncated` | `--snapshot` stacks captured / truncated at the 32 KB capture window | yes | yes | no (no snapshot) |
 | `cfi.walks` / `cfi.stops.<reason>` | CFI-unwind attempts / histogram of blind stop reasons (`no_fde`, `run_fail`, ...) | yes | yes | no |
-| `drops.ring` / `drops.queue` | ring-buffer / worker-queue drops (subsumes the old `ares_drops_report`) | yes | yes | ring only (no worker queue) |
+| `drops.ring` / `drops.queue` | ring-buffer / worker-queue drops (subsumes the old `anubee_drops_report`) | yes | yes | ring only (no worker queue) |
 | `managed_naming_off` | unknown ART build (no `art_buildid.c` table row) - Java naming disabled | yes | yes | no |
 | `prearm_drops` | syscalls dropped in the CR2 pre-arm window before uprobes attach | yes | no | no |
 | `depth_capped` | stack-depth clamp (`syscalls`) / span-stack overflow (`funcs`, `correlate`) | yes | yes | yes |
@@ -1480,8 +1480,8 @@ on non-`--returns` runs.
 record at all*, silently indistinguishable from "checked, found nothing";
 now it's an explicit third record shape): `lib` has no drop map or snapshot
 path, and `dump` is a single-shot read (no run-long coverage to accumulate).
-`struct ares_coverage` carries `exempt`/`exempt_reason` fields
-(`common/coverage.h`); `ares_coverage_report` renders them as a stderr banner
+`struct anubee_coverage` carries `exempt`/`exempt_reason` fields
+(`common/coverage.h`); `anubee_coverage_report` renders them as a stderr banner
 `[coverage] <engine>: not applicable (<reason>)` and, if `-o` is active, a
 sink record `{"type":"coverage","engine":"<engine>","exempt":true,
 "reason":"<reason>"}` — neither `clean` nor any degraded field, a genuinely
@@ -1491,7 +1491,7 @@ variant: each analyzer (`proc-event`/`execve`/`prop-read`/`file-access`/
 count the same way, but has no snapshot/CFI/managed-naming/decode surface to
 report — every other field always reads clean.
 
-The rationale generalizes the older `ares_drops_report` contract: **silence
+The rationale generalizes the older `anubee_drops_report` contract: **silence
 never means "didn't check"** - every run states its own coverage explicitly,
 whether clean or degraded, so a partial trace is never mistaken for a complete
 one.
@@ -1499,7 +1499,7 @@ one.
 ### 7.6 Drain progress (post-Ctrl-C post-processing)
 
 Ctrl-C sets the stop flag and the ring poll loop exits, but the worker thread is
-still draining `ares_evq`. `ares_evq_pop` returns 0 only when `used == 0 && done`,
+still draining `anubee_evq`. `anubee_evq_pop` returns 0 only when `used == 0 && done`,
 so teardown's job is to set `done` and wait. Under `--snapshot` each queued
 snapshot costs an `emit_cfi_backtrace` - a DWARF CFI unwind up to 64 frames plus
 maps lookups and ART naming - so that wait can be minutes.
@@ -1517,7 +1517,7 @@ sequenceDiagram
     participant U as User
     participant M as Main thread
     participant W as Worker thread
-    participant Q as ares_evq
+    participant Q as anubee_evq
 
     U->>M: Ctrl-C (1st)
     Note over M: runtime_sig_handler sets *stop=1
@@ -1559,7 +1559,7 @@ Design points worth knowing:
 - **`-q` does not suppress it.** `-q` governs per-event *stdout*; this is
   operational status on *stderr*.
 
-## 8. MCP server (`tools/ares-mcp`, host-side Python)
+## 8. MCP server (`tools/anubee-mcp`, host-side Python)
 
 - `trace_store.py` — two ingest paths. `load()` loads a `type:"syscall"` trace
   (JSON array or JSONL) into in-memory **DuckDB** via the explicit syscall column
@@ -1587,8 +1587,8 @@ Design points worth knowing:
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
-  plus on-device `list_libraries` (via `ares lib`) / `dump_library` (via
-  `ares dump`). Over the `load_structured()` path: `coverage` (per-engine
+  plus on-device `list_libraries` (via `anubee lib`) / `dump_library` (via
+  `anubee dump`). Over the `load_structured()` path: `coverage` (per-engine
   coverage-health rows — "was this trace clean"), `call_histogram` (call counts by
   module/symbol), `call_timing` (count/min/max/avg/p50/p95 of `returns.elapsed_ns`
   by module/symbol), `calls_where` (module/symbol/pid/tid-filtered raw calls),
@@ -1605,11 +1605,11 @@ Design points worth knowing:
   `mod_events` (drill-down over the raw per-event records themselves,
   filterable by `kind`/`pid` — the complement to `summaries`'s aggregated
   tallies).
-- `device.py` — drives on-device `ares` subcommands over adb (`ARES_ADB`,
-  `ARES_BIN`, `ARES_SHELL_PREFIX`, `ARES_SERIAL`); `list_libraries` → `ares lib`,
-  `dump_library` → `ares dump`.
+- `device.py` — drives on-device `anubee` subcommands over adb (`ANUBEE_ADB`,
+  `ANUBEE_BIN`, `ANUBEE_SHELL_PREFIX`, `ANUBEE_SERIAL`); `list_libraries` → `anubee lib`,
+  `dump_library` → `anubee dump`.
 
-**Long-term:** a single unified `ares-mcp` that treats `ares funcs` structured
+**Long-term:** a single unified `anubee-mcp` that treats `anubee funcs` structured
 output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLOG.md).
 
 ---

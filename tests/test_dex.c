@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the DEX offset->method resolver. Uses a committed real
-// .dex fixture (tests/fixtures/sample.dex: class com.ares.Sample) whose method
+// .dex fixture (tests/fixtures/sample.dex: class com.anubee.Sample) whose method
 // insns offsets were read from `dexdump -d` (see tests/fixtures/README.md).
 #include "common/dex.h"
 
@@ -46,11 +46,11 @@ int main(int argc, char **argv)
     //   add [0x170,0x174)  greet [0x184,0x1ac)  <init> [0x1bc,0x1c4)
     char out[256];
     CHECK(dex_map_lookup(m, 0x172, out, sizeof(out)) == 1 &&
-          strcmp(out, "com.ares.Sample.add") == 0, "0x172 -> add");
+          strcmp(out, "com.anubee.Sample.add") == 0, "0x172 -> add");
     CHECK(dex_map_lookup(m, 0x190, out, sizeof(out)) == 1 &&
-          strcmp(out, "com.ares.Sample.greet") == 0, "0x190 -> greet");
+          strcmp(out, "com.anubee.Sample.greet") == 0, "0x190 -> greet");
     CHECK(dex_map_lookup(m, 0x1c0, out, sizeof(out)) == 1 &&
-          strcmp(out, "com.ares.Sample.<init>") == 0, "0x1c0 -> <init>");
+          strcmp(out, "com.anubee.Sample.<init>") == 0, "0x1c0 -> <init>");
     CHECK(dex_map_lookup(m, 0x10, out, sizeof(out)) == 0, "0x10 header -> miss");
     CHECK(dex_map_lookup(m, 0x180, out, sizeof(out)) == 0, "0x180 gap -> miss");
     CHECK(dex_map_lookup(m, 0x300, out, sizeof(out)) == 0, "0x300 past-last -> miss");
@@ -62,7 +62,7 @@ int main(int argc, char **argv)
         uint32_t greet_idx = 0xffffffffu; char nb[256];
         for (uint32_t idx = 0; idx < 4096; idx++)
             if (dex_name_by_index(m, idx, nb, sizeof(nb)) == 1 &&
-                strcmp(nb, "com.ares.Sample.greet") == 0) { greet_idx = idx; break; }
+                strcmp(nb, "com.anubee.Sample.greet") == 0) { greet_idx = idx; break; }
         CHECK(greet_idx != 0xffffffffu, "greet index found for range test");
         CHECK(dex_lookup_range(m, 0x190, &midx, &ioff) == 1 &&
               midx == greet_idx && ioff == 0x184,
@@ -86,9 +86,9 @@ int main(int argc, char **argv)
         for (uint32_t idx = 0; idx < 4096; idx++) {
             if (dex_name_by_index(m, idx, nb, sizeof(nb)) != 1)
                 continue;
-            if (strcmp(nb, "com.ares.Sample.add") == 0)    saw_add = 1;
-            if (strcmp(nb, "com.ares.Sample.greet") == 0)   saw_greet = 1;
-            if (strcmp(nb, "com.ares.Sample.<init>") == 0)  saw_init = 1;
+            if (strcmp(nb, "com.anubee.Sample.add") == 0)    saw_add = 1;
+            if (strcmp(nb, "com.anubee.Sample.greet") == 0)   saw_greet = 1;
+            if (strcmp(nb, "com.anubee.Sample.<init>") == 0)  saw_init = 1;
         }
         CHECK(saw_add,   "dex_name_by_index resolves add");
         CHECK(saw_greet, "dex_name_by_index resolves greet");

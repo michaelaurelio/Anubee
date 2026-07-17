@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares dump` — launch an Android app fresh and dump a (possibly decrypted)
+// `anubee dump` — launch an Android app fresh and dump a (possibly decrypted)
 // native library from its live memory, rebuilt into a loadable ELF.
 //
-// Stealthy, kprobe-based (like `ares lib`): launch the package under a UID
+// Stealthy, kprobe-based (like `anubee lib`): launch the package under a UID
 // filter installed before launch, capture mappings with the shared lib_trace
 // probe. Two triggers:
 //   - default (dump-on-exit): record every app pid; at Ctrl-C/exit, rescan each
@@ -13,7 +13,7 @@
 //
 // The ELF capture + rebuild is src/dump/rebuild.c; capture/path-resolution is
 // the shared src/common/lib_trace.*. The device/launch helpers are shared from
-// src/common/launch.{c,h} as ares_*.
+// src/common/launch.{c,h} as anubee_*.
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -36,7 +36,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
-#include "common/emit.h"           // SYM1 Phase 3: struct ares_sink, ares_sink_open/close/report
+#include "common/emit.h"           // SYM1 Phase 3: struct anubee_sink, anubee_sink_open/close/report
 #include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
 #include "dump/dump_args.h"
 #include "rebuild.h"
@@ -73,7 +73,7 @@ static int g_pat_hit[64];
 // SYM1 Phase 3: machine channel — a {"type":"dump",...} manifest record per
 // dumped module, mirroring every other engine's g_sink. Independent of
 // g_quiet (dump never had an -o-implies-quiet coupling, unchanged by Phase 1).
-static struct ares_sink g_sink;
+static struct anubee_sink g_sink;
 
 // ---- dump-on-exit: record every app pid that maps anything ----------------
 static __u32 *g_pids;
@@ -139,7 +139,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	// dump-on-map: resolve, match, dump this module once.
 	char path[256];
 	const char *full = path;
-	if (ares_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
+	if (anubee_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 		full = e->name;
 	if (!dump_name_matches_any_track(g_patterns, g_npat, full, g_pat_hit))
 		return 0;
@@ -152,7 +152,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	return 0;
 }
 
-// ponytail: libbpf_print_fn removed; ares_libbpf_quiet from common/runtime.h used instead
+// ponytail: libbpf_print_fn removed; anubee_libbpf_quiet from common/runtime.h used instead
 
 // ---- argp parser ----------------------------------------------------------
 
@@ -161,7 +161,7 @@ static const char dump_doc[] =
     " PATTERN (glob, e.g. 'e_*') from live memory, rebuilding each into a"
     " loadable ELF (.so).\v"
     "PACKAGE, PATTERN, and ACTIVITY can be passed as flags or positionally.\n"
-    "Example: ares dump -P com.example.app 'libsecret*' -d /tmp/dumps";
+    "Example: anubee dump -P com.example.app 'libsecret*' -d /tmp/dumps";
 static const char dump_args_doc[] = "[PACKAGE PATTERN [ACTIVITY]]";
 
 struct dump_args {
@@ -185,7 +185,7 @@ struct dump_args {
 };
 
 // Synthetic keys for long-only options (must be > 127 to avoid short-option collision).
-// Use 0x200+ to avoid collision with ARES_KEY_SIBLINGS (0x100) / ARES_KEY_NO_FOLLOW (0x101).
+// Use 0x200+ to avoid collision with ANUBEE_KEY_SIBLINGS (0x100) / ANUBEE_KEY_NO_FOLLOW (0x101).
 enum { KEY_ON_MAP = 0x200, KEY_RAW, KEY_NOW, KEY_BASE, KEY_CHECK };
 
 static const struct argp_option dump_options[] = {
@@ -235,7 +235,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
             argp_error(state, "cannot open spec file '%s'", arg);
         break;
-    case 'p': case ARES_KEY_SIBLINGS: case ARES_KEY_NO_FOLLOW:
+    case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
     case ARGP_KEY_ARG:
         if      (!a->pkg && a->tgt.n == 0)  a->pkg      = arg;
@@ -273,7 +273,7 @@ static const struct argp dump_argp = { dump_options, dump_parse_opt, dump_args_d
 // in the file-static g_* above. (cmd_dump below is the thin standalone wrapper.)
 
 // Cross-phase state: published by dump_setup, consumed by dump_run/dump_teardown.
-static struct ares_dump  *g_skel;
+static struct anubee_dump  *g_skel;
 static struct ring_buffer *g_rb;
 static int                 g_uid;
 static const char         *g_pkg;
@@ -328,7 +328,7 @@ static void print_never_matched_report(void)
     fprintf(stderr, "\n");
 }
 
-int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
+int dump_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
     // ponytail: static so g_pkg/g_activity/g_patterns can alias da after setup returns.
     static struct dump_args da = { .outdir = "." };
@@ -352,7 +352,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     // SYM1 Phase 3: dump's machine channel. Always JSONL (noun "module") --
     // a brand-new sink with no legacy array-framing consumers, so there's no
     // -J flag to plumb.
-    if (da.output_file && ares_sink_open(&g_sink, da.output_file, "module", 1) != 0) {
+    if (da.output_file && anubee_sink_open(&g_sink, da.output_file, "module", 1) != 0) {
         fprintf(stderr, "dump: cannot open output file '%s': %s\n", da.output_file, strerror(errno));
         return 1;
     }
@@ -380,22 +380,22 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     if (da.tgt.n > 0) {
         g_uid = 0;  // ponytail: uid is display-only; BPF gate uses TGID in PID mode
     } else {
-        g_uid = (rc && rc->uid > 0) ? rc->uid : ares_resolve_uid(g_pkg);
+        g_uid = (rc && rc->uid > 0) ? rc->uid : anubee_resolve_uid(g_pkg);
         if (g_uid < 0) {
             fprintf(stderr, "dump: could not resolve UID for '%s' (installed? run as root?)\n", g_pkg);
-            if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }  // AUDIT.md #7d
+            if (g_sink.f) { anubee_sink_close(&g_sink); anubee_sink_report(&g_sink); }  // AUDIT.md #7d
             return 1;
         }
     }
 
-    libbpf_set_print(ares_libbpf_quiet);
+    libbpf_set_print(anubee_libbpf_quiet);
 
-    struct ares_dump *skel = ares_dump__open();
+    struct anubee_dump *skel = anubee_dump__open();
     if (!skel) {
         fprintf(stderr, "dump: failed to open BPF skeleton\n");
         return 1;
     }
-    if (ares_dump__load(skel)) {
+    if (anubee_dump__load(skel)) {
         fprintf(stderr, "dump: failed to load BPF (need eBPF privileges / SELinux permissive?)\n");
         goto err_skel;
     }
@@ -407,7 +407,7 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
             __u32 tgid = (__u32)da.tgt.pids[i];
             bpf_map_update_elem(bpf_map__fd(skel->maps.target_pids), &tgid, &one, BPF_ANY);
             if (da.tgt.siblings) {
-                int uid = ares_get_pid_uid(da.tgt.pids[i]);
+                int uid = anubee_get_pid_uid(da.tgt.pids[i]);
                 if (uid > 0) {
                     __u32 vuid = (__u32)uid;
                     bpf_map_update_elem(bpf_map__fd(skel->maps.target_uids), &vuid, &one, BPF_ANY);
@@ -423,15 +423,15 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
         }
     }
 
-    bpf_program__set_autoattach(skel->progs.ares_follow_fork, 0);
+    bpf_program__set_autoattach(skel->progs.anubee_follow_fork, 0);
 
-    if (ares_dump__attach(skel)) {
+    if (anubee_dump__attach(skel)) {
         fprintf(stderr, "dump: failed to attach (uprobe_mmap in kallsyms?)\n");
         goto err_skel;
     }
 
     if (da.tgt.n > 0 && !da.tgt.no_follow) {
-        g_ff = bpf_program__attach(skel->progs.ares_follow_fork);
+        g_ff = bpf_program__attach(skel->progs.anubee_follow_fork);
         if (!g_ff) fprintf(stderr, "dump: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -450,8 +450,8 @@ int dump_setup(int argc, char **argv, const struct ares_run_ctx *rc)
     return 0;
 
 err_skel:
-    ares_dump__destroy(skel);
-    if (g_sink.f) { ares_sink_close(&g_sink); ares_sink_report(&g_sink); }  // AUDIT.md #7d
+    anubee_dump__destroy(skel);
+    if (g_sink.f) { anubee_sink_close(&g_sink); anubee_sink_report(&g_sink); }  // AUDIT.md #7d
     return 1;
 }
 
@@ -494,7 +494,7 @@ int dump_run(volatile sig_atomic_t *stop)
     printf("tracing uid %d, dumping '%s' (%s) ... Ctrl-C to stop\n",
            g_uid, pat_banner(), g_on_map ? "on map" : "on exit");
 
-    ares_rb_poll_until(g_rb, stop);
+    anubee_rb_poll_until(g_rb, stop);
 
     // dump-on-exit: rescan each recorded pid's maps and dump matching modules.
     if (!g_on_map) {
@@ -524,7 +524,7 @@ void dump_teardown(void)
         g_ff = NULL;
     }
     if (g_skel) {
-        ares_dump__destroy(g_skel);
+        anubee_dump__destroy(g_skel);
         g_skel = NULL;
     }
     free(g_pids); g_pids = NULL; g_pids_n = g_pids_cap = 0;
@@ -540,14 +540,14 @@ void dump_teardown(void)
     // SYM1 Phase 5b: explicit "not applicable" record instead of silence --
     // dump is a single-shot read, no run-long coverage to accumulate. Must
     // run before the sink closes below (matches every other engine).
-    struct ares_coverage cov = { .engine = "dump", .exempt = 1,
+    struct anubee_coverage cov = { .engine = "dump", .exempt = 1,
         .exempt_reason = "single-shot read, no run-long coverage to accumulate" };
-    ares_coverage_report(&g_sink, &cov);
+    anubee_coverage_report(&g_sink, &cov);
 
     // SYM1 Phase 3: close + report the manifest sink, mirroring every other engine.
     if (g_sink.f) {
-        ares_sink_close(&g_sink);
-        ares_sink_report(&g_sink);
+        anubee_sink_close(&g_sink);
+        anubee_sink_report(&g_sink);
     }
 }
 
@@ -557,7 +557,7 @@ int cmd_dump(int argc, char **argv)
 {
     // MT1: argp_parse(ARGP_NO_EXIT) inside dump_setup returns 0 on --help/--usage
     // (it only prints), so control would otherwise fall through into attach/run.
-    if (ares_wants_help(argc, argv)) {
+    if (anubee_wants_help(argc, argv)) {
         argp_help(&dump_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
         return 0;
     }
@@ -567,10 +567,10 @@ int cmd_dump(int argc, char **argv)
 
     // Standalone: tracing is armed (UID installed in setup); install 2-stage
     // stop handler, launch, run, then teardown.
-    ares_install_stop_handler(&exiting);
+    anubee_install_stop_handler(&exiting);
     if (g_pkg) {
-        ares_launch_banner(g_pkg, g_uid);
-        if (ares_launch_app(g_pkg, g_activity, NULL) != 0) {
+        anubee_launch_banner(g_pkg, g_uid);
+        if (anubee_launch_app(g_pkg, g_activity, NULL) != 0) {
             fprintf(stderr, "dump: launch failed for '%s' (activity resolvable? am available?)\n", g_pkg);
             dump_teardown();
             return 1;

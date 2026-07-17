@@ -1181,7 +1181,7 @@ int cfi_step(const struct cfi_section *s, uint64_t module_pc,
     }
 
     if (st.ra_signed)
-        caller_pc = ares_pac_strip(caller_pc);
+        caller_pc = anubee_pac_strip(caller_pc);
 
     if (caller_pc == 0) {
         if (diag) diag->stop_reason = CFI_RA_ZERO;

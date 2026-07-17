@@ -1,5 +1,5 @@
-#ifndef ARES_SYSCALLS_SCOPE_H
-#define ARES_SYSCALLS_SCOPE_H
+#ifndef ANUBEE_SYSCALLS_SCOPE_H
+#define ANUBEE_SYSCALLS_SCOPE_H
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -58,4 +58,4 @@ static inline bool sysc_list_contains(const char *list, const char *name)
 	return false;
 }
 
-#endif // ARES_SYSCALLS_SCOPE_H
+#endif // ANUBEE_SYSCALLS_SCOPE_H

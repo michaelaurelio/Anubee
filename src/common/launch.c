@@ -12,7 +12,7 @@
 
 extern char **environ;
 
-int ares_sh_exec(const char *cmd, char *out, size_t outsz)
+int anubee_sh_exec(const char *cmd, char *out, size_t outsz)
 {
     int pipefd[2] = { -1, -1 };
 	if (out != NULL) {
@@ -57,7 +57,7 @@ int ares_sh_exec(const char *cmd, char *out, size_t outsz)
 	return status;
 }
 
-int ares_resolve_uid(const char *pkg)
+int anubee_resolve_uid(const char *pkg)
 {
 	const char *roots[] = { "/data/data/%s", "/data/user/0/%s", "/data/user_de/0/%s" };
 	for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
@@ -70,7 +70,7 @@ int ares_resolve_uid(const char *pkg)
 	return -1;
 }
 
-int ares_get_pid_uid(pid_t pid)
+int anubee_get_pid_uid(pid_t pid)
 {
 	char path[64], line[128];
 	snprintf(path, sizeof(path), "/proc/%d/status", pid);
@@ -88,7 +88,7 @@ int ares_get_pid_uid(pid_t pid)
 	return uid;
 }
 
-int ares_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
+int anubee_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
 {
 	if (bufsz == 0) return -1;
 	char path[64];
@@ -104,11 +104,11 @@ int ares_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
 	return buf[0] ? 0 : -1;
 }
 
-int ares_resolve_component(const char *pkg, char *out, size_t outsz)
+int anubee_resolve_component(const char *pkg, char *out, size_t outsz)
 {
 	char cmd[512], buf[1024];
 	snprintf(cmd, sizeof(cmd), "cmd package resolve-activity --brief %s", pkg);
-	if (ares_sh_exec(cmd, buf, sizeof(buf)) < 0)
+	if (anubee_sh_exec(cmd, buf, sizeof(buf)) < 0)
 		return -1;
 
 	out[0] = '\0';
@@ -120,19 +120,19 @@ int ares_resolve_component(const char *pkg, char *out, size_t outsz)
 	return out[0] ? 0 : -1;
 }
 
-int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
+int anubee_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
 {
 	char cmd[512], comp[256];
 
 	// Kill any running instance, then wait for it to actually die so the
 	// relaunch starts from a clean state.
 	snprintf(cmd, sizeof(cmd), "am force-stop %s", pkg);
-	ares_sh_exec(cmd, NULL, 0);
+	anubee_sh_exec(cmd, NULL, 0);
 
 	snprintf(cmd, sizeof(cmd), "pidof %s", pkg);
 	for (int i = 0; i < 30; i++) {
 		char pid_buf[32] = "";
-		ares_sh_exec(cmd, pid_buf, sizeof(pid_buf));
+		anubee_sh_exec(cmd, pid_buf, sizeof(pid_buf));
 		if (pid_buf[0] == '\0')
 			break;
 		usleep(100000);
@@ -141,11 +141,11 @@ int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
 	// Resolve the launchable component (or use the caller-supplied activity).
 	if (activity)
 		snprintf(comp, sizeof(comp), "%s/%s", pkg, activity);
-	else if (ares_resolve_component(pkg, comp, sizeof(comp)) != 0)
+	else if (anubee_resolve_component(pkg, comp, sizeof(comp)) != 0)
 		return -1;
 
 	snprintf(cmd, sizeof(cmd), "am start -S -n %s", comp);
-	if (ares_sh_exec(cmd, NULL, 0) < 0)
+	if (anubee_sh_exec(cmd, NULL, 0) < 0)
 		return -1;
 
 	if (out_pid) {
@@ -153,7 +153,7 @@ int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
 		snprintf(cmd, sizeof(cmd), "pidof %s", pkg);
 		for (int i = 0; i < 30; i++) {
 			char pid_buf[32] = "";
-			ares_sh_exec(cmd, pid_buf, sizeof(pid_buf));
+			anubee_sh_exec(cmd, pid_buf, sizeof(pid_buf));
 			pid_t p = (pid_t)atoi(pid_buf);
 			if (p > 0) { *out_pid = p; return 0; }
 			usleep(100000);
@@ -163,7 +163,7 @@ int ares_launch_app(const char *pkg, const char *activity, pid_t *out_pid)
 	return 0;
 }
 
-void ares_launch_banner(const char *pkg, int uid)
+void anubee_launch_banner(const char *pkg, int uid)
 {
 	printf("launching %s (uid %d)\n", pkg, uid);
 }

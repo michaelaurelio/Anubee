@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure flat flag router for `ares trace` (no libbpf/pthread/libelf deps) so it
+// Pure flat flag router for `anubee trace` (no libbpf/pthread/libelf deps) so it
 // is host-testable — see tests/test_trace_args.c. Markers (--syscalls/--funcs/
 // --lib sections) are gone: every flag is recognized by its own letter/name and
 // routed to whichever engine(s) understand it; presence of an engine-unique
 // flag (or a KIND-routed -e/-F spec, classified by trace.c where the ELF-aware
 // spec parser lives) enables that engine.
-#ifndef ARES_TRACE_ARGS_H
-#define ARES_TRACE_ARGS_H
+#ifndef ANUBEE_TRACE_ARGS_H
+#define ANUBEE_TRACE_ARGS_H
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -66,7 +66,7 @@ static inline bool trace_tok_push(char **toks, int *ntok, const char *engine, ch
 	return true;
 }
 
-// Parse every `ares trace` flag in one flat pass. argv[0] is the subcommand
+// Parse every `anubee trace` flag in one flat pass. argv[0] is the subcommand
 // name. Returns 0 on success, 1 if -h/--help was seen (caller prints usage,
 // exits 0), -1 on a flag missing its required value or an unrecognized token.
 // Does not itself decide `want_sys`/`want_func` from -e/-F (that needs the

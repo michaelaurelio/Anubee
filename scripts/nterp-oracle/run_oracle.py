@@ -1,5 +1,5 @@
 import frida, sys, json, time, subprocess, threading, os
-PKG=os.environ.get("ARES_TEST_PKG", os.environ.get("PKG","icu.nullptr.applistdetector"))
+PKG=os.environ.get("ANUBEE_TEST_PKG", os.environ.get("PKG","icu.nullptr.applistdetector"))
 OUT=open(sys.argv[1],"w")
 ADB=os.environ.get("ADB","adb")
 n=[0]

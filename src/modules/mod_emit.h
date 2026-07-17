@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure structured-record builders for ares mod analyzers (Phase 1: proc-event).
+// Pure structured-record builders for anubee mod analyzers (Phase 1: proc-event).
 // No libbpf deps — host-testable. Builds on the shared jb_* serializer.
 // Each function builds one bare JSON object into j (no trailing newline/framing);
-// the caller wraps it in ares_sink_emit or uses j.b/j.len directly in tests.
-#ifndef __ARES_MOD_EMIT_H
-#define __ARES_MOD_EMIT_H
+// the caller wraps it in anubee_sink_emit or uses j.b/j.len directly in tests.
+#ifndef __ANUBEE_MOD_EMIT_H
+#define __ANUBEE_MOD_EMIT_H
 
 struct jbuf;             // common/emit.h
 struct spawn_event;      // modules/mod_events.h
@@ -105,4 +105,4 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
 // every prior mod analyzer.
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
 
-#endif /* __ARES_MOD_EMIT_H */
+#endif /* __ANUBEE_MOD_EMIT_H */

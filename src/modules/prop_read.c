@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod prop-read` — userspace analyzer for system property read events.
+// `anubee mod prop-read` — userspace analyzer for system property read events.
 // Owns the prop_read BPF skeleton lifecycle; attaches uprobes manually after
 // resolving symbols from libc.so. Kernel side: src/modules/prop_read.bpf.c.
 #include <fcntl.h>
@@ -141,7 +141,7 @@ static void pr_print_summary(void)
 
 // File twin of pr_print_summary: same tally, one {"type":"prop_read_summary",...}
 // record. prop_stats is already sorted by pr_print_summary before this runs.
-static void pr_emit_summary(struct ares_sink *s)
+static void pr_emit_summary(struct anubee_sink *s)
 {
     if (prop_stat_count == 0) return;
 
@@ -169,7 +169,7 @@ static void pr_emit_summary(struct ares_sink *s)
     }
     jb_c(j, ']');
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 // ── BPF skeleton + link state ─────────────────────────────────────────────────
@@ -256,7 +256,7 @@ static unsigned long find_symbol_in_elf(const char *path, const char *sym_name)
 
 static int pr_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     if (sz < sizeof(struct prop_event)) return 0;
     const struct prop_event *e = data;
 
@@ -313,7 +313,7 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
 
     if (mc->sink != NULL) {
         mod_emit_prop(&mc->sink->jb, e);
-        ares_sink_emit(mc->sink);
+        anubee_sink_emit(mc->sink);
     }
 
     return 0;
@@ -321,7 +321,7 @@ static int pr_handle_event(void *ctx, void *data, size_t sz)
 
 // ── BPF lifecycle ─────────────────────────────────────────────────────────────
 
-static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *pr_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = prop_read_bpf__open();
     if (!g_skel) {
@@ -393,7 +393,7 @@ static struct ring_buffer *pr_setup(int uid, struct ares_mod_ctx *mc)
     }
 
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        pr_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        pr_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!pr_ff) fprintf(stderr, "mod prop-read: follow-fork attach failed (non-fatal)\n");
     }
 
@@ -433,12 +433,12 @@ static void pr_teardown(void)
 
 static unsigned long long pr_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ── analyzer registration ─────────────────────────────────────────────────────
 
-const ares_analyzer_t analyzer_prop_read = {
+const anubee_analyzer_t analyzer_prop_read = {
     .name          = "prop-read",
     .description   = "Trace all system property reads (_get, _find, _foreach, _read_callback)",
     .setup         = pr_setup,

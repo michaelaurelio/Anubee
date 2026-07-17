@@ -7,8 +7,8 @@
 //   - parse_common_arg()  — argp callback delegate for the shared keys
 //
 // Include in the engine's .c file (not in shared headers); it pulls <argp.h>.
-#ifndef __ARES_ENGINE_ARGS_H
-#define __ARES_ENGINE_ARGS_H
+#ifndef __ANUBEE_ENGINE_ARGS_H
+#define __ANUBEE_ENGINE_ARGS_H
 
 #include <argp.h>
 #include <stdbool.h>
@@ -62,8 +62,8 @@ static inline error_t parse_common_arg(int key, char *arg,
 // Parallel to common_args; engines that support attach mode embed this in their
 // local args struct and delegate to parse_target_arg() from their parse_opts switch.
 
-#define ARES_KEY_SIBLINGS   0x100  // long-only key, high range to avoid engine short-key clashes
-#define ARES_KEY_NO_FOLLOW  0x101
+#define ANUBEE_KEY_SIBLINGS   0x100  // long-only key, high range to avoid engine short-key clashes
+#define ANUBEE_KEY_NO_FOLLOW  0x101
 
 struct target_args {
     pid_t pids[64];   // parsed PIDs from -p
@@ -76,15 +76,15 @@ struct target_args {
 #define TARGET_ARGP_OPTIONS \
     { "pid",            'p',                 "PID[,PID...]", 0, \
       "Attach to running PID(s) (precise; use --siblings to widen to same-UID)", 0 }, \
-    { "siblings",       ARES_KEY_SIBLINGS,   NULL,           0, \
+    { "siblings",       ANUBEE_KEY_SIBLINGS,   NULL,           0, \
       "With -p: also trace processes sharing the target PID's UID", 0 }, \
-    { "no-follow-fork", ARES_KEY_NO_FOLLOW,  NULL,           0, \
+    { "no-follow-fork", ANUBEE_KEY_NO_FOLLOW,  NULL,           0, \
       "With -p: don't follow forked children (default: follow)", 0 }
 
 // Pure CSV-to-pid_t parser. Splits csv on commas, converts each token with atoi,
 // writes at most max entries to out[]. Returns the count written (<= max).
 // ponytail: atoi is fine here — invalid non-numeric input becomes 0, caught at attach.
-static inline int ares_parse_pid_list(const char *csv, pid_t *out, int max)
+static inline int anubee_parse_pid_list(const char *csv, pid_t *out, int max)
 {
     if (!csv || max <= 0) return 0;
     // strtok modifies its input; work on a copy
@@ -113,7 +113,7 @@ static inline error_t parse_target_arg(int key, char *arg,
     (void)state;
     switch (key) {
         case 'p': {
-            int got = ares_parse_pid_list(arg, t->pids, 64);
+            int got = anubee_parse_pid_list(arg, t->pids, 64);
             if (got < 1)
                 argp_error(state, "-p: no valid PID in '%s'", arg);
             if (got == 64) {
@@ -127,15 +127,15 @@ static inline error_t parse_target_arg(int key, char *arg,
             t->n = got;
             return 0;
         }
-        case ARES_KEY_SIBLINGS:   t->siblings   = 1; return 0;
-        case ARES_KEY_NO_FOLLOW:  t->no_follow  = 1; return 0;
+        case ANUBEE_KEY_SIBLINGS:   t->siblings   = 1; return 0;
+        case ANUBEE_KEY_NO_FOLLOW:  t->no_follow  = 1; return 0;
     }
     return ARGP_ERR_UNKNOWN;
 }
 
 // True if argv requests help/usage — argp prints these but (under ARGP_NO_EXIT)
 // returns 0, so callers must detect + abort themselves. See MT1.
-static inline bool ares_wants_help(int argc, char **argv)
+static inline bool anubee_wants_help(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -146,4 +146,4 @@ static inline bool ares_wants_help(int argc, char **argv)
     return false;
 }
 
-#endif /* __ARES_ENGINE_ARGS_H */
+#endif /* __ANUBEE_ENGINE_ARGS_H */

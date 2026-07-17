@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// `ares mod proc-event` — userspace analyzer for process fork and exit events.
+// `anubee mod proc-event` — userspace analyzer for process fork and exit events.
 // Owns the proc_event BPF skeleton lifecycle; the dispatcher in mod.c drives
 // the poll loop and teardown order. Kernel side: src/modules/proc_event.bpf.c.
 #include <stdio.h>
@@ -30,7 +30,7 @@ static unsigned long g_sig_exits = 0;
 
 static int pe_handle_event(void *ctx, void *data, size_t sz)
 {
-    struct ares_mod_ctx *mc = ctx;
+    struct anubee_mod_ctx *mc = ctx;
     const struct trace_event_header *hdr = data;
 
     switch (hdr->type) {
@@ -45,7 +45,7 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
                    e->h.pid, e->comm, e->child_pid);
         if (mc->sink != NULL) {
             mod_emit_spawn(&mc->sink->jb, e);
-            ares_sink_emit(mc->sink);
+            anubee_sink_emit(mc->sink);
         }
         break;
     }
@@ -68,7 +68,7 @@ static int pe_handle_event(void *ctx, void *data, size_t sz)
         }
         if (mc->sink != NULL) {
             mod_emit_proc_exit(&mc->sink->jb, e);
-            ares_sink_emit(mc->sink);
+            anubee_sink_emit(mc->sink);
         }
         sym_flush_pid((int)e->h.pid);
         break;
@@ -96,7 +96,7 @@ static void pe_print_summary(void)
 
 // File twin of pe_print_summary: same counters, one
 // {"type":"proc_event_summary",...} record.
-static void pe_emit_summary(struct ares_sink *s)
+static void pe_emit_summary(struct anubee_sink *s)
 {
     if (g_forks == 0 && g_exits == 0) return;
 
@@ -108,12 +108,12 @@ static void pe_emit_summary(struct ares_sink *s)
     jb_s(j, ",\"exits\":");        jb_u64(j, g_exits);
     jb_s(j, ",\"signal_exits\":"); jb_u64(j, g_sig_exits);
     jb_c(j, '}');
-    ares_sink_emit(s);
+    anubee_sink_emit(s);
 }
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
-static struct ring_buffer *pe_setup(int uid, struct ares_mod_ctx *mc)
+static struct ring_buffer *pe_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_skel = proc_event_bpf__open();
     if (!g_skel) {
@@ -135,13 +135,13 @@ static struct ring_buffer *pe_setup(int uid, struct ares_mod_ctx *mc)
             bpf_map_update_elem(bpf_map__fd(g_skel->maps.target_pids), &tgid, &one, BPF_ANY);
         }
     }
-    bpf_program__set_autoattach(g_skel->progs.ares_follow_fork, 0);
+    bpf_program__set_autoattach(g_skel->progs.anubee_follow_fork, 0);
     if (proc_event_bpf__attach(g_skel)) {
         fprintf(stderr, "mod proc-event: failed to attach\n");
         goto err;
     }
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        pe_ff = bpf_program__attach(g_skel->progs.ares_follow_fork);
+        pe_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
         if (!pe_ff) fprintf(stderr, "mod proc-event: follow-fork attach failed (non-fatal)\n");
     }
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
@@ -167,12 +167,12 @@ static void pe_teardown(void)
 
 static unsigned long long pe_drops(void)
 {
-    return g_skel ? ares_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
+    return g_skel ? anubee_drops_read(bpf_map__fd(g_skel->maps.dropped)) : 0;
 }
 
 // ---- analyzer registration --------------------------------------------------
 
-const ares_analyzer_t analyzer_proc_event = {
+const anubee_analyzer_t analyzer_proc_event = {
     .name          = "proc-event",
     .description   = "Trace process fork and exit events",
     .setup         = pe_setup,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the funcs structured record builders. Pins the exact JSON
-// for a known event so the schema is stable for ares-mcp ingest.
+// for a known event so the schema is stable for anubee-mcp ingest.
 #include <linux/types.h>
 #include <stdbool.h>
 #include "common/emit.h"

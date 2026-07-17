@@ -1,5 +1,5 @@
-#ifndef ARES_COMMON_DEX_H
-#define ARES_COMMON_DEX_H
+#ifndef ANUBEE_COMMON_DEX_H
+#define ANUBEE_COMMON_DEX_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -36,4 +36,4 @@ int dex_lookup_range(const struct dex_method_map *m, uint32_t off,
 int dex_name_by_index(const struct dex_method_map *m, uint32_t method_idx,
                       char *out, size_t outsz);
 
-#endif /* ARES_COMMON_DEX_H */
+#endif /* ANUBEE_COMMON_DEX_H */

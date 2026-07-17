@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "common/art_buildid.h"
-#include "common/maps.h"        // ares_parse_maps_line, struct ares_map_line
+#include "common/maps.h"        // anubee_parse_maps_line, struct anubee_map_line
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -33,7 +33,7 @@ static char *trim(char *s, char *e)
 }
 
 /* Set once when an unknown libart BuildID disables managed naming this run.
- * Read by ares_art_naming_disabled() for the CR5 coverage record. */
+ * Read by anubee_art_naming_disabled() for the CR5 coverage record. */
 static int g_naming_disabled = 0;
 
 int art_offsets_parse(const char *text, char *buildid_out, size_t bidsz,
@@ -140,7 +140,7 @@ int read_build_id_hex(const char *path, char *out, size_t outsz)
     return ok;
 }
 
-// Lazily (once per process) parse the ARES_ART_OFFSETS file, if set. Return its offsets
+// Lazily (once per process) parse the ANUBEE_ART_OFFSETS file, if set. Return its offsets
 // iff the parsed BuildID matches `target_hex`; else NULL (caller falls back to k_table).
 static const struct art_offsets *override_lookup(const char *target_hex)
 {
@@ -149,11 +149,11 @@ static const struct art_offsets *override_lookup(const char *target_hex)
     static struct art_offsets ov;
     if (!inited) {
         inited = 1;
-        const char *path = getenv("ARES_ART_OFFSETS");
+        const char *path = getenv("ANUBEE_ART_OFFSETS");
         if (path) {
             FILE *f = fopen(path, "rb");
             if (!f) {
-                fprintf(stderr, "[ares] ARES_ART_OFFSETS open failed (%s); ignoring\n", path);
+                fprintf(stderr, "[anubee] ANUBEE_ART_OFFSETS open failed (%s); ignoring\n", path);
             } else {
                 char buf[4096];
                 size_t n = fread(buf, 1, sizeof buf - 1, f);
@@ -162,7 +162,7 @@ static const struct art_offsets *override_lookup(const char *target_hex)
                 if (art_offsets_parse(buf, ov_bid, sizeof ov_bid, &ov))
                     valid = 1;
                 else
-                    fprintf(stderr, "[ares] ARES_ART_OFFSETS parse failed; ignoring\n");
+                    fprintf(stderr, "[anubee] ANUBEE_ART_OFFSETS parse failed; ignoring\n");
             }
         }
     }
@@ -170,7 +170,7 @@ static const struct art_offsets *override_lookup(const char *target_hex)
         static int noted = 0;
         if (!noted) {
             noted = 1;
-            fprintf(stderr, "[ares] using ARES_ART_OFFSETS override for libart BuildID %s\n",
+            fprintf(stderr, "[anubee] using ANUBEE_ART_OFFSETS override for libart BuildID %s\n",
                     target_hex);
         }
         return &ov;
@@ -194,8 +194,8 @@ const struct art_offsets *art_buildid_offsets(int pid)
     if (f) {
         char line[512], libart[256] = {0};
         while (fgets(line, sizeof line, f)) {
-            struct ares_map_line ml;
-            if (ares_parse_maps_line(line, &ml) && ml.path[0] &&
+            struct anubee_map_line ml;
+            if (anubee_parse_maps_line(line, &ml) && ml.path[0] &&
                 strstr(ml.path, "/libart.so")) {
                 snprintf(libart, sizeof libart, "%s", ml.path);
                 break;
@@ -220,7 +220,7 @@ const struct art_offsets *art_buildid_offsets(int pid)
         if (!g_naming_disabled) {
             g_naming_disabled = 1;
             fprintf(stderr,
-                "[ares] libart BuildID %s not in offset table; managed-frame "
+                "[anubee] libart BuildID %s not in offset table; managed-frame "
                 "naming disabled (add a k_table row).\n",
                 hex);
         }
@@ -228,7 +228,7 @@ const struct art_offsets *art_buildid_offsets(int pid)
     return o;
 }
 
-int ares_art_naming_disabled(void)
+int anubee_art_naming_disabled(void)
 {
     return g_naming_disabled;
 }

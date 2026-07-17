@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ares-fold — post-process a syscalls JSON trace by detecting loops in the
+# anubee-fold — post-process a syscalls JSON trace by detecting loops in the
 # syscall sequence and folding each loop into a loop reference.
 #
 # Algorithm: per thread, tokenize each syscall by (name + call-stack signature),
@@ -9,8 +9,8 @@
 # folded per-thread timeline that references them. Original event ids are kept on
 # every loop so any iteration can be expanded; nothing is discarded.
 #
-#   ares-fold trace.json                 # text summary to stdout
-#   ares-fold trace.json --json out.json # write folded JSON
+#   anubee-fold trace.json                 # text summary to stdout
+#   anubee-fold trace.json --json out.json # write folded JSON
 #
 # Stdlib only.
 

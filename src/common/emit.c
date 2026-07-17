@@ -84,13 +84,13 @@ void jb_esc(struct jbuf *j, const char *s)
 }
 
 // ---------------------------------------------------------------------------
-// ares_sink — shared file-output sink
+// anubee_sink — shared file-output sink
 // ---------------------------------------------------------------------------
 
 #define SINK_BUF_SIZE (8u << 20)           // 8 MB write buffer
 #define SINK_FLUSH_DEFAULT 8192u           // flush every N emitted records
 
-int ares_sink_open(struct ares_sink *s, const char *path,
+int anubee_sink_open(struct anubee_sink *s, const char *path,
                    const char *noun, int jsonl)
 {
     s->f = fopen(path, "w");
@@ -110,7 +110,7 @@ int ares_sink_open(struct ares_sink *s, const char *path,
     return 0;
 }
 
-void ares_sink_emit(struct ares_sink *s)
+void anubee_sink_emit(struct anubee_sink *s)
 {
     if (!s->f || !s->jb.b || !s->jb.len)
         return;
@@ -135,13 +135,13 @@ void ares_sink_emit(struct ares_sink *s)
     }
 }
 
-void ares_sink_flush(struct ares_sink *s)
+void anubee_sink_flush(struct anubee_sink *s)
 {
     if (s->f && fflush(s->f) != 0 && !s->werr)
         s->werr = errno ? errno : EIO;
 }
 
-void ares_sink_close(struct ares_sink *s)
+void anubee_sink_close(struct anubee_sink *s)
 {
     if (!s->f)
         return;
@@ -154,7 +154,7 @@ void ares_sink_close(struct ares_sink *s)
     s->jb.b = NULL; s->jb.len = s->jb.cap = 0;
 }
 
-void ares_sink_report(const struct ares_sink *s)
+void anubee_sink_report(const struct anubee_sink *s)
 {
     if (!s->path || !s->noun)
         return;

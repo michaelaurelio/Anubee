@@ -9,7 +9,7 @@
 // when added) write into the target. syscalls (kprobe), lib (mmap-kprobe) and
 // dump (/proc/<pid>/mem reads) write nothing into the target. `trace` runs the
 // funcs uprobe alongside the syscalls kprobe, so it is loud by construction.
-static const struct ares_bpf_object g_objects[] = {
+static const struct anubee_bpf_object g_objects[] = {
     { "syscalls",  false },
     { "funcs",     true  },
     { "lib",       false },
@@ -28,14 +28,14 @@ static const struct ares_bpf_object g_objects[] = {
     { "mod:screencapture-detect", false }, // tracepoint on binder_transaction (context only) + dumpsys poll; zero uprobes
 };
 
-const struct ares_bpf_object *ares_bpf_objects(int *count)
+const struct anubee_bpf_object *anubee_bpf_objects(int *count)
 {
     if (count)
         *count = (int)(sizeof(g_objects) / sizeof(g_objects[0]));
     return g_objects;
 }
 
-bool ares_object_writes_target(const char *name)
+bool anubee_object_writes_target(const char *name)
 {
     // AA2 fix: fail closed. No name, or a name not in the table, means we don't
     // know this capability is quiet — assume loud until it's registered, rather
@@ -48,10 +48,10 @@ bool ares_object_writes_target(const char *name)
     return true;
 }
 
-bool ares_quiet_config_ok(const char *const *loaded, int n)
+bool anubee_quiet_config_ok(const char *const *loaded, int n)
 {
     for (int i = 0; i < n; i++)
-        if (ares_object_writes_target(loaded[i]))
+        if (anubee_object_writes_target(loaded[i]))
             return false;
     return true;
 }

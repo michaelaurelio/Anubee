@@ -1,7 +1,7 @@
 # DEX test fixture
 
 `sample.dex` — a standard DEX (`dex\n035`) built from `Sample.java`: class
-`com.ares.Sample` with methods `add(II)I`, `greet(String)String`, and the
+`com.anubee.Sample` with methods `add(II)I`, `greet(String)String`, and the
 compiler-generated `<init>`.
 
 Regenerate with `./gen_sample_dex.sh` (needs `javac` + `d8` from the Android SDK

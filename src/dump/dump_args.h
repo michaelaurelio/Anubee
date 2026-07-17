@@ -2,8 +2,8 @@
 // Pure validation of dump's selector/trigger combination (no libbpf/libelf
 // deps) so it is host-testable - dump.c itself includes dump.skel.h and cannot
 // link host-side. Same split as src/trace/trace_args.{c,h}.
-#ifndef ARES_DUMP_ARGS_H
-#define ARES_DUMP_ARGS_H
+#ifndef ANUBEE_DUMP_ARGS_H
+#define ANUBEE_DUMP_ARGS_H
 
 // One parsed dump invocation, reduced to just what the rules need.
 struct dump_trigger {
@@ -42,4 +42,4 @@ const char *dump_args_check(const struct dump_trigger *t);
  * so require it to start with a digit. */
 int dump_parse_base(const char *arg, unsigned long long *out);
 
-#endif /* ARES_DUMP_ARGS_H */
+#endif /* ANUBEE_DUMP_ARGS_H */

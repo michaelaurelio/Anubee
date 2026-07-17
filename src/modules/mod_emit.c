@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// Pure structured-record builders for ares mod analyzers (no libbpf/skeleton
+// Pure structured-record builders for anubee mod analyzers (no libbpf/skeleton
 // deps, so the host test can link them). Built on the shared serializer + schema.
 #include <linux/types.h>
 #include "common/emit.h"

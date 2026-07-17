@@ -13,7 +13,7 @@
 
 // Which of args[0..3] are a const char* (path/string), per syscall. Not
 // exported - only install_arg_types() below needs it, on both engines.
-static const struct ares_arg_mask_entry g_str_args[] = {
+static const struct anubee_arg_mask_entry g_str_args[] = {
 #ifdef __NR_openat
     { __NR_openat, A1 },
 #endif
@@ -118,7 +118,7 @@ void install_arg_types(int fd)
 
 // Which arg holds a sockaddr* (the addrlen is the next arg); connect/bind at
 // arg1, sendto at arg4.
-const struct ares_arg_sock_entry g_sock_args[] = {
+const struct anubee_arg_sock_entry g_sock_args[] = {
 #ifdef __NR_connect
     { __NR_connect, 1 },
 #endif
@@ -149,7 +149,7 @@ int arg_sock_index(unsigned long long nr)
     return -1;
 }
 
-const struct ares_arg_mask_entry g_fd_args[] = {
+const struct anubee_arg_mask_entry g_fd_args[] = {
 #ifdef __NR_read
     { __NR_read, A0 },
 #endif
@@ -299,7 +299,7 @@ unsigned arg_fd_mask(unsigned long long nr)
 
 // Per-syscall argument count (arm64 ABI) - see syscall_argtypes.h. Moved here
 // (byte-identical) from src/syscalls/syscalls.c's own g_argc[]/g_nargc.
-const struct ares_arg_count_entry g_arg_counts[] = {
+const struct anubee_arg_count_entry g_arg_counts[] = {
 #include "common/syscall_argc.h"
 };
 const size_t g_arg_counts_count = sizeof(g_arg_counts) / sizeof(g_arg_counts[0]);

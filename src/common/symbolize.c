@@ -16,11 +16,11 @@
 // we look up (addr - load_base) in the symbol table.
 
 #include "symbolize.h"
-#include "common/maps.h"      // ares_parse_maps_line
+#include "common/maps.h"      // anubee_parse_maps_line
 #include "common/proc_mem.h"  // proc_mem_open / proc_mem_read (live target memory)
 #include "common/cfi_unwind.h"
 #include "common/emit.h"      // struct jbuf, jb_s / jb_u64 / jb_hex / jb_esc / jb_c
-#include "common/managed_frame.h" // ares_is_interp_frame, ares_managed_chain_build (impure bodies here)
+#include "common/managed_frame.h" // anubee_is_interp_frame, anubee_managed_chain_build (impure bodies here)
 #include "common/art_nterp.h" // nterp_name
 #include "common/art_shadow.h"   // shadow_frame_chain — switch-interp ShadowFrame naming
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
@@ -170,7 +170,7 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		return 0;
 	}
 
-	struct ares_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
+	struct anubee_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
 	if (!hit) {
 		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
 		if (pm->gone)
@@ -258,13 +258,13 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 	return 1;
 }
 
-int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
+int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
 			uint64_t *out_pcs, int max, uint64_t *out_sps,
 			struct cfi_step_diag *out_diags)
 {
-	struct ares_unwind_regs r;
+	struct anubee_unwind_regs r;
 	unwind_regs_from_snapshot(snap, &r);
-	/* cfi_step operates on uint64_t arrays; ares_unwind_regs uses __u64.
+	/* cfi_step operates on uint64_t arrays; anubee_unwind_regs uses __u64.
 	 * They are the same width but distinct types — copy to avoid -Wincompatible-pointer-types. */
 	uint64_t regs[CFI_NREG];
 	uint64_t sp = (uint64_t)r.sp;
@@ -309,7 +309,7 @@ int cfi_unwind_snapshot(int pid, const struct ares_stack_snapshot *snap,
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
 			break;
 		}
-		struct ares_map_line *hit = find_mapping_refresh(pm, pc);
+		struct anubee_map_line *hit = find_mapping_refresh(pm, pc);
 		if (!hit && !forced_reread) {
 			forced_reread = 1;
 			read_proc_maps(pm);
@@ -372,7 +372,7 @@ void sym_flush_pid(int pid)
 // authoritative ShadowFrame walk (no guessing); nterp_helper keeps the
 // stack-slot guess-path (CR4: kept as separate per-terminal branches — the two
 // walk different ManagedStack fields, so one can't substitute for the other).
-int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
+int anubee_managed_chain(int pid, const struct anubee_stack_snapshot *s,
                        const uint64_t *pcs, const uint64_t *sps, int n,
                        const char *const *syms_in, char *out, size_t cap)
 {
@@ -397,11 +397,11 @@ int ares_managed_chain(int pid, const struct ares_stack_snapshot *s,
         nn = shadow_frame_chain(pid, s->tls_base, chain, 16);
         for (int k = 0; k < nn; k++) nptr[k] = chain[k];
     }
-    return ares_managed_chain_build(syms, m, nptr, nn, out, cap);
+    return anubee_managed_chain_build(syms, m, nptr, nn, out, cap);
 }
 
-void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
-                              const struct ares_stack_snapshot *s,
+void anubee_emit_cfi_stack_json(struct jbuf *j, int pid,
+                              const struct anubee_stack_snapshot *s,
                               const uint64_t *pcs, const uint64_t *sps, int n,
                               const char *const *syms_in,
                               const struct cfi_step_diag *diags)
@@ -422,7 +422,7 @@ void ares_emit_cfi_stack_json(struct jbuf *j, int pid,
         if (strstr(sym, "art_jni_trampoline")) jb_s(j, ",\"kind\":\"jni-trampoline\"");
         else if (strstr(sym, ".oat!") || strstr(sym, ".odex!") || strstr(sym, ".vdex!"))
             jb_s(j, ",\"kind\":\"managed\"");
-        else if (ares_is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
+        else if (anubee_is_interp_frame(sym)) jb_s(j, ",\"kind\":\"interp\"");
         else jb_s(j, ",\"kind\":\"native\"");
         if (diags) {
             const struct cfi_step_diag *d = &diags[i];

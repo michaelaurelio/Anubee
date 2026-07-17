@@ -70,7 +70,7 @@ int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
 
 	if (pid > 0) {
 		char mf[96];
-		ares_map_files_path(mf, sizeof(mf), pid, vstart, vend);
+		anubee_map_files_path(mf, sizeof(mf), pid, vstart, vend);
 		fd = open(mf, O_RDONLY | O_CLOEXEC);
 	}
 	return fd;

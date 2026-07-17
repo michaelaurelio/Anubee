@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-// ares — unified Android RASP / malware-analysis tracer.
+// anubee — unified Android RASP / malware-analysis tracer.
 //
 // One binary, two tracing engines selected by subcommand. Each engine loads ONLY
 // its own BPF object, so the stealthy kprobe syscall tracer ("syscalls") can run
@@ -20,7 +20,7 @@ int cmd_mod(int argc, char **argv);        // src/modules/mod.c
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"ares — Android RASP / malware analysis tracer\n"
+		"anubee — Android RASP / malware analysis tracer\n"
 		"\n"
 		"usage: %s <command> [args...]\n"
 		"\n"
@@ -41,7 +41,7 @@ static void usage(const char *argv0)
 		"                  streams, no correlation.\n"
 		"  mod             run a named analyzer: specialized tracing package with its own\n"
 		"                  BPF object. Stealthy or loud depending on the analyzer.\n"
-		"                  `ares mod --list` lists available analyzers.\n"
+		"                  `anubee mod --list` lists available analyzers.\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -62,14 +62,14 @@ int main(int argc, char **argv)
 
 	// --version / -V: answered centrally because objcopy localizes each engine's
 	// argp_program_version, leaving glibc's weak NULL fallback and a broken
-	// --version. Print "ares <subcommand>" and exit; guard on the known-name set
-	// so "ares bogus --version" still falls through to the "unknown command" error.
+	// --version. Print "anubee <subcommand>" and exit; guard on the known-name set
+	// so "anubee bogus --version" still falls through to the "unknown command" error.
 	static const char *known[] = { "syscalls","funcs","lib","dump","correlate","trace","mod" };
 	for (int k = 0; k < (int)(sizeof(known)/sizeof(known[0])); k++) {
 		if (strcmp(cmd, known[k])) continue;
 		for (int i = 2; i < argc; i++) {
 			if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-V")) {
-				printf("ares %s\n", cmd);
+				printf("anubee %s\n", cmd);
 				return 0;
 			}
 		}

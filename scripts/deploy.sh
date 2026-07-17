@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Push the ares binary (and probe specs) to a connected rooted Android device.
+# Push the anubee binary (and probe specs) to a connected rooted Android device.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="$ROOT/build/ares"
-DEVICE_PATH="/data/local/tmp/ares"
+BINARY="$ROOT/build/anubee"
+DEVICE_PATH="/data/local/tmp/anubee"
 SPECS_DIR="$ROOT/specs"
 DEVICE_SPECS="/data/local/tmp/specs"
 
@@ -14,7 +14,7 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-echo "=== pushing ares ==="
+echo "=== pushing anubee ==="
 adb push "$BINARY" "$DEVICE_PATH"
 adb shell chmod 755 "$DEVICE_PATH"
 

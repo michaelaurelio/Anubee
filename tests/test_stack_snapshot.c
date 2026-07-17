@@ -1,4 +1,4 @@
-// test_stack_snapshot.c — host unit test for ares_stack_snapshot_emit_json.
+// test_stack_snapshot.c — host unit test for anubee_stack_snapshot_emit_json.
 // Links: stack_snapshot.c emit.c trace_schema.c
 #include <assert.h>
 #include <stdlib.h>
@@ -14,7 +14,7 @@
 
 int main(void)
 {
-    struct ares_stack_snapshot s;
+    struct anubee_stack_snapshot s;
     memset(&s, 0, sizeof(s));
     s.h.pid    = 1234;
     s.h.tid    = 5678;
@@ -31,7 +31,7 @@ int main(void)
     s.truncated = 0;
 
     struct jbuf j = {0};
-    ares_stack_snapshot_emit_json(&j, &s);
+    anubee_stack_snapshot_emit_json(&j, &s);
 
     CHECK(j.b && j.len > 0,              "jbuf populated");
     CHECK(strstr(j.b, "\"type\":\"stack\""),  "type:stack present");
@@ -47,31 +47,31 @@ int main(void)
     /* truncated=1 path */
     struct jbuf j2 = {0};
     s.truncated = 1;
-    ares_stack_snapshot_emit_json(&j2, &s);
+    anubee_stack_snapshot_emit_json(&j2, &s);
     CHECK(j2.b && strstr(j2.b, "\"truncated\":1"), "truncated=1 present");
 
     /* W3-window: read side must serialise ANY snap_len, not just the legacy
      * 8K/32K tiers. 16384 is deliberately not a former tier size. */
     struct jbuf j3 = {0};
-    struct ares_stack_snapshot s3;
+    struct anubee_stack_snapshot s3;
     memset(&s3, 0, sizeof(s3));
     s3.h.pid   = 1234;
     s3.snap_len = 16384;
     s3.snap[0] = 0x01;
     s3.snap[16383] = 0x02;
-    ares_stack_snapshot_emit_json(&j3, &s3);
+    anubee_stack_snapshot_emit_json(&j3, &s3);
     CHECK(j3.b && strstr(j3.b, "\"snap_len\":16384"), "non-tier snap_len serialises");
     CHECK(strstr(j3.b, "\"snapshot\":\""),            "non-tier snapshot field present");
     free(j3.b);
 
     /* tls_base round-trips into the {"type":"stack"} record */
     {
-        struct ares_stack_snapshot s4; memset(&s4, 0, sizeof s4);
+        struct anubee_stack_snapshot s4; memset(&s4, 0, sizeof s4);
         s4.h.pid = 1000; s4.h.tid = 1001; s4.stack_id = 7;
         s4.tls_base = 0x7b1234abcdULL;
         s4.snap_len = 0;
         struct jbuf j4 = {0};
-        ares_stack_snapshot_emit_json(&j4, &s4);
+        anubee_stack_snapshot_emit_json(&j4, &s4);
         CHECK(strstr(j4.b, "\"tls_base\":\"0x7b1234abcd\"") != NULL, "tls_base hex present");
         free(j4.b);
     }

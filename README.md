@@ -55,13 +55,27 @@ Here's exactly what each subcommand is for:
 
 ---
 
-## Don't Take Our Word for It
+## Watch It Get Caught, Live
 
-"Detectability firewall" is a nice claim, but a claim isn't proof. [ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a genuine reference RASP: real anti-tamper checks, a UI that turns red the instant any tool writes into its memory, including Anubee's own loud engines. Point a quiet capability at it and watch the screen stay clean. That absence is the proof.
+You've seen what Anubee can do and how to run it. Here's proof that the quiet part of that promise is real, not just something we say.
+
+[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a companion app, built by the same team, whose only job is catching tools like Anubee in the act. It runs real anti-tamper checks and turns its screen red the instant it notices anything watching it.
+
+<table>
+<tr>
+<td align="center" width="33%"><img src="assets/detector-clean.png" width="220"><br><sub>Fresh install. Green "SECURE" banner, 0/4 tripped, every check passing.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-autoloop.png" width="220"><br><sub>Auto-loop switched on, so it keeps re-checking itself. Still green, still 0/4.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-compromised.png" width="220"><br><sub>Seconds after <code>anubee mod prop-read</code> attaches: the banner flips to red "COMPROMISED".</sub></td>
+</tr>
+</table>
+
+That flip happened on the very next automatic check, not staged and not delayed, and the log behind it names the exact memory address it caught. `prop-read` is one of the few Anubee capabilities detectable by design. Point one of the undetectable ones at the same app instead, `syscalls`, `lib`, or `dump`, and the banner never moves.
 
 ---
 
-**Curious how any of this actually works under the hood?** Full architecture, engine internals, the trace schema, detectability analysis, and every known limitation live in [DOCUMENTATION.md](DOCUMENTATION.md).
+**Curious how any of this actually works under the hood?** 
+
+Full architecture, engine internals, the trace schema, detectability analysis, and every known limitation live in [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ---
 

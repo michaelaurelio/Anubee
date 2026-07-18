@@ -44,7 +44,6 @@ static int is_sys_func_flag_val(const char *s)
 }
 
 // syscalls-unique flags: presence enables syscalls.
-static int is_sys_flag_noval(const char *s) { return !strcmp(s, "-a"); }
 static int is_sys_flag_val(const char *s)
 {
 	return !strcmp(s, "-s") || !strcmp(s, "-x") || !strcmp(s, "-l");
@@ -102,8 +101,7 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", argv[i]);
 			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
 			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", argv[i]);
-		} else if (is_sys_flag_noval(tok)) {
-			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
+		} else if (!strcmp(tok, "--syscalls")) {
 			o->want_sys = true;
 		} else if (is_sys_flag_val(tok)) {
 			if (++i >= argc) { fprintf(stderr, "trace: '%s' requires a value\n", tok); return -1; }

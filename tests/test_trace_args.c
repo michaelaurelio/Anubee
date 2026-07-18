@@ -45,11 +45,25 @@ int main(void)
 	char *k[] = { A("trace"), A("-p"), A("1"), A("-P"), A("pkg") };
 	assert(trace_parse_args(5, k, &t) < 0);          // -p then -P: rejected too
 
+	// Fix A: -a is gone from trace; --syscalls is the bare enable switch.
+	{
+		struct trace_args o;
+		char *av[] = { A("trace"), A("-P"), A("com.example.app"), A("-a") };
+		assert(trace_parse_args(4, av, &o) == -1);   // -a rejected (unrecognized)
+	}
+	{
+		struct trace_args o;
+		char *av[] = { A("trace"), A("-P"), A("com.example.app"), A("--syscalls") };
+		assert(trace_parse_args(4, av, &o) == 0);
+		assert(o.want_sys == 1);
+		assert(o.sys_ntok == 0);   // no token pushed -- bare enable only
+	}
+
 	// --- syscalls-unique flags: route to sys_toks, enable syscalls only ---
-	char *b[] = { A("trace"), A("-P"), A("pkg"), A("-a") };
+	char *b[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls") };
 	assert(trace_parse_args(4, b, &t) == 0);
 	assert(t.want_sys && !t.want_func && !t.want_lib);
-	assert(t.sys_ntok == 1 && !strcmp(t.sys_toks[0], "-a"));
+	assert(t.sys_ntok == 0);
 	assert(t.func_ntok == 0 && t.lib_ntok == 0);
 
 	char *slist[] = { A("trace"), A("-P"), A("pkg"), A("-s"), A("openat,read"),
@@ -157,9 +171,9 @@ int main(void)
 	assert(t.lib_ntok == 0);   // lib never receives -b/-Q
 
 	// --- --snapshot/--no-snapshot: broadcast to syscalls+funcs only, no lib ---
-	char *snap[] = { A("trace"), A("-P"), A("pkg"), A("-a"), A("--snapshot") };
+	char *snap[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls"), A("--snapshot") };
 	assert(trace_parse_args(5, snap, &t) == 0);
-	assert(t.want_sys);   // from -a; --snapshot itself doesn't enable anything
+	assert(t.want_sys);   // from --syscalls; --snapshot itself doesn't enable anything
 	assert(count_tok(t.sys_toks, t.sys_ntok, "--snapshot") == 1);
 	assert(count_tok(t.func_toks, t.func_ntok, "--snapshot") == 1);
 	assert(t.lib_ntok == 0);
@@ -188,7 +202,7 @@ int main(void)
 	assert(trace_parse_args(2, h, &t) < 0);          // -s missing value
 
 	// --- combined: multiple engines enabled at once, no markers anywhere ---
-	char *combo[] = { A("trace"), A("-P"), A("pkg"), A("-o"), A("run"), A("-a"),
+	char *combo[] = { A("trace"), A("-P"), A("pkg"), A("-o"), A("run"), A("--syscalls"),
 	                  A("-e"), A("libc.so!open"), A("--lib") };
 	assert(trace_parse_args(9, combo, &t) == 0);
 	assert(t.want_sys && !t.want_func && t.want_lib);   // -e not yet classified -> want_func false here

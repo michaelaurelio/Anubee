@@ -84,7 +84,7 @@ test_lib() {
 test_syscalls() {
     echo "=== syscalls (kprobe) ==="
     forcestop
-    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -104,7 +104,7 @@ test_syscalls() {
 test_syscalls_jit() {
     echo "=== syscalls JIT symbolization ([JIT]! frames) ==="
     forcestop
-    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-jit: BPF load failed"
     fi
@@ -125,7 +125,7 @@ test_syscalls_jit() {
 test_syscalls_vdso() {
     echo "=== syscalls vDSO symbolization ([vdso]! frames) ==="
     forcestop
-    local out; out="$(anubee "syscalls -a -s openat -P $PKG")"
+    local out; out="$(anubee "syscalls -s openat -P $PKG")"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-vdso: BPF load failed"
     fi
@@ -140,8 +140,8 @@ test_syscalls_vdso() {
 
 # syscalls register file: assert that a "stack" sidecar record carries a 31-entry
 # "regs" array (x0..x30 as hex strings). Snapshots are opt-in (--snapshot) and
-# library-filtered mode only (disabled in -a capture-all), and the package must be
-# passed via -P; so use -l libc.so --snapshot -P (not -a, not a positional pkg).
+# library-filtered mode only (disabled in bare capture-all), and the package must be
+# passed via -P; so use -l libc.so --snapshot -P (not bare capture-all, not a positional pkg).
 # A miss on "regs" means the BPF capture or serializer regressed.
 test_syscalls_regs() {
     echo "=== syscalls register file (regs[0..30] in stack sidecar) ==="
@@ -191,7 +191,7 @@ test_syscalls_cfi() {
     # Run with ANUBEE_CFI_DEBUG=1 so per-step diag fields (incl. stop_reason) land in
     # the sidecar — the PAC RUN_FAIL guard below greps that debug-only field. Own
     # su -c (the load-bearing gotcha); mirrors the anubee() wrapper + the env prefix.
-    local out; out="$(adb shell "su -c 'ANUBEE_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -a -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
+    local out; out="$(adb shell "su -c 'ANUBEE_CFI_DEBUG=1 timeout -s INT -k 3 $TIMEOUT $DEVICE_PATH syscalls -s openat --snapshot -o $out_file -P $PKG'" 2>&1)"
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "syscalls-cfi: BPF load failed (root/SELinux/own-su-c?)"
     fi
@@ -747,7 +747,7 @@ test_lib_records() {
     local of="/data/local/tmp/anubee_librec_test.jsonl"
 
     adb shell "su -c 'rm -f $of'" >/dev/null 2>&1 || true
-    local so; so="$(anubee "syscalls -a -s openat -o $of -P $PKG")"
+    local so; so="$(anubee "syscalls -s openat -o $of -P $PKG")"
     grep -qi 'BPF load failed\|-EPERM' <<<"$so" \
         && { tail -5 <<<"$so" >&2; fail "lib-records/syscalls: BPF load failed"; }
     local sc; sc="$(adb shell "su -c 'cat $of 2>/dev/null'" 2>/dev/null | tr -d '\r')"

@@ -43,6 +43,9 @@ _DUMP_RE = re.compile(
     r"^\[dump\]\s+(.+?)\s+\(pid\s+(\d+)\)\s+->\s+(\S+)\s+"
     r"\((\d+)\s+bytes,\s+(\d+)\s+from memory,\s+([^)]+)\)")
 
+# ts_print() (human_out.c) prepends "HH:MM:SS " to some lines; tolerate it.
+_TS_RE = re.compile(r"^\d\d:\d\d:\d\d\s+")
+
 
 # ---- input validation -----------------------------------------------------
 
@@ -65,7 +68,7 @@ def parse_lib_lines(text):
     """Parse `anubee lib` output into a list of per-segment mapping records."""
     out = []
     for line in text.splitlines():
-        m = _LIB_RE.match(line.strip())
+        m = _LIB_RE.match(_TS_RE.sub("", line.strip()))
         if not m:
             continue
         out.append({
@@ -83,7 +86,7 @@ def parse_dump_lines(text):
     """Parse `anubee dump` per-module `[dump]` lines into structured records."""
     out = []
     for line in text.splitlines():
-        m = _DUMP_RE.match(line.strip())
+        m = _DUMP_RE.match(_TS_RE.sub("", line.strip()))
         if not m:
             continue
         out.append({

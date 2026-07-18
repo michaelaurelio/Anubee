@@ -451,6 +451,7 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
             argp_error(state, "cannot open spec file '%s'", arg);
         break;
     case ARGP_KEY_END:
+        anubee_target_warn_noop(&a->tgt, "correlate");
         validate_pid_or_package(state, a->tgt.n, a->pkg);
         validate_have_selector(state, a->nspec, "-e SPEC or -F FILE");
         break;

@@ -1189,6 +1189,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
 		return parse_target_arg(key, arg, state, &a->tgt);
 	case ARGP_KEY_END:
+		anubee_target_warn_noop(&a->tgt, "syscalls");
 		if (a->tgt.n > 0 && a->package_name[0])
 			argp_error(state, "specify exactly one of -p or -P");
 		if (!a->tgt.n && !a->package_name[0])

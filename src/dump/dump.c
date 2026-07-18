@@ -244,6 +244,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         else argp_error(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
+        anubee_target_warn_noop(&a->tgt, "dump");
         if (a->pat_pos && a->npat < 64) a->patterns[a->npat++] = a->pat_pos;
         if (a->npat == 0)               // pull ALL lib: specs, not just the first
             for (int i = 0; i < a->nspec && a->npat < 64; i++)

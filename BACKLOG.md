@@ -262,7 +262,7 @@ three copy-pasted, differently-worded versions in `funcs.c`/`correlate.c`/`sysca
 **Per engine:** `funcs`'s `-I/-i/-r` deprecate (stderr warning naming the equivalent spec
 line, e.g. `-e 'libc.so!/^encrypt/'`; behavior unchanged this release) rather than
 hard-remove, so existing scripts/CI don't break — hard removal is a follow-up once
-`specs/*.spec`, docs, and `ANUBEE-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
+`specs/*.spec`, docs, and `Anubee-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
 onto the shared loader/matcher and gains full `COMMON_ARGP_OPTIONS` for surface parity
 (**done** — see the 2026-07-13 EPIC H entry below; `correlate` no longer hand-rolls
 `-o`/`-q`, it now takes `-v`/`-J`/`-b`/`-Q` too). `syscalls`/`dump`/`mod` each gain new, purely
@@ -292,6 +292,20 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 ---
 
 ## Minor — cleanups, perf nits, cosmetic, verification
+
+### anubee-mcp full tool sweep — 2026-07-18
+
+- **MCP1 — audit the remaining 28 `@mcp.tool` handlers.** Triggered by a
+  library-detection bug report (`mapped_libraries` returning nothing, root
+  cause: `[lib]` lines' `ts_print()` timestamp broke the `^\[lib\]` anchor in
+  `device.py`'s parser — already fixed, commit `f74356c`). Only the two
+  device-side tools (`mapped_libraries`, `dump_library`) got a close read
+  during that audit. The other tools in `server.py`, plus both trace loaders
+  (`load_trace` / `load_trace_structured`) and the DuckDB ingest in
+  `trace_store.py`, haven't had the same scrutiny. Recent fixes in that area
+  (`56b25a6` empty `IN ()` on empty syscall list, `ac3af03` DuckDB connection
+  leak on reload) suggest more may be lurking. Do a correctness pass over
+  `tools/anubee-mcp/server.py` + `trace_store.py`.
 
 ### Cross-engine JSONL schema consistency — 2026-07-13
 
@@ -590,7 +604,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `screencapture_detect` → `exfil_detect`, `exfil_detect` →
   `massdelete_detect`, `fileless_detect` → `exfil_detect`) on the same pid
   within a per-rule time window into evidence-carrying incident records.
-  Checked first: neither ANUBEE-Desktop (never parses `mod` output at all) nor
+  Checked first: neither Anubee-Desktop (never parses `mod` output at all) nor
   `anubee-mcp` (only ingested five stale `*_summary` teardown types) already
   did this.
   - **Same-pid grouping only** — a chain split across a dropper process and
@@ -769,7 +783,7 @@ is in DOCUMENTATION.md and the referenced specs.
     regression oracle — byte-identical except where a phase intentionally
     added a field/record type) plus balance/grep checks on the engine `.c`
     files the BPF-skeleton gate keeps un-host-compilable. Cross-repo: 341/341
-    ANUBEE-Desktop tests pass unmodified — the new record types land as
+    Anubee-Desktop tests pass unmodified — the new record types land as
     retained-but-unhandled rows (EPIC A3's design), no ingest change needed.
     On-device capture confirming the real stdout/file shapes is the
     remaining open step (same standing gate as every BPF-touching change).
@@ -811,7 +825,7 @@ is in DOCUMENTATION.md and the referenced specs.
   unchanged; `correlate` gained full `COMMON_ARGP_OPTIONS` parity and its `-F` trim
   bug is fixed; `syscalls`/`dump`/`mod` each gained new, purely-additive `-e`/`-F`
   spec-file support they never had before. `specs/*.spec` and
-  `ANUBEE-Detector/sim/rasp-checks.spec` migrated to add `syscall:`/`lib:` lines
+  `Anubee-Detector/sim/rasp-checks.spec` migrated to add `syscall:`/`lib:` lines
   alongside their existing uprobe lines, making the latter a genuine multi-engine
   capture-driving file. Two real bugs were found and fixed along the way (not just
   noted): a NULL-logger crash in `parse_custom_probe_spec` reachable from the three

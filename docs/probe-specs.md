@@ -149,7 +149,7 @@ anubee dump     -P com.example.app -F myapp.spec -o dump.jsonl       # reads the
 ```
 
 Real examples: `specs/common-file.spec` and `specs/common-network.spec` mix `funcs:` lines
-with `syscall:` lines. `ANUBEE-Detector/sim/rasp-checks.spec` mixes all three kinds to drive a whole
+with `syscall:` lines. `Anubee-Detector/sim/rasp-checks.spec` mixes all three kinds to drive a whole
 `anubee trace` run from one file.
 
 ## Flag reference

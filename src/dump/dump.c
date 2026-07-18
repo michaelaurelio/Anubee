@@ -245,6 +245,8 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "dump");
+        if (a->tgt.n > 0 && a->activity)
+            fprintf(stderr, "dump: warning - -A/--activity has no effect in -p mode; ignored\n");
         if (a->pat_pos && a->npat < 64) a->patterns[a->npat++] = a->pat_pos;
         if (a->npat == 0)               // pull ALL lib: specs, not just the first
             for (int i = 0; i < a->nspec && a->npat < 64; i++)

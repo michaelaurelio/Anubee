@@ -255,6 +255,8 @@ class TraceStore:
             con.executemany("INSERT INTO mod_events VALUES (?,?,?,?,?)",
                 [[e.get("pid"), e.get("type"), e.get("ts_ns"), e.get("comm"), json.dumps(e)]
                  for e in mod_events])
+        if getattr(self, "con", None) is not None:
+            self.con.close()
         self.con = con
         self.path = path
         self._summaries = summaries
@@ -540,6 +542,8 @@ class TraceStore:
         con = duckdb.connect()
         con.execute("PRAGMA threads=4")
         abspath, skipped = _build_events(con, path, "")
+        if getattr(self, "con", None) is not None:
+            self.con.close()
         self.con = con
         self.path = abspath
         self._summaries = {}

@@ -49,7 +49,7 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 **Get started:** one static `anubee` binary, nothing else to install. Grab it and run your first trace. Full walkthrough, prerequisites included: [`docs/getting-started.md`](docs/getting-started.md).
 
-**Full capability:** [ANUBEE-Desktop](https://github.com/michaelaurelio/ANUBEE-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/ANUBEE-Desktop) and follow its README.
+**Full capability:** [Anubee-Desktop](https://github.com/michaelaurelio/Anubee-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/Anubee-Desktop) and follow its README.
 
 ---
 
@@ -57,7 +57,7 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 Rather than just claim Anubee is stealthy, we tested it against a tool built to catch exactly this kind of tracer.
 
-[ANUBEE-Detector](https://github.com/michaelaurelio/ANUBEE-Detector) is a dedicated tripwire for exactly this kind of tool. It loops real security checks and flips its screen red the instant it senses it's being watched.
+[Anubee-Detector](https://github.com/michaelaurelio/Anubee-Detector) is a dedicated tripwire for exactly this kind of tool. It loops real security checks and flips its screen red the instant it senses it's being watched.
 
 <table>
 <tr>
@@ -71,7 +71,7 @@ Anubee's quiet capabilities never leave a footprint. That's why they never tripp
 
 Then we ran one that does leave a footprint. The detector caught it immediately.
 
-That's what "mostly invisible while it works" actually looks like. [Go try it yourself](https://github.com/michaelaurelio/ANUBEE-Detector). The detector's open source too.
+That's what "mostly invisible while it works" actually looks like. [Go try it yourself](https://github.com/michaelaurelio/Anubee-Detector). The detector's open source too.
 
 ---
 

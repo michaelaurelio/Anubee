@@ -37,6 +37,11 @@ struct dump_sel {
 int dump_sel_matches(const struct dump_sel *sel, const char *path,
                      unsigned long long base);
 
+/* Like dump_sel_matches, but a base selector matches when the address falls
+ * anywhere inside the segment [seg_start, seg_end), not only at the load base. */
+int dump_sel_matches_seg(const struct dump_sel *sel, const char *path,
+                         unsigned long long seg_start, unsigned long long seg_end);
+
 /* Invoked once per distinct module of `pid` matching the selector. `memfd` is an
  * already-open /proc/<pid>/mem (the walker owns it; do not close it). `file_off`
  * is the byte offset of the module's base segment within `path` - 0 for an

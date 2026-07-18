@@ -19,7 +19,7 @@
 
 **Ever wanted to know exactly what an app is really doing?**
 
-Anubee sees what an app is doing, no matter how hidden it is. It watches from the kernel, most of the time without leaving a trace. No repackaging, no injected gadget, nothing the app can find.
+Anubee shows you, no matter how well it's hidden.
 
 ---
 
@@ -42,6 +42,20 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 - **Comes with Android malware analysis built in.** Anubee already catches files being
   deleted in bulk, data being quietly leaked out, permissions being abused, and the
   screen being secretly recorded.
+
+---
+
+## Capabilities
+
+| Subcommand | What it's for |
+|---|---|
+| `anubee syscalls` | Watches what an app does without it ever knowing, the quiet default |
+| `anubee funcs` | Captures deep function-level detail: arguments, return values, and timing |
+| `anubee lib` | Finds every native library an app loads, even ones it only loads mid-run |
+| `anubee dump` | Pulls packed or encrypted code out of a running app and rebuilds it into a file you can open in a disassembler |
+| `anubee correlate` | Ties a specific function to the syscalls it triggers |
+| `anubee trace` | Runs `syscalls` and `funcs`/`lib` together in one launch |
+| `anubee mod` | Runs ready-made analyzers for specific malware behavior |
 
 ---
 

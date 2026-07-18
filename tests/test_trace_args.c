@@ -112,6 +112,40 @@ int main(void)
 		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 1);
 		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 1);
 	}
+	{
+		// launch mode (-P): --no-follow-fork must NOT reach any engine's
+		// token list either; trace_parse_args warns once instead.
+		char *launch_nff[] = { A("trace"), A("-P"), A("com.example.app"),
+		                       A("--no-follow-fork"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, launch_nff, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 0);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 0);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 0);
+	}
+	{
+		// attach mode (-p): --no-follow-fork IS forwarded to every engine
+		// that understands it.
+		char *attach_nff[] = { A("trace"), A("-p"), A("4821"),
+		                       A("--no-follow-fork"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, attach_nff, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 1);
+	}
+	{
+		// attach mode (-p): both --siblings and --no-follow-fork forward
+		// together, independently of each other.
+		char *attach_both[] = { A("trace"), A("-p"), A("4821"),
+		                        A("--siblings"), A("--no-follow-fork"),
+		                        A("-s"), A("openat") };
+		assert(trace_parse_args(7, attach_both, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 1);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 1);
+	}
 
 	// --- -b/-Q: broadcast to syscalls+funcs only, NEVER lib (lib has no -b/-Q) ---
 	char *bq[] = { A("trace"), A("-P"), A("pkg"), A("-b"), A("8"), A("-Q"), A("16") };

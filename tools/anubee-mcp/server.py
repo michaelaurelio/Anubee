@@ -316,11 +316,19 @@ def mapped_libraries(package: str, seconds: int = 8,
                      activity: Optional[str] = None) -> dict:
     """Launch the app on the connected device (via `anubee lib`) for
     `seconds`, then return the native libraries (.so) it loaded — one record per
-    (pid, library) with the merged address range, segment count and inode. Use
-    this to discover what's loaded (and the exact/randomized name of a protector
-    payload) before dump_library. Needs adb + anubee on the device; see the
-    ANUBEE_* env in the README. Returns {libraries, error}: check `error` if
-    `library_count` is 0."""
+    (pid, library) with the merged address range, segment count, inode, whether
+    it was unlink()'d right after mapping (`deleted`: true — a common anti-dump
+    trick), and `soname` when `library` is really a containing APK (a lib mapped
+    straight out of an uncompressed APK entry, extractNativeLibs=false, reports
+    the apk path as `library` and the real .so name as `soname`). Also returns
+    `packed_libraries`: every .so anubee finds packed inside a mapped APK
+    (apk, soname, offset, size), whether or not that .so has actually been
+    dlopen'd yet this run — the way to name a protector payload that never gets
+    its own standalone file on disk. Use this to discover what's loaded (and the
+    exact/randomized name of a protector payload) before dump_library. Needs adb
+    + anubee on the device; see the ANUBEE_* env in the README. Returns
+    {libraries, packed_libraries, error}: check `error` if `library_count` is 0
+    and `packed_libraries` is empty."""
     return device.list_libraries(package, seconds=seconds, activity=activity)
 
 

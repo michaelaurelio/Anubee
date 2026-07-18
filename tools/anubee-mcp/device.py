@@ -32,11 +32,26 @@ SERIAL = os.environ.get("ANUBEE_SERIAL", "").strip()
 MAX_SECONDS = 120
 _PKG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
 
-# [lib] pid 17267  libstagefright.so   [0x7e35e66000, 0x7e35e69000)  off=0x209  inode=28284833
+# [lib] pid 17267  libstagefright.so   [0x7e35e66000, 0x7e35e69000)  off=0x209  inode=28284833  ppid=1234[ -> soname]
+# A lib written to a private path, mmap'd, then unlink()'d (a common anti-dump
+# trick: the file never sits on disk for static extraction) gets a kernel-added
+# literal " (deleted)" in the /proc/pid/maps path anubee resolves and prints —
+# tolerate it or the whole line fails to match and the library goes unreported.
+# The trailing " -> <soname>" is anubee's resolved identity for a lib mapped
+# straight out of an APK (extractNativeLibs=false): `library` is the container
+# apk path, `soname` is the actual .so — capture it or the real name is lost.
 _LIB_RE = re.compile(
-    r"^\[lib\]\s+pid\s+(\d+)\s+(\S+)\s+"
+    r"^\[lib\]\s+pid\s+(\d+)\s+(\S+)(\s+\(deleted\))?\s+"
     r"\[0x([0-9a-fA-F]+),\s*0x([0-9a-fA-F]+)\)\s+"
-    r"off=0x([0-9a-fA-F]+)\s+inode=(\d+)")
+    r"off=0x([0-9a-fA-F]+)\s+inode=(\d+)"
+    r"(?:\s+ppid=-?\d+)?(?:\s+->\s+(\S+))?")
+
+# [lib-packed] <apk> -> <soname> @0x<offset> (<size> b) — every .so anubee finds
+# packed inside a just-mapped APK (extractNativeLibs=false), whether or not that
+# particular .so has actually been dlopen'd yet this run. This is how a protector
+# payload kept only inside the APK (never its own standalone file) gets named.
+_LIB_PACKED_RE = re.compile(
+    r"^\[lib-packed\]\s+(\S+)\s+->\s+(\S+)\s+@0x([0-9a-fA-F]+)\s+\((\d+)\s+b\)")
 
 # [dump] e_22045 (pid 22045) -> ./e_22045.22045.7aea238000.so  (1778456 bytes, 1777664 from memory, rebuilt)
 _DUMP_RE = re.compile(
@@ -74,10 +89,32 @@ def parse_lib_lines(text):
         out.append({
             "pid": int(m.group(1)),
             "library": m.group(2),
-            "start": int(m.group(3), 16),
-            "end": int(m.group(4), 16),
-            "pgoff": int(m.group(5), 16),
-            "inode": int(m.group(6)),
+            "start": int(m.group(4), 16),
+            "end": int(m.group(5), 16),
+            "pgoff": int(m.group(6), 16),
+            "inode": int(m.group(7)),
+            # unlinked from disk right after being mmap'd — a common protector/
+            # anti-dump trick, so surface it rather than silently drop it.
+            "deleted": m.group(3) is not None,
+            # real .so name when `library` is really the containing APK.
+            "soname": m.group(8),
+        })
+    return out
+
+
+def parse_lib_packed_lines(text):
+    """Parse `anubee lib`'s `[lib-packed]` lines: every .so anubee found packed
+    inside a mapped APK, whether or not it's actually been dlopen'd yet."""
+    out = []
+    for line in text.splitlines():
+        m = _LIB_PACKED_RE.match(_TS_RE.sub("", line.strip()))
+        if not m:
+            continue
+        out.append({
+            "apk": m.group(1),
+            "soname": m.group(2),
+            "offset": int(m.group(3), 16),
+            "size": int(m.group(4)),
         })
     return out
 
@@ -109,10 +146,12 @@ def aggregate_libraries(segments):
         if a is None:
             a = agg[key] = {"pid": s["pid"], "library": s["library"],
                             "segments": 0, "start": s["start"], "end": s["end"],
-                            "inode": s["inode"]}
+                            "inode": s["inode"], "deleted": False, "soname": None}
         a["segments"] += 1
         a["start"] = min(a["start"], s["start"])
         a["end"] = max(a["end"], s["end"])
+        a["deleted"] = a["deleted"] or s["deleted"]
+        a["soname"] = a["soname"] or s["soname"]
     out = sorted(agg.values(), key=lambda r: (r["pid"], r["library"]))
     for r in out:
         r["start"] = hex(r["start"])
@@ -187,20 +226,26 @@ def _run_anubee(subcmd, args, seconds):
 
 def list_libraries(package, seconds=8, activity=None):
     """Launch the app via `anubee lib` for `seconds`, then return the native
-    libraries it loaded (one record per pid/library, with merged ranges)."""
+    libraries it loaded (one record per pid/library, with merged ranges), plus
+    every .so anubee finds packed inside a mapped APK (extractNativeLibs=false)
+    whether or not that .so has actually been dlopen'd yet this run — the way
+    to see a protector payload's name when it never gets its own standalone
+    file on disk."""
     _check_pkg(package)
     secs = _clamp_seconds(seconds)
     args = [package] + ([activity] if activity else [])
     log = _run_anubee("lib", args, secs)
     segments = parse_lib_lines(log)
     libs = aggregate_libraries(segments)
+    packed = parse_lib_packed_lines(log)
     return {
         "package": package,
         "seconds": secs,
         "library_count": len(libs),
         "segment_count": len(segments),
         "libraries": libs,
-        "error": None if segments else _diagnose(log),
+        "packed_libraries": packed,
+        "error": None if (segments or packed) else _diagnose(log),
     }
 
 

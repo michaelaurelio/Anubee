@@ -37,6 +37,11 @@ Use the **absolute path to the venv's Python** in the client config below
 (`.venv/bin/python` on Linux, `.venv\Scripts\python.exe` on Windows), or the
 installed `anubee-mcp` console script.
 
+The server is a long-lived stdio process — after pulling a code change (e.g. a
+parser fix), restart it (restart the MCP client, or re-run `claude mcp` / your
+client's reload) so it picks up the new code instead of continuing to run what
+was in memory at launch.
+
 ## Tools
 
 Aggregation-first — the model is told to start broad, then drill down:
@@ -86,12 +91,12 @@ the syscall came from* (e.g. `via="librasp"`), the key dimension for RASP work.
 
 These drive the `anubee` binary on a connected device (they need `adb` and `anubee`
 pushed to the device), rather than querying a captured trace. They use the
-stealthy `anubee syscalls` engine:
+stealthy, injectionless `anubee lib` / `anubee dump` engines (kprobe-based):
 
 | Tool | Purpose |
 |---|---|
-| `mapped_libraries(package, seconds, activity)` | Launch the app via `anubee syscalls -l` for a few seconds and return the native libraries it loaded — one record per (pid, library) with merged range + inode. Use it to discover the (possibly randomized) name of a protector payload. |
-| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `anubee syscalls -l -D <pattern>` for `seconds` (long enough for the app to decrypt), dump every loaded library whose **basename** matches `pattern` from live memory, rebuild a loadable `.so`, and pull it to the host. `pattern` is a glob: `'e_*'` / `'e_[0-9]*'` for a randomized per-run name, or `'libfoo.so'`. Each result carries an ELF sanity check; bump `seconds` if a dump looks like ciphertext. |
+| `mapped_libraries(package, seconds, activity)` | Launch the app via `anubee lib` for a few seconds and return the native libraries it loaded — one record per (pid, library) with merged range + inode. Use it to discover the (possibly randomized) name of a protector payload. |
+| `dump_library(package, pattern, seconds, activity, out_dir)` | Run `anubee dump -q <package> <pattern>` for `seconds` (long enough for the app to decrypt), dump every loaded library whose **basename** matches `pattern` from live memory, rebuild a loadable `.so`, and pull it to the host. `pattern` is a glob: `'e_*'` / `'e_[0-9]*'` for a randomized per-run name, or `'libfoo.so'`. Each result carries an ELF sanity check; bump `seconds` if a dump looks like ciphertext. |
 
 Configure how `anubee` is invoked via environment (set these in the MCP client
 config's `env`):

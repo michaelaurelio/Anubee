@@ -292,6 +292,20 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+### anubee-mcp full tool sweep — 2026-07-18
+
+- **MCP1 — audit the remaining 28 `@mcp.tool` handlers.** Triggered by a
+  library-detection bug report (`mapped_libraries` returning nothing, root
+  cause: `[lib]` lines' `ts_print()` timestamp broke the `^\[lib\]` anchor in
+  `device.py`'s parser — already fixed, commit `f74356c`). Only the two
+  device-side tools (`mapped_libraries`, `dump_library`) got a close read
+  during that audit. The other tools in `server.py`, plus both trace loaders
+  (`load_trace` / `load_trace_structured`) and the DuckDB ingest in
+  `trace_store.py`, haven't had the same scrutiny. Recent fixes in that area
+  (`56b25a6` empty `IN ()` on empty syscall list, `ac3af03` DuckDB connection
+  leak on reload) suggest more may be lurking. Do a correctness pass over
+  `tools/anubee-mcp/server.py` + `trace_store.py`.
+
 ### Cross-engine JSONL schema consistency — 2026-07-13
 
 - **SC1 — `id` field naming overlap (funcs vs correlate).** `funcs` now emits `"id"`

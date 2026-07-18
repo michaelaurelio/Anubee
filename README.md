@@ -1,4 +1,4 @@
-# Anubee: Trace Deeper, Sting Faster
+# Anubee: X-Ray Vision for Android Apps, Tracing Deeper with Every Sting
 
 <p align="center" width="100">
 
@@ -31,14 +31,17 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ## Why Anubee?
 
-- **Invisible when it counts.** Most of what Anubee does never writes a byte into the app.
-  It watches from the kernel, so anti-tamper and RASP checks come back clean.
-- **Unpacks what packers hide.** It rebuilds encrypted or packed native code straight out
-  of live memory, after the app decrypts itself. You get a clean, loadable file for your disassembler.
-- **Behavior with a cause.** Every syscall comes decoded and tied to the exact function
-  that triggered it, so even obfuscated code has nowhere to hide.
-- **Malware detection, out of the box.** It catches ransomware-style mass deletion, data
-  exfiltration, accessibility abuse, and screen-capture spying, with no setup.
+- **Mostly invisible while it works.** Anubee watches an app from a distance instead of
+  living inside it, so most of what it does never trips the app's own security checks.
+- **Reveals code the app tries to hide.** Some apps scramble their own code and only
+  unlock it while running, hoping nobody's watching at that exact moment. Anubee catches
+  that code the instant it's unlocked, so you get to see what was actually hidden.
+- **Explains actions, not just logs them.** Every action an app takes gets traced back to
+  the exact piece of code responsible, so even code deliberately written to be hard to
+  follow still can't hide what it's really doing.
+- **Comes with Android malware analysis built in.** Anubee already catches files being
+  deleted in bulk, data being quietly leaked out, permissions being abused, and the
+  screen being secretly recorded.
 
 ---
 
@@ -52,23 +55,23 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 ## Run It Past a Tool Built to Catch It
 
-You don't have to take the stealth on faith. We ran Anubee against a tool built to catch it.
+Rather than just claim Anubee is stealthy, we tested it against a tool built to catch exactly this kind of tracer.
 
-[ANUBEE-Detector](https://github.com/michaelaurelio/ANUBEE-Detector) is a purpose-built tripwire for exactly this kind of tool. It loops real anti-tamper checks and flips its screen red the instant something starts watching.
+[ANUBEE-Detector](https://github.com/michaelaurelio/ANUBEE-Detector) is a dedicated tripwire for exactly this kind of tool. It loops real security checks and flips its screen red the instant it senses it's being watched.
 
 <table>
 <tr>
 <td align="center" width="33%"><img src="assets/detector-clean.png" width="220"><br><sub>Clean baseline. SECURE, 0/4 tripped.</sub></td>
 <td align="center" width="33%"><img src="assets/detector-autoloop.png" width="220"><br><sub>Auto-loop on, re-checking continuously. Still SECURE, 0/4.</sub></td>
-<td align="center" width="33%"><img src="assets/detector-compromised.png" width="220"><br><sub>Only loud capability trips it: 1/4 tripped, banner turns COMPROMISED.</sub></td>
+<td align="center" width="33%"><img src="assets/detector-compromised.png" width="220"><br><sub>Run one that does: 1/4 tripped, banner turns COMPROMISED.</sub></td>
 </tr>
 </table>
 
-First, proof the detector isn't for show: Anubee's one loud capability trips it right away.
+Anubee's quiet capabilities never leave a footprint. That's why they never tripped the detector.
 
-Then the quiet side runs against the same app. The detector keeps checking, and always coming back clean.
+Then we ran one that does leave a footprint. The detector caught it immediately.
 
-That's what "invisible when it counts" means.
+That's what "mostly invisible while it works" actually looks like. [Go try it yourself](https://github.com/michaelaurelio/ANUBEE-Detector). The detector's open source too.
 
 ---
 

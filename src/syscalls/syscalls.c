@@ -4,13 +4,13 @@
 // app, emitting only those whose user backtrace passes through a chosen native
 // library (e.g. a RASP .so).
 //
-//   usage: syscalls -P <package> [-l <lib-selector> | -a] [options]
+//   usage: syscalls -P <package> [-l <lib-selector>] [options]
 //   where <lib-selector> is a substring or glob (* ? []) of the library name.
-//   With neither -l nor -a, capture-all is the default (-s/-x still narrow the
+//   With no -l, capture-all is the default (-s/-x still narrow the
 //   syscall set).
 //   e.g.   syscalls -P com.example.app -l librasp.so
 //          syscalls -P com.example.app -l 'e_[0-9]*'
-//          syscalls -P com.example.app -a -s openat,read -o out.jsonl
+//          syscalls -P com.example.app -s openat,read -o out.jsonl
 //          syscalls -P com.example.app -s openat,read      # capture-all, filtered
 //
 // What it does, in order:
@@ -1103,7 +1103,7 @@ struct sysc_args {
 	const char *lib_sels[64];    // -l / lib: (repeatable) library selectors, OR'd
 	int  nlib;
 	char activity[256];          // -A: optional launch activity override
-	int  capture_all;            // -a
+	int  capture_all;            // set when no -l/lib: filter given (capture all)
 	int  want_snap;              // --snapshot
 	char syscall_list[1024];     // accumulated, comma-separated values of every -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
@@ -1130,7 +1130,6 @@ static const struct argp_option sysc_options[] = {
 	{ "lib",         'l', "SELECTOR", 0, "Library selector: substring or glob (e.g. 'e_*'); repeat for OR", 0 },
 	{ "activity",    'A', "ACTIVITY", 0, "Override launch activity component",                 0 },
 	COMMON_ARGP_OPTIONS,
-	{ "all",         'a', NULL,       0, "Capture all syscalls (no library filter)",           0 },
 	{ "snapshot",     1,  NULL,       0, "Capture stack snapshots for off-device unwinding",   0 },
 	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)",                        0 },
 	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
@@ -1151,7 +1150,6 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		else fprintf(stderr, "syscalls: warning — lib-selector cap (64) reached; '%s' ignored\n", arg);
 		break;
 	case 'A': copy_str(a->activity,     arg, sizeof(a->activity));     break;
-	case 'a': a->capture_all = 1; break;
 	case  1 : a->want_snap = 1;   break;
 	case  2 : a->want_snap = 0;   break;
 	case 's':
@@ -1189,6 +1187,11 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
 		return parse_target_arg(key, arg, state, &a->tgt);
 	case ARGP_KEY_END:
+		anubee_target_warn_noop(&a->tgt, "syscalls");
+		if (a->tgt.n > 0 && a->activity[0])
+			fprintf(stderr, "syscalls: warning - -A/--activity has no effect in -p mode; ignored\n");
+		if (a->want_snap && !a->c.output_file)
+			fprintf(stderr, "syscalls: warning - --snapshot needs -o FILE for the .stacks sidecar; disabled\n");
 		if (a->tgt.n > 0 && a->package_name[0])
 			argp_error(state, "specify exactly one of -p or -P");
 		if (!a->tgt.n && !a->package_name[0])
@@ -1285,14 +1288,14 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				copy_str(a->specs[i].mod, name, sizeof(a->specs[i].mod)); // now bare NAME
 			}
 		}
-		// No library scope given (no -l, no lib: spec) and no explicit -a:
-		// default to capture-all rather than refusing to run. -s/-x still
-		// narrow the syscall set; without them a bare run traces every
-		// syscall (the "capturing ALL syscalls" banner makes the firehose
-		// explicit). Previously this was a fatal "-l required" argp_error,
-		// but under ARGP_NO_EXIT it printed and ran on with an empty scope,
-		// dropping every syscall in the pre-arm gate.
-		if (!a->capture_all && a->nlib == 0)
+		// No library scope given (no -l, no lib: spec): default to capture-all
+		// rather than refusing to run. -s/-x still narrow the syscall set;
+		// without them a bare run traces every syscall (the "capturing ALL
+		// syscalls" banner makes the firehose explicit). Previously this was
+		// a fatal "-l required" argp_error, but under ARGP_NO_EXIT it printed
+		// and ran on with an empty scope, dropping every syscall in the
+		// pre-arm gate.
+		if (a->nlib == 0)
 			a->capture_all = 1;
 		break;
 	default:
@@ -1307,7 +1310,7 @@ static const struct argp sysc_argp = {
 	.doc     = "Syscall tracer for a single Android app.\v"
 	           "  e.g. anubee syscalls -P com.example.app -l librasp.so\n"
 	           "       anubee syscalls -P com.example.app -l 'e_[0-9]*' -o out.jsonl\n"
-	           "       anubee syscalls -P com.example.app -a -s openat,read\n",
+	           "       anubee syscalls -P com.example.app -s openat,read\n",
 };
 
 // ---- engine driver, split into setup / run / teardown --------------------

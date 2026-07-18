@@ -137,6 +137,11 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
 
         // No arguments case
         case ARGP_KEY_END:
+            anubee_target_warn_noop(&args->tgt, "funcs");
+            if (args->tgt.n > 0 && args->activity[0])
+                fprintf(stderr, "funcs: warning - -A/--activity has no effect in -p mode; ignored\n");
+            if (args->want_snap && !args->c.output_file)
+                fprintf(stderr, "funcs: warning - --snapshot needs -o FILE for the .stacks sidecar; disabled\n");
             validate_pid_or_package(state, args->tgt.n,
                 args->package_name[0] ? args->package_name : NULL);
             validate_have_selector(state,

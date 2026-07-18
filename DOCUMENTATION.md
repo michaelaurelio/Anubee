@@ -318,6 +318,19 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   program on `sched/sched_process_fork` inserts a child's TGID into `target_pids` when its
   parent is tracked. On by default; `--no-follow-fork` disables it. Zero cost when
   `target_pids` is empty (launch/UID mode).
+- **Uniform no-op warnings (2026-07-18).** Four flag combinations that used to
+  resolve silently now print a one-line stderr warning and the run continues
+  unchanged (warn, don't error - the flag just has no effect in the chosen
+  mode, nothing is actually contradictory): `--siblings`/`--no-follow-fork`
+  without `-p` (`anubee_target_warn_noop`, shared via `engine_args.h`, called
+  from each of `syscalls`/`funcs`/`correlate`/`lib`/`dump`'s `ARGP_KEY_END`);
+  `-A`/`--activity` in `-p` attach mode (checked locally per engine -
+  `syscalls`/`funcs`/`lib`/`dump`; `correlate` has no `-A`); and `--snapshot`
+  without `-o` (`syscalls`/`funcs` only - no `.stacks` sidecar without an
+  output file to write it beside). `trace` broadcasts
+  `--siblings`/`--no-follow-fork` to its sub-engines in `-p` mode as before,
+  but in `-P` launch mode it does not broadcast them and instead warns once
+  at the trace level, to avoid tripling the same message.
 
 ---
 
@@ -364,9 +377,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   `syscalls_summary` record (per-syscall-name call counts) prints to stdout
   and, if `-o` is active, to the sink — see §7.
 - **`--snapshot` captures a frozen user-stack window.** Available in both library-filter
-  and capture-all (`-a`) mode (W6-A, 2026-06-29); with `-a` and no `-s`/`-x` syscall filter a
-  one-line firehose warning is printed (a 32 KB snapshot per distinct stack across all
-  syscalls). The BPF program captures up to
+  and capture-all mode (W6-A, 2026-06-29); in capture-all mode with no `-s`/`-x` syscall
+  filter a one-line firehose warning is printed (a 32 KB snapshot per distinct stack across
+  all syscalls). `--snapshot` given without `-o` is itself a no-op (Fix D): a stderr warning
+  prints and snapshots stay disabled, since there is no output file to write the `.stacks`
+  sidecar beside. The BPF program captures up to
   `ANUBEE_SNAP_MAX` bytes from `sp` upward in **`ANUBEE_SNAP_CHUNK` (4 KB) page-sized chunks**,
   stopping at the first faulting (unmapped) chunk so the full contiguous stack prefix from
   `sp` is kept instead of an all-or-nothing read (W3-window, 2026-06-29). Also captures the
@@ -517,11 +532,13 @@ located the module-base bug and stays available for future CFI diagnosis.
 - Inlining defeats CFI attribution: an inlined callee has no FDE and cannot be named.
 - Cross-thread offloaded syscalls are not attributed (CFI is per-tid).
 - All capture behavior is flag-driven via GNU argp
-  (`-P`/`-p`/`-l`/`-A`/`-a`/`-s`/`-x`/`-e`/`-F`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/
+  (`-P`/`-p`/`-l`/`-A`/`-s`/`-x`/`-e`/`-F`/`-q`/`-v`/`-J`/`-o`/`-b`/`-Q`/`--snapshot`/
   `--siblings`/`--no-follow-fork`); option ordering does not matter; `--help` is
   auto-generated; `--version` prints `anubee syscalls`. The library selector `-l <selector>`
   is repeatable and OR'd (each `-l` adds to the match set, not last-wins); with
-  **neither `-l` nor `-a`, capture-all is the default** (`-s`/`-x` still narrow the
+  **no `-l` given at all, capture-all is the default** - there is no separate
+  "capture all" flag; `-a` was removed (2026-07-18) since it was redundant with
+  the no-filter default (`-s`/`-x` still narrow the
   syscall set). `-s`/`-x`
   (syscall allow/deny lists) are also repeatable and accumulate (comma-joined); an `-s`
   allowlist that resolves to zero valid syscalls is now a hard error, not a silent no-op.
@@ -1118,7 +1135,7 @@ you need them.
   them (see the `*_DRIVER` `--keep-global-symbol` lists in the Makefile).
 - **No section markers.** Every flag is recognized by its own letter/name and
   routed to whichever engine(s) understand it; presence of an engine-unique
-  flag (`-a`/`-s`/`-x`/`-l` for `syscalls`, `-S`/`-c` for `funcs`, `--lib` for
+  flag (`--syscalls`/`-s`/`-x`/`-l` for `syscalls`, `-S`/`-c` for `funcs`, `--lib` for
   `lib`) enables that engine. A top-level `-e SPEC`/`-F FILE` is classified by
   its `KIND:` prefix (`classify_spec`, `trace.c:94`) and routed the same way —
   `syscall:`/`lib:` → `syscalls`, `funcs:`/unprefixed → `funcs` — with the
@@ -1128,8 +1145,15 @@ you need them.
   (`-v`/`-q`/`--siblings`/`--no-follow-fork`) broadcast to every enabled
   engine; `-b`/`-Q`/`--snapshot` broadcast to `syscalls`/`funcs` only (`lib`
   has neither). See `docs/engines.md` for the full flag table.
+- **`-a` removed, `--syscalls` added (2026-07-18).** `-a` used to double as the
+  switch that enabled the `syscalls` engine with no filter; it is gone
+  everywhere, including here. The bare `--syscalls` flag now enables the
+  syscall stream at its capture-all default (`-s`/`-x`/`-l` still narrow it).
+  Scripts invoking `anubee trace ... -a` must switch to
+  `anubee trace ... --syscalls`; `-a` is no longer a recognized token and
+  aborts with `trace: unrecognized argument '-a'`.
 - **CLI:** `anubee trace (-P <pkg> | -p <pid[,pid…]>) [-o <prefix>] [-A <act>]
-  [-v] [-q] [-b MB] [-Q MB] [-e SPEC]... [-F FILE]... [-l PATTERN]... [-a] [-s
+  [-v] [-q] [-b MB] [-Q MB] [-e SPEC]... [-F FILE]... [-l PATTERN]... [--syscalls] [-s
   LIST] [-x LIST] [-S] [-c] [--snapshot|--no-snapshot] [--lib]`. With `-o`,
   each engine writes its own file (`<prefix>.syscalls.jsonl` /
   `<prefix>.funcs.jsonl` / `<prefix>.lib.jsonl`) — no shared `FILE*` — plus a

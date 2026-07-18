@@ -228,7 +228,8 @@ read as "app used no Java."
 `correlate` duplicates the `-I`/`-i` regex arrays verbatim and re-implements `-e`/`-F` file
 loading with different whitespace-trimming than `funcs` (`\n\r \t` vs `\n`-only). Three
 more engines each have their own bespoke, spec-less selector: `syscalls` (`-l` library
-scope + `-a`/`-s`/`-x` syscall name allow/deny), `dump` (positional glob/substring
+scope + `-a`/`-s`/`-x` syscall name allow/deny - `-a` since removed 2026-07-18,
+see DOCUMENTATION.md §2), `dump` (positional glob/substring
 PATTERN), `mod` (positional analyzer NAME). The glob-matching convention is independently
 reimplemented three times with inconsistent trigger chars (`*?[` in `lib_seed.h`/
 `rebuild.c` vs `*?` in `probe_resolve.c`). `funcs` is also missing a zero-target
@@ -552,6 +553,14 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
     that entry names a partial `/proc/<pid>/mem` read as an open coverage
     gap for the dump-and-rebuild path; `--check`'s `unreadable` state is
     the same failure mode, named explicitly, for the compare path.
+
+### Follow-ups - 2026-07-18 engine arg cleanup
+
+- syscalls arg parsing: consolidate all cross-flag validation into a single
+  ARGP_KEY_END gate (per-key handlers only store). Internal reorg; predictable
+  single failure point. Design: docs/superpowers/specs/2026-07-18-engine-args-noop-uniform-design.md (Fix F).
+- repo-wide em dash scrub: replace all ~1109 em dashes with plain dash across
+  code, comments, docs, prose. Mechanical; own branch/PR with reviewed diff.
 
 ---
 
@@ -1588,7 +1597,8 @@ is in DOCUMENTATION.md and the referenced specs.
   guard when `-a --snapshot` has no `-s`/`-x` filter. `device-test.sh` CFI arm repointed at
   `-a`. On-device: `.stacks` sidecar 0 → 307 records under capture-all. Closes W6. Commits
   `8992405`, `b73134d`, `0bd983e`. The narrow lib-filter `stack_hits` defect it sidesteps is
-  tracked in Minor.
+  tracked in Minor. (`-a` itself was later removed 2026-07-18 - capture-all is now the
+  automatic no-`-l` default, see DOCUMENTATION.md §2.)
 
 - **Maps-cache staleness fix — capture-all CFI unwinds past frame 0.** Under capture-all the
   symbolizer first reads a pid's `/proc/<pid>/maps` mid-launch (libc not yet at its final

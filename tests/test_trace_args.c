@@ -45,11 +45,25 @@ int main(void)
 	char *k[] = { A("trace"), A("-p"), A("1"), A("-P"), A("pkg") };
 	assert(trace_parse_args(5, k, &t) < 0);          // -p then -P: rejected too
 
+	// Fix A: -a is gone from trace; --syscalls is the bare enable switch.
+	{
+		struct trace_args o;
+		char *av[] = { A("trace"), A("-P"), A("com.example.app"), A("-a") };
+		assert(trace_parse_args(4, av, &o) == -1);   // -a rejected (unrecognized)
+	}
+	{
+		struct trace_args o;
+		char *av[] = { A("trace"), A("-P"), A("com.example.app"), A("--syscalls") };
+		assert(trace_parse_args(4, av, &o) == 0);
+		assert(o.want_sys == 1);
+		assert(o.sys_ntok == 0);   // no token pushed -- bare enable only
+	}
+
 	// --- syscalls-unique flags: route to sys_toks, enable syscalls only ---
-	char *b[] = { A("trace"), A("-P"), A("pkg"), A("-a") };
+	char *b[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls") };
 	assert(trace_parse_args(4, b, &t) == 0);
 	assert(t.want_sys && !t.want_func && !t.want_lib);
-	assert(t.sys_ntok == 1 && !strcmp(t.sys_toks[0], "-a"));
+	assert(t.sys_ntok == 0);
 	assert(t.func_ntok == 0 && t.lib_ntok == 0);
 
 	char *slist[] = { A("trace"), A("-P"), A("pkg"), A("-s"), A("openat,read"),
@@ -76,17 +90,75 @@ int main(void)
 	assert(t.want_lib && !t.want_sys && !t.want_func);
 	assert(t.lib_ntok == 0);
 
-	// --- broadcast common flags (-v/-q/--siblings/--no-follow-fork): land on
-	//     all three accumulators, do NOT themselves set any want_* ---
-	char *v[] = { A("trace"), A("-P"), A("pkg"), A("-v"), A("-q"),
-	              A("--siblings"), A("--no-follow-fork") };
-	assert(trace_parse_args(7, v, &t) == 0);
+	// --- broadcast common flags (-v/-q only; --siblings/--no-follow-fork are
+	//     deferred/routed separately, see Fix E block below): land on all
+	//     three accumulators, do NOT themselves set any want_* ---
+	char *v[] = { A("trace"), A("-P"), A("pkg"), A("-v"), A("-q") };
+	assert(trace_parse_args(5, v, &t) == 0);
 	assert(!t.want_sys && !t.want_func && !t.want_lib);   // broadcast alone enables nothing
-	for (int i = 0; i < 4; i++) {
-		const char *f = (const char *[]){ "-v", "-q", "--siblings", "--no-follow-fork" }[i];
+	for (int i = 0; i < 2; i++) {
+		const char *f = (const char *[]){ "-v", "-q" }[i];
 		assert(count_tok(t.sys_toks, t.sys_ntok, f) == 1);
 		assert(count_tok(t.func_toks, t.func_ntok, f) == 1);
 		assert(count_tok(t.lib_toks, t.lib_ntok, f) == 1);
+	}
+
+	// --- Fix E: --siblings/--no-follow-fork are deferred, not broadcast by
+	//     is_common_flag; routing happens post-loop based on attach (-p) vs
+	//     launch (-P) mode ---
+	{
+		// launch mode (-P): no -p, so --siblings must NOT reach any engine's
+		// token list; trace_parse_args warns once instead.
+		char *launch_sib[] = { A("trace"), A("-P"), A("com.example.app"),
+		                       A("--siblings"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, launch_sib, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 0);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 0);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 0);
+	}
+	{
+		// attach mode (-p): --siblings IS forwarded to every engine that
+		// understands it.
+		char *attach_sib[] = { A("trace"), A("-p"), A("4821"),
+		                       A("--siblings"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, attach_sib, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 1);
+	}
+	{
+		// launch mode (-P): --no-follow-fork must NOT reach any engine's
+		// token list either; trace_parse_args warns once instead.
+		char *launch_nff[] = { A("trace"), A("-P"), A("com.example.app"),
+		                       A("--no-follow-fork"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, launch_nff, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 0);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 0);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 0);
+	}
+	{
+		// attach mode (-p): --no-follow-fork IS forwarded to every engine
+		// that understands it.
+		char *attach_nff[] = { A("trace"), A("-p"), A("4821"),
+		                       A("--no-follow-fork"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, attach_nff, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 1);
+	}
+	{
+		// attach mode (-p): both --siblings and --no-follow-fork forward
+		// together, independently of each other.
+		char *attach_both[] = { A("trace"), A("-p"), A("4821"),
+		                        A("--siblings"), A("--no-follow-fork"),
+		                        A("-s"), A("openat") };
+		assert(trace_parse_args(7, attach_both, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 1);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--no-follow-fork") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--no-follow-fork") == 1);
 	}
 
 	// --- -b/-Q: broadcast to syscalls+funcs only, NEVER lib (lib has no -b/-Q) ---
@@ -99,9 +171,9 @@ int main(void)
 	assert(t.lib_ntok == 0);   // lib never receives -b/-Q
 
 	// --- --snapshot/--no-snapshot: broadcast to syscalls+funcs only, no lib ---
-	char *snap[] = { A("trace"), A("-P"), A("pkg"), A("-a"), A("--snapshot") };
+	char *snap[] = { A("trace"), A("-P"), A("pkg"), A("--syscalls"), A("--snapshot") };
 	assert(trace_parse_args(5, snap, &t) == 0);
-	assert(t.want_sys);   // from -a; --snapshot itself doesn't enable anything
+	assert(t.want_sys);   // from --syscalls; --snapshot itself doesn't enable anything
 	assert(count_tok(t.sys_toks, t.sys_ntok, "--snapshot") == 1);
 	assert(count_tok(t.func_toks, t.func_ntok, "--snapshot") == 1);
 	assert(t.lib_ntok == 0);
@@ -130,7 +202,7 @@ int main(void)
 	assert(trace_parse_args(2, h, &t) < 0);          // -s missing value
 
 	// --- combined: multiple engines enabled at once, no markers anywhere ---
-	char *combo[] = { A("trace"), A("-P"), A("pkg"), A("-o"), A("run"), A("-a"),
+	char *combo[] = { A("trace"), A("-P"), A("pkg"), A("-o"), A("run"), A("--syscalls"),
 	                  A("-e"), A("libc.so!open"), A("--lib") };
 	assert(trace_parse_args(9, combo, &t) == 0);
 	assert(t.want_sys && !t.want_func && t.want_lib);   // -e not yet classified -> want_func false here

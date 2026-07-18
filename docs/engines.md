@@ -34,6 +34,9 @@ Every engine below takes exactly one of:
   UID, or **`--no-follow-fork`** to stop forked children from being auto-traced
   (on by default).
 
+`--siblings`/`--no-follow-fork` only apply in `-p` mode; given without `-p`
+they print a one-line warning and are ignored.
+
 ## Flags shared by every engine below
 
 | Flag | Meaning |
@@ -55,18 +58,17 @@ Every engine below takes exactly one of:
 # Syscalls that pass through a specific library:
 anubee syscalls -P com.example.app -l librasp.so -o trace.jsonl
 
-# Capture ALL of an app's syscalls (no library filter):
-anubee syscalls -P com.example.app -a -o trace.jsonl
+# Capture ALL of an app's syscalls (no library filter given = capture all):
+anubee syscalls -P com.example.app -o trace.jsonl
 
 # Stack snapshots + CFI-unwind into Java callers (capture-all reaches JNI stacks):
-anubee syscalls -P com.example.app -a -s openat --snapshot -o trace.jsonl
+anubee syscalls -P com.example.app -s openat --snapshot -o trace.jsonl
 ```
 
 | Flag | Meaning |
 |---|---|
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
-| `-l SELECTOR` | Library selector: substring or glob (`e_*`); repeatable, OR'd |
-| `-a` | Capture all syscalls (no library filter) |
+| `-l SELECTOR` | Library selector: substring or glob (`e_*`); repeatable, OR'd. No `-l` at all captures every syscall (the default - there is no separate "capture all" flag) |
 | `-s LIST` / `-x LIST` | Allowlist / denylist, comma-separated syscall names (mutually exclusive) |
 | `-e SPEC` / `-F FILE` | Probe spec: `syscall:[!]NAME` or `lib:[!]PATTERN`, see [`probe-specs.md`](probe-specs.md) |
 | `--snapshot` / `--no-snapshot` | Capture stack snapshots for off-device unwinding (default: off) |
@@ -233,13 +235,14 @@ understand it, and its presence enables that engine:
 
 ```sh
 anubee trace -P com.example.app -o /data/local/tmp/run \
-           -a \
+           --syscalls \
            -e 'libc.so!open' -e 'libc.so!/^encrypt/'
 ```
 
-`-a` is syscalls-only (enables `syscalls`, captures everything); the two `-e`
-specs are unprefixed `funcs:` targets (enable `funcs`). Mixing engines needs
-no marker — just give each engine's own flags on the same command line.
+`--syscalls` enables the `syscalls` engine at its capture-all default (no
+library filter); the two `-e` specs are unprefixed `funcs:` targets (enable
+`funcs`). Mixing engines needs no marker — just give each engine's own flags
+on the same command line.
 
 | Flag | Meaning |
 |---|---|
@@ -247,7 +250,7 @@ no marker — just give each engine's own flags on the same command line.
 | `-o PREFIX` | Writes `<prefix>.syscalls.jsonl`, `<prefix>.funcs.jsonl`, `<prefix>.lib.jsonl` |
 | `-e SPEC` / `-F FILE` | Probe spec (repeatable); routed by `KIND:` prefix — `syscall:NAME`/`lib:PATTERN` → syscalls, `funcs:MODULE!FUNC`/unprefixed → funcs. A `-F` file may carry both kinds and enable both engines. `mod:` is not a trace engine. |
 | `-l PATTERN` | Syscalls library selector, equivalent to `-e 'lib:PATTERN'` |
-| `-a` / `-s LIST` / `-x LIST` | Syscalls-only: capture-all / allowlist / denylist; each enables `syscalls` |
+| `--syscalls` / `-s LIST` / `-x LIST` | Syscalls-only: bare capture-all enable / allowlist / denylist; each enables `syscalls` |
 | `-S` / `-c` | Funcs-only: resolve-syms mode / caller-only; each enables `funcs` |
 | `--snapshot` / `--no-snapshot` | Stack snapshots, broadcast to whichever of syscalls/funcs is enabled |
 | `--lib` | Enable library-load tracing (no spec of its own) |
@@ -271,5 +274,9 @@ At least one engine must end up enabled — via a unique flag, a routed spec, or
 - **`--returns` on `correlate` and `--snapshot` on `syscalls`/`funcs` are both
   opt-in and louder** than the plain engine: each adds a second detection
   surface (a uretprobe trampoline, or a wider stack capture).
+- **Silent no-ops now warn instead of doing nothing quietly.**
+  `--siblings`/`--no-follow-fork` without `-p`, `-A`/`--activity` in `-p` mode,
+  and `--snapshot` without `-o` each print a one-line stderr warning and the
+  run continues (uniform across every engine that takes the flag).
 - **`dump`'s `-l`/spec-file `lib:` patterns are substring/glob only.** No
   `/regex/` support, unlike `funcs:`'s module side.

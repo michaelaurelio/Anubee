@@ -60,6 +60,24 @@ int main(void)
             CHECK_EQ(big_buf[i], 1000000 + i, "oversized csv: pre-cutoff PID value preserved");
     }
 
+    // ---- anubee_target_is_noop: siblings/no-follow are a no-op without -p ----
+    {
+        struct target_args t = {0};
+        CHECK_EQ(anubee_target_is_noop(&t), 0, "empty target: not a no-op");
+
+        t.siblings = 1;
+        CHECK_EQ(anubee_target_is_noop(&t), 1, "siblings, no pid: no-op");
+
+        t.siblings = 0; t.no_follow = 1;
+        CHECK_EQ(anubee_target_is_noop(&t), 1, "no-follow, no pid: no-op");
+
+        t.n = 1;  // -p present now
+        CHECK_EQ(anubee_target_is_noop(&t), 0, "no-follow WITH pid: not a no-op");
+
+        t.siblings = 1;
+        CHECK_EQ(anubee_target_is_noop(&t), 0, "siblings+no-follow WITH pid: not a no-op");
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -133,6 +133,23 @@ static inline error_t parse_target_arg(int key, char *arg,
     return ARGP_ERR_UNKNOWN;
 }
 
+// True if the target-selection flags are a no-op: --siblings / --no-follow-fork
+// were given but no -p PID accompanies them (both only mean anything in attach
+// mode). Pure predicate so it is host-testable; the warn wrapper prints on it.
+static inline bool anubee_target_is_noop(const struct target_args *t)
+{
+    return t->n == 0 && (t->siblings || t->no_follow);
+}
+
+// Emit the standard no-op warning when the target flags are a no-op. Called from
+// each engine's ARGP_KEY_END so the message is identical everywhere; `engine` is
+// the subcommand name used as the message prefix (e.g. "syscalls").
+static inline void anubee_target_warn_noop(const struct target_args *t, const char *engine)
+{
+    if (anubee_target_is_noop(t))
+        fprintf(stderr, "%s: warning - --siblings/--no-follow-fork need -p; ignored\n", engine);
+}
+
 // True if argv requests help/usage — argp prints these but (under ARGP_NO_EXIT)
 // returns 0, so callers must detect + abort themselves. See MT1.
 static inline bool anubee_wants_help(int argc, char **argv)

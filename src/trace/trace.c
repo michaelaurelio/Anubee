@@ -47,7 +47,7 @@ static void usage(const char *argv0)
 		"usage: %s (-P <package> | -p <pid[,pid...]>) [-o <prefix>] [-A <activity>]\n"
 		"       [-v] [-q] [-b MB] [-Q MB] [--siblings] [--no-follow-fork]\n"
 		"       [-e SPEC]... [-F FILE]... [-l PATTERN]...\n"
-		"       [-a] [-s LIST] [-x LIST] [-S] [-c] [--snapshot | --no-snapshot] [--lib]\n"
+		"       [--syscalls] [-s LIST] [-x LIST] [-S] [-c] [--snapshot | --no-snapshot] [--lib]\n"
 		"\n"
 		"Run the kprobe syscall tracer, uprobe function tracer, and/or library-load\n"
 		"tracer together from a single app launch (LOUD: the uprobe writes a BRK into\n"
@@ -62,7 +62,8 @@ static void usage(const char *argv0)
 		"                  separate and silences console output)\n"
 		"  -v / -q         verbose / quiet (broadcast to every enabled engine)\n"
 		"  --siblings, --no-follow-fork\n"
-		"                  attach-mode target widening (broadcast; see -p)\n"
+		"                  attach-mode target widening (broadcast; see -p); require -p,\n"
+		"                  ignored (with a warning) in -P launch mode\n"
 		"  -b MB / -Q MB   ring/queue buffer sizes (syscalls + funcs only; lib has none)\n"
 		"  -e SPEC / -F FILE\n"
 		"                  probe spec (repeatable); routed by KIND: prefix —\n"
@@ -70,8 +71,9 @@ static void usage(const char *argv0)
 		"                  unprefixed (the default) -> funcs. A -F file may carry both\n"
 		"                  kinds and enable both engines. mod: is not a trace engine.\n"
 		"  -l PATTERN      syscalls library selector, equivalent to -e 'lib:PATTERN'\n"
-		"  -a / -s LIST / -x LIST\n"
-		"                  syscalls-only: capture all / allowlist / denylist; each enables syscalls\n"
+		"  --syscalls      enable the syscall stream (capture all; -s/-x/-l narrow it)\n"
+		"  -s LIST / -x LIST\n"
+		"                  syscalls-only: allowlist / denylist; each enables syscalls\n"
 		"  -S / -c         funcs-only: resolve-syms mode / caller-only; each enables funcs\n"
 		"  --snapshot, --no-snapshot\n"
 		"                  stack snapshots (broadcast to whichever of syscalls/funcs is enabled)\n"
@@ -201,7 +203,7 @@ int cmd_trace(int argc, char **argv)
 	// classify_spec's doc comment) — this is what lets a bare `-e 'syscall:x'`
 	// or `-e 'libc.so!x'` enable and feed the right engine with no --syscalls/
 	// --funcs marker. May raise ta.want_sys/want_func on top of whatever the
-	// flat parse already set from -a/-s/-x/-l or -S/-c.
+	// flat parse already set from --syscalls/-s/-x/-l or -S/-c.
 	for (int i = 0; i < ta.nspec; i++) {
 		if (classify_spec(&ta, &ta.specs[i], &ta.want_sys, &ta.want_func) != 0) {
 			fprintf(stderr, "trace: bad %s '%s'\n", ta.specs[i].is_file ? "-F" : "-e",

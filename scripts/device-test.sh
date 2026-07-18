@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -356,6 +356,68 @@ test_syscalls_cfi() {
         fail "syscalls-cfi: managed_naming_off:true on known apex build (naming table stale?)"
     fi
     echo "PASS: Java naming on (known build) - managed_naming_off absent"
+}
+
+# syscalls arg-parse no-op warnings + -a removal: commit 433aca4 dropped the
+# redundant -a switch (bare "no -l" already meant capture-all) and made
+# --snapshot-without-o, --siblings/--no-follow-fork-without-p, and
+# -A/--activity-in--p-mode diagnosed no-ops (warn on stderr, keep running)
+# instead of silent misconfiguration. Warnings print at ARGP_KEY_END, before
+# any BPF load or app launch, so these are cheap/fast asserts on the anubee()
+# banner text -- same convention as the rest of this file. -a is the one HARD
+# case: argp must now reject it outright, so that check asserts a real
+# nonzero exit instead of a warning string.
+test_syscalls_argwarn() {
+    echo "=== syscalls arg-parse no-op warnings + -a removal ==="
+
+    forcestop
+    local out; out="$(anubee "syscalls -P $PKG --snapshot")"
+    grep -q -- "--snapshot needs -o" <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "syscalls-argwarn: no --snapshot-without-o warning"; }
+    info "syscalls-argwarn: --snapshot-without-o warning present"
+
+    forcestop
+    out="$(anubee "syscalls -P $PKG --siblings")"
+    grep -q -- "--siblings/--no-follow-fork need -p" <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "syscalls-argwarn: no --siblings-without-p warning"; }
+    info "syscalls-argwarn: --siblings-without-p warning present"
+
+    # -p 1 (init) needs no forcestop/launch -- it's not $PKG.
+    out="$(anubee "syscalls -p 1 -A .Main")"
+    grep -q -- "-A/--activity has no effect in -p mode" <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "syscalls-argwarn: no -A-in-p-mode warning"; }
+    info "syscalls-argwarn: -A-in-p-mode warning present"
+
+    # -a: argp must reject it fast (before any timeout-expiry ambiguity), so
+    # this is the one case in the file worth a real exit-status check rather
+    # than a text grep. Reuse run_dump_now's ANUBEE_EXIT sentinel (already in
+    # this file for exactly that purpose) instead of trusting adb's own
+    # propagated exit code.
+    run_dump_now "syscalls -P $PKG -a"
+    [ "$RUN_DUMP_NOW_STATUS" != "0" ] \
+        || { echo "  out: $RUN_DUMP_NOW_OUT" >&2; fail "syscalls-argwarn: -a was accepted (exit 0) -- removed flag should be rejected by argp"; }
+    info "syscalls-argwarn: -a correctly rejected (exit ${RUN_DUMP_NOW_STATUS:-?})"
+}
+
+# trace --syscalls: commit 433aca4 gave trace a bare --syscalls enable switch
+# (the replacement for the old -a, which routed a capture-all token through
+# trace's own arg accumulator). Assert it actually wires up a running syscalls
+# engine -- not just an accepted flag -- by checking the engine produces its
+# <prefix>.syscalls.jsonl output (per trace's -o <prefix> convention).
+test_trace_syscalls() {
+    echo "=== trace --syscalls (bare enable switch wires the syscalls stream) ==="
+    forcestop
+    local prefix="/data/local/tmp/anubee_trace_syscalls_test"
+    adb shell "su -c 'rm -f ${prefix}.syscalls.jsonl'" >/dev/null 2>&1 || true
+    local out; out="$(anubee "trace -P $PKG --syscalls -o $prefix")"
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "trace-syscalls: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    local content; content="$(adb shell "su -c 'cat ${prefix}.syscalls.jsonl 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f ${prefix}.syscalls.jsonl'" >/dev/null 2>&1 || true
+    [ -n "$content" ] \
+        || { echo "  out: $out" >&2; fail "trace-syscalls: ${prefix}.syscalls.jsonl empty/missing -- --syscalls did not enable the engine"; }
+    info "trace-syscalls OK -- ${prefix}.syscalls.jsonl non-empty ($(wc -l <<<"$content" | tr -d ' ') line(s))"
 }
 
 # funcs --structured: uprobe with structured JSONL output (-J). Needs at least
@@ -882,6 +944,8 @@ case "$WHAT" in
     syscalls-vdso)     test_syscalls_vdso ;;
     syscalls-regs)     test_syscalls_regs ;;
     syscalls-cfi)      test_syscalls_cfi ;;
+    syscalls-argwarn)  test_syscalls_argwarn ;;
+    trace-syscalls)    test_trace_syscalls ;;
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
     massdelete-detect)  test_massdelete_detect ;;
@@ -891,8 +955,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

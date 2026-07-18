@@ -659,8 +659,9 @@ class TraceStore:
         where, p = [], []
         if syscall:
             names = [s.strip() for s in syscall.split(",") if s.strip()]
-            where.append("syscall IN (" + ",".join(["?"] * len(names)) + ")")
-            p += names
+            if names:
+                where.append("syscall IN (" + ",".join(["?"] * len(names)) + ")")
+                p += names
         if tid is not None:
             where.append("tid = ?"); p.append(tid)
         if path_contains:

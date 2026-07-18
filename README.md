@@ -2,7 +2,7 @@
 
 <p align="center" width="100">
 
-<img src="assets/banner.png" alt="Anubee banner" width="800">
+<img src="assets/logo.svg" alt="Anubee banner" width="800">
 
 </p>
 

@@ -17,6 +17,8 @@
 
 ---
 
+**Anubee is an eBPF-powered tracer designed to observe, trace, and expose an Android app's real runtime behavior, from syscalls and function calls to code it tries to keep hidden. Built for RASP research and Android malware analysis.**
+
 **Ever wanted to know exactly what an app is really doing?**
 
 Anubee shows you, no matter how well it's hidden.

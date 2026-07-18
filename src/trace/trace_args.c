@@ -26,11 +26,11 @@ int trace_build_argv(struct trace_argv *out, const char *engine,
 }
 
 // Flags with no value, broadcast to every engine that understands them
-// (syscalls, funcs, and lib all share -v/-q/--siblings/--no-follow-fork).
+// (syscalls, funcs, and lib all share -v/-q). --siblings/--no-follow-fork are
+// handled separately below (deferred until we know launch vs attach mode).
 static int is_common_flag(const char *s)
 {
-	return !strcmp(s, "-v") || !strcmp(s, "-q") ||
-	       !strcmp(s, "--siblings") || !strcmp(s, "--no-follow-fork");
+	return !strcmp(s, "-v") || !strcmp(s, "-q");
 }
 
 // Flags shared by syscalls+funcs only (lib has neither -b/-Q nor snapshots).
@@ -85,6 +85,10 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 			o->nspec++;
 		} else if (!strcmp(tok, "--lib")) {
 			o->want_lib = true;
+		} else if (!strcmp(tok, "--siblings")) {
+			o->siblings = 1;
+		} else if (!strcmp(tok, "--no-follow-fork")) {
+			o->no_follow = 1;
 		} else if (is_common_flag(tok)) {
 			trace_tok_push(o->sys_toks, &o->sys_ntok, "syscalls", tok);
 			trace_tok_push(o->func_toks, &o->func_ntok, "funcs", tok);
@@ -114,6 +118,26 @@ int trace_parse_args(int argc, char **argv, struct trace_args *o)
 		} else {
 			fprintf(stderr, "trace: unrecognized argument '%s'\n", tok);
 			return -1;
+		}
+	}
+
+	// Fix E: --siblings/--no-follow-fork mean nothing without -p. In attach mode
+	// forward them to every engine that understands them; in launch mode warn
+	// once here rather than letting each engine's ARGP_KEY_END warn separately.
+	if (o->siblings || o->no_follow) {
+		if (o->pids) {
+			if (o->siblings) {
+				trace_tok_push(o->sys_toks,  &o->sys_ntok,  "syscalls", "--siblings");
+				trace_tok_push(o->func_toks, &o->func_ntok, "funcs",    "--siblings");
+				trace_tok_push(o->lib_toks,  &o->lib_ntok,  "lib",      "--siblings");
+			}
+			if (o->no_follow) {
+				trace_tok_push(o->sys_toks,  &o->sys_ntok,  "syscalls", "--no-follow-fork");
+				trace_tok_push(o->func_toks, &o->func_ntok, "funcs",    "--no-follow-fork");
+				trace_tok_push(o->lib_toks,  &o->lib_ntok,  "lib",      "--no-follow-fork");
+			}
+		} else {
+			fprintf(stderr, "trace: warning - --siblings/--no-follow-fork need -p; ignored\n");
 		}
 	}
 	return 0;

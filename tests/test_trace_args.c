@@ -76,17 +76,41 @@ int main(void)
 	assert(t.want_lib && !t.want_sys && !t.want_func);
 	assert(t.lib_ntok == 0);
 
-	// --- broadcast common flags (-v/-q/--siblings/--no-follow-fork): land on
-	//     all three accumulators, do NOT themselves set any want_* ---
-	char *v[] = { A("trace"), A("-P"), A("pkg"), A("-v"), A("-q"),
-	              A("--siblings"), A("--no-follow-fork") };
-	assert(trace_parse_args(7, v, &t) == 0);
+	// --- broadcast common flags (-v/-q only; --siblings/--no-follow-fork are
+	//     deferred/routed separately, see Fix E block below): land on all
+	//     three accumulators, do NOT themselves set any want_* ---
+	char *v[] = { A("trace"), A("-P"), A("pkg"), A("-v"), A("-q") };
+	assert(trace_parse_args(5, v, &t) == 0);
 	assert(!t.want_sys && !t.want_func && !t.want_lib);   // broadcast alone enables nothing
-	for (int i = 0; i < 4; i++) {
-		const char *f = (const char *[]){ "-v", "-q", "--siblings", "--no-follow-fork" }[i];
+	for (int i = 0; i < 2; i++) {
+		const char *f = (const char *[]){ "-v", "-q" }[i];
 		assert(count_tok(t.sys_toks, t.sys_ntok, f) == 1);
 		assert(count_tok(t.func_toks, t.func_ntok, f) == 1);
 		assert(count_tok(t.lib_toks, t.lib_ntok, f) == 1);
+	}
+
+	// --- Fix E: --siblings/--no-follow-fork are deferred, not broadcast by
+	//     is_common_flag; routing happens post-loop based on attach (-p) vs
+	//     launch (-P) mode ---
+	{
+		// launch mode (-P): no -p, so --siblings must NOT reach any engine's
+		// token list; trace_parse_args warns once instead.
+		char *launch_sib[] = { A("trace"), A("-P"), A("com.example.app"),
+		                       A("--siblings"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, launch_sib, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 0);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 0);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 0);
+	}
+	{
+		// attach mode (-p): --siblings IS forwarded to every engine that
+		// understands it.
+		char *attach_sib[] = { A("trace"), A("-p"), A("4821"),
+		                       A("--siblings"), A("-s"), A("openat") };
+		assert(trace_parse_args(6, attach_sib, &t) == 0);
+		assert(count_tok(t.sys_toks, t.sys_ntok, "--siblings") == 1);
+		assert(count_tok(t.func_toks, t.func_ntok, "--siblings") == 1);
+		assert(count_tok(t.lib_toks, t.lib_ntok, "--siblings") == 1);
 	}
 
 	// --- -b/-Q: broadcast to syscalls+funcs only, NEVER lib (lib has no -b/-Q) ---

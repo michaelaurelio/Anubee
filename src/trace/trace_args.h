@@ -45,6 +45,8 @@ struct trace_args {
 
 	bool want_sys, want_func, want_lib;  // want_lib is set only by the bare --lib toggle
 
+	int siblings, no_follow;  // deferred: forwarded to engines only in -p mode (else warn once)
+
 	// Top-level -e/-F occurrences, collected but not yet classified (see
 	// struct trace_spec above).
 	struct trace_spec specs[TRACE_ARGV_CAP]; int nspec;

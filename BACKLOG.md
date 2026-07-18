@@ -261,7 +261,7 @@ three copy-pasted, differently-worded versions in `funcs.c`/`correlate.c`/`sysca
 **Per engine:** `funcs`'s `-I/-i/-r` deprecate (stderr warning naming the equivalent spec
 line, e.g. `-e 'libc.so!/^encrypt/'`; behavior unchanged this release) rather than
 hard-remove, so existing scripts/CI don't break — hard removal is a follow-up once
-`specs/*.spec`, docs, and `ARES-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
+`specs/*.spec`, docs, and `ANUBEE-Detector/sim/rasp-checks.spec` migrate. `correlate` moves
 onto the shared loader/matcher and gains full `COMMON_ARGP_OPTIONS` for surface parity
 (**done** — see the 2026-07-13 EPIC H entry below; `correlate` no longer hand-rolls
 `-o`/`-q`, it now takes `-v`/`-J`/`-b`/`-Q` too). `syscalls`/`dump`/`mod` each gain new, purely
@@ -581,7 +581,7 @@ is in DOCUMENTATION.md and the referenced specs.
   `screencapture_detect` → `exfil_detect`, `exfil_detect` →
   `massdelete_detect`, `fileless_detect` → `exfil_detect`) on the same pid
   within a per-rule time window into evidence-carrying incident records.
-  Checked first: neither ARES-Desktop (never parses `mod` output at all) nor
+  Checked first: neither ANUBEE-Desktop (never parses `mod` output at all) nor
   `anubee-mcp` (only ingested five stale `*_summary` teardown types) already
   did this.
   - **Same-pid grouping only** — a chain split across a dropper process and
@@ -760,7 +760,7 @@ is in DOCUMENTATION.md and the referenced specs.
     regression oracle — byte-identical except where a phase intentionally
     added a field/record type) plus balance/grep checks on the engine `.c`
     files the BPF-skeleton gate keeps un-host-compilable. Cross-repo: 341/341
-    ARES-Desktop tests pass unmodified — the new record types land as
+    ANUBEE-Desktop tests pass unmodified — the new record types land as
     retained-but-unhandled rows (EPIC A3's design), no ingest change needed.
     On-device capture confirming the real stdout/file shapes is the
     remaining open step (same standing gate as every BPF-touching change).
@@ -802,7 +802,7 @@ is in DOCUMENTATION.md and the referenced specs.
   unchanged; `correlate` gained full `COMMON_ARGP_OPTIONS` parity and its `-F` trim
   bug is fixed; `syscalls`/`dump`/`mod` each gained new, purely-additive `-e`/`-F`
   spec-file support they never had before. `specs/*.spec` and
-  `ARES-Detector/sim/rasp-checks.spec` migrated to add `syscall:`/`lib:` lines
+  `ANUBEE-Detector/sim/rasp-checks.spec` migrated to add `syscall:`/`lib:` lines
   alongside their existing uprobe lines, making the latter a genuine multi-engine
   capture-driving file. Two real bugs were found and fixed along the way (not just
   noted): a NULL-logger crash in `parse_custom_probe_spec` reachable from the three

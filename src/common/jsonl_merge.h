@@ -3,7 +3,7 @@
 // — same rationale as trace/trace_args.h). Used by the `trace` coordinator
 // (EPIC C5) to combine each engine's own separate `-o` output into one file at
 // the literal path the caller originally passed to `-o`, so a downstream
-// consumer expecting a single JSONL stream (e.g. ARES-Desktop's ingest, which
+// consumer expecting a single JSONL stream (e.g. ANUBEE-Desktop's ingest, which
 // already merge-sorts every engine's records by the shared `ktime` field
 // rather than by physical file position — see EPIC C3/C4) gets exactly that
 // without needing to know about the per-engine suffixed files underneath.

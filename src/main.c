@@ -50,7 +50,7 @@ static void usage(const char *argv0)
 int main(int argc, char **argv)
 {
 	// Human output (ts_print -> stdout) must stream live when stdout is a pipe
-	// (e.g. `ares lib` under `adb shell` feeding the Desktop viewer). Without
+	// (e.g. `anubee lib` under `adb shell` feeding the Desktop viewer). Without
 	// this, bionic full-buffers stdout and every [lib] line lands only at exit.
 	// Line buffering keeps per-line latency without the cost of _IONBF.
 	setvbuf(stdout, NULL, _IOLBF, 0);

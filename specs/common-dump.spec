@@ -3,7 +3,7 @@
 # docs/probe-specs.md.
 #   anubee dump -P com.example.app -F specs/common-dump.spec -o out/
 #
-# rasp-checks.spec (ARES-Detector/sim/) already has its own lib:libsentinel.so
+# rasp-checks.spec (ANUBEE-Detector/sim/) already has its own lib:libsentinel.so
 # line for that project's own use; this file is the generic starting point.
 
 lib:libsentinel.so

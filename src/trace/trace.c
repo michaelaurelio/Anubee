@@ -325,7 +325,7 @@ int cmd_trace(int argc, char **argv)
 	// EPIC C5: each engine above wrote its own <prefix>.<suffix>.jsonl (per-engine
 	// files kept, unchanged - purely additive). Also merge them into one file at
 	// the literal -o value, so a caller expecting a single combined stream (e.g.
-	// ARES-Desktop's Capture UI, which already re-sorts every record by the
+	// ANUBEE-Desktop's Capture UI, which already re-sorts every record by the
 	// shared `ktime` field rather than by file position - EPIC C3/C4, so a
 	// concatenation, not a true byte-interleave, is all correctness requires)
 	// gets exactly that without knowing about the per-engine suffixes.

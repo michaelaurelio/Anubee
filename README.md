@@ -46,7 +46,7 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 **Get started:** one static `anubee` binary, nothing else to install. Grab it and run your first trace. Full walkthrough, prerequisites included: [`docs/getting-started.md`](docs/getting-started.md).
 
-**Full capability:** [ARES-Desktop](https://github.com/michaelaurelio/ARES-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/ARES-Desktop) and follow its README.
+**Full capability:** [ANUBEE-Desktop](https://github.com/michaelaurelio/ANUBEE-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/ANUBEE-Desktop) and follow its README.
 
 ---
 
@@ -54,7 +54,7 @@ Coming soon. Until then, here's what makes Anubee worth pointing at an app:
 
 You don't have to take the stealth on faith. We ran Anubee against a tool built to catch it.
 
-[ARES-Detector](https://github.com/michaelaurelio/ARES-Detector) is a purpose-built tripwire for exactly this kind of tool. It loops real anti-tamper checks and flips its screen red the instant something starts watching.
+[ANUBEE-Detector](https://github.com/michaelaurelio/ANUBEE-Detector) is a purpose-built tripwire for exactly this kind of tool. It loops real anti-tamper checks and flips its screen red the instant something starts watching.
 
 <table>
 <tr>

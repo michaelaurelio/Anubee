@@ -1103,7 +1103,7 @@ struct sysc_args {
 	const char *lib_sels[64];    // -l / lib: (repeatable) library selectors, OR'd
 	int  nlib;
 	char activity[256];          // -A: optional launch activity override
-	int  capture_all;            // -a
+	int  capture_all;            // set when no -l/lib: filter given (capture all)
 	int  want_snap;              // --snapshot
 	char syscall_list[1024];     // accumulated, comma-separated values of every -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist

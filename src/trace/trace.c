@@ -203,7 +203,7 @@ int cmd_trace(int argc, char **argv)
 	// classify_spec's doc comment) — this is what lets a bare `-e 'syscall:x'`
 	// or `-e 'libc.so!x'` enable and feed the right engine with no --syscalls/
 	// --funcs marker. May raise ta.want_sys/want_func on top of whatever the
-	// flat parse already set from -a/-s/-x/-l or -S/-c.
+	// flat parse already set from --syscalls/-s/-x/-l or -S/-c.
 	for (int i = 0; i < ta.nspec; i++) {
 		if (classify_spec(&ta, &ta.specs[i], &ta.want_sys, &ta.want_func) != 0) {
 			fprintf(stderr, "trace: bad %s '%s'\n", ta.specs[i].is_file ? "-F" : "-e",

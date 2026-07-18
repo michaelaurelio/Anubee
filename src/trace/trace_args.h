@@ -36,7 +36,7 @@ struct trace_args {
 
 	// Per-engine raw token accumulators: flags this engine's own argp will
 	// re-parse verbatim (broadcast common flags like -v/-q, plus each
-	// engine's unique flags like -a/-s/-x/-l for syscalls or -S/-c for
+	// engine's unique flags like --syscalls/-s/-x/-l for syscalls or -S/-c for
 	// funcs). Presence of an engine-unique flag also sets that engine's
 	// want_* below; broadcast common flags do not change want_* on their own.
 	char *sys_toks[TRACE_ARGV_CAP];  int sys_ntok;

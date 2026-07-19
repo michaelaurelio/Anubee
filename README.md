@@ -27,7 +27,19 @@ Anubee shows you, no matter how well it's hidden.
 
 ## Demo
 
-Coming soon. Until then, here's what makes Anubee worth pointing at an app:
+### Desktop app
+
+| Load a trace |
+|:---:|
+| Point [Anubee-Desktop](https://github.com/michaelaurelio/Anubee-Desktop) at a trace file and the run loads into a filterable table. |
+| <img src="assets/anubee-desktop-load-file.gif" width="800"> |
+
+---
+
+| Build the call graph |
+|:---:|
+| Selecting a table entry plots its nodes. Clicking one of those nodes then draws the connections between them. |
+| <img src="assets/anubee-desktop-load-graph.gif" width="800"> |
 
 ---
 

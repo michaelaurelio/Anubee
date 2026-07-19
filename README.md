@@ -34,7 +34,7 @@ Anubee shows you, no matter how well it's hidden.
 | Point [Anubee-Desktop](https://github.com/michaelaurelio/Anubee-Desktop) at a trace file and the run loads into a filterable table. |
 | <img src="assets/anubee-desktop-load-file.gif" width="800"> |
 
----
+<br>
 
 | Build the call graph |
 |:---:|

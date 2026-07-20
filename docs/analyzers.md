@@ -67,3 +67,11 @@ appear from that one run. Rebuild from source with
 - **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
   Screen-share/remote-support apps and legitimate accessibility services trip
   the same signal as abuse.
+- **`exfil-detect`'s `sample_path`/`sensitive_paths` are correlational, not
+  proof of transfer.** They list sensitive-classified files the process
+  opened within a few seconds of the network burst (`EXFIL_RECENT_NS`) —
+  plausible candidates for what triggered the alert, not confirmed evidence
+  of what was actually sent. Syscall-level tracing can't see which file's
+  bytes ended up in which network write; proving that would require
+  inspecting buffer contents (uprobes), which this analyzer deliberately
+  doesn't do to stay stealthy.

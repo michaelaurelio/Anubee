@@ -1,7 +1,7 @@
 name: release
 
 # Cut a GitHub Release when a version tag is pushed. Single containerized build
-# (same path as ci.yml) — CO-RE means one binary serves every supported kernel,
+# (same path as ci.yml). CO-RE means one binary serves every supported kernel,
 # so there is deliberately NO per-version build matrix. The only asset is the
 # renamed static binary; its SHA-256 is injected into the per-tag notes file.
 on:

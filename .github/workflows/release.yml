@@ -1,0 +1,57 @@
+name: release
+
+# Cut a GitHub Release when a version tag is pushed. Single containerized build
+# (same path as ci.yml). CO-RE means one binary serves every supported kernel,
+# so there is deliberately NO per-version build matrix. The only asset is the
+# renamed static binary; its SHA-256 is injected into the per-tag notes file.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # required for gh release create
+
+jobs:
+  release:
+    name: build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # vendored libbpf
+
+      - name: Cross-build anubee (static aarch64)
+        run: ./scripts/build.sh
+        env:
+          ANUBEE_CHECK_DEPS: "1"
+
+      - name: Verify binary produced
+        run: test -f build/anubee && file build/anubee
+
+      - name: Detectability firewall gate (CR1)
+        run: ./scripts/build.sh check-firewall
+
+      - name: Stage release asset and notes
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          NOTES_SRC=".github/release-notes/${TAG}.md"
+          test -f "$NOTES_SRC" || { echo "missing notes file: $NOTES_SRC" >&2; exit 1; }
+          cp build/anubee "anubee-${TAG}"
+          DIGEST="$(sha256sum "anubee-${TAG}" | awk '{print $1}')"
+          sed "s/__SHA256__/${DIGEST}/g" "$NOTES_SRC" > notes.md
+          if grep -q '__SHA256__' notes.md; then
+            echo "token substitution failed" >&2; exit 1
+          fi
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" "anubee-${TAG}" \
+            --title "Anubee ${TAG}" \
+            --notes-file notes.md \
+            --verify-tag

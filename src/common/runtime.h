@@ -71,6 +71,17 @@ static inline int anubee_rb_poll_until_cb(struct ring_buffer *rb,
 		err = 0;
 		if (tick)
 			tick(ctx);
+		// main.c line-buffers stdout (setvbuf _IOLBF), but bionic doesn't
+		// reliably honor that on the non-tty pipe every `adb shell
+		// "su -c '...'"` invocation gives it -- the tool's only real
+		// transport per docs/getting-started.md's own documented usage.
+		// Output silently sits buffered until process exit otherwise,
+		// indistinguishable from a hang. stdout is one shared, thread-safe
+		// FILE* per process, so this also flushes anything a worker/poll
+		// thread (funcs/syscalls' worker, screencapture-detect/
+		// fileless-detect's poll thread) already wrote -- one flush here
+		// covers every engine's console output, not just this loop's own.
+		fflush(stdout);
 	}
 	return err;
 }
@@ -96,6 +107,11 @@ static inline void anubee_rb_poll_multi(struct ring_buffer **rbs, int n,
 			int c = ring_buffer__consume(rbs[i]);   // non-blocking
 			if (c > 0) total += c;
 		}
+		// see anubee_rb_poll_until_cb's comment: bionic doesn't reliably
+		// line-buffer stdout over adb shell's non-tty pipe. Flush every
+		// pass, not just when idle -- a busy multi-analyzer trace never
+		// hits the sleep branch below and would otherwise never flush.
+		fflush(stdout);
 		if (total == 0) {
 			struct timespec ts = { 0, 100 * 1000 * 1000 };
 			nanosleep(&ts, NULL);                    // wakes early on SIGINT (EINTR)

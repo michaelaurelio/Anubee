@@ -32,56 +32,42 @@ Anubee shows you, no matter how well it's hidden.
 | Load a trace |
 |:---:|
 | Point [Anubee-Desktop](https://github.com/michaelaurelio/Anubee-Desktop) at a trace file and the run loads into a filterable table. |
-| <img src="assets/anubee-desktop-load-file.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-load-file.gif" width="800"> |
 
 <br>
 
 | Build the call graph |
 |:---:|
 | Selecting a table entry plots its nodes. Clicking one of those nodes then draws the connections between them. |
-| <img src="assets/anubee-desktop-load-graph.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-load-graph.gif" width="800"> |
 
 <br>
 
 | Filter the trace |
 |:---:|
 | Type a library name, syscall, or plain text into the search bar and the table narrows to just those calls. |
-| <img src="assets/anubee-desktop-filtering.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-filtering.gif" width="800"> |
 
 <br>
 
 | Graph a specific call |
 |:---:|
 | Clicking through the graph for a filtered call surfaces each node's syscall, args, and backtrace in the inspector panel. |
-| <img src="assets/anubee-desktop-specific-graph.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-specific-graph.gif" width="800"> |
 
 <br>
 
 | Confirm a suggested tag |
 |:---:|
 | The `Suggestions` panel surfaces candidate RASP checks from a heuristic scan. Confirming one turns its dashed border solid to show it's been reviewed. |
-| <img src="assets/anubee-desktop-choice.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-choice.gif" width="800"> |
 
 ### MCP integration
 
 | Drive Anubee from chat |
 |:---:|
 | [`anubee-mcp`](tools/anubee-mcp) lets your LLM client run the `anubee` CLI for you. Just ask, and it picks the right command for the live device on its own. This run asks it to list the native libraries [Anubee-Detector](https://github.com/michaelaurelio/Anubee-Detector) has loaded at runtime. |
-| <img src="assets/anubee-mcp-demo.gif" width="800"> |
-
-### `mod`: catching malware behavior on a real app
-
-| Mass-delete detection |
-|:---:|
-| A real installed app ([`scripts/moddemoapp`](scripts/moddemoapp), a small safe demo target — [see how](docs/analyzers.md)) renames and deletes a burst of files on external storage, the classic ransomware signature. `anubee mod massdelete-detect` catches it — stealthily, zero uprobes. |
-| <img src="assets/anubee-mod-massdelete-demo.gif" width="800"> |
-
-<br>
-
-| Exfil detection |
-|:---:|
-| The same app opens a media-shaped file it wrote itself, then pushes a network byte-volume burst. `anubee mod exfil-detect` flags the sensitive-open-then-burst pattern — again, zero uprobes. This is detection only: what Anubee alerts on, not a working exfil path (the demo app's network target is a reserved, non-routable test address — nothing ever actually leaves the device). |
-| <img src="assets/anubee-mod-exfil-demo.gif" width="800"> |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-mcp-demo.gif" width="800"> |
 
 ---
 

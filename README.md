@@ -69,6 +69,20 @@ Anubee shows you, no matter how well it's hidden.
 | [`anubee-mcp`](tools/anubee-mcp) lets your LLM client run the `anubee` CLI for you. Just ask, and it picks the right command for the live device on its own. This run asks it to list the native libraries [Anubee-Detector](https://github.com/michaelaurelio/Anubee-Detector) has loaded at runtime. |
 | <img src="assets/anubee-mcp-demo.gif" width="800"> |
 
+### `mod`: catching malware behavior on a real app
+
+| Mass-delete detection |
+|:---:|
+| A real installed app ([`scripts/moddemoapp`](scripts/moddemoapp), a small safe demo target — [see how](docs/analyzers.md)) renames and deletes a burst of files on external storage, the classic ransomware signature. `anubee mod massdelete-detect` catches it — stealthily, zero uprobes. |
+| <img src="assets/anubee-mod-massdelete-demo.gif" width="800"> |
+
+<br>
+
+| Exfil detection |
+|:---:|
+| The same app opens a media-shaped file it wrote itself, then pushes a network byte-volume burst. `anubee mod exfil-detect` flags the sensitive-open-then-burst pattern — again, zero uprobes. This is detection only: what Anubee alerts on, not a working exfil path (the demo app's network target is a reserved, non-routable test address — nothing ever actually leaves the device). |
+| <img src="assets/anubee-mod-exfil-demo.gif" width="800"> |
+
 ---
 
 ## Why Anubee?

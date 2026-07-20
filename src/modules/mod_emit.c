@@ -182,12 +182,13 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
         jb_s(j, "null");
     }
     if (verbose) {
-        int n = (int)e->sensitive_path_count;
-        if (n > EXFIL_DETECT_RING_LEN) n = EXFIL_DETECT_RING_LEN;
         jb_s(j, ",\"sensitive_paths\":[");
-        for (int i = 0; i < n; i++) {
-            if (i) jb_c(j, ',');
+        int emitted = 0;
+        for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++) {
+            if (e->sensitive_paths[i][0] == '\0') continue; // blanked: not within EXFIL_RECENT_NS of the burst
+            if (emitted) jb_c(j, ',');
             jb_c(j, '"'); jb_esc(j, e->sensitive_paths[i]); jb_c(j, '"');
+            emitted++;
         }
         jb_c(j, ']');
         jb_s(j, ",\"sensitive_path_count\":"); jb_u64(j, e->sensitive_path_count);

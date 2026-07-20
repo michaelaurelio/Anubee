@@ -89,10 +89,10 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
                e->h.pid, e->comm, (unsigned long long)e->bytes_sent, e->window_ms,
                e->sample_path, dest_str ? dest_str : "unknown");
         if (mc->verbose) {
-            int n = (int)e->sensitive_path_count;
-            if (n > EXFIL_DETECT_RING_LEN) n = EXFIL_DETECT_RING_LEN;
-            for (int i = 0; i < n; i++)
+            for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++) {
+                if (e->sensitive_paths[i][0] == '\0') continue; // blanked: not within EXFIL_RECENT_NS of the burst
                 human_detail("exfil-detect", "%s\n", e->sensitive_paths[i]);
+            }
         }
     }
 

@@ -4,7 +4,7 @@
 
 **Target device**
 - Rooted Android device, **arm64/aarch64** only.
-- Kernel with **eBPF + BTF** (CO-RE); most modern Android kernels qualify.
+- Kernel: **Android 12+ / GKI 5.10 or newer** (needs BTF + BPF ring buffer). Tested on Android 15 / 6.6.
 - SELinux typically needs to be **permissive** to load eBPF.
 - `adb` access; commands run as root (`su -c` on Magisk, or `adb root`).
 

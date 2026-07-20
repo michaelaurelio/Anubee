@@ -18,6 +18,7 @@
 #include "common/emit.h"
 #include "common/decode.h"
 #include "common/runtime.h"
+#include "common/human_out.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 
@@ -87,6 +88,12 @@ static int eb_handle_event(void *ctx, void *data, size_t sz)
         printf("[exfil-detect] PID:%-6d (%s) %llu bytes, %ums window, read %s, dest %s\n",
                e->h.pid, e->comm, (unsigned long long)e->bytes_sent, e->window_ms,
                e->sample_path, dest_str ? dest_str : "unknown");
+        if (mc->verbose) {
+            int n = (int)e->sensitive_path_count;
+            if (n > EXFIL_DETECT_RING_LEN) n = EXFIL_DETECT_RING_LEN;
+            for (int i = 0; i < n; i++)
+                human_detail("exfil-detect", "%s\n", e->sensitive_paths[i]);
+        }
     }
 
     if (mc->sink != NULL) {

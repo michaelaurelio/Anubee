@@ -283,21 +283,22 @@ expensive one:
    `device-test.sh` sends `-s INT` to match the interactive Ctrl-C path (`-k 3` keeps
    the SIGKILL backstop); and grep the captured output with here-strings (an `echo |
    grep -q` pipe SIGPIPEs under `pipefail` on large output).
-4. **Realistic app-driven verification** (`scripts/massdeleteapp/`, manual, not part of
-   `make device-test`) — for capabilities where a synthetic trigger's fidelity to
-   the real threat model is itself in question (`mod massdelete-detect`: does a
-   real app's file mutation, not a purpose-built binary, actually get seen?).
-   `scripts/massdeleteapp/build.sh install` builds and installs `dev.anubee.massdeleteapp`, a
-   minimal code-free APK (`android:hasCode="false"`, references the stock
-   `android.app.Activity` by name — no dex compiler needed, see the script's
-   header for why one isn't available in this toolchain), grants it
-   `MANAGE_EXTERNAL_STORAGE`, and prints its UID. Attach with
-   `anubee mod massdelete-detect -P dev.anubee.massdeleteapp -o <file>`, then trigger file
-   activity as that exact UID with `su <uid> -c scripts/anubee_massdelete_gen
-   <target-dir>` (root allows arbitrary-UID exec directly — no `run-as` dance).
-   This is also how the MediaStore-trash blind spot noted in §6.6 was found:
-   real file managers routing "delete" through `IS_TRASHED` never reached
-   this at all.
+4. **Realistic app-driven verification** (`scripts/moddemoapp/`, manual, not
+   part of `make device-test`) — for capabilities where a synthetic
+   trigger's fidelity to the real threat model is itself in question
+   (`mod massdelete-detect`/`mod exfil-detect`: does a real app's own file
+   and network activity, not a purpose-built binary, actually get seen?).
+   `scripts/moddemoapp/anubee-moddemoapp.apk` is a committed, prebuilt,
+   signed APK (`dev.anubee.moddemoapp`) — install it directly, or rebuild
+   from source via `scripts/moddemoapp/build.sh`. Unlike the old
+   `massdeleteapp` (code-free, paired with an externally su-exec'd trigger
+   binary), this app performs both a mass-delete burst and an exfil burst
+   itself, on launch, via ordinary Android `File`/`DatagramSocket` APIs.
+   Attach with `anubee mod -P dev.anubee.moddemoapp -m massdelete-detect
+   -m exfil-detect -o <file>` — no companion process, one command. This is
+   also how the MediaStore-trash blind spot noted in §6.6 was found: real
+   file managers routing "delete" through `IS_TRASHED` never reached this
+   at all.
 
 ### Attach modes: launch (`-P`) vs PID (`-p`)
 

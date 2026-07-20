@@ -31,10 +31,11 @@ mkdir -p "$OUT/classes" "$OUT/dex"
 
 echo "=== javac ==="
 javac --release 8 -classpath "$ANDROID_JAR" -d "$OUT/classes" \
-    "$SRC/src/dev/anubee/moddemoapp/DemoActivity.java"
+    "$SRC/src/dev/anubee/moddemoapp/DemoActivity.java" \
+    "$SRC/src/dev/anubee/moddemoapp/DemoService.java"
 
 echo "=== d8 (dex) ==="
-d8 --min-api 24 --output "$OUT/dex" "$OUT/classes/dev/anubee/moddemoapp/DemoActivity.class"
+d8 --min-api 24 --output "$OUT/dex" "$OUT/classes/dev/anubee/moddemoapp/"*.class
 
 echo "=== aapt2 link ==="
 aapt2 link -o "$OUT/unsigned.apk" \

@@ -20,7 +20,7 @@ capture from `anubee trace`) can be consumed by one reader. Feed a trace to
 | `dump` | `dump` (module, path, base, pid, raw): one per module written to disk |
 | any engine | `coverage` (see below) |
 | `syscalls`/`funcs`/`correlate` | `<engine>_summary` at teardown |
-| `mod` | `<analyzer>_summary` at teardown, e.g. `execve_summary`, `massdelete_detect_summary` |
+| `mod` | per-analyzer event record, e.g. `massdelete_detect`, `exfil_detect` (`sample_path`/`sensitive_paths` semantics: see [`analyzers.md`](analyzers.md)'s Gotchas); `<analyzer>_summary` at teardown, e.g. `execve_summary`, `massdelete_detect_summary` |
 
 `correlate`'s `func`/`syscall`/`return` records carry no `backtrace` array.
 Join `span` → `parent_span` across `func` records to reconstruct the call chain

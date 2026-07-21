@@ -40,43 +40,25 @@ anubee mod file-access -m file-access -m execve -P com.example.app   # run sever
 other analyzer is a kprobe/tracepoint. Each run also prints (and, with `-o`,
 writes) an end-of-run summary record, see [`reading-traces.md`](reading-traces.md).
 
-## Testing `massdelete-detect`/`exfil-detect` against a real app (manual)
+## Testing massdelete-detect/exfil-detect against a real app (manual)
 
-The burst analyzers key off genuine app-UID file activity. `scripts/massdeleteapp/build.sh install`
-builds and installs a minimal trigger app for this; it needs **two terminals**:
+The burst analyzers key off genuine app-UID file/network activity.
+`scripts/moddemoapp/anubee-moddemoapp.apk` is a small, safe demo app
+(source in the same directory) that performs both behaviors itself, on
+launch — no companion trigger process needed:
 
-**Terminal A** (leave it running: it blocks with no output until Terminal B kills it, that's expected):
 ```sh
-adb shell "su -c '/data/local/tmp/anubee mod massdelete-detect -P dev.anubee.massdeleteapp -o /data/local/tmp/burst.jsonl'"
+adb install scripts/moddemoapp/anubee-moddemoapp.apk
+adb shell "su -c 'appops set dev.anubee.moddemoapp MANAGE_EXTERNAL_STORAGE allow'"
+adb shell "su -c '/data/local/tmp/anubee mod -P dev.anubee.moddemoapp -m massdelete-detect -m exfil-detect -o /data/local/tmp/moddemo.jsonl'"
 ```
 
-**Terminal B:**
-```sh
-# 1. build + install (prints the assigned UID)
-scripts/massdeleteapp/build.sh install
-
-# 2. push the trigger binary
-adb push build/anubee_massdelete_gen /data/local/tmp/anubee_massdelete_gen
-adb shell chmod 755 /data/local/tmp/anubee_massdelete_gen
-
-# 3. find the PID Terminal A is running as (NOT the UID from step 1)
-adb shell "su -c 'ps -ef | grep \"anubee mod\" | grep -v grep'"
-
-# 4. trigger the burst AS the app's own UID
-adb shell "su -c 'mkdir -p /sdcard/Download/burst_test'"
-adb shell "su -c 'su <UID> -c \"/data/local/tmp/anubee_massdelete_gen /sdcard/Download/burst_test\"'"
-
-# 5. stop Terminal A by PID (Ctrl-C doesn't reliably reach a non-pty adb shell)
-adb shell "su -c 'kill -INT <PID>'"
-
-# 6. read the result
-adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
-```
+`anubee`'s own launcher starts the app; both analyzers' alert lines should
+appear from that one run. Rebuild from source with
+`scripts/moddemoapp/build.sh install` (needs `d8`, see the script header).
 
 ## Gotchas
 
-- **The UID (step 1 above) and the PID (step 3) are not interchangeable.** The
-  UID is who runs the trigger, the PID is what you kill.
 - **`massdelete-detect`/`exfil-detect` need `MANAGE_EXTERNAL_STORAGE`** ("All files
   access") on the target app. Scoped storage (Android 11+) otherwise blocks the
   signal outright. `massdelete-detect` surfaces whether the app holds it.
@@ -85,3 +67,11 @@ adb shell "su -c 'cat /data/local/tmp/burst.jsonl'"
 - **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
   Screen-share/remote-support apps and legitimate accessibility services trip
   the same signal as abuse.
+- **`exfil-detect`'s `sample_path`/`sensitive_paths` are correlational, not
+  proof of transfer.** They list sensitive-classified files the process
+  opened within a few seconds of the network burst (`EXFIL_RECENT_NS`) —
+  plausible candidates for what triggered the alert, not confirmed evidence
+  of what was actually sent. Syscall-level tracing can't see which file's
+  bytes ended up in which network write; proving that would require
+  inspecting buffer contents (uprobes), which this analyzer deliberately
+  doesn't do to stay stealthy.

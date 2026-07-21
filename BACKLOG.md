@@ -404,7 +404,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   `.trashed-*`, still on disk) performed by the MediaProvider process, not
   the calling app's UID — a UID/PID-gated kprobe trace structurally cannot
   see it. Real-app-driven verification (as opposed to a synthetic PID
-  trigger) is now `scripts/massdeleteapp/build.sh install` — see
+  trigger) is now `scripts/moddemoapp/anubee-moddemoapp.apk` — see
   DOCUMENTATION.md §"Testing tiers".
 - `mod exfil-detect` known v1 limitations (shipped 2026-07-11): contacts/
   SMS/call-log exfil is invisible (Binder-mediated ContentProvider access,

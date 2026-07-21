@@ -113,6 +113,12 @@ static int rb_handle_event(void *ctx, void *data, size_t sz)
         ts_print("[massdelete-detect] %-26s PID:%-6d (%s) %u touches, %d distinct, %ums window, e.g. %s\n",
                burst_tag(categories), e->h.pid, e->comm, e->touch_count, distinct,
                e->window_ms, e->sample_path);
+        if (mc->verbose) {
+            int n = (int)e->touch_count;
+            if (n > MASSDELETE_DETECT_RING_LEN) n = MASSDELETE_DETECT_RING_LEN;
+            for (int i = 0; i < n; i++)
+                human_detail("massdelete-detect", "%s\n", e->paths[i]);
+        }
     }
 
     if (mc->sink != NULL) {

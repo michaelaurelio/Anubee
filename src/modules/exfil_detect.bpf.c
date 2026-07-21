@@ -31,6 +31,14 @@ struct {
 
 #define EXFIL_WINDOW_NS      (30ULL * 1000000000ULL)
 #define EXFIL_BYTE_THRESHOLD (512u * 1024u)
+// How recent a sensitive-file open must be, relative to the alert firing,
+// to be reported as evidence -- narrower than EXFIL_WINDOW_NS (which only
+// governs whether an alert fires at all, not what gets reported). Keeps
+// the reported file list to plausible candidates for *this* burst instead
+// of every sensitive open across the full 30s arming window. See
+// docs/analyzers.md's Gotchas entry for what this field does and doesn't
+// prove -- it narrows false attribution, it doesn't eliminate it.
+#define EXFIL_RECENT_NS       (3ULL * 1000000000ULL)
 
 // Linux AF_* values -- no <sys/socket.h> in a BPF compile unit, and
 // vmlinux.h (BTF-generated) carries types, not macro constants.
@@ -85,6 +93,7 @@ struct exfil_state {
     __u64 bytes_sent;
     char  sample_path[FILE_PATH_LEN];
     char  sensitive_paths[EXFIL_DETECT_RING_LEN][FILE_PATH_LEN];
+    __u64 sensitive_ts_ns[EXFIL_DETECT_RING_LEN]; // per-entry open time, kernel-side only -- not exposed in exfil_detect_event
     __u32 sensitive_path_count;
     __u8  paths_truncated;
     unsigned char dest[28];
@@ -180,10 +189,31 @@ static __always_inline void record_bytes(__u64 n)
     e->bytes_sent = st->bytes_sent;
     e->window_ms  = (__u32)((now - st->window_start_ns) / 1000000ULL);
     __builtin_memcpy(e->sample_path, st->sample_path, FILE_PATH_LEN);
+    // Only report ring entries opened within EXFIL_RECENT_NS of this alert
+    // -- older opens get blanked out rather than copied, so the reported
+    // evidence stays scoped to plausible candidates for *this* burst
+    // instead of every sensitive open across the full 30s arming window.
+    // Both read and write use the same compile-time-constant loop index i
+    // (never a runtime-computed one) so this stays trivially unrollable/
+    // verifier-safe -- an earlier version used a separate, data-dependent
+    // output index to pack surviving entries densely, which failed to
+    // unroll and blew the verifier's instruction budget by exactly one
+    // instruction across on_sendto/on_write/on_writev. sensitive_paths[]
+    // can now have blanks at any position, not just a trailing range;
+    // consumers (exfil_detect.c, mod_emit.c) iterate the full
+    // EXFIL_DETECT_RING_LEN range and skip blank entries rather than
+    // trusting sensitive_path_count as a compact-prefix bound.
+    __u32 recent_count = 0;
     #pragma unroll
-    for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++)
-        __builtin_memcpy(e->sensitive_paths[i], st->sensitive_paths[i], FILE_PATH_LEN);
-    e->sensitive_path_count = st->sensitive_path_count;
+    for (int i = 0; i < EXFIL_DETECT_RING_LEN; i++) {
+        if (now - st->sensitive_ts_ns[i] <= EXFIL_RECENT_NS) {
+            __builtin_memcpy(e->sensitive_paths[i], st->sensitive_paths[i], FILE_PATH_LEN);
+            recent_count++;
+        } else {
+            e->sensitive_paths[i][0] = '\0';
+        }
+    }
+    e->sensitive_path_count = recent_count;
     e->paths_truncated = st->paths_truncated;
     __builtin_memcpy(e->dest, st->dest, sizeof(e->dest));
     e->dest_len = st->dest_len;
@@ -229,6 +259,7 @@ static __always_inline void arm_on_sensitive_read(const char *path)
 
     __u32 slot = st->sensitive_path_count & (EXFIL_DETECT_RING_LEN - 1);
     bpf_probe_read_kernel_str(st->sensitive_paths[slot], sizeof(st->sensitive_paths[slot]), path);
+    st->sensitive_ts_ns[slot] = now;
     if (st->sensitive_path_count >= EXFIL_DETECT_RING_LEN)
         st->paths_truncated = 1;
     st->sensitive_path_count++;

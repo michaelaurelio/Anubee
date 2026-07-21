@@ -121,6 +121,8 @@ Anubee shows you, no matter how well it's hidden.
 
 **Full capability:** [Anubee-Desktop](https://github.com/michaelaurelio/Anubee-Desktop) drives `anubee` for you and turns its raw output into something you can actually read. [Grab it here](https://github.com/michaelaurelio/Anubee-Desktop) and follow its README.
 
+**Full usage documentation:** [`docs/README.md`](docs/README.md), which engine to pick and how to use each.
+
 ---
 
 ## Run It Past a Tool Built to Catch It

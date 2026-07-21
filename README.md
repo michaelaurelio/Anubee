@@ -27,7 +27,7 @@ Anubee shows you, no matter how well it's hidden.
 
 ## Demo
 
-### Desktop app
+### Desktop App
 
 | Load a trace |
 |:---:|
@@ -62,12 +62,26 @@ Anubee shows you, no matter how well it's hidden.
 | The `Suggestions` panel surfaces candidate RASP checks from a heuristic scan. Confirming one turns its dashed border solid to show it's been reviewed. |
 | <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-desktop-choice.gif" width="800"> |
 
-### MCP integration
+### MCP Integration
 
 | Drive Anubee from chat |
 |:---:|
 | [`anubee-mcp`](tools/anubee-mcp) lets your LLM client run the `anubee` CLI for you. Just ask, and it picks the right command for the live device on its own. This run asks it to list the native libraries [Anubee-Detector](https://github.com/michaelaurelio/Anubee-Detector) has loaded at runtime. |
 | <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/anubee-mcp-demo.gif" width="800"> |
+
+### Android Malware Analysis
+
+| Catch a mass file delete |
+|:---:|
+| `mod massdelete-detect` watches renameat/unlinkat activity and alerts once a burst of distinct files get touched in a short window. This run attaches to the demo app mid-delete. |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/mod-massdelete-demo.gif" width="800"> |
+
+<br>
+
+| Catch data leaving after a sensitive read |
+|:---:|
+| `mod exfil-detect` arms on a credential or media-shaped file read, then tracks the outbound byte volume that follows. This run attaches to the demo app mid-transfer. |
+| <img src="https://raw.githubusercontent.com/Ringoshiroku/Anubee-Demo-Media/main/assets/mod-exfil-demo.gif" width="800"> |
 
 ---
 

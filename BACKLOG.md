@@ -640,6 +640,11 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
 
+- **Malware-analysis guide (Phase 7, part 1).** User docs gain a
+  step-by-step workflow: lab prep, install without launching, `triage
+  --no-launch`, which analyzer answers which question, focused re-runs, when
+  to accept loud tools, and the indicators to pull from the JSONL.
+
 - **Phase 6 tuning: `execve`, `prop-read`, `file-access`.** execve tags each
   run (root/recon/tamper/control/shell/app_dir/memfd, including commands
   inside `sh -c` / `su -c` and toybox applets) and marks cut-off argv;

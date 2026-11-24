@@ -13,7 +13,8 @@ anubee mod triage -P com.example.app -o out.jsonl         # every stealthy analy
 anubee mod triage -P com.example.app --no-launch          # wait for the app to start by itself
 ```
 
-**Start with `triage` on an unknown sample.** It runs every stealthy analyzer
+**Start with `triage` on an unknown sample** (full walkthrough:
+[`malware-analysis.md`](malware-analysis.md)). It runs every stealthy analyzer
 into one JSONL (zero writes into the target), so the first run shows which
 behaviors are present; then rerun the relevant analyzers alone with `-v`.
 Use `--no-launch` when the sample has no launcher icon, starts from a

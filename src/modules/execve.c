@@ -18,6 +18,7 @@
 #include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
+#include "modules/execve_classify.h"
 
 // ── per-binary exec tally (tallied unconditionally so summary survives -o) ───
 
@@ -26,22 +27,25 @@
 typedef struct {
     char     path[128];   // sized to execve_event.filename
     uint32_t count;
+    unsigned flags;       // EXF_* seen on any run of this binary
 } exec_stat_t;
 
 static exec_stat_t exec_stats[EXEC_STAT_MAX];
 static int         exec_stat_count = 0;
 
-static void exec_stat_add(const char *path)
+static void exec_stat_add(const char *path, unsigned flags)
 {
     for (int i = 0; i < exec_stat_count; i++) {
         if (strcmp(exec_stats[i].path, path) == 0) {
             exec_stats[i].count++;
+            exec_stats[i].flags |= flags;
             return;
         }
     }
     if (exec_stat_count >= EXEC_STAT_MAX) return;
     snprintf(exec_stats[exec_stat_count].path, sizeof(exec_stats[0].path), "%s", path);
     exec_stats[exec_stat_count].count = 1;
+    exec_stats[exec_stat_count].flags = flags;
     exec_stat_count++;
 }
 
@@ -50,24 +54,6 @@ static int exec_stat_cmp_desc(const void *a, const void *b)
     uint32_t ca = ((const exec_stat_t *)a)->count;
     uint32_t cb = ((const exec_stat_t *)b)->count;
     return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
-}
-
-// Basenames that indicate root-access or tamper-detection-relevant execution.
-// Edit freely; NULL-terminated like rasp_props in prop_read.c.
-static const char *const suspicious_bins[] = {
-    "su", "magisk", "busybox", "mount", "sh", "bash",
-    "getprop", "setprop", "setenforce", "getenforce",
-    NULL,
-};
-
-static bool is_suspicious_bin(const char *path)
-{
-    // compare basename only
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    for (int i = 0; suspicious_bins[i]; i++)
-        if (strcmp(suspicious_bins[i], base) == 0) return true;
-    return false;
 }
 
 static struct execve_bpf *g_skel       = NULL;
@@ -89,7 +75,13 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
 
     const struct execve_event *e = data;
 
-    exec_stat_add(e->filename);
+    const char *av[MAX_ARGV_ENTRIES];
+    for (int i = 0; i < MAX_ARGV_ENTRIES; i++) av[i] = e->argv[i];
+    unsigned fl = ex_classify(e->filename, av,
+                              (int)(e->argc < MAX_ARGV_ENTRIES ? e->argc : MAX_ARGV_ENTRIES));
+    char flags[96];
+    ex_flag_names(fl, flags, sizeof flags);
+    exec_stat_add(e->filename, fl);
 
     if (!mc->quiet) {
         char argv_buf[MAX_ARGV_ENTRIES * (MAX_ARGV_STR + 4) + 4];
@@ -106,10 +98,12 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         // human_out.c) but with a stale "[event]" tag mismatched against this
         // file's own "[exec]" header -- now unified through human_detail with
         // the correct "exec" tag.
-        ts_print("[exec]  > [EXEC]  PID:%d (%s) %s%s%s\n",
+        ts_print("[exec]  > [EXEC]  PID:%d (%s) %s%s%s%s%s%s%s\n",
                e->h.pid, e->comm, e->filename,
                e->argc ? " " : "",
-               e->argc ? argv_buf : "");
+               e->argc ? argv_buf : "",
+               e->truncated ? " [cut off]" : "",
+               flags[0] ? " [" : "", flags, flags[0] ? "]" : "");
 
         if (e->stack_depth > 0) {
             __u32 start = 1;
@@ -137,7 +131,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
             sym_resolve(hdr->pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
             syms[i] = symbuf[i];
         }
-        mod_emit_execve(&mc->sink->jb, e, syms);
+        mod_emit_execve(&mc->sink->jb, e, syms, flags);
         anubee_sink_emit(mc->sink);
     }
 
@@ -231,7 +225,7 @@ static void ex_print_summary(void)
     int flagged = 0;
     for (int i = 0; i < exec_stat_count; i++) {
         total += exec_stats[i].count;
-        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+        if (exec_stats[i].flags) flagged++;
     }
 
     int use_color = isatty(STDOUT_FILENO);
@@ -254,13 +248,15 @@ static void ex_print_summary(void)
     printf("[exec]" EXEC_SEP);
 
     for (int i = 0; i < exec_stat_count; i++) {
-        bool sus = is_suspicious_bin(exec_stats[i].path);
+        bool sus = exec_stats[i].flags != 0;
+        char fn[96];
+        ex_flag_names(exec_stats[i].flags, fn, sizeof fn);
         if (sus && use_color)
-            printf("[exec]  \033[1;33m[!] %6u  %s\033[0m\n",
-                   exec_stats[i].count, exec_stats[i].path);
+            printf("[exec]  \033[1;33m[!] %6u  %s  [%s]\033[0m\n",
+                   exec_stats[i].count, exec_stats[i].path, fn);
         else if (sus)
-            printf("[exec]  [!] %6u  %s\n",
-                   exec_stats[i].count, exec_stats[i].path);
+            printf("[exec]  [!] %6u  %s  [%s]\n",
+                   exec_stats[i].count, exec_stats[i].path, fn);
         else
             printf("[exec]      %6u  %s\n",
                    exec_stats[i].count, exec_stats[i].path);
@@ -285,7 +281,7 @@ static void ex_emit_summary(struct anubee_sink *s)
     int flagged = 0;
     for (int i = 0; i < exec_stat_count; i++) {
         total += exec_stats[i].count;
-        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+        if (exec_stats[i].flags) flagged++;
     }
 
     struct jbuf *j = &s->jb;
@@ -300,7 +296,17 @@ static void ex_emit_summary(struct anubee_sink *s)
         if (i) jb_c(j, ',');
         jb_s(j, "{\"path\":\"");  jb_esc(j, exec_stats[i].path); jb_c(j, '"');
         jb_s(j, ",\"count\":");   jb_u64(j, exec_stats[i].count);
-        jb_s(j, ",\"suspicious\":"); jb_s(j, is_suspicious_bin(exec_stats[i].path) ? "true" : "false");
+        jb_s(j, ",\"suspicious\":"); jb_s(j, exec_stats[i].flags ? "true" : "false");
+        char fn[96];
+        ex_flag_names(exec_stats[i].flags, fn, sizeof fn);
+        jb_s(j, ",\"flags\":[");
+        for (char *p = fn, *t; *p; p = t) {
+            t = strchr(p, ',');
+            if (t) *t++ = '\0'; else t = p + strlen(p);
+            if (p != fn) jb_c(j, ',');
+            jb_c(j, '"'); jb_esc(j, p); jb_c(j, '"');
+        }
+        jb_c(j, ']');
         jb_c(j, '}');
     }
     jb_c(j, ']');
@@ -317,7 +323,8 @@ static unsigned long long ex_drops(void)
 
 const anubee_analyzer_t analyzer_execve = {
     .name          = "execve",
-    .description   = "Trace execve syscalls with full argv and call stack",
+    .description   = "Trace execve syscalls with full argv and call stack; each run tagged "
+                      "root/recon/tamper/control/shell/app_dir/memfd (commands inside sh -c too)",
     .setup         = ex_setup,
     .teardown      = ex_teardown,
     .print_summary = ex_print_summary,

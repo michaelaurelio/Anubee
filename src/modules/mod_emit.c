@@ -2,6 +2,7 @@
 // Pure structured-record builders for anubee mod analyzers (no libbpf/skeleton
 // deps, so the host test can link them). Built on the shared serializer + schema.
 #include <linux/types.h>
+#include <stdio.h>
 #include <string.h>
 #include "common/emit.h"
 #include "common/trace_schema.h"
@@ -42,7 +43,8 @@ void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e)
 
 // syms: resolved symbol strings for each frame (NULL or syms[i]==NULL/"" → omit symbol field).
 // Caller (execve.c) resolves via sym_resolve; passing NULL produces addr-only output.
-void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms)
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
+                     const char *flags)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_EXECVE)); jb_c(j, '"');
@@ -69,6 +71,20 @@ void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *c
             jb_s(j, ",\"symbol\":\""); jb_esc(j, syms[i]); jb_c(j, '"');
         }
         jb_c(j, '}');
+    }
+    jb_c(j, ']');
+    jb_s(j, ",\"argv_truncated\":"); jb_s(j, e->truncated ? "true" : "false");
+    jb_s(j, ",\"flags\":[");
+    // flags: "a,b,c" -> ["a","b","c"]
+    for (const char *p = flags ? flags : ""; *p; ) {
+        const char *c = strchr(p, ',');
+        size_t n = c ? (size_t)(c - p) : strlen(p);
+        if (p != flags) jb_c(j, ',');
+        char w[32];
+        snprintf(w, sizeof w, "%.*s", (int)(n < sizeof w ? n : sizeof w - 1), p);
+        jb_c(j, '"'); jb_esc(j, w); jb_c(j, '"');
+        p += n;
+        if (*p == ',') p++;
     }
     jb_c(j, ']');
     jb_c(j, '}');
@@ -127,6 +143,10 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
         { FA_CREDENTIAL_PATTERN, "credential_pattern" },
         { FA_FOREIGN_APP_DIR,    "foreign_app_dir"    },
         { FA_UNKNOWN_SELF,       "unknown_self"       },
+        { FA_OWN_APP_DIR,        "own_app_dir"        },
+        { FA_PROC_SELF,          "proc_self"          },
+        { FA_PROC_OTHER,         "proc_other_process" },
+        { FA_PROC_SYSTEM,        "proc_system"        },
     };
     for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
         if (!(categories & tags[i].bit)) continue;

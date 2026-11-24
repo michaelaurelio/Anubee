@@ -29,9 +29,12 @@ void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
 
 // {"type":"execve","pid":N,"tid":N,"comm":"..","filename":"..","argc":N,
-//  "argv":["..",..],"backtrace":[{"frame":N,"addr":"0x..","symbol":".."},..]}
+//  "argv":["..",..],"backtrace":[{"frame":N,"addr":"0x..","symbol":".."},..],
+//  "argv_truncated":bool,"flags":["root","recon",..]}
 // syms: per-frame resolved strings (NULL → addr-only; syms[i]==NULL/"" → omit that frame's symbol).
-void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms);
+// flags: execve_classify.h names, comma-joined ("" or NULL = none).
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
+                     const char *flags);
 
 // {"type":"prop","op":"get|find|read","pid":N,"tid":N,"comm":"..",
 //  "name":"..","value":"..","is_ret":N,"found":N}

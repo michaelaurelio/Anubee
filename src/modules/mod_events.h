@@ -102,11 +102,17 @@ struct proc_exit_event {
     int  exit_code;
 };
 
+// execve_event.truncated bits: what didn't fit.
+#define EXEC_TRUNC_MORE_ARGS  1   // more than MAX_ARGV_ENTRIES arguments
+#define EXEC_TRUNC_LONG_ARG   2   // an argument longer than MAX_ARGV_STR - 1
+#define EXEC_TRUNC_LONG_PATH  4   // filename longer than 127 bytes
 struct execve_event {
     struct trace_event_header h;
     __u64 ts_ns;
     __u32 argc;
     __u32 stack_depth;
+    __u32 truncated;          // EXEC_TRUNC_* bits
+    __u32 _pad2;
     char  comm[TASK_COMM_LEN];
     char  filename[128];
     char  argv[MAX_ARGV_ENTRIES][MAX_ARGV_STR];

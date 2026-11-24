@@ -1192,19 +1192,56 @@ straight from a background thread. Available analyzers:
   non-main-thread exits. Wires
   `sym_flush_pid` on `ANUBEE_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
 - **`execve`** — execve kprobes (stealthy: zero uprobes). Captures exec events for
-  child-process correlation.
+  child-process correlation. Each run is tagged by `src/modules/execve_classify.c`
+  (record field `flags`): `root` (su, magisk, KernelSU/APatch daemons, busybox,
+  resetprop), `recon` (getprop, id, dumpsys, `pm list`, `settings get`,
+  `content query`, which ...), `tamper` (setenforce, mount, setprop, iptables,
+  `pm install/grant/disable`, `settings put` ...), `control` (am, input,
+  screencap, cmd, svc, monkey ...), `shell`, `app_dir` (binary in an
+  app-writable folder -- `/data/data`, `/data/user`, `/data/local/tmp`,
+  external storage -- or a relative path) and `memfd` (run from
+  `/proc/self/fd/N` / `/dev/fd/N`). Multi-call binaries (toybox, toolbox,
+  busybox) are classified by their applet, and the commands inside
+  `sh -c "..."` / `su -c "..."` (split on `;`, `&`, `|`) count too.
+  `argv_truncated` marks a run whose argv didn't fit: more than 8 arguments,
+  an argument over 127 bytes, or a path over 127 bytes (the kernel side
+  checks the byte after the buffer). The summary carries the union of flags
+  per binary.
 - **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
-  `BRK` into the target's libc pages).
+  `BRK` into the target's libc pages). Each property is classified
+  (`src/modules/prop_read_classify.c`) as a `root` check (ro.debuggable,
+  test-keys, verified boot, bootloader lock, adbd, magisk/KernelSU/Xposed
+  props), an `emulator` check (qemu/goldfish/ranchu, genymotion, vbox,
+  hardware/board names, empty baseband) or `device` fingerprinting (model,
+  serial, SIM operator, timezone/locale, SDK); `rasp` is true for any of the
+  three. bionic's own startup reads (GWP-ASan, fdsan, MTE, `ro.arch`,
+  libnetd_client) are hidden from the summary table (kept in the JSON).
+  Blind spot: `android.os.Build.*` fields are filled once in zygote, before
+  any app exists, so an app reading `Build.MODEL` / `Build.FINGERPRINT` /
+  `Build.HARDWARE` touches no property and is invisible here; only explicit
+  `SystemProperties.get` / `__system_property_get` / `getprop` calls show.
 - **`file-access`** — `openat`/`openat2` kprobes (stealthy: zero uprobes), gated
-  in-kernel to 4 fixed path prefixes (external storage, `/data/data`,
-  `/data/user`) to keep ring-buffer volume sane. Userspace classifies each hit
+  in-kernel to 5 fixed path prefixes (external storage, `/data/data`,
+  `/data/user`, `/proc`) to keep ring-buffer volume sane. Userspace classifies each hit
   into external-storage / known-media-subdir / credential-shaped-filename /
   foreign-app-private-dir categories (`src/modules/file_access_classify.c`),
   using the launched package name (or a best-effort `/proc/<pid>/cmdline`
   resolve in `-p` PID-attach mode) to tell "own sandbox" from "foreign app
-  probe." Known limitation: dirfd-relative opens with a relative pathname
-  aren't resolved to an absolute path and are silently dropped (see
-  BACKLOG.md).
+  probe." Opens in the app's own data folder are tagged `own_app_dir` and
+  hidden from the console and summary table unless `-v` (they are the bulk
+  of every app's opens; the JSON keeps them). `/proc` is gated in too and
+  classified by `fa_classify_proc`; only anti-analysis-shaped reads are kept:
+  `proc_self` (own `maps`/`smaps`, `status` and `task/*/status` for
+  TracerPid, `task/*/comm` *read* for Frida's thread names, `fd`, `mounts`,
+  `mem`, `environ`), `proc_other_process` (another process's
+  `/proc/<pid>/` -- process scanning) and `proc_system` (`net/` for Frida's
+  port, `cpuinfo`, `tty/drivers`, `version`, `mounts`, `modules`). Ordinary
+  reads (`stat`, per-thread `stat`, `cmdline`, `meminfo`, `pagemap`, comm
+  *writes* = a thread naming itself) are dropped. The summary collapses the
+  own pid to `self` and thread ids to `*`. Known limitation: dirfd-relative
+  opens with a relative pathname aren't resolved to an absolute path and are
+  silently dropped; `stat`/`access` probes (RootBeer-style `su` file checks)
+  aren't opens and aren't seen (see BACKLOG.md).
 - **`massdelete-detect`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
   zero uprobes), gated in-kernel to external storage only. Tracks a per-process
   sliding-window touch counter + bounded path-hash ring; when 20 touches land
@@ -1548,9 +1585,9 @@ active, the same tally is additionally written as one final `*_summary` record
 (before the `coverage` footer, via the analyzer's `emit_summary` hook in
 `anubee_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
 longer lost from the file:
-- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
-- `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
-- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
+- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool,"flags":["root"|"recon"|"tamper"|"control"|"shell"|"app_dir"|"memfd",..]},..]}` (per-event `execve` records gain `"argv_truncated":bool,"flags":[..]`)
+- `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool,"category":"root"|"emulator"|"device"|null},..]}`
+- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}` (categories: `external_storage`, `media_subdir`, `credential_pattern`, `foreign_app_dir`, `unknown_self`, `own_app_dir`, `proc_self`, `proc_other_process`, `proc_system`; `/proc` paths use `self` and `task/*`)
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read|action|gesture|global_action|screenshot|input_method","method":".."|null,"code":N,"granted":true|false|null}` (first call per process and category)

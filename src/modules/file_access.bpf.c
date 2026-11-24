@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // BPF object for the file-access analyzer: trace openat/openat2 syscalls,
-// gated in-kernel to 4 fixed path prefixes so only sensitive-storage /
-// per-app-data-dir opens reach the ring buffer. Fine-grained classification
+// gated in-kernel to 5 fixed path prefixes so only sensitive-storage /
+// per-app-data-dir / /proc opens reach the ring buffer. Fine-grained classification
 // (media subdir / credential filename / foreign-app dir) happens in
 // userspace (file_access_classify.c), which has the one piece of context BPF
 // doesn't: the traced app's own package name.
@@ -26,14 +26,16 @@ struct {
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
 // enormous (every .so/.apk/.oat/cache file at startup). Only forward opens
-// under external storage or a per-app data dir; everything else never
-// reaches the ring buffer.
+// under external storage, a per-app data dir, or /proc (anti-analysis
+// probes -- userspace keeps only the telling ones, fa_classify_proc);
+// everything else never reaches the ring buffer.
 static __always_inline int path_is_interesting(const char *path)
 {
     if (path_has_prefix(path, "/storage/emulated/", 18)) return 1;
     if (path_has_prefix(path, "/sdcard/", 8))            return 1;
     if (path_has_prefix(path, "/data/data/", 11))        return 1;
     if (path_has_prefix(path, "/data/user/", 11))        return 1;
+    if (path_has_prefix(path, "/proc/", 6))              return 1;
     return 0;
 }
 

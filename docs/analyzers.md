@@ -36,9 +36,9 @@ receiver (boot, SMS, alarm, push), or you want to start it by hand.
 | Name | Detects | Loud? |
 |---|---|---|
 | `proc-event` | Process fork/exit | Stealthy |
-| `execve` | `execve`/`execveat` calls, with full argv + call stack | Stealthy |
-| `prop-read` | Android `__system_property_*` reads (anti-emulator/root checks) | **Loud** (libc uprobe) |
-| `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs | Stealthy |
+| `execve` | `execve`/`execveat` calls, with full argv + call stack; each tagged root / recon / tamper / control / shell / run-from-app-folder / run-from-memory (commands inside `sh -c` too), and marked when argv was cut off | Stealthy |
+| `prop-read` | Android `__system_property_*` reads, each tagged as a root, emulator or device-fingerprint check (bionic's own startup reads hidden). Can't see `Build.*` fields, which zygote fills before the app starts | **Loud** (libc uprobe) |
+| `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs, and `/proc` anti-analysis probes (own maps/TracerPid, Frida threads/port, other processes). The app's own folder is hidden unless `-v` | Stealthy |
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `accessibility-detect` | What the app's own Accessibility Service does, by category: reading other apps' screens (`screen_read`), clicking / entering text (`action`), injecting gestures, global back/home actions, screenshots, keyboard switching. One alert per category | Stealthy |

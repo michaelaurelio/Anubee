@@ -3,6 +3,7 @@
 // events. Owns the file_access BPF skeleton lifecycle; the dispatcher in
 // mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/file_access.bpf.c. Classification: src/modules/file_access_classify.c.
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,12 +60,32 @@ static int fa_stat_cmp_desc(const void *a, const void *b)
 static const char *cat_tag(unsigned categories)
 {
     if (categories & FA_FOREIGN_APP_DIR)    return "[foreign]";
+    if (categories & FA_PROC_SELF)          return "[proc]";
+    if (categories & FA_PROC_OTHER)         return "[proc-pid]";
+    if (categories & FA_PROC_SYSTEM)        return "[proc-sys]";
     if (categories & FA_UNKNOWN_SELF)       return "[data?]";
     if (categories & FA_CREDENTIAL_PATTERN) return "[cred]";
     if (categories & FA_MEDIA_SUBDIR)       return "[media]";
     if (categories & FA_EXTERNAL_STORAGE)   return "[ext]";
+    if (categories & FA_OWN_APP_DIR)        return "[own]";
     return "";
 }
+
+// Only the app's own folder: the bulk of opens, hidden unless -v.
+static int own_only(unsigned categories)
+{
+    return categories == FA_OWN_APP_DIR;
+}
+
+// /proc/<n>/ where n is one of pid's threads is the process itself.
+static int is_own_tid(unsigned pid, unsigned n)
+{
+    char p[64];
+    snprintf(p, sizeof p, "/proc/%u/task/%u", pid, n);
+    return access(p, F_OK) == 0;
+}
+
+static int fa_verbose = 0;
 
 static struct file_access_bpf *g_skel       = NULL;
 static struct bpf_link        *fa_ff        = NULL;
@@ -83,13 +104,24 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
         return 0;
 
     const struct file_access_event *e = data;
-    unsigned categories = classify_path(e->path, mc->pkg);
-    fa_stat_add(e->path, categories);
+    unsigned categories;
+    if (!strncmp(e->path, "/proc/", 6)) {
+        int writing = (e->flags & O_ACCMODE) != O_RDONLY;
+        categories = fa_classify_proc(writing, e->path, e->h.pid, is_own_tid);
+        if (!categories)
+            return 0;   // ordinary /proc read (stat, cmdline, meminfo ...)
+        char key[FILE_PATH_LEN];
+        fa_proc_normalize(e->path, e->h.pid, key, sizeof key);
+        fa_stat_add(key, categories);
+    } else {
+        categories = classify_path(e->path, mc->pkg);
+        fa_stat_add(e->path, categories);
+    }
 
     const char *flag_strs[8];
     int n_flags = file_access_decode_flags(e->flags, flag_strs, 8);
 
-    if (!mc->quiet) {
+    if (!mc->quiet && (mc->verbose || !own_only(categories))) {
         // SYM1 Phase 4c: was printf(...).
         ts_print("[file] %-9s PID:%-6d (%s) %s\n",
                cat_tag(categories), e->h.pid, e->comm, e->path);
@@ -107,6 +139,7 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *fa_setup(int uid, struct anubee_mod_ctx *mc)
 {
+    fa_verbose = mc->verbose;
     g_skel = file_access_bpf__open();
     if (!g_skel) {
         fprintf(stderr, "mod file-access: failed to open BPF skeleton\n");
@@ -184,15 +217,20 @@ static void fa_print_summary(void)
     int flagged = 0;
     for (int i = 0; i < fa_stat_count; i++) {
         total += fa_stats[i].count;
-        if (fa_stats[i].categories) flagged++;
+        if (fa_stats[i].categories & ~FA_OWN_APP_DIR) flagged++;
     }
 
     printf("[file] --- File Access Summary ---------------------------------\n");
     printf("[file]       Count  Tag        Path\n");
+    int own_hidden = 0;
     for (int i = 0; i < fa_stat_count; i++) {
-        printf("[file]  %6u  %-9s  %s\n",
+        if (!fa_verbose && own_only(fa_stats[i].categories)) { own_hidden++; continue; }
+        printf("[file]  %6u  %-10s %s\n",
                fa_stats[i].count, cat_tag(fa_stats[i].categories), fa_stats[i].path);
     }
+    if (own_hidden)
+        printf("[file]  (%d path%s in the app's own folder hidden; -v shows them, the JSON summary has them)\n",
+               own_hidden, own_hidden == 1 ? "" : "s");
     printf("[file]  %llu access%s across %d unique path%s (%d flagged)\n",
            (unsigned long long)total, total == 1 ? "" : "es",
            fa_stat_count, fa_stat_count == 1 ? "" : "s",
@@ -211,7 +249,7 @@ static void fa_emit_summary(struct anubee_sink *s)
     int flagged = 0;
     for (int i = 0; i < fa_stat_count; i++) {
         total += fa_stats[i].count;
-        if (fa_stats[i].categories) flagged++;
+        if (fa_stats[i].categories & ~FA_OWN_APP_DIR) flagged++;
     }
 
     struct jbuf *j = &s->jb;
@@ -228,6 +266,10 @@ static void fa_emit_summary(struct anubee_sink *s)
         { FA_CREDENTIAL_PATTERN, "credential_pattern" },
         { FA_FOREIGN_APP_DIR,    "foreign_app_dir"    },
         { FA_UNKNOWN_SELF,       "unknown_self"       },
+        { FA_OWN_APP_DIR,        "own_app_dir"        },
+        { FA_PROC_SELF,          "proc_self"          },
+        { FA_PROC_OTHER,         "proc_other_process" },
+        { FA_PROC_SYSTEM,        "proc_system"        },
     };
     for (int i = 0; i < fa_stat_count; i++) {
         if (i) jb_c(j, ',');
@@ -258,7 +300,9 @@ static unsigned long long fa_drops(void)
 const anubee_analyzer_t analyzer_file_access = {
     .name          = "file-access",
     .description   = "Trace sensitive file opens: external storage, credential-shaped "
-                      "filenames, foreign app data dirs (stealthy — kprobes, zero uprobes)",
+                      "filenames, foreign app data dirs, /proc anti-analysis probes (maps, "
+                      "TracerPid, Frida port/threads, process scans); own folder hidden "
+                      "unless -v (stealthy — kprobes, zero uprobes)",
     .setup         = fa_setup,
     .teardown      = fa_teardown,
     .print_summary = fa_print_summary,

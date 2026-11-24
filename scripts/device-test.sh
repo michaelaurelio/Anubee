@@ -477,6 +477,35 @@ test_mod_file_access() {
     [ "$(grep -c 'stealthy: file-access writes nothing into the target' <<<"$dup")" = "1" ] \
         || { tail -5 <<<"$dup" >&2; fail "mod-file-access: duplicate name still set up twice"; }
     info "mod-file-access duplicate-name OK - analyzer set up once, warning shown"
+
+    # /proc probes, deterministic: a shell driver reads what anti-analysis
+    # code reads (own maps/status, another process, /proc/net/tcp) plus
+    # ordinary /proc files that must stay silent.
+    local out_jsonl=/data/local/tmp/anubee_fa.jsonl
+    local drv="$ROOT/build/anubee_fa_drive.sh"
+    cat > "$drv" <<'DRV'
+#!/system/bin/sh
+sleep 3
+cat /proc/self/maps /proc/self/status /proc/1/cmdline /proc/net/tcp /proc/self/stat /proc/meminfo >/dev/null 2>&1
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_fa_drive.sh >/dev/null || fail "mod-file-access: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_fa_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_fa_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "mod-file-access: could not start the /proc driver"
+    out="$(anubee "mod file-access -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'grep file_access_summary $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_jsonl /data/local/tmp/anubee_fa_drive.sh'" >/dev/null 2>&1 || true
+    local p c
+    for p in /proc/self/maps:proc_self /proc/self/status:proc_self /proc/1/cmdline:proc_other_process /proc/net/tcp:proc_system; do
+        c="${p#*:}"; p="${p%%:*}"
+        grep -q "\"path\":\"$p\",\"count\":[0-9]*,\"categories\":\[\"$c\"\]" <<<"$rec" \
+            || { tail -10 <<<"$out" >&2; fail "mod-file-access: $p not reported as $c"; }
+    done
+    ! grep -q '/proc/self/stat"\|/proc/meminfo' <<<"$rec" \
+        || fail "mod-file-access: ordinary /proc reads (stat, meminfo) reported"
+    info "mod-file-access /proc OK - self maps/status, other process, net/tcp; ordinary reads silent"
 }
 
 # mod massdelete-detect: deterministic trigger via a compiled single-process
@@ -1178,6 +1207,76 @@ test_mod_follow_fork() {
     info "follow-fork OK - child of a 100-thread target traced"
 }
 
+test_mod_execve() {
+    echo "=== mod execve (categories, commands inside sh -c, app-dir binary, cut-off argv) ==="
+    local out_jsonl=/data/local/tmp/anubee_ex.jsonl bin=/data/local/tmp/anubee_ex_bin
+    local long; long="$(printf 'x%.0s' $(seq 1 200))"
+    local drv="$ROOT/build/anubee_ex_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+sleep 3
+sh -c 'getprop ro.build.tags >/dev/null; id >/dev/null'
+cp /system/bin/toybox $bin; chmod 755 $bin
+$bin true
+/system/bin/toybox echo 1 2 3 4 5 6 7 8 9 10 >/dev/null
+/system/bin/toybox echo $long >/dev/null
+rm -f $bin
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_ex_drive.sh >/dev/null || fail "execve: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_ex_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_ex_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "execve: could not start the driver"
+    local out; out="$(anubee "mod execve -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_jsonl $bin /data/local/tmp/anubee_ex_drive.sh'" >/dev/null 2>&1 || true
+
+    grep -q '"filename":"/system/bin/sh".*"argv_truncated":false,"flags":\["recon","shell"\]' <<<"$rec" \
+        || { grep '"type":"execve"' <<<"$rec" | head -3 >&2; fail "execve: sh -c 'getprop; id' not tagged recon+shell"; }
+    grep -q "\"filename\":\"$bin\".*\"flags\":\[\"app_dir\"\]" <<<"$rec" \
+        || fail "execve: binary run from /data/local/tmp not tagged app_dir"
+    [ "$(grep -c '"filename":"/system/bin/toybox".*"argv_truncated":true' <<<"$rec")" -eq 2 ] \
+        || { grep toybox <<<"$rec" >&2; fail "execve: 10-argument and 200-byte-argument runs not marked argv_truncated"; }
+    grep -q '"type":"execve_summary".*"flags":\["recon","shell"\]' <<<"$rec" \
+        || fail "execve: summary lacks per-binary flags"
+    info "execve OK - recon+shell from sh -c, app_dir, cut-off argv marked"
+}
+
+test_mod_prop_read() {
+    echo "=== mod prop-read (root / emulator / device categories, libc noise hidden) ==="
+    # Loud analyzer (libc uprobes): only ever on this throwaway shell driver.
+    local out_jsonl=/data/local/tmp/anubee_pr.jsonl
+    local drv="$ROOT/build/anubee_pr_drive.sh"
+    cat > "$drv" <<'DRV'
+#!/system/bin/sh
+sleep 3
+getprop ro.kernel.qemu >/dev/null; getprop ro.debuggable >/dev/null
+getprop ro.product.model >/dev/null; getprop debug.hwui.renderer >/dev/null
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_pr_drive.sh >/dev/null || fail "prop-read: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_pr_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_pr_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "prop-read: could not start the driver"
+    local out; out="$(anubee "mod prop-read -p $drv_pid -q -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'grep prop_read_summary $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_jsonl /data/local/tmp/anubee_pr_drive.sh'" >/dev/null 2>&1 || true
+
+    local p c
+    for p in ro.kernel.qemu:emulator ro.debuggable:root ro.product.model:device; do
+        c="${p#*:}"; p="${p%%:*}"
+        grep -q "\"name\":\"$p\",\"count\":[0-9]*,\"rasp\":true,\"category\":\"$c\"" <<<"$rec" \
+            || { tail -12 <<<"$out" >&2; fail "prop-read: $p not reported as a $c check"; }
+    done
+    grep -q '"name":"debug.hwui.renderer","count":[0-9]*,"rasp":false,"category":null' <<<"$rec" \
+        || fail "prop-read: an ordinary property was flagged"
+    grep -q 'libc-internal propert.* hidden' <<<"$out" && ! grep -q 'gwp_asan' <<<"$out" \
+        || { tail -12 <<<"$out" >&2; fail "prop-read: libc startup reads not hidden from the table"; }
+    info "prop-read OK - emulator/root/device categories, libc noise hidden"
+}
+
 test_net() {
     echo "=== mod net (netd DNS lookup, HTTP flow with Host and byte totals) ==="
     # A shell client stands in for the app: ping resolves example.com through
@@ -1321,6 +1420,8 @@ case "$WHAT" in
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
     mod-follow-fork)   test_mod_follow_fork ;;
+    mod-execve)        test_mod_execve ;;
+    mod-prop-read)     test_mod_prop_read ;;
     mod-proc-event)    test_mod_proc_event ;;
     mod-pkg-inject)    test_mod_pkg_inject ;;
     mod-perm-watch)    test_mod_perm_watch ;;
@@ -1336,8 +1437,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

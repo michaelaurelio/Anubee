@@ -19,6 +19,17 @@ struct {
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
+// A bpf_probe_read_user_str() that filled the whole buffer may have cut the
+// string: it did if the byte at the last position isn't the terminator.
+static __always_inline int str_cut(long r, unsigned long addr, unsigned cap)
+{
+    if (r < (long)cap)
+        return 0;
+    char c = 0;
+    bpf_probe_read_user(&c, 1, (void *)(addr + cap - 1));
+    return c != 0;
+}
+
 // Full execve tracing via kprobe on __arm64_sys_execve.
 // __arm64_sys_execve(const struct pt_regs *regs): userspace syscall args in regs->regs[0..2].
 // Falls back to on_proc_exec (sched_process_exec) when this kprobe fails to attach.
@@ -47,7 +58,9 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
     unsigned long filename_ptr = BPF_CORE_READ(regs, regs[0]) & 0x00FFFFFFFFFFFFFFul;
     unsigned long argv_base    = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
 
-    bpf_probe_read_user_str(e->filename, sizeof(e->filename), (void *)filename_ptr);
+    long fr = bpf_probe_read_user_str(e->filename, sizeof(e->filename), (void *)filename_ptr);
+    e->truncated = str_cut(fr, filename_ptr, sizeof(e->filename)) ? EXEC_TRUNC_LONG_PATH : 0;
+    e->_pad2 = 0;
 
     e->argc = 0;
     bool done = false;
@@ -64,8 +77,17 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
         }
         // Strip tag from the individual string pointer too
         unsigned long arg_addr = (unsigned long)arg & 0x00FFFFFFFFFFFFFFul;
-        bpf_probe_read_user_str(e->argv[i], MAX_ARGV_STR, (void *)arg_addr);
+        long ar = bpf_probe_read_user_str(e->argv[i], MAX_ARGV_STR, (void *)arg_addr);
+        if (str_cut(ar, arg_addr, MAX_ARGV_STR))
+            e->truncated |= EXEC_TRUNC_LONG_ARG;
         e->argc++;
+    }
+    if (!done) {   // every slot used: is there another argument?
+        char *more = NULL;
+        bpf_probe_read_user(&more, sizeof(more),
+                            (void *)(argv_base + MAX_ARGV_ENTRIES * sizeof(char *)));
+        if (more)
+            e->truncated |= EXEC_TRUNC_MORE_ARGS;
     }
 
     long sr = bpf_get_stack(ctx, e->call_stack, sizeof(e->call_stack), BPF_F_USER_STACK);
@@ -100,7 +122,9 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
     unsigned long filename_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
     unsigned long argv_base    = BPF_CORE_READ(regs, regs[2]) & 0x00FFFFFFFFFFFFFFul;
 
-    bpf_probe_read_user_str(e->filename, sizeof(e->filename), (void *)filename_ptr);
+    long fr = bpf_probe_read_user_str(e->filename, sizeof(e->filename), (void *)filename_ptr);
+    e->truncated = str_cut(fr, filename_ptr, sizeof(e->filename)) ? EXEC_TRUNC_LONG_PATH : 0;
+    e->_pad2 = 0;
 
     e->argc = 0;
     bool done = false;
@@ -116,8 +140,17 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
             continue;
         }
         unsigned long arg_addr = (unsigned long)arg & 0x00FFFFFFFFFFFFFFul;
-        bpf_probe_read_user_str(e->argv[i], MAX_ARGV_STR, (void *)arg_addr);
+        long ar = bpf_probe_read_user_str(e->argv[i], MAX_ARGV_STR, (void *)arg_addr);
+        if (str_cut(ar, arg_addr, MAX_ARGV_STR))
+            e->truncated |= EXEC_TRUNC_LONG_ARG;
         e->argc++;
+    }
+    if (!done) {   // every slot used: is there another argument?
+        char *more = NULL;
+        bpf_probe_read_user(&more, sizeof(more),
+                            (void *)(argv_base + MAX_ARGV_ENTRIES * sizeof(char *)));
+        if (more)
+            e->truncated |= EXEC_TRUNC_MORE_ARGS;
     }
 
     long sr = bpf_get_stack(ctx, e->call_stack, sizeof(e->call_stack), BPF_F_USER_STACK);
@@ -149,6 +182,8 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
     e->ts_ns  = bpf_ktime_get_ns();
     e->argc       = 0;
     e->stack_depth = 0;
+    e->truncated   = 0;
+    e->_pad2       = 0;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     // __data_loc_filename: lower 16 bits = byte offset from start of ctx

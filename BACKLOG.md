@@ -320,6 +320,11 @@ the tests encode the original phone's environment.
 - **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
   a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
   and cursor-window decoding.
+- **FA1 — `file-access` doesn't see `stat`/`access` probes.** RootBeer-style
+  root checks (`/system/xbin/su`, `/sbin/su`, Magisk paths) and many
+  emulator checks (`/dev/qemu_pipe`, `/system/lib/libc_malloc_debug_qemu.so`)
+  test existence with `faccessat`/`newfstatat`, not `open`. Hook those two,
+  gated to a fixed path list, and tag `root_probe` / `emulator_probe`.
 - **NET1 — `net` has no host for QUIC flows.** QUIC (UDP 443, most Google
   traffic) encrypts the ClientHello with keys derived from the connection
   ID; decrypting the Initial packet (HKDF + AES-128-GCM, RFC 9001) would
@@ -634,6 +639,16 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
+
+- **Phase 6 tuning: `execve`, `prop-read`, `file-access`.** execve tags each
+  run (root/recon/tamper/control/shell/app_dir/memfd, including commands
+  inside `sh -c` / `su -c` and toybox applets) and marks cut-off argv;
+  prop-read classifies root/emulator/device checks and hides bionic's own
+  startup reads; file-access hides the app's own folder (unless `-v`) and
+  covers `/proc` anti-analysis probes (maps, TracerPid, Frida threads/port,
+  process scans) while dropping ordinary `/proc` reads. New device tests
+  `mod-execve`, `mod-prop-read`, and `/proc` assertions in
+  `mod-file-access`. Known drawback: FA1.
 
 - **`mod net` (Phase 5).** Outbound IPv4/IPv6 flows: destination, host
   named in the first bytes (TLS SNI, HTTP Host, DNS question), bytes sent

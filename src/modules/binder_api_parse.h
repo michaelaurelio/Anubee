@@ -24,6 +24,9 @@ int binder_parcel_token(const unsigned char *raw, size_t n, char *out, size_t ou
 // FNV-1a over the token's UTF-16LE bytes -- the same hash binder_api.bpf.c
 // computes, so userspace can match kernel counters to decoded tokens.
 uint64_t binder_token_hash(const unsigned char *raw, size_t n);
+// The same hash for a descriptor string (e.g. to arm an in-kernel token
+// match): what binder_token_hash returns for a Parcel carrying it. 0 for "".
+uint64_t binder_descriptor_hash(const char *descriptor);
 
 // What an IContentProvider transaction is about, from its Parcel prefix.
 struct binder_cp_detail {

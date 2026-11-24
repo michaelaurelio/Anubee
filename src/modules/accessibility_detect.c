@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-// `anubee mod accessibility-detect` — userspace analyzer for the Binder-transaction-burst
-// signal. Owns the accessibility_detect BPF skeleton lifecycle; the dispatcher in mod.c
-// drives the poll loop and teardown order. Kernel side:
+// `anubee mod accessibility-detect` — what the traced app's own
+// AccessibilityService does: calls on IAccessibilityServiceConnection, named
+// from the device's framework jars and mapped to abuse categories
+// (screen_read, action, gesture, global_action, screenshot, input_method).
+// One alert per (process, category); every call is counted. Kernel side:
 // src/modules/accessibility_detect.bpf.c. Classification:
 // src/modules/accessibility_detect_classify.c.
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,48 +23,33 @@
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/accessibility_detect_classify.h"
+#include "modules/binder_names_load.h"
 
-// ── per-pid tally (tallied unconditionally so summary survives -o) ─────────
+// ── per-pid tally ──────────────────────────────────────────────────────────
 
 #define A11Y_STAT_MAX 64
 
 typedef struct {
-    __u32    pid;
-    char     comm[TASK_COMM_LEN];
-    uint32_t burst_count;
-    uint32_t max_touch_count;
+    __u32              pid;
+    char               comm[TASK_COMM_LEN];
+    unsigned           alerted;               // bit per category already reported
+    unsigned long long calls[A11Y_CAT_N];     // filled from a11y_counts at teardown
 } a11y_stat_t;
 
 static a11y_stat_t a11y_stats[A11Y_STAT_MAX];
 static int         a11y_stat_count = 0;
 
-static void a11y_stat_add(__u32 pid, const char *comm, int touch_count)
+static a11y_stat_t *a11y_stat_get(__u32 pid, const char *comm)
 {
-    for (int i = 0; i < a11y_stat_count; i++) {
-        if (a11y_stats[i].pid == pid) {
-            a11y_stats[i].burst_count++;
-            if ((uint32_t)touch_count > a11y_stats[i].max_touch_count)
-                a11y_stats[i].max_touch_count = (uint32_t)touch_count;
-            return;
-        }
-    }
-    if (a11y_stat_count >= A11Y_STAT_MAX) return;
-    a11y_stats[a11y_stat_count].pid = pid;
-    snprintf(a11y_stats[a11y_stat_count].comm, TASK_COMM_LEN, "%s", comm);
-    a11y_stats[a11y_stat_count].burst_count = 1;
-    a11y_stats[a11y_stat_count].max_touch_count = (uint32_t)touch_count;
-    a11y_stat_count++;
-}
-
-// ── system_server pid resolve (pre-attach, gates in-kernel) ────────────────
-
-static void a11y_resolve_sys_server_pid(__u32 *out)
-{
-    *out = 0;
-    char out_buf[64];
-    if (anubee_sh_exec("pidof system_server", out_buf, sizeof(out_buf)) < 0)
-        return;
-    *out = (__u32)strtoul(out_buf, NULL, 10);
+    for (int i = 0; i < a11y_stat_count; i++)
+        if (a11y_stats[i].pid == pid)
+            return &a11y_stats[i];
+    if (a11y_stat_count >= A11Y_STAT_MAX) return NULL;
+    a11y_stat_t *s = &a11y_stats[a11y_stat_count++];
+    memset(s, 0, sizeof *s);
+    s->pid = pid;
+    snprintf(s->comm, TASK_COMM_LEN, "%s", comm ? comm : "");
+    return s;
 }
 
 // ── accessibility-service grant check (one-time, post-attach) ──────────────
@@ -79,24 +67,16 @@ static void a11y_check_service_granted(const char *pkg)
     g_a11y_granted = strstr(out, pkg) ? 1 : 0;
 }
 
-// Single short tag for the console line.
-static const char *a11y_tag(unsigned categories)
-{
-    if ((categories & ACCESSIBILITY_DETECT_BURST_DETECTED) && (categories & ACCESSIBILITY_DETECT_SERVICE_GRANTED))
-        return "[accessibility-detect]";
-    if (categories & ACCESSIBILITY_DETECT_BURST_DETECTED)
-        return "[a11y-burst]";
-    // Unreachable while the BPF side only ever emits at count==ACCESSIBILITY_DETECT_THRESHOLD
-    // (accessibility_detect.bpf.c's record_call): kept for the same defensive-gate
-    // reasoning classify_accessibility() itself documents, mirrors burst_tag()'s
-    // equivalent fallback in massdelete_detect.c.
-    return "[a11y-low-confidence]";
-}
-
 static struct accessibility_detect_bpf *g_skel = NULL;
 static struct bpf_link       *a11y_ff = NULL;
 static struct ring_buffer    *g_rb = NULL;
 static struct bpf_link       *binder_link = NULL;
+static struct binder_names   *g_names = NULL;
+
+static const char *a11y_method(__u32 code)
+{
+    return g_names ? binder_names_lookup(g_names, A11Y_SERVICE_IFACE, code) : NULL;
+}
 
 // ---- ring-buffer callback ---------------------------------------------------
 
@@ -109,16 +89,23 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
         return 0;
 
     const struct accessibility_detect_event *e = data;
-    unsigned categories = classify_accessibility((int)e->touch_count, g_a11y_granted);
-    a11y_stat_add(e->h.pid, e->comm, (int)e->touch_count);
+    const char *method = a11y_method(e->code);
+    int cat = a11y_classify_method(method);
+    a11y_stat_t *st = a11y_stat_get(e->h.pid, e->comm);
+    if (!a11y_category_alerts(cat) || !st || (st->alerted & (1u << cat)))
+        return 0;
+    st->alerted |= 1u << cat;
 
     if (!mc->quiet) {
-        printf("[accessibility-detect] %-22s PID:%-6d (%s) %u binder calls to system_server, %ums window\n",
-               a11y_tag(categories), e->h.pid, e->comm, e->touch_count, e->window_ms);
+        printf("[accessibility-detect] PID:%-6d (%s) %-13s %s", e->h.pid, e->comm,
+               a11y_category_name(cat), method ? method : "?");
+        if (!method) printf("#%u", e->code);
+        printf("%s\n", g_a11y_granted == 1 ? " [service granted]" : "");
     }
 
     if (mc->sink != NULL) {
-        mod_emit_accessibility_detect(&mc->sink->jb, e, g_a11y_granted);
+        mod_emit_accessibility_detect(&mc->sink->jb, e, a11y_category_name(cat), method,
+                                      g_a11y_granted);
         anubee_sink_emit(mc->sink);
     }
 
@@ -127,8 +114,16 @@ static int a11y_handle_event(void *ctx, void *data, size_t sz)
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
+static void a11y_teardown(void);
+
 static struct ring_buffer *a11y_setup(int uid, struct anubee_mod_ctx *mc)
 {
+    g_names = binder_names_load_device(NULL);
+    if (!a11y_method(0) && !a11y_method(1))   // codes start at 1; 0 is never valid
+        fprintf(stderr, "mod accessibility-detect: %s method names not found in the "
+                        "framework jars -- calls will show as #code / category other\n",
+                A11Y_SERVICE_IFACE);
+
     g_skel = accessibility_detect_bpf__open();
     if (!g_skel) {
         fprintf(stderr, "mod accessibility-detect: failed to open BPF skeleton\n");
@@ -151,20 +146,15 @@ static struct ring_buffer *a11y_setup(int uid, struct anubee_mod_ctx *mc)
         }
     }
 
-    // Resolve system_server's pid BEFORE attach: the tracepoint gate reads
-    // this map on every fired event, so it must be armed before the program
-    // goes live. A resolve failure leaves it 0 (gate never matches -- fails
-    // closed on the gate, not a crash); logged so an empty run isn't mistaken
-    // for "nothing happened".
-    __u32 sys_pid = 0, zk = 0;
-    a11y_resolve_sys_server_pid(&sys_pid);
-    if (sys_pid == 0)
-        fprintf(stderr, "mod accessibility-detect: could not resolve system_server pid (pidof failed) -- gate will never match\n");
-    bpf_map_update_elem(bpf_map__fd(g_skel->maps.sys_server_pid_map), &zk, &sys_pid, BPF_ANY);
+    // Arm the in-kernel token match before attach.
+    __u32 zk = 0;
+    __u64 h = binder_descriptor_hash(A11Y_SERVICE_IFACE);
+    bpf_map_update_elem(bpf_map__fd(g_skel->maps.a11y_token), &zk, &h, BPF_ANY);
 
     binder_link = bpf_program__attach(g_skel->progs.on_binder_transaction);
     if (!binder_link) {
-        fprintf(stderr, "mod accessibility-detect: tp/binder/binder_transaction unavailable, aborting\n");
+        fprintf(stderr, "mod accessibility-detect: kprobe/binder_transaction unavailable (%s), aborting\n",
+                strerror(errno));
         goto err;
     }
 
@@ -189,10 +179,25 @@ static struct ring_buffer *a11y_setup(int uid, struct anubee_mod_ctx *mc)
     return g_rb;
 
 err:
-    if (a11y_ff)     { bpf_link__destroy(a11y_ff);     a11y_ff     = NULL; }
-    if (binder_link) { bpf_link__destroy(binder_link); binder_link = NULL; }
-    if (g_skel)      { accessibility_detect_bpf__destroy(g_skel); g_skel     = NULL; }
+    a11y_teardown();
     return NULL;
+}
+
+// Per-(process, code) call counts from the kernel, folded into categories.
+static void a11y_snapshot_counts(void)
+{
+    if (!g_skel) return;
+    int fd = bpf_map__fd(g_skel->maps.a11y_counts);
+    struct a11y_key k, next, *prev = NULL;
+    while (bpf_map_get_next_key(fd, prev, &next) == 0) {
+        __u64 c = 0;
+        if (bpf_map_lookup_elem(fd, &next, &c) == 0) {
+            a11y_stat_t *st = a11y_stat_get(next.tgid, NULL);
+            if (st) st->calls[a11y_classify_method(a11y_method(next.code))] += c;
+        }
+        k = next;
+        prev = &k;
+    }
 }
 
 static void a11y_teardown(void)
@@ -200,7 +205,8 @@ static void a11y_teardown(void)
     if (a11y_ff)     { bpf_link__destroy(a11y_ff);     a11y_ff     = NULL; }
     if (binder_link) { bpf_link__destroy(binder_link); binder_link = NULL; }
     if (g_rb)        { ring_buffer__free(g_rb);        g_rb        = NULL; }
-    if (g_skel)      { accessibility_detect_bpf__destroy(g_skel); g_skel     = NULL; }
+    a11y_snapshot_counts();
+    if (g_skel)      { accessibility_detect_bpf__destroy(g_skel); g_skel = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
@@ -209,14 +215,17 @@ static void a11y_print_summary(void)
 {
     if (a11y_stat_count == 0) return;
 
-    printf("[accessibility-detect] --- Accessibility Detection Summary ---------------------------\n");
-    printf("[accessibility-detect]   PID     Comm             Bursts  MaxTouch\n");
+    printf("[accessibility-detect] --- Accessibility-service calls by category ---\n");
     for (int i = 0; i < a11y_stat_count; i++) {
-        printf("[accessibility-detect]  %6u  %-16s  %6u  %8u\n",
-               a11y_stats[i].pid, a11y_stats[i].comm, a11y_stats[i].burst_count,
-               a11y_stats[i].max_touch_count);
+        printf("[accessibility-detect]  %6u  %-16s", a11y_stats[i].pid, a11y_stats[i].comm);
+        for (int c = 1; c < A11Y_CAT_N; c++)
+            if (a11y_stats[i].calls[c])
+                printf(" %s=%llu", a11y_category_name(c), a11y_stats[i].calls[c]);
+        if (a11y_stats[i].calls[A11Y_OTHER])
+            printf(" other=%llu", a11y_stats[i].calls[A11Y_OTHER]);
+        printf("\n");
     }
-    printf("[accessibility-detect]  %d process%s triggered a burst\n",
+    printf("[accessibility-detect]  %d process%s used an Accessibility service\n",
            a11y_stat_count, a11y_stat_count == 1 ? "" : "es");
 }
 
@@ -234,9 +243,13 @@ static void a11y_emit_summary(struct anubee_sink *s)
         if (i) jb_c(j, ',');
         jb_s(j, "{\"pid\":");        jb_u64(j, a11y_stats[i].pid);
         jb_s(j, ",\"comm\":\"");     jb_esc(j, a11y_stats[i].comm); jb_c(j, '"');
-        jb_s(j, ",\"bursts\":");     jb_u64(j, a11y_stats[i].burst_count);
-        jb_s(j, ",\"max_touch_count\":"); jb_u64(j, a11y_stats[i].max_touch_count);
-        jb_c(j, '}');
+        jb_s(j, ",\"calls\":{");
+        for (int c = 0; c < A11Y_CAT_N; c++) {
+            if (c) jb_c(j, ',');
+            jb_c(j, '"'); jb_s(j, a11y_category_name(c)); jb_s(j, "\":");
+            jb_u64(j, a11y_stats[i].calls[c]);
+        }
+        jb_s(j, "}}");
     }
     jb_c(j, ']');
     jb_c(j, '}');
@@ -252,11 +265,11 @@ static unsigned long long a11y_drops(void)
 
 const anubee_analyzer_t analyzer_accessibility_detect = {
     .name          = "accessibility-detect",
-    .description   = "Detect Binder-transaction bursts to system_server while the traced "
-                      "app holds a granted Accessibility Service (dominant technique in "
-                      "2025-2026 Android banking trojans -- overlay/ATS fraud, screen "
-                      "reading, security-prompt bypass; stealthy -- tracepoint only, zero "
-                      "uprobes)",
+    .description   = "What the app's own Accessibility Service does: screen reading, "
+                      "clicks/text entry, gestures, global actions, screenshots, keyboard "
+                      "switching -- from its IAccessibilityServiceConnection calls (the "
+                      "dominant technique in current Android banking trojans; stealthy -- "
+                      "kprobe only, zero uprobes)",
     .setup         = a11y_setup,
     .teardown      = a11y_teardown,
     .print_summary = a11y_print_summary,

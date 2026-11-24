@@ -41,7 +41,7 @@ receiver (boot, SMS, alarm, push), or you want to start it by hand.
 | `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs | Stealthy |
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
-| `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
+| `accessibility-detect` | What the app's own Accessibility Service does, by category: reading other apps' screens (`screen_read`), clicking / entering text (`action`), injecting gestures, global back/home actions, screenshots, keyboard switching. One alert per category | Stealthy |
 | `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
 | `binder-api` | Which Binder interfaces/methods the app calls (`IActivityManager.getRunningAppProcesses`, `IPackageManager.getInstalledPackages`...), named from the device's own framework jars; every ContentProvider call with its URI (`QUERY content://sms/inbox`) or `CALL` target (`settings GET_secure android_id`) | Stealthy |
@@ -77,8 +77,11 @@ appear from that one run. Rebuild from source with
 - **Deletes via MediaStore's trash API are invisible** to `massdelete-detect`.
   The real `renameat` runs under MediaProvider's UID, not the app's.
 - **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
-  Screen-share/remote-support apps and legitimate accessibility services trip
-  the same signal as abuse.
+  Screen-share/remote-support apps and legitimate accessibility services
+  (TalkBack, password managers, automation apps) make the same calls as abuse.
+  `accessibility-detect` says what the service did (read the screen, clicked,
+  took a screenshot), not why. Its grant check (`granted`) is made once at
+  attach; enable-after-start shows up in `perm-watch`.
 - **`exfil-detect` counts only sends to a non-loopback IPv4/IPv6 peer.** The
   fd is resolved to its kernel socket at send time, so AF_UNIX (logd, netd)
   never counts, connections opened before the analyzer attached are seen,

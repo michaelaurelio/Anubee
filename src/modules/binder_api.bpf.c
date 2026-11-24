@@ -30,6 +30,7 @@ struct {
 #include "common/follow_fork.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/binder_token.bpf.h"
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -47,9 +48,6 @@ struct {
 	__type(value, __u8);
 } binder_api_always SEC(".maps");
 
-#define TOKEN_OFF      12      // int32 length of the String16 token
-#define TOKEN_MAX_CH   120     // longest token hashed (real ones are < 80)
-
 SEC("kprobe/binder_transaction")
 int BPF_KPROBE(on_binder_transaction, void *proc, void *thread,
 	       struct binder_transaction_data *tr, int reply)
@@ -64,7 +62,7 @@ int BPF_KPROBE(on_binder_transaction, void *proc, void *thread,
 	__u64 buf = BPF_CORE_READ(tr, data.ptr.buffer) & 0x00FFFFFFFFFFFFFFULL;
 	__u64 dsz = BPF_CORE_READ(tr, data_size);
 	__u32 n = dsz < BINDER_API_RAW ? (__u32)dsz : BINDER_API_RAW;
-	if (!buf || n < TOKEN_OFF + 4)
+	if (!buf || n < BINDER_TOKEN_LEN_OFF + 4)
 		return 0;
 
 	// Reserve first and read the Parcel prefix straight into the event; it
@@ -81,20 +79,7 @@ int BPF_KPROBE(on_binder_transaction, void *proc, void *thread,
 		return 0;
 	}
 
-	// FNV-1a over the token's UTF-16 bytes (bounded by its own length,
-	// the bytes actually read, and TOKEN_MAX_CH).
-	__s32 len = 0;
-	__builtin_memcpy(&len, &e->raw[TOKEN_OFF], 4);
-	__u64 h = 0;
-	if (len > 0 && len <= TOKEN_MAX_CH && TOKEN_OFF + 4 + 2 * len <= n) {
-		h = 1469598103934665603ULL;
-		for (int i = 0; i < 2 * TOKEN_MAX_CH; i++) {
-			if (i >= 2 * len)
-				break;
-			h ^= e->raw[(TOKEN_OFF + 4 + i) & (BINDER_API_RAW - 1)];
-			h *= 1099511628211ULL;
-		}
-	}
+	__u64 h = binder_token_fnv(e->raw, BINDER_API_RAW - 1, n);
 
 	__u64 id = bpf_get_current_pid_tgid();
 	struct binder_api_key k = {

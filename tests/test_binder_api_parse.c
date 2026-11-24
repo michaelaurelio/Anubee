@@ -65,6 +65,9 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; i++) { want ^= bytes[i]; want *= 1099511628211ULL; }
     CHECK(binder_token_hash(p, n) == want, "hash = FNV-1a(UTF-16LE token)");
     CHECK(binder_token_hash(p, 10) == 0, "no token -> hash 0");
+    CHECK(binder_descriptor_hash("a.B") == 0x7d05b88aa76770eeULL,
+          "descriptor hash = FNV-1a over its UTF-16LE bytes (what the kernel hashes)");
+    CHECK(binder_descriptor_hash("") == 0, "empty descriptor -> 0 (never matches)");
 
     // ---- IContentProvider detail: layouts as captured on an Android 16 device ----
     {

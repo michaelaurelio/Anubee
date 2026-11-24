@@ -39,15 +39,6 @@
 // requirement as that constant (slot index uses `& (RING_LEN-1)`).
 #define EXFIL_DETECT_RING_LEN 32
 
-// Per-pid sliding-window burst counter for mod accessibility-detect (see
-// accessibility_detect.bpf.c). Same load-bearing relationship as
-// MASSDELETE_DETECT_RING_LEN/MASSDELETE_DETECT_THRESHOLD above: the ring must never wrap
-// before a window resets (RING_LEN > THRESHOLD), and the slot index uses a
-// `& (RING_LEN-1)` mask, so RING_LEN must stay a power of two (the BPF
-// verifier can't range-track a non-pow2 modulo).
-#define ACCESSIBILITY_DETECT_CODE_RING_LEN 64
-#define ACCESSIBILITY_DETECT_THRESHOLD     50
-
 // Truncated capture buffer for the fileless-detect analyzer's anon_name field
 // (see fileless_detect.bpf.c). Not a ring/threshold pair like the burst
 // analyzers above -- this is a single fixed-size string buffer, sized to
@@ -164,14 +155,16 @@ struct exfil_detect_event {
     __u32  dest_len;          // sizeof(dest) when set; 0 only if no outbound send was recorded
 };
 
+// First call of each IAccessibilityServiceConnection method by a process (see
+// accessibility_detect.bpf.c); repeats are counted in a11y_counts.
 struct accessibility_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
-    __u32  touch_count;
-    __u32  window_ms;
-    __u32  code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
+    __u32  code;
+    __u32  _pad;
 };
+struct a11y_key { __u32 tgid, code; };
 
 struct fileless_detect_event {
     struct trace_event_header h;

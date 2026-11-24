@@ -1241,17 +1241,33 @@ straight from a background thread. Available analyzers:
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
-- **`accessibility-detect`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
-  `anubee` code to touch Binder). Gated to outbound calls (not replies) addressed to
-  `system_server`; per-process sliding-window counter flags a burst of 50 calls within
-  5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
-  see whether the traced app holds a granted Accessibility Service — the dominant
-  technique behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda,
-  RatOn, TrickMo), used for overlay-credential harvesting, automated-transfer-system
-  fraud, screen reading, and security-prompt bypass. v1 is a coarse volume signal only:
-  it does not decode which specific privileged action fired (transaction-code decode is
-  parked — see BACKLOG.md), and only gates on `system_server` as the destination
-  (misses accessibility routing through OEM-specific separate framework processes).
+- **`accessibility-detect`** — what the app's own Accessibility Service *does*
+  (stealthy: kprobe, zero uprobes). Accessibility abuse is the dominant technique
+  behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda, RatOn,
+  TrickMo): overlay-credential harvesting, automated-transfer-system fraud, screen
+  reading, security-prompt bypass. A service does all of that through
+  `android.accessibilityservice.IAccessibilityServiceConnection`, so a call on that
+  interface means the service is live and working, not merely granted.
+  `kprobe/binder_transaction` (as `binder-api`) reads the sender's Parcel head into
+  a per-CPU scratch buffer and FNV-1a-hashes the interface token
+  (`src/modules/binder_token.bpf.h`, source-shared with `binder-api`); only calls
+  whose hash matches the one userspace armed (`binder_descriptor_hash`) count. The
+  first `(process, code)` is sent up, repeats are counted in `a11y_counts`. Userspace
+  names the code from the framework jars (`binder_names_load_device`) and maps the
+  method to a category (`accessibility_detect_classify.c`): `screen_read`
+  (`getWindows`, `findAccessibilityNodeInfo*`, `findFocus`...), `action`
+  (`performAccessibilityAction`: clicks, set text), `gesture` (`dispatchGesture`),
+  `global_action` (`performGlobalAction`: back/home/notifications), `screenshot`
+  (`takeScreenshot*`), `input_method` (keyboard switching); everything else is
+  `other` (counted, never alerted). One alert per (process, category); the
+  summary has per-category call totals. The `settings get secure
+  enabled_accessibility_services` grant check is still made once at attach and
+  carried as `granted`. Replaced the v1 signal (a burst of 50 Binder calls to
+  `system_server` in 5 s), which fired on ordinary apps. Limitations: a
+  legitimate accessibility tool (TalkBack, password managers, automation apps)
+  produces the same calls — the categories say what the service did, not why;
+  the grant is checked only at attach (`perm-watch` tracks changes); an OEM
+  build that renames the interface's descriptor would need the name updated.
 - **`fileless-detect`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
   fires for every mmap, file-backed or anonymous, correlated entry/exit via a
   per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
@@ -1384,7 +1400,8 @@ longer lost from the file:
 - `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
-- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
+- `{"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read|action|gesture|global_action|screenshot|input_method","method":".."|null,"code":N,"granted":true|false|null}` (first call per process and category)
+- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"calls":{"other":N,"screen_read":N,"action":N,"gesture":N,"global_action":N,"screenshot":N,"input_method":N}},..]}`
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`

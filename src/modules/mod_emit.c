@@ -200,15 +200,23 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
     jb_c(j, '}');
 }
 
-void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted)
+static void jb_str_or_null(struct jbuf *j, const char *s)
+{
+    if (!s) { jb_s(j, "null"); return; }
+    jb_c(j, '"'); jb_esc(j, s); jb_c(j, '"');
+}
+
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
+                                   const char *category, const char *method, int granted)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_ACCESSIBILITY_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
-    jb_s(j, ",\"touch_count\":"); jb_u64(j, e->touch_count);
-    jb_s(j, ",\"window_ms\":");   jb_u64(j, e->window_ms);
+    jb_s(j, ",\"category\":\"");  jb_esc(j, category); jb_c(j, '"');
+    jb_s(j, ",\"method\":");      jb_str_or_null(j, method);
+    jb_s(j, ",\"code\":");        jb_u64(j, e->code);
     jb_s(j, ",\"granted\":");
     if (granted < 0)
         jb_s(j, "null");
@@ -239,12 +247,6 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
     jb_s(j, ",\"binder_calls_context\":"); jb_u64(j, e->binder_calls_context);
     jb_c(j, '}');
-}
-
-static void jb_str_or_null(struct jbuf *j, const char *s)
-{
-    if (!s) { jb_s(j, "null"); return; }
-    jb_c(j, '"'); jb_esc(j, s); jb_c(j, '"');
 }
 
 void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,

@@ -31,9 +31,8 @@ struct {
 #include "modules/mod_events.h"
 
 // system_server's pid, resolved once at userspace startup (pidof
-// system_server) and pushed BEFORE attach -- same fail-closed pattern as
-// accessibility_detect.bpf.c's sys_server_pid_map. An unresolved (zero) value means
-// the gate never matches anything.
+// system_server) and pushed BEFORE attach (fail-closed). An unresolved
+// (zero) value means the gate never matches anything.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);

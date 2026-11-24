@@ -478,3 +478,17 @@ int binder_names_add_jar(struct binder_names *bn, const uint8_t *z, size_t len)
     }
     return added;
 }
+
+uint64_t binder_descriptor_hash(const char *descriptor)
+{
+    if (!descriptor || !*descriptor)
+        return 0;
+    uint64_t h = 1469598103934665603ULL;
+    for (const unsigned char *c = (const unsigned char *)descriptor; *c; c++) {
+        h ^= *c;                       // UTF-16LE low byte (ASCII descriptor)
+        h *= 1099511628211ULL;
+        h ^= 0;                        // high byte
+        h *= 1099511628211ULL;
+    }
+    return h;
+}

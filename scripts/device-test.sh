@@ -636,56 +636,53 @@ test_exfil_detect() {
 # accessibility configuration than it started in. Hard-fail, not SKIP: we
 # control the trigger, same rationale as massdelete-detect/exfil-detect.
 test_accessibility_detect() {
-    echo "=== mod accessibility-detect (binder-transaction burst to system_server + accessibility grant) ==="
+    echo "=== mod accessibility-detect (Accessibility-service calls by category + grant) ==="
+    # Negative first: an ordinary app with no Accessibility service must not
+    # alert (the old volume-burst signal fired on the stock clock app).
+    local neg; neg="$(anubee "mod accessibility-detect -P $PKG")"
+    if grep -q '^\[accessibility-detect\] PID' <<<"$neg"; then
+        grep '^\[accessibility-detect\] PID' <<<"$neg" | head -3 >&2
+        fail "accessibility-detect: alert on $PKG, which has no Accessibility service"
+    fi
+    info "accessibility-detect negative OK - no alert on $PKG"
+
+    # Positive: TalkBack is a real Accessibility service; its process calls
+    # IAccessibilityServiceConnection (getWindows, findAccessibilityNodeInfo*...).
     local tb_pkg="com.google.android.marvin.talkback"
     local tb_svc="$tb_pkg/com.google.android.marvin.talkback.TalkBackService"
-
-    adb shell "pm path $tb_pkg" >/dev/null 2>&1 \
-        || fail "accessibility-detect: TalkBack ($tb_pkg) not installed on this device"
+    if ! adb shell "pm path $tb_pkg" >/dev/null 2>&1; then
+        info "SKIP positive: TalkBack ($tb_pkg) not installed on this device"
+        return 0
+    fi
 
     local prev_svc prev_enabled
     prev_svc="$(adb shell "su -c 'settings get secure enabled_accessibility_services'" 2>/dev/null | tr -d '\r')"
     prev_enabled="$(adb shell "su -c 'settings get secure accessibility_enabled'" 2>/dev/null | tr -d '\r')"
-    [ -z "$prev_enabled" ] && prev_enabled=0
-
     restore_a11y() {
-        adb shell "su -c 'settings put secure enabled_accessibility_services $prev_svc'" >/dev/null 2>&1
-        adb shell "su -c 'settings put secure accessibility_enabled $prev_enabled'" >/dev/null 2>&1
+        if [ "$prev_svc" = "null" ] || [ -z "$prev_svc" ]; then
+            adb shell "su -c 'settings delete secure enabled_accessibility_services'" >/dev/null 2>&1
+        else
+            adb shell "su -c 'settings put secure enabled_accessibility_services $prev_svc'" >/dev/null 2>&1
+        fi
+        if [ "$prev_enabled" = "null" ] || [ -z "$prev_enabled" ]; then
+            adb shell "su -c 'settings delete secure accessibility_enabled'" >/dev/null 2>&1
+        else
+            adb shell "su -c 'settings put secure accessibility_enabled $prev_enabled'" >/dev/null 2>&1
+        fi
         adb shell "su -c 'am force-stop $tb_pkg'" >/dev/null 2>&1
     }
 
-    adb shell "su -c 'settings put secure enabled_accessibility_services $tb_svc'" >/dev/null 2>&1
-    adb shell "su -c 'settings put secure accessibility_enabled 1'" >/dev/null 2>&1
-    sleep 2
-
-    local tb_pid
-    tb_pid="$(adb shell "su -c 'pidof $tb_pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-    if [ -z "$tb_pid" ] || ! [ "$tb_pid" -gt 0 ] 2>/dev/null; then
-        restore_a11y
-        fail "accessibility-detect: TalkBack did not start after enabling (no pid)"
-    fi
-
-    (
-        for _ in $(seq 1 30); do
-            adb shell "su -c 'input keyevent 20'" >/dev/null 2>&1
-            adb shell "su -c 'input keyevent 19'" >/dev/null 2>&1
-        done
-    ) &
-    local stim_pid=$!
-
-    local out; out="$(anubee "mod accessibility-detect -p $tb_pid")"
-    wait "$stim_pid" 2>/dev/null || true
+    # Attach by UID before enabling, so the service's first calls are seen.
+    adb shell "su -c 'nohup setsid sh -c \"sleep 3; settings put secure enabled_accessibility_services $tb_svc; settings put secure accessibility_enabled 1; sleep 4; input keyevent KEYCODE_HOME\" >/dev/null 2>&1 &'"
+    local out; out="$(anubee "mod accessibility-detect -P $tb_pkg --no-launch")"
     restore_a11y
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "accessibility-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[accessibility-detect\]' <<<"$out"; then
-        info "accessibility-detect OK — $(grep -c '^\[accessibility-detect\]' <<<"$out") [accessibility-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "accessibility-detect: no [accessibility-detect] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
-    fi
+    grep -q '^\[accessibility-detect\] PID.* screen_read ' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "accessibility-detect: no screen_read alert from an active Accessibility service"; }
+    info "accessibility-detect OK - $(grep -c '^\[accessibility-detect\] PID' <<<"$out") category alert(s) from TalkBack"
 }
 
 # mod fileless-detect: deterministic trigger via a compiled single-process

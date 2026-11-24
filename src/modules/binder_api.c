@@ -11,13 +11,9 @@
 // the running Android build. Approach credit: WOOTdroid/WDBind (interface
 // token + transaction code -> API method), reimplemented here.
 #include <errno.h>
-#include <fcntl.h>
-#include <glob.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/types.h>
@@ -31,6 +27,7 @@
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/binder_api_parse.h"
+#include "modules/binder_names_load.h"
 
 static struct binder_api_bpf *g_skel = NULL;
 static struct bpf_link *g_link = NULL, *g_ff = NULL;
@@ -39,48 +36,8 @@ static struct anubee_mod_ctx *g_mc = NULL;
 
 // ---- method-name table from framework jars ----------------------------------
 
-#define BA_MAX_JARS 64
 static struct binder_names *g_names = NULL;
-static void *g_jar_map[BA_MAX_JARS];
-static size_t g_jar_len[BA_MAX_JARS];
 static int g_njar = 0;
-
-// The jars stay mapped (and g_names alive) for the whole run: method names
-// point into them, and both summaries need them after teardown. Process exit
-// releases them.
-static void ba_load_jar(const char *path)
-{
-    if (g_njar == BA_MAX_JARS) return;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return;
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return; }
-    void *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (m == MAP_FAILED) return;
-    if (binder_names_add_jar(g_names, m, (size_t)st.st_size) > 0) {
-        g_jar_map[g_njar] = m;            // names point into it: keep mapped
-        g_jar_len[g_njar++] = (size_t)st.st_size;
-    } else {
-        munmap(m, (size_t)st.st_size);
-    }
-}
-
-// framework.jar holds the platform AIDL stubs; mainline modules (permission,
-// connectivity, wifi...) ship theirs in their APEX's framework-*.jar.
-static void ba_load_names(void)
-{
-    g_names = binder_names_new();
-    if (!g_names) return;
-    ba_load_jar("/system/framework/framework.jar");
-    glob_t gl;
-    if (glob("/apex/*/javalib/framework-*.jar", 0, NULL, &gl) == 0) {
-        for (size_t i = 0; i < gl.gl_pathc; i++)
-            if (!strchr(gl.gl_pathv[i] + 6, '@'))   // skip versioned duplicate mounts
-                ba_load_jar(gl.gl_pathv[i]);
-        globfree(&gl);
-    }
-}
 
 // ---- token hash -> decoded name (for the summary) --------------------------
 
@@ -248,7 +205,7 @@ static struct ring_buffer *ba_setup(int uid, struct anubee_mod_ctx *mc)
     g_mc = mc;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    ba_load_names();
+    g_names = binder_names_load_device(&g_njar);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     if (!mc->quiet)
         printf("[binder-api] %d AIDL method name(s) from %d framework jar(s) (%ld ms)\n",
@@ -277,11 +234,7 @@ static struct ring_buffer *ba_setup(int uid, struct anubee_mod_ctx *mc)
     // Interfaces whose every call is reported (not just the first per method).
     static const char *const always[] = { "android.content.IContentProvider" };
     for (size_t i = 0; i < sizeof always / sizeof always[0]; i++) {
-        unsigned char p[16 + 2 * 128] = {0};
-        int32_t l = (int32_t)strlen(always[i]);
-        memcpy(p + BINDER_TOKEN_OFF, &l, 4);
-        for (int c = 0; c < l; c++) p[BINDER_TOKEN_OFF + 4 + 2 * c] = (unsigned char)always[i][c];
-        __u64 h = binder_token_hash(p, sizeof p);
+        __u64 h = binder_descriptor_hash(always[i]);
         bpf_map_update_elem(bpf_map__fd(g_skel->maps.binder_api_always), &h, &one, BPF_ANY);
     }
     g_link = bpf_program__attach(g_skel->progs.on_binder_transaction);

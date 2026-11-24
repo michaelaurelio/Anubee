@@ -320,10 +320,10 @@ the tests encode the original phone's environment.
 - **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
   a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
   and cursor-window decoding.
-- **DT5 — `accessibility-detect` fires on a benign app.** 7 bursts from the
-  stock clock app in a 12s triage run (a granted service wasn't even
-  required to raise the burst). Expected for a volume-only signal; resolved by
-  the planned Binder interface/method decode, not by tuning the threshold.
+- **DT5 — `accessibility-detect` fired on a benign app.** Fixed: the
+  volume signal is replaced by decoded `IAccessibilityServiceConnection`
+  calls; the device test now asserts no alert on an ordinary app and a
+  `screen_read` alert from TalkBack.
 - Fixed in passing: the `exfil-detect` test silently needed a default network
   route (offline, `connect()` failed and SIGPIPE killed the generator). The
   generator now uses a private network namespace.
@@ -457,18 +457,13 @@ the tests encode the original phone's environment.
   arming (a soft precondition), not the byte-threshold detection itself.
   `writev()` calls with more than 8 iovecs undercount past the 8th entry
   (bounded-loop limit for verifier provability).
-- `mod accessibility-detect` known v1 limitations (shipped 2026-07-12): no transaction-code
-  decode — the analyzer proves "high Binder call volume to `system_server` while
-  Accessibility-granted," not *which* privileged action fired (parked, same version-
-  treadmill risk shape as ART's `k_table`/`ANUBEE_ART_OFFSETS`). Only gates on
-  `system_server` as the destination — misses accessibility routing through any
-  OEM-specific separate framework process. Grant check
-  (`enabled_accessibility_services`) is a package-substring match against a
-  colon-separated settings string, not a structured parse — a package name that
-  happens to be a substring of another entry could false-match. Threshold (50 calls/
-  5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
-  `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
-  matching.
+- `mod accessibility-detect` known limitations (category signal, 2026-11-24):
+  legitimate accessibility tools make the same calls (categories say what, not
+  why). Grant check (`enabled_accessibility_services`) runs once at attach and is
+  a package-substring match against a colon-separated settings string — a
+  package name that is a substring of another entry could false-match.
+  Category table is hand-maintained against the interface's method list; a new
+  Android release's methods land in `other` until added.
 - `mod fileless-detect` known v1 limitations (shipped 2026-07-12): false positives from
   legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
   Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
@@ -624,8 +619,8 @@ is in DOCUMENTATION.md and the referenced specs.
   traced app with names from the device's own framework jars (AIDL `$Stub`
   `TRANSACTION_*` and hand-written `*_TRANSACTION` constants, keyed by the
   wire descriptor), and every ContentProvider call's URI or `CALL` target.
-  Next: rebase `accessibility-detect`/`screencapture-detect` on these decoded
-  calls (DT5).
+  `accessibility-detect` rebased on decoded `IAccessibilityServiceConnection`
+  calls (categories; fixes DT5). Next: `screencapture-detect`.
 - **`mod` triage workflow (Phase 2).** `perm-watch` analyzer (permission /
   app-op / special-access / role / installed timeline, `perm_change` record,
   ingested by anubee-mcp); `triage` preset (every stealthy analyzer, derived

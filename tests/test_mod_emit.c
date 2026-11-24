@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#define _GNU_SOURCE
 // Host unit tests for the mod structured record builders. Pins the exact JSON
 // for known events so the schema is stable for anubee-mcp ingest.
 #include <linux/types.h>
@@ -20,7 +21,8 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
                                 int distinct_estimate, int manage_ext_storage, int verbose);
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str, int verbose);
-void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
+                                   const char *category, const char *method, int granted);
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
 #include "modules/binder_api_parse.h"
@@ -343,27 +345,31 @@ int main(void)
     aa.h.tid  = 9200;
     aa.ts_ns  = 100000000008ULL;
     strncpy(aa.comm, "fakebank", TASK_COMM_LEN - 1);
-    aa.touch_count = 50;
-    aa.window_ms   = 2100;
+    aa.code = 10;
 
     j.len = 0;
-    mod_emit_accessibility_detect(&j, &aa, 1);
+    mod_emit_accessibility_detect(&j, &aa, "screen_read", "getWindows", 1);
     CHECK_HAS(j, "\"type\":\"accessibility_detect\"", "accessibility_detect type");
     CHECK_HAS(j, "\"pid\":9200",            "accessibility_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000008",  "accessibility_detect ts_ns");
     CHECK_HAS(j, "\"comm\":\"fakebank\"",   "accessibility_detect comm");
-    CHECK_HAS(j, "\"touch_count\":50",      "accessibility_detect touch_count");
-    CHECK_HAS(j, "\"window_ms\":2100",      "accessibility_detect window_ms");
-    CHECK_HAS(j, "\"granted\":true",        "accessibility_detect granted true");
+    CHECK_HAS(j, "\"category\":\"screen_read\",\"method\":\"getWindows\",\"code\":10",
+              "accessibility_detect category/method/code");
+    CHECK_HAS(j, "\"granted\":true}",       "accessibility_detect granted true");
+    checks++;
+    if (memmem(j.b, j.len, "touch_count", 11) || memmem(j.b, j.len, "window_ms", 9)) {
+        failures++; printf("  FAIL: old burst fields gone\n");
+    }
 
-    // ---- accessibility_detect: checked, not granted -------------------------------------
+    // ---- accessibility_detect: checked, not granted; unnamed method -------------------
     j.len = 0;
-    mod_emit_accessibility_detect(&j, &aa, 0);
+    mod_emit_accessibility_detect(&j, &aa, "other", NULL, 0);
+    CHECK_HAS(j, "\"method\":null", "accessibility_detect unnamed method -> null");
     CHECK_HAS(j, "\"granted\":false", "accessibility_detect granted false");
 
     // ---- accessibility_detect: grant check unresolved (unknown) -------------------------
     j.len = 0;
-    mod_emit_accessibility_detect(&j, &aa, -1);
+    mod_emit_accessibility_detect(&j, &aa, "screen_read", "getWindows", -1);
     CHECK_HAS(j, "\"granted\":null", "accessibility_detect granted null");
 
     // ---- fileless_detect: untagged (no anon_name) -------------------------------

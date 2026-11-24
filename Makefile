@@ -178,7 +178,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_names_load.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -305,7 +305,7 @@ $(EXFIL_DETECT_BPF_OBJ): $(SRC)/modules/exfil_detect.bpf.c vmlinux.h $(LIBBPF_A)
 $(EXFIL_DETECT_SKEL): $(EXFIL_DETECT_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name exfil_detect_bpf > $@
 
-$(ACCESSIBILITY_DETECT_BPF_OBJ): $(SRC)/modules/accessibility_detect.bpf.c vmlinux.h $(LIBBPF_A)
+$(ACCESSIBILITY_DETECT_BPF_OBJ): $(SRC)/modules/accessibility_detect.bpf.c $(SRC)/modules/binder_token.bpf.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true
@@ -319,7 +319,7 @@ $(FILELESS_DETECT_BPF_OBJ): $(SRC)/modules/fileless_detect.bpf.c vmlinux.h $(LIB
 $(FILELESS_DETECT_SKEL): $(FILELESS_DETECT_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name fileless_detect_bpf > $@
 
-$(BINDER_API_BPF_OBJ): $(SRC)/modules/binder_api.bpf.c vmlinux.h $(LIBBPF_A)
+$(BINDER_API_BPF_OBJ): $(SRC)/modules/binder_api.bpf.c $(SRC)/modules/binder_token.bpf.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true

@@ -79,14 +79,14 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str, int verbose);
 
-// {"type":"accessibility_detect","pid":N,"comm":"..","touch_count":N,"window_ms":N,
-//  "granted":true|false|null}
-// granted mirrors massdelete_detect's manage_ext_storage tri-state: 1 -> true,
-// 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
-// consumers derive it from touch_count/granted the same way classify_accessibility()
-// does, matching massdelete_detect/exfil_detect's convention of exposing raw
-// fields rather than a baked-in classification string.
-void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
+// {"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read",
+//  "method":"getWindows"|null,"code":N,"granted":true|false|null}
+// One record per (process, abuse category), on the first
+// IAccessibilityServiceConnection call in that category
+// (accessibility_detect_classify.h). granted mirrors massdelete_detect's
+// manage_ext_storage tri-state: 1 -> true, 0 -> false, negative -> null.
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
+                                   const char *category, const char *method, int granted);
 
 // {"type":"fileless_detect","pid":N,"comm":"..","start":"0x..","size":N,
 //  "anon_name":".."}

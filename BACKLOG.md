@@ -320,6 +320,17 @@ the tests encode the original phone's environment.
 - **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
   a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
   and cursor-window decoding.
+- **DL1 — `dexload-detect` misses a payload deleted before it is mapped.**
+  The copy is taken on load (or from `map_files`/open fds after unlink); a
+  file written, never mapped and unlinked within milliseconds is reported
+  (drop + delete) but not saved. Fix: opt-in hard link of each dropped file
+  at drop time (changes the file's link count -- visible to a check, so not
+  default), or a copy from a periodic tick shortly after the drop.
+- **DL2 — `dexload-detect` drop coverage.** Only `vfs_write` at offset 0 is
+  hooked: `writev`, `sendfile`/`copy_file_range` (`FileChannel.transferTo`),
+  `io_uring` and writes through a shared mapping aren't seen as drops (the
+  load hook still fires, but the file is unknown). Encrypted payloads
+  decrypted in memory never have a magic header on disk.
 - **DT5 — `accessibility-detect` fired on a benign app.** Fixed: the
   volume signal is replaced by decoded `IAccessibilityServiceConnection`
   calls; the device test now asserts no alert on an ordinary app and a
@@ -615,6 +626,13 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-24
 
+- **`mod dexload-detect` (Phase 4a).** Payload files dropped by the app
+  (DEX/CDEX/ZIP/ELF header written at offset 0), mapped by any process, and
+  deleted -- keyed by inode, full path rebuilt across mounts in the kernel,
+  and a copy + SHA-256 of each payload saved (path, then
+  `/proc/<pid>/map_files`, then open fds). Device test drives a shell
+  dropper (DEX loaded by `dalvikvm`, ELF executed, both deleted) and checks
+  the saved DEX's hash against the original. Known drawbacks: DL1, DL2.
 - **`mod binder-api` (Phase 3a).** Binder interface/method timeline for the
   traced app with names from the device's own framework jars (AIDL `$Stub`
   `TRANSACTION_*` and hand-written `*_TRANSACTION` constants, keyed by the

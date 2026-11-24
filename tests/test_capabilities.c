@@ -41,10 +41,11 @@ int main(void)
     CHECK(!anubee_object_writes_target("mod:screencapture-detect"), "mod:screencapture-detect quiet");
     CHECK(!anubee_object_writes_target("mod:perm-watch"), "mod:perm-watch quiet");
     CHECK(!anubee_object_writes_target("mod:binder-api"), "mod:binder-api quiet");
+    CHECK(!anubee_object_writes_target("mod:dexload-detect"), "mod:dexload-detect quiet");
 
     int n2 = 0;
     (void)anubee_bpf_objects(&n2);
-    CHECK(n2 == 17, "registry has exactly 17 entries (6 engines + 11 analyzers) after binder-api lands");
+    CHECK(n2 == 18, "registry has exactly 18 entries (6 engines + 12 analyzers) after dexload-detect lands");
 
     // anubee_quiet_config_ok: a quiet set passes; adding a loud object fails.
     const char *quiet_set[] = { "syscalls", "lib", "dump", "mod:proc-event" };

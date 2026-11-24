@@ -84,6 +84,7 @@ enum {
     MOD_EV_FILELESS_DETECT = 12,
     MOD_EV_SCREENCAPTURE_DETECT = 13,
     MOD_EV_BINDER_API = 14,
+    MOD_EV_DEXLOAD_DETECT = 15,
 };
 
 struct spawn_event {
@@ -214,6 +215,35 @@ struct binder_api_key {
 struct binder_api_val {
     __u64 count;
     __u64 first_ts_ns;
+};
+
+// dexload-detect: a file whose first bytes written are a DEX/CDEX/ZIP/ELF
+// header (drop), that file being mapped by any process (load), and unlinked
+// (delete) -- see dexload_detect.bpf.c. comp[] is the file's path, leaf
+// first, one component per slot (dexload_detect_parse.c joins it).
+#define DEXLOAD_COMP_N   16   // power of two (BPF index masking)
+#define DEXLOAD_COMP_LEN 48
+enum { DEXLOAD_STAGE_DROP = 1, DEXLOAD_STAGE_LOAD = 2, DEXLOAD_STAGE_DELETE = 3 };
+struct dexload_detect_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  ino;
+    __u32  dev;
+    __u8   stage;
+    __u8   exec;              // load: mapped with PROT_EXEC
+    __u8   ncomp;             // valid comp[] slots (0 for delete)
+    __u8   truncated;         // path walk stopped before the root
+    unsigned char head[8];    // drop: first bytes written
+    char   comm[TASK_COMM_LEN];
+    char   comp[DEXLOAD_COMP_N][DEXLOAD_COMP_LEN];
+};
+
+// dexload_files map: one entry per dropped payload file.
+struct dexload_key { __u64 ino; __u32 dev; __u32 _pad; };
+struct dexload_val {
+    __u64 drop_ts_ns;
+    __u32 pid;
+    __u8  loaded, deleted, _p[2];
 };
 
 #endif /* __ANUBEE_MOD_EVENTS_H */

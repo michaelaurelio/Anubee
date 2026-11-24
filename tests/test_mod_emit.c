@@ -30,6 +30,9 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
 void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
                          const char *iface, const char *method,
                          const struct binder_cp_detail *cp);
+void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
+                             const char *kind, const char *path, long long after_drop_ms,
+                             const char *saved, const char *sha256, long long size);
 void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
                           const char *key, const char *change,
                           const char *old_val, const char *new_val);
@@ -483,6 +486,39 @@ int main(void)
     mod_emit_screencapture_detect(&j, &mf, "fgs_declared", NULL, NULL);
     CHECK_HAS(j, "\"stage\":\"fgs_declared\",\"interface\":null,\"method\":null,\"code\":null}",
               "screencapture_detect fgs stage -> nulls");
+
+    // ---- dexload_detect: drop, then load with a saved copy -----------------
+    struct dexload_detect_event dl = {0};
+    dl.h.type = MOD_EV_DEXLOAD_DETECT;
+    dl.h.pid  = 9500;
+    dl.ts_ns  = 100000000020ULL;
+    dl.ino    = 99887;
+    dl.stage  = DEXLOAD_STAGE_DROP;
+    strncpy(dl.comm, "fakebank", TASK_COMM_LEN - 1);
+    j.len = 0;
+    mod_emit_dexload_detect(&j, &dl, "dex", "/data/user/0/com.example.app/files/p.dex", -1,
+                            NULL, NULL, -1);
+    CHECK_HAS(j, "\"type\":\"dexload_detect\",\"pid\":9500,\"ts_ns\":100000000020,\"comm\":\"fakebank\"",
+              "dexload_detect header");
+    CHECK_HAS(j, "\"stage\":\"drop\",\"kind\":\"dex\",\"path\":\"/data/user/0/com.example.app/files/p.dex\",\"ino\":99887",
+              "dexload_detect drop stage/kind/path/ino");
+    CHECK_HAS(j, "\"exec\":null,\"after_drop_ms\":null,\"saved\":null}", "dexload_detect drop has no load fields");
+
+    dl.stage = DEXLOAD_STAGE_LOAD;
+    dl.exec  = 1;
+    j.len = 0;
+    mod_emit_dexload_detect(&j, &dl, "elf", "/data/user/0/com.example.app/files/x.so", 42,
+                            "/data/local/tmp/p/9500-99887.so", "ab12", 4096);
+    CHECK_HAS(j, "\"stage\":\"load\",\"kind\":\"elf\"", "dexload_detect load stage");
+    CHECK_HAS(j, "\"exec\":true,\"after_drop_ms\":42,\"saved\":{\"file\":\"/data/local/tmp/p/9500-99887.so\",\"sha256\":\"ab12\",\"size\":4096}}",
+              "dexload_detect load exec/timing/saved copy");
+
+    dl.stage = DEXLOAD_STAGE_DELETE;
+    dl.exec  = 0;
+    j.len = 0;
+    mod_emit_dexload_detect(&j, &dl, "dex", NULL, 7, NULL, NULL, -1);
+    CHECK_HAS(j, "\"stage\":\"delete\",\"kind\":\"dex\",\"path\":null", "dexload_detect delete, path unknown");
+    CHECK_HAS(j, "\"exec\":null,\"after_drop_ms\":7,\"saved\":null}", "dexload_detect delete timing");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

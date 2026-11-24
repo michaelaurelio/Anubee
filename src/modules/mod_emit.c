@@ -254,6 +254,36 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
     jb_c(j, '}');
 }
 
+void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
+                             const char *kind, const char *path, long long after_drop_ms,
+                             const char *saved, const char *sha256, long long size)
+{
+    static const char *const stages[] = { "?", "drop", "load", "delete" };
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");     jb_s(j, trace_type_name(TRACE_DEXLOAD_DETECT)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
+    jb_s(j, ",\"ts_ns\":");      jb_u64(j, e->ts_ns);
+    jb_s(j, ",\"comm\":\"");     jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"stage\":\"");    jb_s(j, stages[e->stage <= DEXLOAD_STAGE_DELETE ? e->stage : 0]); jb_c(j, '"');
+    jb_s(j, ",\"kind\":\"");     jb_esc(j, kind); jb_c(j, '"');
+    jb_s(j, ",\"path\":");       jb_str_or_null(j, path);
+    jb_s(j, ",\"ino\":");        jb_u64(j, e->ino);
+    jb_s(j, ",\"exec\":");
+    jb_s(j, e->stage == DEXLOAD_STAGE_LOAD ? (e->exec ? "true" : "false") : "null");
+    jb_s(j, ",\"after_drop_ms\":");
+    if (after_drop_ms >= 0) jb_u64(j, (unsigned long long)after_drop_ms); else jb_s(j, "null");
+    jb_s(j, ",\"saved\":");
+    if (saved) {
+        jb_s(j, "{\"file\":\"");   jb_esc(j, saved); jb_c(j, '"');
+        jb_s(j, ",\"sha256\":");   jb_str_or_null(j, sha256);
+        jb_s(j, ",\"size\":");     jb_u64(j, size > 0 ? (unsigned long long)size : 0);
+        jb_c(j, '}');
+    } else {
+        jb_s(j, "null");
+    }
+    jb_c(j, '}');
+}
+
 void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
                           const char *key, const char *change,
                           const char *old_val, const char *new_val)

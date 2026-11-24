@@ -20,14 +20,14 @@ import duckdb
 
 MAX_ROWS = 200                 # hard cap on rows any query returns
 
-# The nine mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
-# §6/§7) and, for the eight that carry a nested list, which field to cap.
+# The mod-analyzer teardown *_summary record types (see DOCUMENTATION.md
+# §6/§7) and, for those that carry a nested list, which field to cap.
 _SUMMARY_TYPES = frozenset({
     "execve_summary", "prop_read_summary", "file_access_summary",
     "massdelete_detect_summary", "proc_event_summary",
     "accessibility_detect_summary", "exfil_detect_summary",
     "fileless_detect_summary", "screencapture_detect_summary",
-    "binder_api_summary",
+    "binder_api_summary", "dexload_detect_summary",
 })
 _SUMMARY_LIST_FIELD = {
     "execve_summary": "binaries",
@@ -39,6 +39,7 @@ _SUMMARY_LIST_FIELD = {
     "fileless_detect_summary": "processes",
     "screencapture_detect_summary": "processes",
     "binder_api_summary": "content_access",
+    "dexload_detect_summary": "files",
 }
 
 # All per-event mod-analyzer record types, ingested into the mod_events
@@ -50,7 +51,7 @@ _MOD_EVENT_TYPES = frozenset({
     "accessibility_detect", "screencapture_detect", "exfil_detect",
     "massdelete_detect", "fileless_detect",
     "spawn", "proc_exit", "execve", "prop", "file_access",
-    "perm_change", "binder_api",
+    "perm_change", "binder_api", "dexload_detect",
 })
 
 _DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")

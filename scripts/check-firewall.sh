@@ -40,6 +40,7 @@ map_bpf_obj() {
     mod:exfil-detect) echo exfil_detect.bpf.o ;;
     mod:accessibility-detect) echo accessibility_detect.bpf.o ;;
     mod:fileless-detect) echo fileless_detect.bpf.o ;;
+    mod:dexload-detect) echo dexload_detect.bpf.o ;;
     mod:screencapture-detect) echo screencapture_detect.bpf.o ;;
     mod:binder-api) echo binder_api.bpf.o ;;
     mod:perm-watch) echo SKIP ;;   # no BPF object: shell polling + an empty ring map
@@ -98,6 +99,7 @@ owner_of() {
     $BUILD/modules/exfil_detect.o) echo mod:exfil-detect ;;
     $BUILD/modules/accessibility_detect.o) echo mod:accessibility-detect ;;
     $BUILD/modules/fileless_detect.o) echo mod:fileless-detect ;;
+    $BUILD/modules/dexload_detect.o) echo mod:dexload-detect ;;
     $BUILD/modules/screencapture_detect.o) echo mod:screencapture-detect ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;

@@ -18,6 +18,7 @@ struct accessibility_detect_event; // modules/mod_events.h
 struct fileless_detect_event; // modules/mod_events.h
 struct screencapture_detect_event; // modules/mod_events.h
 struct binder_api_event;          // modules/mod_events.h
+struct dexload_detect_event;      // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -106,6 +107,14 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
 // stages carry the decoded call; fgs_declared (dumpsys poll) has nulls.
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
                                    const char *stage, const char *iface, const char *method);
+
+// {"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete",
+//  "kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,
+//  "after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}
+// exec is set on load only; after_drop_ms < 0 and saved == NULL print null.
+void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
+                             const char *kind, const char *path, long long after_drop_ms,
+                             const char *saved, const char *sha256, long long size);
 
 // {"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,
 //  "method":".."|null,"code":N,"oneway":bool} -- first call of (interface, method)

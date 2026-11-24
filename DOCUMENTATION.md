@@ -1346,6 +1346,52 @@ straight from a background thread. Available analyzers:
   `libgui`, HALs) and app-private AIDL are unnamed (`#code`); a `Uri`
   marshalled as split parts isn't decoded; Parcel contents beyond 1 KiB
   aren't seen; replies (return values) aren't decoded.
+- **`dexload-detect`** — payload files the app drops, and what happens to
+  them (stealthy: kprobes only, zero uprobes). Three hooks, all keyed by the
+  file's `(device, inode)` so a rename keeps matching:
+
+  ```mermaid
+  flowchart LR
+    W["kprobe/vfs_write<br/>offset 0, regular file,<br/>DEX/CDEX/ZIP/ELF magic"] -->|insert dexload_files| D[drop]
+    M["kprobe/security_mmap_file<br/>any process maps it"] --> L["load<br/>(again once PROT_EXEC)"]
+    U["kprobe/security_inode_unlink"] --> X[delete]
+    D --> L --> X
+    L --> S["userspace saves a copy<br/>+ SHA-256"]
+    X --> S
+  ```
+
+  - **drop**: the traced app's `write()`/`pwrite64()` at offset 0 of a
+    regular file starts with `dex\n`, `cdex`, `PK\3\4` or `\x7fELF` (the
+    idea of Tracee's `magic_write`, reimplemented). Userspace re-checks the
+    header (a DEX needs its 3-digit version). DEX/CDEX/ELF drops alert; a ZIP
+    (APK/JAR/any zip) is recorded silently and alerts when it is mapped.
+  - **load**: any process -- not only the target, so a helper process
+    loading the payload counts -- maps a dropped file (`security_mmap_file`:
+    ART maps a DEX/APK it loads, the linker maps a `.so`, exec maps a
+    binary). Reported once, and once more if a later mapping is executable.
+  - **delete**: the file is unlinked; `after_drop_ms` gives the drop→load and
+    drop→delete timing.
+
+  The path is rebuilt in the kernel from the file's dentry chain, crossing
+  mount points to the root of the writer's mount namespace (`bpf_loop`, up to
+  16 components); inside an app's namespace, `/data/user/0/<pkg>` shows as
+  its real location `/data/data/<pkg>`. A copy of each payload is saved as
+  `<pid>-<inode>.<dex|cdex|zip|so>` in `<-o file>.payloads/` (or
+  `/data/local/tmp/anubee-payloads/` without `-o`), mode 0600, with its
+  SHA-256 in the event and summary. Saving happens on load or delete, trying
+  in turn: the path, `/proc/<pid>/map_files/<range>` (still mapped after
+  unlink -- the usual "load then delete" case), and the process's open fds;
+  each candidate is checked against the inode. Payloads never loaded or
+  deleted are saved at teardown; files over 256 MiB are not saved. Reading the
+  copy is anubee's own file I/O -- nothing touches the target's memory.
+  Limitations: a payload deleted before anything maps it, and not held open,
+  can't be saved (opt-in hard-linking is a possible fix); writes via
+  `writev`, `sendfile`/`copy_file_range`, `io_uring` or `mmap` stores, and
+  payloads that start with a non-matching header (encrypted, then decrypted in
+  memory) aren't seen as drops; `InMemoryDexClassLoader` never writes a file
+  (see `fileless-detect` / `dump`); legitimate apps that extract native
+  libraries (SoLoader/ReLinker), dynamic feature modules or plugin
+  frameworks produce the same events.
 - **`perm-watch`** — the package's permission state as a timeline (stealthy:
   no BPF program at all). A background thread snapshots, every 2s, the
   package's granted install/runtime permissions (`dumpsys package`, filtered
@@ -1411,6 +1457,8 @@ longer lost from the file:
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
 - `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
+- `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; enum value appended after `binder_api`)
+- `{"type":"dexload_detect_summary","file_count":N,"untracked":N,"files":[{"pid":N,"comm":"..","kind":"..","path":"..","ino":N,"loaded":bool,"exec":bool,"deleted":bool,"saved":{..}|null},..]}`
 - `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
 - `{"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..","stage":"fgs_declared|projection_start|virtual_display","interface":".."|null,"method":".."|null,"code":N|null}` (one per process and stage; `fgs_declared` per session, with nulls)
 - `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"stages":["fgs_declared",..],"fgs_sessions":N},..]}`

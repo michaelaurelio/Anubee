@@ -70,6 +70,27 @@ def main():
     check(len(ba_sum) == 1 and ba_sum[0]["content_access"][0]["count"] == 3,
           f"binder_api_summary queryable, content_access kept (got {ba_sum})")
 
+    # mod dexload-detect: per-event drop/load/delete records and the summary.
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write('{"type":"dexload_detect","pid":7,"ts_ns":9,"comm":"x","stage":"load",'
+                '"kind":"dex","path":"/data/user/0/com.example.app/files/p.dex","ino":5,'
+                '"exec":false,"after_drop_ms":40,"saved":{"file":"/tmp/7-5.dex",'
+                '"sha256":"ab","size":10}}\n')
+        f.write('{"type":"dexload_detect_summary","file_count":1,"untracked":0,'
+                '"files":[{"pid":7,"kind":"dex","path":"/x","loaded":true}]}\n')
+        dl_path = f.name
+    dts = TraceStore()
+    _, dl_skipped = dts.load_structured(dl_path)
+    os.unlink(dl_path)
+    check(dl_skipped == 0, f"dexload_detect + summary recognized (skipped {dl_skipped})")
+    dl_rows = dts.mod_events(kind="dexload_detect")
+    check(len(dl_rows) == 1 and dl_rows[0].get("stage") == "load"
+          and dl_rows[0].get("saved", {}).get("sha256") == "ab",
+          f"dexload_detect queryable via mod_events(kind=) (got {dl_rows})")
+    dl_sum = dts.summaries(kind="dexload_detect_summary")
+    check(len(dl_sum) == 1 and dl_sum[0]["files"][0]["loaded"] is True,
+          f"dexload_detect_summary queryable, files kept (got {dl_sum})")
+
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0
 

@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -1176,6 +1176,59 @@ test_mod_follow_fork() {
     info "follow-fork OK - child of a 100-thread target traced"
 }
 
+test_dexload_detect() {
+    echo "=== mod dexload-detect (payload drop -> load -> delete, copy saved) ==="
+    # A shell stands in for a dropper: writes a real DEX (from a framework jar)
+    # and an ELF, maps both (dalvikvm loads the DEX, the ELF is executed),
+    # then deletes them -- the "load then delete" pattern.
+    local d=/data/local/tmp/anubee_dltest out_jsonl=/data/local/tmp/anubee_dl.jsonl
+    local drv="$ROOT/build/anubee_dl_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+mkdir -p $d
+sleep 3
+unzip -p /system/framework/am.jar classes.dex > $d/stage2.dex
+cat /system/bin/toybox > $d/echo
+chmod 755 $d/echo
+chmod 444 $d/stage2.dex
+$d/echo dropped-elf-ran >/dev/null
+dalvikvm64 -cp $d/stage2.dex com.android.commands.am.Am >/dev/null 2>&1
+rm -f $d/stage2.dex $d/echo
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_dl_drive.sh >/dev/null || fail "dexload-detect: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_dl_drive.sh; rm -rf $out_jsonl $out_jsonl.payloads $d'" >/dev/null 2>&1
+    local want_sha
+    want_sha="$(adb shell "su -c 'unzip -p /system/framework/am.jar classes.dex | sha256sum'" | tr -d '\r' | cut -d' ' -f1)"
+    [ -n "$want_sha" ] || fail "dexload-detect: no classes.dex in /system/framework/am.jar on this device"
+
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_dl_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the driver"
+    local out; out="$(anubee "mod dexload-detect -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $out_jsonl $out_jsonl.payloads $d /data/local/tmp/anubee_dl_drive.sh'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -15 <<<"$out" >&2; fail "dexload-detect: BPF load/attach failed"
+    fi
+    grep -q 'dropped dex  .*/anubee_dltest/stage2.dex' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: DEX drop (with full path) not reported"; }
+    grep -q 'dropped elf  .*/anubee_dltest/echo' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: ELF drop not reported"; }
+    grep -q 'loaded  elf  .*\[exec\]' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: executable mapping of the ELF not reported"; }
+    grep -q 'loaded  dex  .*/anubee_dltest/stage2.dex' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: DEX load (dalvikvm mapping it) not reported"; }
+    [ "$(grep -c 'deleted ' <<<"$out")" -ge 2 ] \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: deletes not reported"; }
+    grep -q "\"stage\":\"load\",\"kind\":\"dex\".*\"sha256\":\"$want_sha\"" <<<"$rec" \
+        || { echo "$rec" | head -5 >&2; fail "dexload-detect: saved DEX copy missing or its sha256 differs from the original"; }
+    grep -q '"type":"dexload_detect_summary","file_count":2' <<<"$rec" \
+        || fail "dexload-detect: summary record missing"
+    info "dexload-detect OK - drop/load/delete of a DEX and an ELF, payload copy sha256 matches"
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -1199,10 +1252,11 @@ case "$WHAT" in
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
     fileless-detect)     test_fileless_detect ;;
+    dexload-detect)      test_dexload_detect ;;
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
     *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 

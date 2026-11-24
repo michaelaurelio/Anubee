@@ -28,6 +28,7 @@ const char *trace_type_name(unsigned type)
     case TRACE_MODCMP:     return "modcmp";
     case TRACE_PERM_CHANGE: return "perm_change";
     case TRACE_BINDER_API:  return "binder_api";
+    case TRACE_DEXLOAD_DETECT: return "dexload_detect";
     default:              return "unknown";
     }
 }

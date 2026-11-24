@@ -788,38 +788,48 @@ for n,l in enumerate(sys.stdin,1):
 # Blocking for the device-side `timeout -s INT $TIMEOUT` window lets anubee
 # exit cleanly and flush before the capture completes.
 test_screencapture_detect() {
-    echo "=== mod screencapture-detect (active MediaProjection session via dumpsys poll) ==="
+    echo "=== mod screencapture-detect (capture stages: FGS declared, projection start, virtual display) ==="
+    # Drives the OEM screen recorder through a real ~4s recording: its
+    # foreground service (fgs_declared, dumpsys poll), then IMediaProjection.start
+    # and IDisplayManager.createVirtualDisplay (Binder). The consent prompt is
+    # accepted by tapping its "Start recording" node when it appears (the app
+    # skips it once consent was given). The recording is deleted afterwards.
     local pkg="com.transsion.screenrecorder"
     local svc="$pkg/.service.RecordingService"
-
-    adb shell "pm path $pkg" >/dev/null 2>&1 \
-        || fail "screencapture-detect: $pkg not installed on this device"
-
-    adb shell am start-foreground-service \
-        -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
-        || fail "screencapture-detect: could not start $svc (adb/root/service export changed?)"
-    # Settle delay for cold-start pid resolution race (same as accessibility-detect).
-    sleep 2
-
-    local svc_pid
-    svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-    if [ -z "$svc_pid" ] || ! [ "$svc_pid" -gt 0 ] 2>/dev/null; then
-        adb shell am stopservice -n "$svc" >/dev/null 2>&1
-        fail "screencapture-detect: $svc did not start (no pid) after start-foreground-service"
+    if ! adb shell "pm path $pkg" >/dev/null 2>&1; then
+        info "SKIP: screencapture-detect needs the OEM recorder ($pkg), not installed"
+        return 0
     fi
-
-    local out; out="$(anubee "mod screencapture-detect -p $svc_pid")"
-    adb shell am stopservice -n "$svc" >/dev/null 2>&1
+    local dir="/storage/emulated/0/Movies/ScreenRecord" mark="/data/local/tmp/anubee_sc_mark"
+    local drive="/data/local/tmp/anubee_sc_drive.sh"
+    adb shell "cat > $drive" <<SH
+sleep 2
+am start-foreground-service -a transsion.intent.screenrecorder.RECORDER_SERVICE -n $svc >/dev/null 2>&1
+sleep 2
+uiautomator dump /data/local/tmp/anubee_sc_ui.xml >/dev/null 2>&1
+b=\$(grep -o 'text="Start recording"[^>]*bounds="[^"]*"' /data/local/tmp/anubee_sc_ui.xml | grep -o '[0-9][0-9]*' | tail -4 | tr '\n' ' ')
+rm -f /data/local/tmp/anubee_sc_ui.xml
+if [ -n "\$b" ]; then set -- \$b; input tap \$(( (\$1 + \$3) / 2 )) \$(( (\$2 + \$4) / 2 )); fi
+sleep 4
+am force-stop $pkg
+SH
+    adb shell "su -c 'touch $mark; nohup setsid sh $drive >/dev/null 2>&1 &'"
+    local out; out="$(anubee "mod screencapture-detect -P $pkg --no-launch")"
+    adb shell "su -c 'am force-stop $pkg'" >/dev/null 2>&1
+    # Delete only recordings created during this test (find -delete is refused
+    # on the FUSE mount, rm per file works).
+    adb shell "su -c 'for f in \$(find $dir -newer $mark -type f -name \"*.mp4\" 2>/dev/null); do rm -f \"\$f\"; done; rm -f $mark $drive'" >/dev/null 2>&1
 
     if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "screencapture-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[screencapture-detect\] PID:' <<<"$out"; then
-        info "screencapture-detect OK — $(grep -c '^\[screencapture-detect\] PID:' <<<"$out") [screencapture-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "screencapture-detect: no [screencapture-detect] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
-    fi
+    local st
+    for st in fgs_declared projection_start virtual_display; do
+        grep -q "^\[screencapture-detect\] PID:.* $st " <<<"$out" \
+            || { tail -12 <<<"$out" >&2; fail "screencapture-detect: no $st stage during a real recording"; }
+    done
+    grep -q 'IMediaProjection\.start' <<<"$out" || fail "screencapture-detect: projection stage not named"
+    info "screencapture-detect OK - fgs_declared, projection_start, virtual_display"
 }
 
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a

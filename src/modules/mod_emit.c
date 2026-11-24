@@ -238,14 +238,19 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
     jb_c(j, '}');
 }
 
-void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e)
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
+                                   const char *stage, const char *iface, const char *method)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_SCREENCAPTURE_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
-    jb_s(j, ",\"binder_calls_context\":"); jb_u64(j, e->binder_calls_context);
+    jb_s(j, ",\"stage\":\"");     jb_esc(j, stage); jb_c(j, '"');
+    jb_s(j, ",\"interface\":");   jb_str_or_null(j, iface);
+    jb_s(j, ",\"method\":");      jb_str_or_null(j, method);
+    jb_s(j, ",\"code\":");
+    if (iface) jb_u64(j, e->code); else jb_s(j, "null");
     jb_c(j, '}');
 }
 

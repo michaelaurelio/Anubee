@@ -1285,31 +1285,37 @@ straight from a background thread. Available analyzers:
   occurrence is already the signal). Known limitation: legitimate non-ART JIT
   engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
   anonymous executable mappings and will false-positive (see BACKLOG.md).
-- **`screencapture-detect`** — detects an active Android `MediaProjection`
-  screen-capture session (stealthy: zero uprobes). Detection is a userspace
-  thread polling `dumpsys activity services <pkg>` once a second (it hands a
-  detected session to the dispatcher `tick`, which emits it -- the `-o` sink is
-  single-writer) for a
-  `ServiceRecord` block matching the launched/attached package with
-  `isForeground=true` and a `types=0x..` hex mask that has the
-  `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed
-  against real device output (`src/modules/screencapture_detect_parse.c`). A
-  `tp/binder/binder_transaction` tracepoint gated on outbound calls to
-  `system_server` keeps a passive per-pid counter reported as supporting
-  context on each alert, not as the trigger itself — a burst-threshold
-  design (mirroring `accessibility-detect`) was tried first and rejected: MediaProjection
-  setup is 1-2 discrete Binder calls, not a sustained burst, and ongoing frame
-  delivery goes to `SurfaceFlinger`, not `system_server`. Targets the
-  live-screen-streaming-to-C2 technique behind OverlayPhantom and other
-  current (2026) Android banking trojans — an escalation beyond the overlay/
-  accessibility abuse `accessibility-detect` already covers. Known limitations: the
-  1s poll interval bounds detection latency (a session that starts and stops
-  within one window is missed); no transaction-code decode, so the Binder-call
-  context is coarse, not proof of which `system_server` interface was called;
-  legitimate screen-share/remote-support apps false-positive (same accepted
-  category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
-  proves a capture session was active, not that data left the device (no
-  frame-content or exfil-volume corroboration).
+- **`screencapture-detect`** — how far a screen-capture attempt got, per
+  process, as stages (stealthy: kprobe + dumpsys poll, zero uprobes). Targets
+  the live-screen-streaming-to-C2 technique behind OverlayPhantom and other
+  current Android banking trojans.
+  - `fgs_declared`: a userspace thread polls `dumpsys activity services <pkg>`
+    once a second for a `ServiceRecord` of the package with
+    `isForeground=true` and the `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`
+    bit (`0x20`) in `types=0x..` (`src/modules/screencapture_detect_parse.c`),
+    handing a new session to the dispatcher `tick` (the `-o` sink is
+    single-writer). Android 14+ requires this service before capture, and it
+    runs while the consent prompt is up -- so it shows the attempt even if the
+    user declines. Needs a package (`-P`/`-A`/launch).
+  - `projection_start`: the app's `IMediaProjection.start` call (consent
+    given, capture live).
+  - `virtual_display`: `IDisplayManager.createVirtualDisplay`, the screen
+    mirrored into the app's surface; reported only after one of the stages
+    above, since apps also create virtual displays for Presentation/casting.
+
+  The Binder stages use the same machinery as `accessibility-detect`:
+  `kprobe/binder_transaction`, token hash (`binder_token.bpf.h`) checked
+  against the two armed interfaces, first `(process, interface, code)` sent
+  up, names from the framework jars. One record per (process, stage);
+  `fgs_declared` again per new session. Observed order on a real recording:
+  `IMediaProjection.start` → `getDisplayId` → `createVirtualDisplay`, then
+  the codec pipeline. Replaced a passive count of Binder calls to
+  `system_server`, which said nothing about capture. Limitations: legitimate
+  screen-share/remote-support/recorder apps produce the same stages; a
+  session shorter than the 1 s poll can miss `fgs_declared` (the Binder
+  stages are still seen); a privileged/OEM app capturing via
+  `SurfaceControl` directly (no `MediaProjection`) shows no Binder stage;
+  proves capture ran, not that frames left the device.
 - **`binder-api`** — the Android-API view of the app: which Binder interfaces
   and methods it calls (stealthy: kprobe, zero uprobes). `kprobe/binder_transaction`
   runs in the sender's context with `tr` (the kernel's copy of the caller's
@@ -1406,7 +1412,8 @@ longer lost from the file:
 - `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
 - `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
-- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
+- `{"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..","stage":"fgs_declared|projection_start|virtual_display","interface":".."|null,"method":".."|null,"code":N|null}` (one per process and stage; `fgs_declared` per session, with nulls)
+- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"stages":["fgs_declared",..],"fgs_sessions":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors

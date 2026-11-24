@@ -175,11 +175,15 @@ struct fileless_detect_event {
     char   anon_name[FILELESS_DETECT_TAG_LEN];
 };
 
+// First call of each watched (interface, method) by a process (see
+// screencapture_detect.bpf.c); also built in userspace for the dumpsys stage.
 struct screencapture_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
-    __u64  binder_calls_context;
+    __u64  token_hash;
+    __u32  code;
+    __u32  _pad;
 };
 
 // binder-api: first outbound transaction of a given (process, interface,

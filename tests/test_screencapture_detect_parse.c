@@ -110,6 +110,30 @@ int main(void)
     CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", NULL) == 1,
           "NULL out_pid is tolerated");
 
+    // ---- Binder capture stages ---------------------------------------------
+    CHECK(sc_stage_of(SC_IFACE_PROJECTION, "start") == SC_PROJECTION_START,
+          "IMediaProjection.start -> projection_start");
+    CHECK(sc_stage_of(SC_IFACE_DISPLAY, "createVirtualDisplay") == SC_VIRTUAL_DISPLAY,
+          "IDisplayManager.createVirtualDisplay -> virtual_display");
+    CHECK(sc_stage_of(SC_IFACE_PROJECTION, "getDisplayId") == SC_NONE, "other projection method -> none");
+    CHECK(sc_stage_of(SC_IFACE_DISPLAY, "getDisplayInfo") == SC_NONE, "other display method -> none");
+    CHECK(sc_stage_of("android.app.IActivityManager", "start") == SC_NONE, "other interface -> none");
+    CHECK(sc_stage_of(NULL, "start") == SC_NONE && sc_stage_of(SC_IFACE_PROJECTION, NULL) == SC_NONE,
+          "NULL -> none");
+    CHECK(!strcmp(sc_stage_name(SC_FGS_DECLARED), "fgs_declared") &&
+          !strcmp(sc_stage_name(SC_PROJECTION_START), "projection_start") &&
+          !strcmp(sc_stage_name(SC_VIRTUAL_DISPLAY), "virtual_display") &&
+          !strcmp(sc_stage_name(SC_NONE), "none") && !strcmp(sc_stage_name(99), "none"),
+          "stage names");
+    // A virtual display alone is also how apps drive Presentation / casting:
+    // it counts as capture only once the process has a projection or an FGS.
+    CHECK(!sc_stage_alerts(SC_VIRTUAL_DISPLAY, 0), "virtual display alone -> no alert");
+    CHECK(sc_stage_alerts(SC_VIRTUAL_DISPLAY, 1u << SC_PROJECTION_START), "after projection -> alert");
+    CHECK(sc_stage_alerts(SC_VIRTUAL_DISPLAY, 1u << SC_FGS_DECLARED), "after FGS -> alert");
+    CHECK(sc_stage_alerts(SC_PROJECTION_START, 0) && sc_stage_alerts(SC_FGS_DECLARED, 0),
+          "projection start / FGS always alert");
+    CHECK(!sc_stage_alerts(SC_NONE, ~0u), "none never alerts");
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

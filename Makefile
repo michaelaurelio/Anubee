@@ -326,7 +326,7 @@ $(BINDER_API_BPF_OBJ): $(SRC)/modules/binder_api.bpf.c $(SRC)/modules/binder_tok
 $(BINDER_API_SKEL): $(BINDER_API_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name binder_api_bpf > $@
 
-$(SCREENCAPTURE_DETECT_BPF_OBJ): $(SRC)/modules/screencapture_detect.bpf.c vmlinux.h $(LIBBPF_A)
+$(SCREENCAPTURE_DETECT_BPF_OBJ): $(SRC)/modules/screencapture_detect.bpf.c $(SRC)/modules/binder_token.bpf.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
 	llvm-strip -g $@ 2>/dev/null || true

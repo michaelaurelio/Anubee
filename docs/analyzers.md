@@ -43,7 +43,7 @@ receiver (boot, SMS, alarm, push), or you want to start it by hand.
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `accessibility-detect` | What the app's own Accessibility Service does, by category: reading other apps' screens (`screen_read`), clicking / entering text (`action`), injecting gestures, global back/home actions, screenshots, keyboard switching. One alert per category | Stealthy |
 | `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
-| `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
+| `screencapture-detect` | How far a screen-capture attempt got: capture service declared (`fgs_declared`, even if the user declines the prompt), capture started (`projection_start`), screen mirrored into the app (`virtual_display`) | Stealthy |
 | `binder-api` | Which Binder interfaces/methods the app calls (`IActivityManager.getRunningAppProcesses`, `IPackageManager.getInstalledPackages`...), named from the device's own framework jars; every ContentProvider call with its URI (`QUERY content://sms/inbox`) or `CALL` target (`settings GET_secure android_id`) | Stealthy |
 | `perm-watch` | Baseline + every change of the package's granted permissions, app-op modes, Accessibility / notification-listener / device-admin enablement, roles (default SMS, dialer, home...), and installed-ness (polls shell tools, 2s) | Stealthy |
 

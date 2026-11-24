@@ -620,7 +620,11 @@ is in DOCUMENTATION.md and the referenced specs.
   `TRANSACTION_*` and hand-written `*_TRANSACTION` constants, keyed by the
   wire descriptor), and every ContentProvider call's URI or `CALL` target.
   `accessibility-detect` rebased on decoded `IAccessibilityServiceConnection`
-  calls (categories; fixes DT5). Next: `screencapture-detect`.
+  calls (categories; fixes DT5). `screencapture-detect` reports capture
+  stages: the dumpsys FGS poll plus decoded `IMediaProjection.start` /
+  `createVirtualDisplay`. Its device test now drives a real ~4 s recording
+  (consent prompt tapped when shown; recording deleted after) and SKIPs off
+  devices without that OEM recorder.
 - **`mod` triage workflow (Phase 2).** `perm-watch` analyzer (permission /
   app-op / special-access / role / installed timeline, `perm_change` record,
   ingested by anubee-mcp); `triage` preset (every stealthy analyzer, derived

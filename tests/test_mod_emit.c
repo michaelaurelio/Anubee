@@ -24,7 +24,8 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
                                    const char *category, const char *method, int granted);
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
-void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
+                                   const char *stage, const char *iface, const char *method);
 #include "modules/binder_api_parse.h"
 void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
                          const char *iface, const char *method,
@@ -452,28 +453,36 @@ int main(void)
     CHECK_HAS(j, "\"category\":\"accessibility\",\"name\":\"accessibility\"", "special access name");
     CHECK_HAS(j, "\"old\":null,\"new\":\"p/.Svc\"",    "perm_change null old");
 
-    // ---- screencapture_detect: full event with Binder-call context -----------------
+    // ---- screencapture_detect: Binder stage --------------------------------------
     struct screencapture_detect_event mp = {0};
     mp.h.type = MOD_EV_SCREENCAPTURE_DETECT;
     mp.h.pid  = 9400;
     mp.h.tid  = 9400;
     mp.ts_ns  = 100000000010ULL;
     strncpy(mp.comm, "fakebank", TASK_COMM_LEN - 1);
-    mp.binder_calls_context = 7;
+    mp.code   = 1;
 
     j.len = 0;
-    mod_emit_screencapture_detect(&j, &mp);
+    mod_emit_screencapture_detect(&j, &mp, "projection_start",
+                                  "android.media.projection.IMediaProjection", "start");
     CHECK_HAS(j, "\"type\":\"screencapture_detect\"",   "screencapture_detect type");
     CHECK_HAS(j, "\"pid\":9400",                    "screencapture_detect pid");
     CHECK_HAS(j, "\"ts_ns\":100000000010",          "screencapture_detect ts_ns");
     CHECK_HAS(j, "\"comm\":\"fakebank\"",           "screencapture_detect comm");
-    CHECK_HAS(j, "\"binder_calls_context\":7",      "screencapture_detect binder_calls_context");
+    CHECK_HAS(j, "\"stage\":\"projection_start\",\"interface\":\"android.media.projection.IMediaProjection\",\"method\":\"start\",\"code\":1}",
+              "screencapture_detect stage/interface/method/code");
+    checks++;
+    if (memmem(j.b, j.len, "binder_calls_context", 20)) {
+        failures++; printf("  FAIL: binder_calls_context gone\n");
+    }
 
-    // ---- screencapture_detect: zero Binder-call context (pid unresolved case) ------
-    mp.binder_calls_context = 0;
+    // ---- screencapture_detect: dumpsys stage (no Binder call) ----------------------
+    struct screencapture_detect_event mf = mp;
+    mf.code = 0;
     j.len = 0;
-    mod_emit_screencapture_detect(&j, &mp);
-    CHECK_HAS(j, "\"binder_calls_context\":0", "screencapture_detect binder_calls_context zero");
+    mod_emit_screencapture_detect(&j, &mf, "fgs_declared", NULL, NULL);
+    CHECK_HAS(j, "\"stage\":\"fgs_declared\",\"interface\":null,\"method\":null,\"code\":null}",
+              "screencapture_detect fgs stage -> nulls");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

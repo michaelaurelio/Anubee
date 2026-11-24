@@ -99,13 +99,13 @@ void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_de
 // baked-in verdict" convention as every prior mod analyzer.
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 
-// {"type":"screencapture_detect","pid":N,"comm":"..","binder_calls_context":N}
-// binder_calls_context is the passive system_server Binder-call count
-// observed since the last alert for this pid (coarse/cumulative, not
-// windowed -- see design doc's Known limitations). No burst/threshold/
-// severity fields, same "raw fields, no baked-in verdict" convention as
-// every prior mod analyzer.
-void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+// {"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..",
+//  "stage":"fgs_declared|projection_start|virtual_display",
+//  "interface":".."|null,"method":".."|null,"code":N|null}
+// One per (process, stage) -- fgs_declared again per new session. Binder
+// stages carry the decoded call; fgs_declared (dumpsys poll) has nulls.
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
+                                   const char *stage, const char *iface, const char *method);
 
 // {"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,
 //  "method":".."|null,"code":N,"oneway":bool} -- first call of (interface, method)

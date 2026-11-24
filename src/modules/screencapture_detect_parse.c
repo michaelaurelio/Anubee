@@ -85,3 +85,28 @@ int screencapture_detect_parse_dumpsys(const char *buf, const char *pkg, int *ou
     }
     return 0;
 }
+
+int sc_stage_of(const char *iface, const char *method)
+{
+    if (!iface || !method) return SC_NONE;
+    if (!strcmp(iface, SC_IFACE_PROJECTION) && !strcmp(method, "start"))
+        return SC_PROJECTION_START;
+    if (!strcmp(iface, SC_IFACE_DISPLAY) && !strcmp(method, "createVirtualDisplay"))
+        return SC_VIRTUAL_DISPLAY;
+    return SC_NONE;
+}
+
+const char *sc_stage_name(int stage)
+{
+    static const char *const names[SC_STAGE_N] = {
+        "none", "fgs_declared", "projection_start", "virtual_display",
+    };
+    return stage > SC_NONE && stage < SC_STAGE_N ? names[stage] : names[SC_NONE];
+}
+
+int sc_stage_alerts(int stage, unsigned seen)
+{
+    if (stage == SC_VIRTUAL_DISPLAY)
+        return (seen & (1u << SC_PROJECTION_START | 1u << SC_FGS_DECLARED)) != 0;
+    return stage > SC_NONE && stage < SC_STAGE_N;
+}

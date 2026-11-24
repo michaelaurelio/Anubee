@@ -40,6 +40,7 @@ enum trace_event_type {
     TRACE_FILELESS_DETECT, // anonymous executable mmap, non-ART (mod fileless-detect)
     TRACE_SCREENCAPTURE_DETECT, // active MediaProjection screen-capture session (mod screencapture-detect)
     TRACE_MODCMP,      // module memory-vs-disk comparison (dump --check)
+    TRACE_PERM_CHANGE, // permission / app-op / special-access / role fact (mod perm-watch)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

@@ -64,5 +64,6 @@ extern const anubee_analyzer_t analyzer_exfil_detect;
 extern const anubee_analyzer_t analyzer_accessibility_detect;
 extern const anubee_analyzer_t analyzer_fileless_detect;
 extern const anubee_analyzer_t analyzer_screencapture_detect;
+extern const anubee_analyzer_t analyzer_perm_watch;
 
 #endif /* __ANUBEE_ANALYZER_H */

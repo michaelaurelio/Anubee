@@ -37,6 +37,7 @@ static const anubee_analyzer_t *const registry[] = {
     &analyzer_accessibility_detect,
     &analyzer_fileless_detect,
     &analyzer_screencapture_detect,
+    &analyzer_perm_watch,
     NULL,
 };
 

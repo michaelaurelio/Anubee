@@ -41,6 +41,7 @@ map_bpf_obj() {
     mod:accessibility-detect) echo accessibility_detect.bpf.o ;;
     mod:fileless-detect) echo fileless_detect.bpf.o ;;
     mod:screencapture-detect) echo screencapture_detect.bpf.o ;;
+    mod:perm-watch) echo SKIP ;;   # no BPF object: shell polling + an empty ring map
     *)              echo UNMAPPED ;;
   esac
 }

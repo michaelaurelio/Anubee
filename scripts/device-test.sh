@@ -993,6 +993,34 @@ test_dump_now() {
 # threads are inserted into the 64-slot target_pids map, a later child can't
 # be. scripts/anubee_forkfollow_gen.c creates 100 threads, then forks a child
 # that execs /system/bin/true with a marker argv; mod execve -p must show it.
+test_mod_perm_watch() {
+    echo "=== mod perm-watch (baseline + app-op change timeline) ==="
+    # Flip SYSTEM_ALERT_WINDOW (overlay -- the banking-trojan staple) on the
+    # test app mid-run and back; both changes must appear, in order, as
+    # perm_change records. The original mode is restored whatever happens.
+    local op=SYSTEM_ALERT_WINDOW out="/data/local/tmp/anubee_perm_watch.jsonl"
+    local orig; orig="$(adb shell "appops get $PKG $op" | tr -d '\r' | sed -n "s/^$op: \([a-z]*\).*/\1/p")"
+    [ -n "$orig" ] || orig=default
+    local flip=allow; [ "$orig" = allow ] && flip=ignore
+    # Flips at ~3s and ~6s: inside the run (TIMEOUT, default 10s) with a 2s
+    # poll on each side. nohup+setsid so the job outlives this adb shell.
+    adb shell "su -c 'rm -f $out; nohup setsid sh -c \"sleep 3; appops set $PKG $op $flip; sleep 3; appops set $PKG $op $orig\" >/dev/null 2>&1 &'"
+    local con; con="$(anubee "mod perm-watch -P $PKG -o $out")"
+    adb shell "appops set $PKG $op $orig" >/dev/null 2>&1 || true
+    grep -q "^\[perm-watch\] $PKG baseline:" <<<"$con" \
+        || { tail -10 <<<"$con" >&2; fail "perm-watch: no baseline line"; }
+    local recs; recs="$(adb shell "su -c 'cat $out'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "perm-watch: -o output is not valid JSONL"
+    grep -q '"change":"baseline"' <<<"$recs" || fail "perm-watch: no baseline records in -o output"
+    local seq; seq="$(grep "\"name\":\"$op\",\"change\":\"changed\"" <<<"$recs" \
+        | sed 's/.*"old":"\([a-z]*\)","new":"\([a-z]*\)".*/\1>\2/' | tr '\n' ' ')"
+    [ "$seq" = "$orig>$flip $flip>$orig " ] \
+        || { echo "  got: '$seq'" >&2; fail "perm-watch: expected '$orig>$flip $flip>$orig' for $op"; }
+    adb shell "su -c 'rm -f $out'" >/dev/null 2>&1 || true
+    info "perm-watch OK - baseline + $op $orig>$flip>$orig timeline"
+}
+
 test_mod_pkg_inject() {
     echo "=== mod -p: target-controlled cmdline never reaches a root shell ==="
     # In -p mode the package name is read from /proc/<pid>/cmdline, which the
@@ -1065,6 +1093,7 @@ case "$WHAT" in
     mod-file-access)   test_mod_file_access ;;
     mod-follow-fork)   test_mod_follow_fork ;;
     mod-pkg-inject)    test_mod_pkg_inject ;;
+    mod-perm-watch)    test_mod_perm_watch ;;
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
@@ -1072,8 +1101,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_pkg_inject; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-pkg-inject | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_pkg_inject; test_mod_perm_watch; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-pkg-inject | mod-perm-watch | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

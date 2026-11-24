@@ -176,7 +176,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -541,7 +541,7 @@ test:
 	$(BUILD)/test_maps
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_args.c -o $(BUILD)/test_target_args
 	$(BUILD)/test_target_args
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_emit.c src/modules/mod_emit.c src/modules/perm_watch_parse.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_mod_emit
 	$(BUILD)/test_mod_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_emit.c src/dump/dump_emit.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_dump_emit
 	$(BUILD)/test_dump_emit
@@ -561,6 +561,8 @@ test:
 	$(BUILD)/test_mod_names
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_exfil_detect_addr.c -o $(BUILD)/test_exfil_detect_addr
 	$(BUILD)/test_exfil_detect_addr
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_perm_watch_parse.c src/modules/perm_watch_parse.c -o $(BUILD)/test_perm_watch_parse
+	$(BUILD)/test_perm_watch_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pkg_name.c -o $(BUILD)/test_pkg_name
 	$(BUILD)/test_pkg_name
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index

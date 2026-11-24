@@ -48,6 +48,7 @@ _MOD_EVENT_TYPES = frozenset({
     "accessibility_detect", "screencapture_detect", "exfil_detect",
     "massdelete_detect", "fileless_detect",
     "spawn", "proc_exit", "execve", "prop", "file_access",
+    "perm_change",
 })
 
 _DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")

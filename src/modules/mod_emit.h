@@ -106,4 +106,13 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
 // every prior mod analyzer.
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
 
+// {"type":"perm_change","ts_ns":N,"package":"..","category":"..","name":"..",
+//  "change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}
+// `key` is a perm_watch_parse.h fact key; category/name are split from it
+// (special-access keys have no prefix, so name == category). Built in
+// userspace (no BPF event), so it takes its fields directly.
+void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
+                          const char *key, const char *change,
+                          const char *old_val, const char *new_val);
+
 #endif /* __ANUBEE_MOD_EMIT_H */

@@ -23,6 +23,9 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
+                          const char *key, const char *change,
+                          const char *old_val, const char *new_val);
 
 static int checks = 0, failures = 0;
 #define CHECK_HAS(j, sub, msg) do {                                  \
@@ -388,6 +391,23 @@ int main(void)
     j.len = 0;
     mod_emit_fileless_detect(&j, &fe);
     CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_detect anon_name tagged");
+
+    // ---- perm_change: appop mode change, category + bare name split ----------
+    j.len = 0;
+    mod_emit_perm_change(&j, 42, "com.example.app", "appop:SYSTEM_ALERT_WINDOW",
+                         "changed", "default", "allow");
+    CHECK_HAS(j, "\"type\":\"perm_change\"",            "perm_change type");
+    CHECK_HAS(j, "\"ts_ns\":42",                          "perm_change ts_ns");
+    CHECK_HAS(j, "\"package\":\"com.example.app\"",     "perm_change package");
+    CHECK_HAS(j, "\"category\":\"appop\"",              "perm_change category");
+    CHECK_HAS(j, "\"name\":\"SYSTEM_ALERT_WINDOW\"",    "perm_change bare name");
+    CHECK_HAS(j, "\"change\":\"changed\"",              "perm_change change");
+    CHECK_HAS(j, "\"old\":\"default\",\"new\":\"allow\"}", "perm_change old/new");
+    // ---- perm_change: special access granted -> old is null -----------------
+    j.len = 0;
+    mod_emit_perm_change(&j, 1, "p", "accessibility", "granted", NULL, "p/.Svc");
+    CHECK_HAS(j, "\"category\":\"accessibility\",\"name\":\"accessibility\"", "special access name");
+    CHECK_HAS(j, "\"old\":null,\"new\":\"p/.Svc\"",    "perm_change null old");
 
     // ---- screencapture_detect: full event with Binder-call context -----------------
     struct screencapture_detect_event mp = {0};

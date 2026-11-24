@@ -2,10 +2,12 @@
 // Pure structured-record builders for anubee mod analyzers (no libbpf/skeleton
 // deps, so the host test can link them). Built on the shared serializer + schema.
 #include <linux/types.h>
+#include <string.h>
 #include "common/emit.h"
 #include "common/trace_schema.h"
 #include "modules/mod_events.h"
 #include "modules/file_access_classify.h"
+#include "modules/perm_watch_parse.h"
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e)
 {
@@ -235,5 +237,30 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
     jb_s(j, ",\"binder_calls_context\":"); jb_u64(j, e->binder_calls_context);
+    jb_c(j, '}');
+}
+
+static void jb_str_or_null(struct jbuf *j, const char *s)
+{
+    if (!s) { jb_s(j, "null"); return; }
+    jb_c(j, '"'); jb_esc(j, s); jb_c(j, '"');
+}
+
+void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
+                          const char *key, const char *change,
+                          const char *old_val, const char *new_val)
+{
+    const char *cat = pw_category(key);
+    const char *colon = strchr(key, ':');
+    const char *name = colon ? colon + 1 : key;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");    jb_s(j, trace_type_name(TRACE_PERM_CHANGE)); jb_c(j, '"');
+    jb_s(j, ",\"ts_ns\":");     jb_u64(j, ts_ns);
+    jb_s(j, ",\"package\":");   jb_str_or_null(j, pkg);
+    jb_s(j, ",\"category\":\""); jb_esc(j, cat);    jb_c(j, '"');
+    jb_s(j, ",\"name\":\"");   jb_esc(j, name);     jb_c(j, '"');
+    jb_s(j, ",\"change\":\""); jb_esc(j, change);   jb_c(j, '"');
+    jb_s(j, ",\"old\":");       jb_str_or_null(j, old_val);
+    jb_s(j, ",\"new\":");       jb_str_or_null(j, new_val);
     jb_c(j, '}');
 }

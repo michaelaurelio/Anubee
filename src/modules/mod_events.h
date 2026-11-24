@@ -159,8 +159,8 @@ struct exfil_detect_event {
     char   sensitive_paths[EXFIL_DETECT_RING_LEN][FILE_PATH_LEN];
     __u32  sensitive_path_count;
     __u8   paths_truncated;
-    unsigned char dest[28];   // raw sockaddr bytes (sockaddr_in6-sized), or all-zero
-    __u32  dest_len;          // 0 if no connect() was observed before threshold
+    unsigned char dest[28];   // raw sockaddr (in/in6) of the peer the tripping send went to
+    __u32  dest_len;          // sizeof(dest) when set; 0 only if no outbound send was recorded
 };
 
 struct accessibility_detect_event {

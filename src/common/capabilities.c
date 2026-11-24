@@ -22,7 +22,7 @@ static const struct anubee_bpf_object g_objects[] = {
     { "mod:prop-read",  true  },  // uprobes on libc; writes target memory
     { "mod:file-access", false }, // kprobes on openat/openat2; zero uprobes
     { "mod:massdelete-detect", false }, // kprobes on renameat/renameat2/unlinkat; zero uprobes
-    { "mod:exfil-detect", false }, // kprobes on openat/openat2/connect/sendto/write/writev/close; zero uprobes
+    { "mod:exfil-detect", false }, // kprobes on openat/openat2/sendto/write/writev; zero uprobes
     { "mod:accessibility-detect", false }, // tracepoint on binder_transaction; zero uprobes
     { "mod:fileless-detect", false }, // kprobes on do_mmap/__arm64_sys_prctl; zero uprobes
     { "mod:screencapture-detect", false }, // tracepoint on binder_transaction (context only) + dumpsys poll; zero uprobes

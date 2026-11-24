@@ -549,10 +549,10 @@ test_massdelete_detect() {
 # control the trigger. Same single-process rationale as massdelete-detect's
 # generator (a forked write()-per-call pattern would split byte-volume
 # across too many short-lived pids to accumulate a per-pid signal) plus a
-# new constraint: the destination is a deliberately unreachable RFC 5737
-# test address, because exfil_detect.bpf.c's connect() hook discards
-# loopback destinations outright (a real listener on 127.0.0.1 would never
-# arm the socket fd).
+# new constraint: the peer must be a non-loopback IPv4 address (loopback and
+# AF_UNIX never count), and the phone may be offline -- so the generator puts
+# RFC 5737's 192.0.2.1 on lo inside its own network namespace and listens
+# there (see the generator's header).
 test_exfil_detect() {
     echo "=== mod exfil-detect (sensitive-read + network byte-volume burst) ==="
     forcestop
@@ -598,6 +598,28 @@ test_exfil_detect() {
         tail -10 <<<"$out" >&2
         fail "exfil-detect: no [exfil-detect] line from a 576KiB-write generator (threshold/window mistuned, or timing missed the attach window)"
     fi
+
+    # Regression modes (generator argv[2]). preconnect: the socket is connected
+    # BEFORE the sensitive read (pooled keep-alive) -- dest must still name the
+    # peer. unix: the burst goes over a connected AF_UNIX socket (logd/dnsproxyd
+    # shape) -- local IPC, must not alert.
+    adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-detect: push failed"
+    adb shell "chmod 755 $gen"
+    local mode mpid mout
+    for mode in preconnect unix; do
+        mpid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_exfil_test/DCIM $mode >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+        mout="$(anubee "mod exfil-detect -p $mpid")"
+        if [ "$mode" = preconnect ]; then
+            grep -q '^\[exfil-detect\] .*dest 192\.0\.2\.1:9' <<<"$mout" \
+                || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: preconnect burst not attributed to 192.0.2.1:9 (dest lost for a socket connected before the sensitive read)"; }
+            info "exfil-detect preconnect OK — dest names the pre-existing connection's peer"
+        else
+            ! grep -q '^\[exfil-detect\] PID' <<<"$mout" \
+                || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: AF_UNIX burst raised an exfil alert (local IPC counted as outbound)"; }
+            info "exfil-detect unix OK — AF_UNIX burst not counted"
+        fi
+    done
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.anubee_exfil_test'" >/dev/null 2>&1 || true
 }
 
 # mod accessibility-detect: real trigger via TalkBack (com.google.android.marvin.talkback),

@@ -559,6 +559,8 @@ test:
 	$(BUILD)/test_screencapture_detect_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_names.c src/modules/mod_names.c -o $(BUILD)/test_mod_names
 	$(BUILD)/test_mod_names
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_exfil_detect_addr.c -o $(BUILD)/test_exfil_detect_addr
+	$(BUILD)/test_exfil_detect_addr
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_index.c -o $(BUILD)/test_syscall_index
 	$(BUILD)/test_syscall_index
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscalls_attribution.c -o $(BUILD)/test_syscalls_attribution

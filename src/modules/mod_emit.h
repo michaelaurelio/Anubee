@@ -65,8 +65,9 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 //  "sample_path":"..","dest":".."|null
 //  [,"sensitive_paths":["..",...],"sensitive_path_count":N,"paths_truncated":true|false]}
 // dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
-// builder free of that logic. NULL or empty -> JSON null (no connect()
-// observed before the byte threshold tripped). sensitive_paths/
+// builder free of that logic. It is the kernel-side peer of the socket the
+// threshold-tripping send went to; NULL or empty -> JSON null (defensive --
+// only sends to an outbound IPv4/IPv6 peer are counted, so an alert has one). sensitive_paths/
 // sensitive_path_count/paths_truncated: only present when verbose is set.
 // sensitive_paths always has min(sensitive_path_count, EXFIL_DETECT_RING_LEN)
 // entries -- the ring only ever physically holds RING_LEN slots.

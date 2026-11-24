@@ -47,15 +47,15 @@
 #define FILELESS_DETECT_TAG_LEN 32
 
 // Grace window between an anon+exec mmap candidate landing in pending_map
-// and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
-// See fileless_detect.bpf.c's two-hook mmap+prctl correlate/suppress design.
+// and userspace graduating it: long enough for the creator to name the
+// region (ART names its JIT cache right after mapping it), after which the
+// name is read from /proc/<pid>/maps.
 #define FILELESS_DETECT_GRACE_NS (250ULL * 1000000ULL)
 
-// BPF map key/value for fileless-detect's pending-alert map: mmap-time state
-// that gets suppressed if a matching dalvik-tagged
-// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_DETECT_GRACE_NS, or
-// graduates into an alert if not. Shared between fileless_detect.bpf.c
-// (writer, both hooks) and fileless_detect.c (dispatcher-tick reader).
+// BPF map key/value for fileless-detect's pending anon_exec_mmap candidates.
+// Shared between fileless_detect.bpf.c (writer, do_mmap entry/return) and
+// fileless_detect.c (dispatcher-tick reader, graduates after
+// FILELESS_DETECT_GRACE_NS unless the region's name is ART's).
 struct fileless_pending_key {
     __u32 pid;
     __u32 _pad;
@@ -173,7 +173,10 @@ struct fileless_detect_event {
     char   comm[TASK_COMM_LEN];
     __u64  start;
     __u64  size;
-    char   anon_name[FILELESS_DETECT_TAG_LEN];
+    char   anon_name[FILELESS_DETECT_TAG_LEN];   // region / memfd name ("" if none)
+    __u64  ino;               // memfd_exec: the memfd's inode
+    __u32  kind;              // enum fl_kind (fileless_detect_parse.h)
+    __u32  _pad;
 };
 
 // First call of each watched (interface, method) by a process (see

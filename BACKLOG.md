@@ -475,24 +475,17 @@ the tests encode the original phone's environment.
   package name that is a substring of another entry could false-match.
   Category table is hand-maintained against the interface's method list; a new
   Android release's methods land in `other` until added.
-- `mod fileless-detect` known v1 limitations (shipped 2026-07-12): false positives from
-  legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
-  Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
-  will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
-  known-benign JIT engines yet (parked as a follow-up in the design doc). `mprotect`-
-  based W^X evasion (allocate RW, write payload, flip to RX afterward) is invisible to
-  the `mmap`-only v1 hook. `memfd_create`-backed "fileless" loaders bypass the gate
-  entirely — they have a `vm_file` (tmpfs-backed), so `vm_file == NULL` never matches;
-  this is a real technique the analyzer is named for but does not yet catch. No
-  payload-content signal (e.g. ELF-magic check) — the mapping is zero-filled at hook
-  time, before the caller writes anything into it. Evadable by a loader that tags its
-  own mapping `dalvik-fake` via `prctl` to dodge the carve-out (arms-race concern, not
-  addressed in v1). The suppression mechanism assumes ART's
-  `prctl(PR_SET_VMA_ANON_NAME, addr, ...)` call names the *exact* address `do_mmap`
-  returned; implemented faithfully per design and spot-checked on-device (0 false
-  positives across multiple runs against an ordinary app) but not exhaustively proven,
-  since JIT compilation isn't guaranteed to occur within any given short observation
-  window.
+- `mod fileless-detect` known limitations (v2, 2026-11-24): a non-ART JIT
+  running inside the app's own process (Unity/Mono, Flutter debug, an
+  in-process V8) alerts -- Chrome/WebView keep V8 in a separate sandboxed
+  process, outside the traced UID, and launches of Settings/Chrome/YouTube
+  gave no alerts. ART is recognised by region name (`dalvik-*`, memfd
+  `jit-*`), so a payload that names its region the same way is excluded
+  (arms-race gap). An `anon_exec_mmap` region is copied at graduation
+  (250 ms) and may not hold its final contents yet; an all-zero region isn't
+  saved. `pending_map` (1024) doesn't evict: a flood of anonymous executable
+  mappings past that is not seen. Mapping an executable file region, or
+  `mremap` of an existing executable mapping, isn't covered.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
   Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
   full-screen lock overlays + data-destruction threats rather than actual file
@@ -626,6 +619,16 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-24
 
+- **`mod fileless-detect` v2 (Phase 4b).** Three signals: `anon_exec_mmap`
+  (as v1), `mprotect_exec` (anonymous / shared-anonymous / memfd memory
+  gaining `PROT_EXEC`, `security_file_mprotect`) and `memfd_exec`
+  (`security_mmap_file` on a memfd, covers fexecve). ART's regions are now
+  recognised by the name the kernel holds (in-kernel `vma->anon_name` for
+  mprotect, `/proc/<pid>/maps` at graduation for mmap) instead of v1's
+  exact-address `prctl` matching. Each alert classifies the first bytes
+  (elf/zero/data) and saves a copy + SHA-256 through `/proc/<pid>/mem` into
+  the payload store now shared with `dexload-detect`. Records gain `kind`,
+  `content`, `saved`; summary gains per-kind counts.
 - **`mod dexload-detect` (Phase 4a).** Payload files dropped by the app
   (DEX/CDEX/ZIP/ELF header written at offset 0), mapped by any process, and
   deleted -- keyed by inode, full path rebuilt across mounts in the kernel,

@@ -42,7 +42,7 @@ receiver (boot, SMS, alarm, push), or you want to start it by hand.
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
 | `accessibility-detect` | What the app's own Accessibility Service does, by category: reading other apps' screens (`screen_read`), clicking / entering text (`action`), injecting gestures, global back/home actions, screenshots, keyboard switching. One alert per category | Stealthy |
-| `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
+| `fileless-detect` | Executable memory without a file: an anonymous executable mapping, memory made executable after being written (unpackers), or code run from a memfd -- ART's own JIT regions excluded by name; a copy of each region saved | Stealthy |
 | `dexload-detect` | A DEX/APK/JAR/ELF payload written to a file, mapped (loaded) and deleted, with a saved copy + SHA-256: droppers, `DexClassLoader`, native second stages | Stealthy |
 | `screencapture-detect` | How far a screen-capture attempt got: capture service declared (`fgs_declared`, even if the user declines the prompt), capture started (`projection_start`), screen mirrored into the app (`virtual_display`) | Stealthy |
 | `binder-api` | Which Binder interfaces/methods the app calls (`IActivityManager.getRunningAppProcesses`, `IPackageManager.getInstalledPackages`...), named from the device's own framework jars; every ContentProvider call with its URI (`QUERY content://sms/inbox`) or `CALL` target (`settings GET_secure android_id`) | Stealthy |

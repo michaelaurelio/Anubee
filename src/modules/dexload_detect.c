@@ -4,7 +4,6 @@
 // being mapped by any process (load) and unlinked (delete). A copy of each
 // payload is saved, with its SHA-256, so a "load then delete" dropper still
 // leaves the second stage behind. Kernel side: src/modules/dexload_detect.bpf.c.
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -23,12 +22,12 @@
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/dexload_detect_parse.h"
+#include "modules/payload_store.h"
 
 _Static_assert(DL_COMP_LEN == DEXLOAD_COMP_LEN, "path component size mismatch");
 
 #define DL_FILE_MAX  256
 #define DL_SAVE_MAX  (256LL * 1024 * 1024)   // skip saving anything larger
-#define DL_DIR_DEFAULT "/data/local/tmp/anubee-payloads"
 
 typedef struct {
     __u64              ino;
@@ -53,8 +52,6 @@ static struct dexload_detect_bpf *g_skel = NULL;
 static struct ring_buffer        *g_rb = NULL;
 static struct bpf_link           *g_links[4];
 static int                        g_nlinks = 0;
-static char                       g_dir[512];
-static int                        g_dir_ready = 0;   // 1 ok, -1 failed
 
 static dl_file_t *dl_find(__u64 ino, __u32 dev)
 {
@@ -66,75 +63,16 @@ static dl_file_t *dl_find(__u64 ino, __u32 dev)
 
 // ---- saving a payload copy ---------------------------------------------------
 
-static int dl_dir_ready(void)
-{
-    if (g_dir_ready) return g_dir_ready > 0;
-    if (mkdir(g_dir, 0700) != 0 && errno != EEXIST) {
-        fprintf(stderr, "mod dexload-detect: cannot create %s (%s) -- payloads not saved\n",
-                g_dir, strerror(errno));
-        g_dir_ready = -1;
-        return 0;
-    }
-    g_dir_ready = 1;
-    return 1;
-}
-
-// An fd on the payload: its path, else (unlinked but still mapped) the
-// mapping via /proc/<pid>/map_files, else (unlinked, still open) one of the
-// process's fds. Every candidate is checked against the inode.
-static int dl_open_matching(const char *path, __u32 pid, __u64 ino)
-{
-    struct stat st;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        if (fstat(fd, &st) == 0 && st.st_ino == ino) return fd;
-        close(fd);
-    }
-    if (!pid) return -1;
-
-    char p[96];
-    snprintf(p, sizeof p, "/proc/%u/maps", pid);
-    FILE *f = fopen(p, "r");
-    if (f) {
-        static char maps[1 << 20];
-        size_t n = fread(maps, 1, sizeof maps - 1, f);
-        fclose(f);
-        maps[n] = '\0';
-        unsigned long s, e;
-        if (dl_maps_find_ino(maps, (unsigned long)ino, &s, &e)) {
-            snprintf(p, sizeof p, "/proc/%u/map_files/%lx-%lx", pid, s, e);
-            fd = open(p, O_RDONLY | O_CLOEXEC);
-            if (fd >= 0) return fd;
-        }
-    }
-
-    snprintf(p, sizeof p, "/proc/%u/fd", pid);
-    DIR *d = opendir(p);
-    if (!d) return -1;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        char fp[300];
-        snprintf(fp, sizeof fp, "/proc/%u/fd/%s", pid, de->d_name);
-        if (stat(fp, &st) == 0 && st.st_ino == ino && S_ISREG(st.st_mode)) {
-            fd = open(fp, O_RDONLY | O_CLOEXEC);
-            if (fd >= 0) break;
-        }
-    }
-    closedir(d);
-    return fd;
-}
-
 static void dl_save(dl_file_t *f, __u32 pid)
 {
-    if (f->saved[0] || !dl_dir_ready()) return;
-    int fd = dl_open_matching(f->path, pid, f->ino);
-    if (fd < 0 && pid != f->pid) fd = dl_open_matching(f->path, f->pid, f->ino);
+    if (f->saved[0] || !payload_dir_ready()) return;
+    int fd = payload_open_ino(f->path, pid, f->ino);
+    if (fd < 0 && pid != f->pid) fd = payload_open_ino(f->path, f->pid, f->ino);
     if (fd < 0) return;
     struct stat st;
     if (fstat(fd, &st) == 0 && st.st_size > DL_SAVE_MAX) { close(fd); return; }
     char dst[512];
-    dl_payload_name(dst, sizeof dst, g_dir, f->pid, f->ino, f->kind);
+    dl_payload_name(dst, sizeof dst, payload_dir(), f->pid, f->ino, f->kind);
     long long n = dl_copy_fd(fd, dst, f->sha256);
     close(fd);
     if (n <= 0) { unlink(dst); return; }
@@ -220,10 +158,7 @@ static void dl_teardown(void);
 
 static struct ring_buffer *dl_setup(int uid, struct anubee_mod_ctx *mc)
 {
-    if (mc->sink && mc->sink->path)
-        snprintf(g_dir, sizeof g_dir, "%s.payloads", mc->sink->path);
-    else
-        snprintf(g_dir, sizeof g_dir, "%s", DL_DIR_DEFAULT);
+    payload_dir_init(mc->sink ? mc->sink->path : NULL);
 
     g_skel = dexload_detect_bpf__open();
     if (!g_skel) {
@@ -269,7 +204,7 @@ static struct ring_buffer *dl_setup(int uid, struct anubee_mod_ctx *mc)
         fprintf(stderr, "mod dexload-detect: failed to create ring buffer\n");
         goto err;
     }
-    printf("[dexload-detect] payload copies go to %s\n", g_dir);
+    printf("[dexload-detect] payload copies go to %s\n", payload_dir());
     return g_rb;
 
 err:

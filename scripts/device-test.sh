@@ -685,16 +685,14 @@ test_accessibility_detect() {
     info "accessibility-detect OK - $(grep -c '^\[accessibility-detect\] PID' <<<"$out") category alert(s) from TalkBack"
 }
 
-# mod fileless-detect: deterministic trigger via a compiled single-process
-# generator (scripts/anubee_fileless_gen.c) that performs one raw
-# mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
-# of normal operation, so (like massdelete-detect/exfil-detect) this needs a
-# purpose-built native binary rather than driving a real app. Hard-fail, not
-# SKIP: we control the trigger. A second, informational-only run against an
-# ordinary app checks the dalvik- carve-out doesn't false-positive on real
-# ART JIT activity -- not a hard assertion, since JIT compilation isn't
-# guaranteed to happen within a short launch window either way, so absence
-# of output there proves nothing on its own.
+# mod fileless-detect: deterministic trigger via a compiled generator
+# (scripts/anubee_fileless_gen.c) that does one of each signal --
+# anon_exec_mmap, mprotect_exec, memfd_exec -- each holding an ELF-headed
+# payload, plus the first two on regions named "dalvik-*" (ART's naming),
+# which must not alert. No real installed app does this, so a purpose-built
+# native binary is needed (like massdelete-detect/exfil-detect). Hard-fail,
+# not SKIP: we control the trigger. A final run against an ordinary app is
+# informational (JIT activity in a short window isn't guaranteed).
 test_fileless_detect() {
     echo "=== mod fileless-detect (anonymous executable mmap, non-ART) ==="
     forcestop
@@ -714,24 +712,23 @@ test_fileless_detect() {
     fi
 
     local out; out="$(anubee "mod fileless-detect -p $loop_pid")"
-    adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
+    adb shell "su -c 'rm -f $gen; rm -rf /data/local/tmp/anubee-payloads'" >/dev/null 2>&1 || true
 
-    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load failed (root/SELinux/own-su-c?)"
+    if grep -qi 'BPF load failed\|failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load/attach failed (root/SELinux/own-su-c?)"
     fi
-    # Match only the per-event alert line ("[fileless-detect] PID:...") -- NOT
-    # fileless_print_summary()'s own [fileless-detect]-prefixed header/column-
-    # header/table-row/footer lines, which share the same tag prefix and would
-    # otherwise inflate any non-zero count by 4 (confirmed via manual -o/JSONL
-    # cross-check: a single real detection always produces exactly one
-    # {"type":"fileless_detect"} record, but the old '^\[fileless-detect\]' pattern
-    # counted 5 console lines for it -- 1 real alert + 4 summary-table lines).
-    if grep -q '^\[fileless-detect\] PID:' <<<"$out"; then
-        info "fileless-detect OK — $(grep -c '^\[fileless-detect\] PID:' <<<"$out") [fileless-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
-    fi
+    # Count only per-event alert lines ("[fileless-detect] PID:..."), not the
+    # summary table that shares the prefix.
+    local kind
+    for kind in anon_exec_mmap mprotect_exec memfd_exec; do
+        grep -q "^\[fileless-detect\] PID:.* $kind .*content=elf" <<<"$out" \
+            || { tail -15 <<<"$out" >&2; fail "fileless-detect: no $kind alert with ELF content"; }
+    done
+    [ "$(grep -c '^\[fileless-detect\] PID:' <<<"$out")" -eq 3 ] \
+        || { tail -15 <<<"$out" >&2; fail "fileless-detect: expected exactly 3 alerts -- the dalvik-named regions must be recognised as ART's"; }
+    [ "$(grep -c '^\[fileless-detect\]   saved ' <<<"$out")" -eq 3 ] \
+        || { tail -15 <<<"$out" >&2; fail "fileless-detect: payload copies not saved for all three regions"; }
+    info "fileless-detect OK - anon_exec_mmap, mprotect_exec, memfd_exec caught and saved; ART-named regions excluded"
 
     # Shared-sink wiring: fileless-detect's alerts are produced off the ring
     # path (pending_map scan), and must reach the single-writer -o sink via the
@@ -744,7 +741,7 @@ test_fileless_detect() {
     local mix_file="/data/local/tmp/fileless_mix.jsonl"
     anubee "mod -m fileless-detect -m proc-event -p $mix_pid -o $mix_file -q" >/dev/null
     local mix_out; mix_out="$(adb shell "su -c 'cat $mix_file'" 2>/dev/null | tr -d '\r')"
-    adb shell "su -c 'rm -f $mix_file $gen'" >/dev/null 2>&1 || true
+    adb shell "su -c 'rm -rf $mix_file $mix_file.payloads $gen'" >/dev/null 2>&1 || true
     grep -q '"type":"fileless_detect"' <<<"$mix_out" \
         || { tail -5 <<<"$mix_out" >&2; fail "fileless-detect: no fileless_detect record in a combined -m fileless-detect -m proc-event -o run"; }
     python3 -c 'import json,sys
@@ -755,9 +752,10 @@ for n,l in enumerate(sys.stdin,1):
 
     local jit_out; jit_out="$(anubee "mod fileless-detect -P $PKG")"
     forcestop
+    adb shell "su -c 'rm -rf /data/local/tmp/anubee-payloads'" >/dev/null 2>&1 || true
     local jit_lines
     jit_lines="$(grep -c '^\[fileless-detect\] PID:' <<<"$jit_out")"
-    info "fileless-detect dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
+    info "fileless-detect ART-name exclusion check on a real app (informational): $jit_lines line(s) against $PKG"
 }
 
 # mod screencapture-detect: real trigger via com.transsion.screenrecorder

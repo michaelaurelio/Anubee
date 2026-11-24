@@ -89,16 +89,16 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
                                    const char *category, const char *method, int granted);
 
-// {"type":"fileless_detect","pid":N,"comm":"..","start":"0x..","size":N,
-//  "anon_name":".."}
-// anon_name is always "" in this version -- the reworked detection path
-// (do_mmap entry/exit correlation + kernel-side dalvik- suppression via
-// __arm64_sys_prctl, not inline tag capture at mmap time) has no way to
-// capture/propagate a non-dalvik tag; the field is reserved in the schema
-// for a possible future version that does. No burst/threshold/severity
-// fields -- v1 has one signal only, emitted as-is, same "raw fields, no
-// baked-in verdict" convention as every prior mod analyzer.
-void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
+// {"type":"fileless_detect","pid":N,"ts_ns":N,"comm":"..",
+//  "kind":"anon_exec_mmap|mprotect_exec|memfd_exec","start":"0x..","size":N,
+//  "anon_name":"..","content":"elf|zero|data"|null,
+//  "saved":{"file":"..","sha256":"..","size":N}|null}
+// anon_name is the region's (or memfd's) name as the kernel holds it, "" if
+// unnamed. content classifies the region's first bytes when they could be
+// read; saved is the copy taken through /proc/<pid>/mem (or the memfd).
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e,
+                              const char *kind, const char *content,
+                              const char *saved, const char *sha256, long long size);
 
 // {"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..",
 //  "stage":"fgs_declared|projection_start|virtual_display",

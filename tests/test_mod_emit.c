@@ -23,7 +23,9 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str, int verbose);
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
                                    const char *category, const char *method, int granted);
-void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e,
+                              const char *kind, const char *content,
+                              const char *saved, const char *sha256, long long size);
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
                                    const char *stage, const char *iface, const char *method);
 #include "modules/binder_api_parse.h"
@@ -376,7 +378,7 @@ int main(void)
     mod_emit_accessibility_detect(&j, &aa, "screen_read", "getWindows", -1);
     CHECK_HAS(j, "\"granted\":null", "accessibility_detect granted null");
 
-    // ---- fileless_detect: untagged (no anon_name) -------------------------------
+    // ---- fileless_detect: unnamed anonymous exec mapping, nothing saved -------
     struct fileless_detect_event fe = {0};
     fe.h.type = MOD_EV_FILELESS_DETECT;
     fe.h.pid  = 9300;
@@ -387,24 +389,21 @@ int main(void)
     fe.size  = 4096;
 
     j.len = 0;
-    mod_emit_fileless_detect(&j, &fe);
-    CHECK_HAS(j, "\"type\":\"fileless_detect\"",     "fileless_detect type");
-    CHECK_HAS(j, "\"pid\":9300",                    "fileless_detect pid");
-    CHECK_HAS(j, "\"ts_ns\":100000000009",          "fileless_detect ts_ns");
-    CHECK_HAS(j, "\"comm\":\"droploader\"",         "fileless_detect comm");
-    CHECK_HAS(j, "\"start\":\"0x7f0000000000\"",    "fileless_detect start hex");
-    CHECK_HAS(j, "\"size\":4096",                   "fileless_detect size");
-    CHECK_HAS(j, "\"anon_name\":\"\"",              "fileless_detect anon_name empty");
+    mod_emit_fileless_detect(&j, &fe, "anon_exec_mmap", NULL, NULL, NULL, -1);
+    CHECK_HAS(j, "\"type\":\"fileless_detect\",\"pid\":9300,\"ts_ns\":100000000009,\"comm\":\"droploader\"",
+              "fileless_detect header");
+    CHECK_HAS(j, "\"kind\":\"anon_exec_mmap\",\"start\":\"0x7f0000000000\",\"size\":4096,\"anon_name\":\"\"",
+              "fileless_detect kind/start/size/name");
+    CHECK_HAS(j, "\"content\":null,\"saved\":null}", "fileless_detect nothing read");
 
-    // ---- fileless_detect: tagged (non-dalvik anon_name present) -----------------
-    // Exercises the serializer only -- nothing in the current runtime path
-    // (pending_map + dalvik- suppression) ever actually populates a
-    // non-empty anon_name; this just proves mod_emit_fileless_detect()
-    // correctly serializes whatever value it's given.
-    strncpy(fe.anon_name, "v8-jit", FILELESS_DETECT_TAG_LEN - 1);
+    // ---- fileless_detect: named region made executable, ELF saved -------------
+    strncpy(fe.anon_name, "stage2", FILELESS_DETECT_TAG_LEN - 1);
     j.len = 0;
-    mod_emit_fileless_detect(&j, &fe);
-    CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_detect anon_name tagged");
+    mod_emit_fileless_detect(&j, &fe, "mprotect_exec", "elf", "/data/local/tmp/p/9300-7f0000000000.bin",
+                             "cd34", 4096);
+    CHECK_HAS(j, "\"kind\":\"mprotect_exec\"", "fileless_detect wx kind");
+    CHECK_HAS(j, "\"anon_name\":\"stage2\",\"content\":\"elf\",\"saved\":{\"file\":\"/data/local/tmp/p/9300-7f0000000000.bin\",\"sha256\":\"cd34\",\"size\":4096}}",
+              "fileless_detect name/content/saved");
 
     // ---- binder_api: named method, oneway --------------------------------------
     {

@@ -180,7 +180,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_names_load.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/dexload_detect_parse.c $(SRC)/modules/dexload_detect.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_names_load.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/dexload_detect_parse.c $(SRC)/modules/payload_store.c $(SRC)/modules/dexload_detect.c $(SRC)/modules/fileless_detect_parse.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -577,6 +577,10 @@ test:
 	$(BUILD)/test_screencapture_detect_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dexload_detect_parse.c src/modules/dexload_detect_parse.c src/common/sha256.c -o $(BUILD)/test_dexload_detect_parse
 	$(BUILD)/test_dexload_detect_parse
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_fileless_detect_parse.c src/modules/fileless_detect_parse.c -o $(BUILD)/test_fileless_detect_parse
+	$(BUILD)/test_fileless_detect_parse
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_payload_store.c src/modules/payload_store.c src/modules/dexload_detect_parse.c src/common/proc_mem.c src/common/sha256.c -o $(BUILD)/test_payload_store
+	$(BUILD)/test_payload_store
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_names.c src/modules/mod_names.c -o $(BUILD)/test_mod_names
 	$(BUILD)/test_mod_names
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_exfil_detect_addr.c -o $(BUILD)/test_exfil_detect_addr

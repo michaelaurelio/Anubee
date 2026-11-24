@@ -225,16 +225,29 @@ void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_de
     jb_c(j, '}');
 }
 
-void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e)
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e,
+                              const char *kind, const char *content,
+                              const char *saved, const char *sha256, long long size)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_FILELESS_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");      jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"kind\":\"");      jb_esc(j, kind); jb_c(j, '"');
     jb_s(j, ",\"start\":\"");     jb_hex(j, e->start); jb_c(j, '"');
     jb_s(j, ",\"size\":");        jb_u64(j, e->size);
     jb_s(j, ",\"anon_name\":\""); jb_esc(j, e->anon_name); jb_c(j, '"');
+    jb_s(j, ",\"content\":");     jb_str_or_null(j, content);
+    jb_s(j, ",\"saved\":");
+    if (saved) {
+        jb_s(j, "{\"file\":\"");   jb_esc(j, saved); jb_c(j, '"');
+        jb_s(j, ",\"sha256\":");   jb_str_or_null(j, sha256);
+        jb_s(j, ",\"size\":");     jb_u64(j, size > 0 ? (unsigned long long)size : 0);
+        jb_c(j, '}');
+    } else {
+        jb_s(j, "null");
+    }
     jb_c(j, '}');
 }
 

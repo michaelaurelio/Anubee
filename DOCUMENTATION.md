@@ -1268,23 +1268,59 @@ straight from a background thread. Available analyzers:
   produces the same calls — the categories say what the service did, not why;
   the grant is checked only at attach (`perm-watch` tracks changes); an OEM
   build that renames the interface's descriptor would need the name updated.
-- **`fileless-detect`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
-  fires for every mmap, file-backed or anonymous, correlated entry/exit via a
-  per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
-  into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
-  hook suppresses (deletes) the candidate if ART's own `dalvik-`tagged JIT-cache
-  naming call — `prctl(PR_SET_VMA_ANON_NAME, ...)`, a distinct, later syscall from
-  the mmap itself — follows shortly after. The analyzer's dispatcher `tick` scans
-  `pending_map` every 100ms (on the poll thread, the `-o` sink's single writer) and alerts on any candidate that survives a 250ms grace
-  window unsuppressed. Detects fileless native code execution — the mechanism behind
-  native packers/unpackers and multi-stage droppers that hand off to a second-stage
-  payload without ever writing it to disk (e.g. NexusRoute's obfuscated-native-
-  library-via-JNI handoff stage) — not `DexClassLoader`/DEX loading, which executes
-  through ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
-  emits every qualifying mapping as its own event (no burst/threshold — a single
-  occurrence is already the signal). Known limitation: legitimate non-ART JIT
-  engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
-  anonymous executable mappings and will false-positive (see BACKLOG.md).
+- **`fileless-detect`** — executable memory with no file behind it: native
+  packers/unpackers, in-memory second stages, exec-from-memfd (stealthy:
+  kprobes only, zero uprobes). Three signals, each its own event `kind`:
+
+  ```mermaid
+  flowchart LR
+    A["kprobe+kretprobe do_mmap<br/>anonymous + PROT_EXEC"] --> P[(pending_map)]
+    P -->|"tick, after 250 ms"| N{"region name in<br/>/proc/pid/maps<br/>ART's?"}
+    N -->|no| R[anon_exec_mmap]
+    M["kprobe security_file_mprotect<br/>anon / shared-anon / memfd<br/>gaining PROT_EXEC"] --> K{"vma name<br/>ART's?<br/>(read in kernel)"}
+    K -->|no| R2[mprotect_exec]
+    F["kprobe security_mmap_file<br/>memfd + PROT_EXEC"] --> R3[memfd_exec]
+    R & R2 & R3 --> S["first bytes → content elf/zero/data<br/>copy + SHA-256 saved"]
+  ```
+
+  - `anon_exec_mmap`: `do_mmap` entry/return (the file argument is NULL for
+    `MAP_ANONYMOUS`, private or shared) records the region in `pending_map`;
+    the dispatcher `tick` (every 100 ms, the `-o` sink's single writer)
+    graduates entries older than 250 ms after reading the region's name from
+    `/proc/<pid>/maps` -- the name the kernel actually holds, whichever call
+    set it -- and drops ART's.
+  - `mprotect_exec`: `security_file_mprotect` on a region that wasn't
+    executable, is anonymous, anonymous-shared (`dev/zero`) or a memfd, and
+    gains `PROT_EXEC`. Anonymous memory starts zeroed, so code was written
+    into it first -- the write-then-execute step of an unpacker (the idea of
+    Tracee's `mem_prot_alert`, reimplemented). The region name is read from
+    `vma->anon_name` in the kernel. Real files are skipped (text
+    relocations).
+  - `memfd_exec`: `security_mmap_file` mapping a memfd executable -- also how
+    `execve` of a memfd (`fexecve`) maps its segments.
+
+  ART's own regions are recognised by name: anonymous/shmem regions named
+  `dalvik-*` (on Android 16 the JIT caches are
+  `[anon_shmem:dalvik-jit-code-cache]` / `dalvik-zygote-jit-code-cache`) and
+  the memfd caches `jit-cache` / `jit-zygote-cache`. This replaced v1's
+  matching of a following `prctl(PR_SET_VMA_ANON_NAME)` call by exact address.
+  Each alert reads the region (through `/proc/<pid>/mem`, or the memfd through
+  `/proc/<pid>/fd`), classifies its first bytes (`content`: `elf`, `zero`,
+  `data`) and saves a copy as `<pid>-<start>.bin` / `<pid>-memfd-<ino>.bin`
+  in the payload store shared with `dexload-detect`; regions with no
+  non-zero byte (nothing written yet) and regions over 64 MiB aren't saved,
+  and at most 32 copies are kept per process. The console prints the first 10
+  alerts per process; JSON gets every one. Not `DexClassLoader`/DEX loading,
+  which runs through ART's own regions (`dexload-detect`). Verified on
+  Android 16: no alerts from Settings, Chrome or YouTube launches. Known
+  limitations: a non-ART JIT inside the app's own process (Unity/Mono,
+  Flutter debug builds, an in-process V8) alerts -- Chrome/WebView run V8 in
+  a separate sandboxed process, outside the traced UID; a payload that names
+  its region `dalvik-*` (or its memfd `jit-cache`) is excluded the same as
+  ART; an anonymous mapping copied at graduation may not hold its final
+  contents yet (a later `mprotect_exec` would not fire if it was created
+  executable); code reached by remapping an existing executable file mapping
+  isn't covered.
 - **`screencapture-detect`** — how far a screen-capture attempt got, per
   process, as stages (stealthy: kprobe + dumpsys poll, zero uprobes). Targets
   the live-screen-streaming-to-C2 technique behind OverlayPhantom and other
@@ -1428,9 +1464,9 @@ at the moment the underlying kernel hook fired. Two exceptions: `mediaproj-
 abuse`'s event is built entirely in userspace (a `dumpsys`-polling thread,
 not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
 call at detection time, accurate only to the analyzer's 1s poll interval;
-`fileless-detect`'s alert event reuses the timestamp already captured at the
-original `do_mmap` return (not the later moment the alert graduates past its
-grace window), since that's the more accurate instant; `perm-watch`'s
+`fileless-detect`'s `anon_exec_mmap` event reuses the timestamp already
+captured at the original `do_mmap` return (not the later moment the alert
+graduates past its grace window), since that's the more accurate instant; `perm-watch`'s
 `perm_change` records are also userspace `CLOCK_MONOTONIC` stamps, taken when
 the snapshot that saw the change began (2s resolution). `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
@@ -1454,7 +1490,8 @@ longer lost from the file:
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read|action|gesture|global_action|screenshot|input_method","method":".."|null,"code":N,"granted":true|false|null}` (first call per process and category)
 - `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"calls":{"other":N,"screen_read":N,"action":N,"gesture":N,"global_action":N,"screenshot":N,"input_method":N}},..]}`
-- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"fileless_detect","pid":N,"ts_ns":N,"comm":"..","kind":"anon_exec_mmap|mprotect_exec|memfd_exec","start":"0x..","size":N,"anon_name":"..","content":"elf|zero|data"|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (`kind`, `content`, `saved` added in v2; `start` is 0 for `memfd_exec`, whose `size` is the memfd's)
+- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N,"anon_exec_mmap":N,"mprotect_exec":N,"memfd_exec":N,"saved":N},..]}`
 - `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
 - `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; enum value appended after `binder_api`)

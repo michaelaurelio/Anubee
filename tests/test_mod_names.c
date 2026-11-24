@@ -16,6 +16,7 @@ static int checks = 0, failures = 0;
 static const char *dups[8];
 static int ndups;
 static void on_dup(const char *name) { dups[ndups++] = name; }
+static int is_loud(const char *name) { return !strcmp(name, "prop-read"); }
 
 int main(void)
 {
@@ -46,6 +47,30 @@ int main(void)
     // NULL callback is allowed
     const char *d[] = { "execve", "execve" };
     CHECK(mod_dedupe_names(d, 2, NULL) == 1, "NULL on_dup still dedupes");
+
+    // triage preset: every non-loud analyzer, registry order, at its position
+    const char *reg[] = { "proc-event", "prop-read", "file-access", "perm-watch" };
+    const char *e[16] = { "execve", "triage" };
+    n = mod_expand_presets(e, 2, 16, reg, 4, is_loud);
+    CHECK(n == 4, "triage -> 3 quiet analyzers after execve");
+    CHECK(n == 4 && !strcmp(e[0], "execve") && !strcmp(e[1], "proc-event")
+                 && !strcmp(e[2], "file-access") && !strcmp(e[3], "perm-watch"),
+          "loud prop-read excluded, registry order kept");
+
+    const char *f[16] = { "triage", "prop-read" };
+    n = mod_expand_presets(f, 2, 16, reg, 4, is_loud);
+    CHECK(n == 4 && !strcmp(f[3], "prop-read"), "explicit loud analyzer after the preset kept");
+
+    const char *g[16] = { "triage", "file-access" };
+    n = mod_expand_presets(g, 2, 16, reg, 4, is_loud);
+    n = mod_dedupe_names(g, n, NULL);
+    CHECK(n == 3, "explicit + preset duplicate removed by dedupe");
+
+    const char *h[3] = { "triage" };
+    CHECK(mod_expand_presets(h, 1, 2, reg, 4, is_loud) == -1, "cap too small -> -1");
+
+    const char *k[4] = { "execve" };
+    CHECK(mod_expand_presets(k, 1, 4, reg, 4, is_loud) == 1, "no preset -> unchanged");
 
     printf("test_mod_names: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

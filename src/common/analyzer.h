@@ -51,6 +51,11 @@ typedef struct {
     // here instead of emitting itself. Also called once after the poll loop
     // exits, before teardown(). May be NULL.
     void (*tick)(void);
+    // Non-NULL reason string if setup() succeeded but the analyzer is not
+    // actually watching anything (e.g. perm-watch with no resolvable
+    // package). The coverage record then reports it exempt with that reason
+    // instead of "full coverage". May be NULL.
+    const char *(*inactive)(void);
 } anubee_analyzer_t;
 
 // Defined in each analyzer's .c; the dispatcher references them by pointer in

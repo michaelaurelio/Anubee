@@ -17,3 +17,26 @@ int mod_dedupe_names(const char *names[], int n, void (*on_dup)(const char *name
     }
     return out;
 }
+
+int mod_expand_presets(const char *names[], int n, int cap,
+                       const char *const *all, int nall,
+                       int (*is_loud)(const char *name))
+{
+    const char *out[64];
+    int m = 0;
+    if (cap > 64) cap = 64;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(names[i], MOD_PRESET_TRIAGE)) {
+            if (m == cap) return -1;
+            out[m++] = names[i];
+            continue;
+        }
+        for (int j = 0; j < nall; j++) {
+            if (is_loud(all[j])) continue;
+            if (m == cap) return -1;
+            out[m++] = all[j];
+        }
+    }
+    for (int i = 0; i < m; i++) names[i] = out[i];
+    return m;
+}

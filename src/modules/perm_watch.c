@@ -205,12 +205,7 @@ static struct ring_buffer *pw_setup(int uid, struct anubee_mod_ctx *mc)
 {
     (void)uid;
     g_mc = mc;
-    g_pkg = mc->pkg;
-    if (!g_pkg || !anubee_pkg_name_ok(g_pkg)) {
-        fprintf(stderr, "mod perm-watch: no package name to watch (-P PACKAGE, or a -p "
-                        "pid whose package resolves)\n");
-        return NULL;
-    }
+    g_pkg = (mc->pkg && anubee_pkg_name_ok(mc->pkg)) ? mc->pkg : NULL;
 
     long page = sysconf(_SC_PAGESIZE);
     g_stub_fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "pw_stub", 0, 0,
@@ -221,6 +216,13 @@ static struct ring_buffer *pw_setup(int uid, struct anubee_mod_ctx *mc)
     }
     g_rb = ring_buffer__new(g_stub_fd, stub_sample, NULL, NULL);
     if (!g_rb) { pw_teardown(); return NULL; }
+    if (!g_pkg) {
+        // Inert rather than fatal, so one unresolvable target (a native
+        // daemon under -p) doesn't abort the other analyzers in a triage run.
+        fprintf(stderr, "mod perm-watch: warning - no package name to watch (-p pid whose "
+                        "package doesn't resolve); perm-watch inactive\n");
+        return g_rb;
+    }
 
     // Baseline: taken before the dispatcher launches the app, emitted here on
     // the dispatcher thread (setup runs there, before the poll loop starts).
@@ -287,7 +289,7 @@ static void pw_teardown(void)
 
 static void pw_print_summary(void)
 {
-    if (!g_pkg) return;
+    if (!g_pkg) { printf("[perm-watch] --- inactive (no package resolved)\n"); return; }
     printf("[perm-watch] --- %s: %lu granted, %lu revoked, %lu changed",
            g_pkg, g_granted, g_revoked, g_changed);
     if (g_snap_failed) printf(" (%lu snapshot(s) failed, skipped)", g_snap_failed);
@@ -301,6 +303,11 @@ static unsigned long long pw_drops(void)
     return g_q_dropped;
 }
 
+static const char *pw_inactive(void)
+{
+    return g_pkg ? NULL : "inactive: no package name resolved for the target";
+}
+
 const anubee_analyzer_t analyzer_perm_watch = {
     .name          = "perm-watch",
     .description   = "Baseline + timeline of the package's permissions, app-op modes, "
@@ -311,4 +318,5 @@ const anubee_analyzer_t analyzer_perm_watch = {
     .print_summary = pw_print_summary,
     .drops         = pw_drops,
     .tick          = pw_tick,
+    .inactive      = pw_inactive,
 };

@@ -993,6 +993,46 @@ test_dump_now() {
 # threads are inserted into the 64-slot target_pids map, a later child can't
 # be. scripts/anubee_forkfollow_gen.c creates 100 threads, then forks a child
 # that execs /system/bin/true with a marker argv; mod execve -p must show it.
+test_mod_no_launch() {
+    echo "=== mod --no-launch (arm the UID, never start/stop the app) ==="
+    local comp; comp="$(adb shell "cmd package resolve-activity --brief $PKG" | tr -d '\r' | tail -1)"
+    [ -n "$comp" ] || fail "no-launch: cannot resolve a launcher activity for $PKG"
+    # 1) an app that is already running must not be force-stopped/relaunched
+    adb shell "am start -n $comp" >/dev/null 2>&1; sleep 2
+    local before after con
+    before="$(adb shell "pidof $PKG" | tr -d '\r')"
+    con="$(anubee "mod proc-event -P $PKG --no-launch -q")"
+    after="$(adb shell "pidof $PKG" | tr -d '\r')"
+    [ -n "$before" ] && [ "$before" = "$after" ] \
+        || fail "no-launch: running app was restarted (pid '$before' -> '$after')"
+    ! grep -q '^launching' <<<"$con" || fail "no-launch: launch banner printed"
+    # 2) an app started later by someone else (here: am start from a detached
+    #    job, standing in for a user tap / receiver / alarm) is traced
+    local out="/data/local/tmp/anubee_no_launch.jsonl"
+    forcestop; sleep 1
+    adb shell "su -c 'rm -f $out; nohup setsid sh -c \"sleep 3; am start -n $comp\" >/dev/null 2>&1 &'"
+    anubee "mod proc-event -P $PKG --no-launch -q -o $out" >/dev/null
+    local n; n="$(adb shell "su -c 'grep -c \"type\\\":\\\"spawn\" $out; rm -f $out'" | tr -d '\r' | head -1)"
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || fail "no-launch: app started after attach produced no spawn records"
+    info "no-launch OK - running app untouched; later start traced ($n spawn record(s))"
+}
+
+test_mod_triage() {
+    echo "=== mod triage preset (every stealthy analyzer, one sink) ==="
+    local out="/data/local/tmp/anubee_triage.jsonl" con recs
+    con="$(anubee "mod triage -P $PKG -q -o $out")"
+    grep -q 'LOUD' <<<"$con" && fail "triage: a LOUD analyzer was included"
+    local want; want="$(adb shell "su -c '$DEVICE_PATH mod --list'" | tr -d '\r' | grep -c '^  [a-z-]* *\[stealth\]')"
+    local got; got="$(grep -c '^\[mod\]   > stealthy:' <<<"$con")"
+    [ "$got" = "$want" ] || { tail -15 <<<"$con" >&2; fail "triage: $got analyzer(s) set up, expected every [stealth] one ($want)"; }
+    recs="$(adb shell "su -c 'cat $out; rm -f $out'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "triage: combined -o output is not valid JSONL"
+    local ncov; ncov="$(grep -c '"type":"coverage"' <<<"$recs")"
+    [ "$ncov" = "$want" ] || fail "triage: $ncov coverage record(s), expected $want (an analyzer didn't tear down?)"
+    info "triage OK - $got stealthy analyzers, valid shared JSONL, $ncov coverage records"
+}
+
 test_mod_perm_watch() {
     echo "=== mod perm-watch (baseline + app-op change timeline) ==="
     # Flip SYSTEM_ALERT_WINDOW (overlay -- the banking-trojan staple) on the
@@ -1094,6 +1134,8 @@ case "$WHAT" in
     mod-follow-fork)   test_mod_follow_fork ;;
     mod-pkg-inject)    test_mod_pkg_inject ;;
     mod-perm-watch)    test_mod_perm_watch ;;
+    mod-no-launch)     test_mod_no_launch ;;
+    mod-triage)        test_mod_triage ;;
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
@@ -1101,8 +1143,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_pkg_inject; test_mod_perm_watch; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-pkg-inject | mod-perm-watch | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_pkg_inject; test_mod_perm_watch; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-pkg-inject | mod-perm-watch | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

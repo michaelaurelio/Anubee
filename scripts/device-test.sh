@@ -966,6 +966,38 @@ test_dump_now() {
     adb shell "su -c 'rm -rf $devdir'" >/dev/null 2>&1
 }
 
+# -p follow-fork: a target that creates many threads must still have its
+# child processes followed. Thread creation fires sched_process_fork too; if
+# threads are inserted into the 64-slot target_pids map, a later child can't
+# be. scripts/anubee_forkfollow_gen.c creates 100 threads, then forks a child
+# that execs /system/bin/true with a marker argv; mod execve -p must show it.
+test_mod_follow_fork() {
+    echo "=== mod -p follow-fork (children followed past many threads) ==="
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "follow-fork: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/anubee_forkfollow_gen"
+    aarch64-linux-gnu-gcc -static -O2 -pthread -o "$gen_bin" "$ROOT/scripts/anubee_forkfollow_gen.c" \
+        || fail "follow-fork: failed to compile generator"
+    local gen="/data/local/tmp/anubee_forkfollow_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "follow-fork: push failed"
+    adb shell "chmod 755 $gen"
+
+    local gen_pid
+    gen_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$gen_pid" ] || ! [ "$gen_pid" -gt 0 ] 2>/dev/null; then
+        fail "follow-fork: could not start generator (no pid captured)"
+    fi
+    local out; out="$(anubee "mod execve -p $gen_pid")"
+    adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "follow-fork: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    grep -q 'anubee-forkfollow-child' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "follow-fork: child exec not traced after 100 threads (threads exhausted target_pids?)"; }
+    info "follow-fork OK - child of a 100-thread target traced"
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -978,6 +1010,7 @@ case "$WHAT" in
     trace-syscalls)    test_trace_syscalls ;;
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
+    mod-follow-fork)   test_mod_follow_fork ;;
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
@@ -985,8 +1018,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

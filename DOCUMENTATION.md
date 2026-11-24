@@ -1407,6 +1407,23 @@ straight from a background thread. Available analyzers:
     binary). Reported once, and once more if a later mapping is executable.
   - **delete**: the file is unlinked; `after_drop_ms` gives the drop→load and
     drop→delete timing.
+  - **memload**: a DEX ART holds only in anonymous memory. `kprobe` on
+    `__arm64_sys_prctl` catches ART's `MemMap` naming the region
+    (`PR_SET_VMA_ANON_NAME`): `dalvik-DEX data` is what
+    `InMemoryDexClassLoader` (and other byte-array loads) produces;
+    `dalvik-classes*.dex extracted in memory from <file>` is a compressed DEX
+    ART unpacked. ART names the region before copying the DEX in, so the
+    dispatcher tick reads the header through `/proc/<pid>/mem` every 100 ms
+    until it is a valid DEX (magic + version, `header_size` 0x70, endian tag,
+    `file_size` within the region), for up to 2 s (once more at teardown),
+    then saves `file_size` bytes as `<pid>-mem-<addr>.dex`. The full region
+    name comes from `/proc/<pid>/maps`; extractions from read-only system
+    partitions (`/system`, `/system_ext`, `/product`, `/vendor`, `/odm`,
+    `/apex`) are the platform's own code and dropped -- on the test phone
+    every app gets two for an OEM framework jar. Observed on Android 16: an
+    app class loader given a jar with a compressed `classes.dex` maps the jar
+    briefly (the `load` stage, with the jar saved) rather than producing a
+    named extraction region, so that case is covered by the file stages.
 
   The path is rebuilt in the kernel from the file's dentry chain, crossing
   mount points to the root of the writer's mount namespace (`bpf_loop`, up to
@@ -1420,12 +1437,14 @@ straight from a background thread. Available analyzers:
   each candidate is checked against the inode. Payloads never loaded or
   deleted are saved at teardown; files over 256 MiB are not saved. Reading the
   copy is anubee's own file I/O -- nothing touches the target's memory.
-  Limitations: a payload deleted before anything maps it, and not held open,
-  can't be saved (opt-in hard-linking is a possible fix); writes via
+  Tracing a package that shares the system UID (Settings runs as `system`)
+  also traces `system_server` and the package installer, so app installs
+  and updates show up as zip drops/loads. Limitations: a payload deleted
+  before anything maps it, and not held open, can't be saved (opt-in hard-linking is a possible fix); writes via
   `writev`, `sendfile`/`copy_file_range`, `io_uring` or `mmap` stores, and
   payloads that start with a non-matching header (encrypted, then decrypted in
   memory) aren't seen as drops; `InMemoryDexClassLoader` never writes a file
-  (see `fileless-detect` / `dump`); legitimate apps that extract native
+  (see `memload` above); legitimate apps that extract native
   libraries (SoLoader/ReLinker), dynamic feature modules or plugin
   frameworks produce the same events.
 - **`perm-watch`** — the package's permission state as a timeline (stealthy:
@@ -1494,8 +1513,8 @@ longer lost from the file:
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N,"anon_exec_mmap":N,"mprotect_exec":N,"memfd_exec":N,"saved":N},..]}`
 - `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
-- `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; enum value appended after `binder_api`)
-- `{"type":"dexload_detect_summary","file_count":N,"untracked":N,"files":[{"pid":N,"comm":"..","kind":"..","path":"..","ino":N,"loaded":bool,"exec":bool,"deleted":bool,"saved":{..}|null},..]}`
+- `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete|memload","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N[,"start":"0x..","region_size":N],"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; memload adds `start`/`region_size`, `ino` 0, `path` = the source file or null; enum value appended after `binder_api`)
+- `{"type":"dexload_detect_summary","file_count":N,"untracked":N,"files":[{"pid":N,"comm":"..","kind":"..","path":"..","ino":N,"loaded":bool,"exec":bool,"deleted":bool,"memload":bool,"saved":{..}|null},..]}`
 - `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
 - `{"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..","stage":"fgs_declared|projection_start|virtual_display","interface":".."|null,"method":".."|null,"code":N|null}` (one per process and stage; `fgs_declared` per session, with nulls)
 - `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"stages":["fgs_declared",..],"fgs_sessions":N},..]}`

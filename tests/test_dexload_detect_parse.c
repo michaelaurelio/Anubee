@@ -101,6 +101,36 @@ int main(void)
         unlink(dst);
     }
 
+    // ---- in-memory DEX: header check -----------------------------------------
+    unsigned char h[0x70] = { 'd','e','x','\n','0','3','9','\0' };
+    h[0x20] = 0x00; h[0x21] = 0x10;                 // file_size = 0x1000
+    h[0x24] = 0x70;                                 // header_size
+    h[0x28] = 0x78; h[0x29] = 0x56; h[0x2a] = 0x34; h[0x2b] = 0x12;  // endian_tag
+    unsigned fs = 0;
+    CHECK(dl_dex_header_ok(h, sizeof h, 0x2000, &fs) == 1 && fs == 0x1000, "valid in-memory DEX header");
+    CHECK(dl_dex_header_ok(h, sizeof h, 0x800, &fs) == 0, "file_size larger than the region rejected");
+    CHECK(dl_dex_header_ok(h, 0x40, 0x2000, &fs) == 0, "short header rejected");
+    unsigned char z[0x70] = { 0 };
+    CHECK(dl_dex_header_ok(z, sizeof z, 0x2000, &fs) == 0, "not yet copied (zeros) rejected");
+    h[0x28] = 0;
+    CHECK(dl_dex_header_ok(h, sizeof h, 0x2000, &fs) == 0, "bad endian tag rejected");
+
+    // ---- in-memory DEX: which regions matter ----------------------------------
+    const char *msrc = NULL;
+    CHECK(dl_memload_wanted("dalvik-DEX data", &msrc) == 1 && msrc == NULL,
+          "InMemoryDexClassLoader region wanted, no source file");
+    CHECK(dl_memload_wanted("dalvik-classes.dex extracted in memory from /data/user/0/com.example.app/files/p.jar", &msrc) == 1
+          && strcmp(msrc, "/data/user/0/com.example.app/files/p.jar") == 0,
+          "dex extracted from an app-writable file wanted, source returned");
+    CHECK(dl_memload_wanted("dalvik-classes2.dex extracted in memory from /data/local/tmp/x.jar", &msrc) == 1,
+          "multidex extraction wanted");
+    CHECK(dl_memload_wanted("dalvik-classes.dex extracted in memory from /system_ext/framework/x.jar", &msrc) == 0,
+          "extraction from a system partition ignored");
+    CHECK(dl_memload_wanted("dalvik-classes.dex extracted in memory from /apex/com.android.art/javalib/y.jar", &msrc) == 0,
+          "extraction from an apex ignored");
+    CHECK(dl_memload_wanted("dalvik-jit-code-cache", &msrc) == 0, "other dalvik region ignored");
+    CHECK(dl_memload_wanted(NULL, &msrc) == 0, "NULL ignored");
+
     printf("test_dexload_detect_parse: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

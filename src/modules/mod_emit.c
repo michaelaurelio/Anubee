@@ -271,16 +271,20 @@ void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *
                              const char *kind, const char *path, long long after_drop_ms,
                              const char *saved, const char *sha256, long long size)
 {
-    static const char *const stages[] = { "?", "drop", "load", "delete" };
+    static const char *const stages[] = { "?", "drop", "load", "delete", "memload" };
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");     jb_s(j, trace_type_name(TRACE_DEXLOAD_DETECT)); jb_c(j, '"');
     jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
     jb_s(j, ",\"ts_ns\":");      jb_u64(j, e->ts_ns);
     jb_s(j, ",\"comm\":\"");     jb_esc(j, e->comm); jb_c(j, '"');
-    jb_s(j, ",\"stage\":\"");    jb_s(j, stages[e->stage <= DEXLOAD_STAGE_DELETE ? e->stage : 0]); jb_c(j, '"');
+    jb_s(j, ",\"stage\":\"");    jb_s(j, stages[e->stage <= DEXLOAD_STAGE_MEMLOAD ? e->stage : 0]); jb_c(j, '"');
     jb_s(j, ",\"kind\":\"");     jb_esc(j, kind); jb_c(j, '"');
     jb_s(j, ",\"path\":");       jb_str_or_null(j, path);
     jb_s(j, ",\"ino\":");        jb_u64(j, e->ino);
+    if (e->stage == DEXLOAD_STAGE_MEMLOAD) {
+        jb_s(j, ",\"start\":\"");  jb_hex(j, e->addr); jb_c(j, '"');
+        jb_s(j, ",\"region_size\":"); jb_u64(j, e->len);
+    }
     jb_s(j, ",\"exec\":");
     jb_s(j, e->stage == DEXLOAD_STAGE_LOAD ? (e->exec ? "true" : "false") : "null");
     jb_s(j, ",\"after_drop_ms\":");

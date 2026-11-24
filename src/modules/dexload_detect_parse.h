@@ -43,6 +43,20 @@ void dl_path_join(const char *comps, int n, size_t stride, int truncated,
 int dl_maps_find_ino(const char *maps, unsigned long ino,
                      unsigned long *start, unsigned long *end);
 
+// In-memory DEX (memload): a standard DEX header ("dex\n0NN\0", header_size
+// 0x70, little-endian tag) whose file_size fits in a region of region_len
+// bytes. n is how many header bytes were read (needs 0x70). Sets *file_size.
+int dl_dex_header_ok(const unsigned char *h, size_t n, unsigned long region_len,
+                     unsigned *file_size);
+
+// Whether an ART DEX region (name without the "[anon:" wrapper) is worth
+// reporting: "dalvik-DEX data" (a DEX loaded from memory) always;
+// "dalvik-classes*.dex extracted in memory from <path>" unless <path> is on a
+// read-only system partition (/system, /system_ext, /product, /vendor,
+// /odm, /apex), in which case it is the platform's own code. *source is set
+// to <path> (pointing into name) or NULL.
+int dl_memload_wanted(const char *name, const char **source);
+
 // "<dir>/<pid>-<ino>.<ext>"
 void dl_payload_name(char *out, size_t cap, const char *dir, unsigned pid,
                      unsigned long long ino, int kind);

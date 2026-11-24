@@ -85,6 +85,40 @@ int dl_maps_find_ino(const char *maps, unsigned long ino,
     return 0;
 }
 
+static unsigned rd_le32(const unsigned char *p)
+{
+    return (unsigned)p[0] | (unsigned)p[1] << 8 | (unsigned)p[2] << 16 | (unsigned)p[3] << 24;
+}
+
+int dl_dex_header_ok(const unsigned char *h, size_t n, unsigned long region_len,
+                     unsigned *file_size)
+{
+    if (!h || n < 0x70 || dl_kind_of(h, n) != DL_DEX) return 0;
+    unsigned fs = rd_le32(h + 0x20);
+    if (rd_le32(h + 0x24) != 0x70 || rd_le32(h + 0x28) != 0x12345678u) return 0;
+    if (fs < 0x70 || fs > region_len) return 0;
+    if (file_size) *file_size = fs;
+    return 1;
+}
+
+int dl_memload_wanted(const char *name, const char **source)
+{
+    static const char *const sys[] = { "/system/", "/system_ext/", "/product/",
+                                       "/vendor/", "/odm/", "/apex/" };
+    static const char marker[] = " extracted in memory from ";
+    if (source) *source = NULL;
+    if (!name) return 0;
+    if (!strcmp(name, "dalvik-DEX data")) return 1;
+    if (strncmp(name, "dalvik-classes", 14)) return 0;
+    const char *m = strstr(name, marker);
+    if (!m) return 0;
+    const char *src = m + sizeof marker - 1;
+    if (source) *source = src;
+    for (size_t i = 0; i < sizeof sys / sizeof sys[0]; i++)
+        if (!strncmp(src, sys[i], strlen(sys[i]))) return 0;
+    return 1;
+}
+
 void dl_payload_name(char *out, size_t cap, const char *dir, unsigned pid,
                      unsigned long long ino, int kind)
 {

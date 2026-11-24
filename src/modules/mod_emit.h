@@ -112,6 +112,9 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
 //  "kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,
 //  "after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}
 // exec is set on load only; after_drop_ms < 0 and saved == NULL print null.
+// stage "memload" (a DEX ART holds in anonymous memory) adds
+// "start":"0x..","region_size":N after ino (0); path is the file ART
+// extracted it from, or null for a DEX loaded from memory.
 void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
                              const char *kind, const char *path, long long after_drop_ms,
                              const char *saved, const char *sha256, long long size);

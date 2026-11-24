@@ -1225,6 +1225,42 @@ DRV
     grep -q '"type":"dexload_detect_summary","file_count":2' <<<"$rec" \
         || fail "dexload-detect: summary record missing"
     info "dexload-detect OK - drop/load/delete of a DEX and an ELF, payload copy sha256 matches"
+
+    # memload: a DEX that only ever exists in memory. AnubeeLoader
+    # (scripts/anubee_inmemdex/) reads payload.dex, deletes it, and loads it
+    # with InMemoryDexClassLoader; ART holds it in "[anon:dalvik-DEX data]".
+    # Needs javac + d8 on the host to build the two tiny DEX files.
+    if ! command -v javac >/dev/null 2>&1 || ! command -v d8 >/dev/null 2>&1; then
+        info "dexload-detect memload SKIP - javac/d8 not on PATH (Android SDK build-tools)"
+        return 0
+    fi
+    local b="$ROOT/build/inmemdex" t=/data/local/tmp/anubee_inmem
+    rm -rf "$b"; mkdir -p "$b/cls" "$b/ldr" "$b/pay"
+    javac --release 8 -nowarn -d "$b/cls" "$ROOT"/scripts/anubee_inmemdex/*.java 2>/dev/null \
+        || fail "dexload-detect: javac failed on scripts/anubee_inmemdex"
+    d8 --min-api 26 --output "$b/ldr" "$b/cls/AnubeeLoader.class" \
+        && d8 --min-api 26 --output "$b/pay" "$b/cls/Payload.class" \
+        || fail "dexload-detect: d8 failed"
+    local pay_sha; pay_sha="$(sha256sum "$b/pay/classes.dex" | cut -d' ' -f1)"
+    adb shell "su -c 'rm -rf $t; mkdir -p $t; chmod 777 $t'" >/dev/null
+    adb push "$b/ldr/classes.dex" "$t/loader.dex" >/dev/null && adb push "$b/pay/classes.dex" "$t/payload.dex" >/dev/null \
+        || fail "dexload-detect: push of the memload fixtures failed"
+    local ld_pid
+    ld_pid="$(adb shell "su -c 'nohup setsid dalvikvm64 -cp $t/loader.dex AnubeeLoader mem $t/payload.dex >$t/out 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$ld_pid" ] && [ "$ld_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the in-memory loader"
+    out="$(anubee "mod dexload-detect -p $ld_pid -o $t/dl.jsonl")"
+    rec="$(adb shell "su -c 'cat $t/dl.jsonl; cat $t/out; ls $t/payload.dex 2>&1'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $t'" >/dev/null 2>&1 || true
+
+    grep -q 'anubee-inmem-payload-ran' <<<"$rec" \
+        || { echo "$rec" | tail -5 >&2; fail "dexload-detect: the in-memory loader didn't run its payload"; }
+    grep -q 'payload.dex: No such file' <<<"$rec" \
+        || fail "dexload-detect: payload.dex still on disk -- the test needs it deleted before the load"
+    grep -q 'memload dex  \[from memory\]' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "dexload-detect: InMemoryDexClassLoader DEX not reported (memload)"; }
+    grep -q "\"stage\":\"memload\".*\"sha256\":\"$pay_sha\"" <<<"$rec" \
+        || { echo "$rec" | head -5 >&2; fail "dexload-detect: in-memory DEX copy missing or its sha256 differs from the payload"; }
+    info "dexload-detect memload OK - DEX loaded from memory (file deleted first) captured, sha256 matches"
 }
 
 case "$WHAT" in

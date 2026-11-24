@@ -9,6 +9,11 @@
 //             once mapped executable.
 //   delete -- kprobe/security_inode_unlink: a dropped file is unlinked
 //             (the "load then delete" anti-forensics step).
+//   memload -- kprobe/__arm64_sys_prctl: ART names an anonymous region it
+//             holds a DEX in -- "dalvik-DEX data" (InMemoryDexClassLoader and
+//             other byte-array loads) or "dalvik-classes*.dex extracted in
+//             memory from <file>". The DEX is copied in after the naming;
+//             userspace reads it from /proc/<pid>/mem once its header is valid.
 // Dropped files are keyed by (device, inode), so renames keep matching.
 // Userspace (dexload_detect.c) classifies the header precisely, joins the
 // path and saves a copy of the payload. All kprobes: nothing is written to
@@ -140,6 +145,8 @@ static __always_inline struct dexload_detect_event *dl_begin(__u8 stage, const s
 	e->exec    = 0;
 	e->ncomp   = 0;
 	e->truncated = 0;
+	e->addr    = 0;
+	e->len     = 0;
 	__builtin_memset(e->head, 0, sizeof(e->head));
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	return e;
@@ -237,6 +244,45 @@ int BPF_KPROBE(on_inode_unlink, struct inode *dir, struct dentry *dentry)
 	struct dexload_detect_event *e = dl_begin(DEXLOAD_STAGE_DELETE, &k);
 	if (!e)
 		return 0;
+	dl_send(e);
+	return 0;
+}
+
+// prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name): how ART's MemMap
+// names its anonymous regions. Args from pt_regs (syscall-entry kprobe);
+// the name pointer is tag-stripped before the user read.
+#define DL_PR_SET_VMA           0x53564d41UL   // "SVMA", <linux/prctl.h>
+#define DL_PR_SET_VMA_ANON_NAME 0UL
+
+SEC("kprobe/__arm64_sys_prctl")
+int BPF_KPROBE(on_prctl, const struct pt_regs *regs)
+{
+	if (!uid_matches() && !pid_matches())
+		return 0;
+	if (BPF_CORE_READ(regs, regs[0]) != DL_PR_SET_VMA ||
+	    BPF_CORE_READ(regs, regs[1]) != DL_PR_SET_VMA_ANON_NAME)
+		return 0;
+	char n[16] = {};
+	unsigned long np = BPF_CORE_READ(regs, regs[4]) & 0x00FFFFFFFFFFFFFFul;
+	if (bpf_probe_read_user(n, sizeof(n), (void *)np))
+		return 0;
+	// "dalvik-DEX data" / "dalvik-classes..."
+	if (!(n[0] == 'd' && n[1] == 'a' && n[2] == 'l' && n[3] == 'v' && n[4] == 'i' &&
+	      n[5] == 'k' && n[6] == '-'))
+		return 0;
+	int dexdata = n[7] == 'D' && n[8] == 'E' && n[9] == 'X' && n[10] == ' ' && n[11] == 'd';
+	int classes = n[7] == 'c' && n[8] == 'l' && n[9] == 'a' && n[10] == 's' && n[11] == 's';
+	if (!dexdata && !classes)
+		return 0;
+
+	struct dexload_key k = {};
+	struct dexload_detect_event *e = dl_begin(DEXLOAD_STAGE_MEMLOAD, &k);
+	if (!e)
+		return 0;
+	e->addr  = BPF_CORE_READ(regs, regs[2]);
+	e->len   = BPF_CORE_READ(regs, regs[3]);
+	e->ncomp = 1;
+	bpf_probe_read_user_str(e->comp[0], DEXLOAD_COMP_LEN, (void *)np);
 	dl_send(e);
 	return 0;
 }

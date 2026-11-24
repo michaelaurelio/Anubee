@@ -222,11 +222,14 @@ struct binder_api_val {
 
 // dexload-detect: a file whose first bytes written are a DEX/CDEX/ZIP/ELF
 // header (drop), that file being mapped by any process (load), and unlinked
-// (delete) -- see dexload_detect.bpf.c. comp[] is the file's path, leaf
-// first, one component per slot (dexload_detect_parse.c joins it).
+// (delete); and ART naming a region it holds a DEX in (memload: addr/len,
+// region name in comp[0]) -- see dexload_detect.bpf.c. For file stages comp[]
+// is the file's path, leaf first, one component per slot
+// (dexload_detect_parse.c joins it).
 #define DEXLOAD_COMP_N   16   // power of two (BPF index masking)
 #define DEXLOAD_COMP_LEN 48
-enum { DEXLOAD_STAGE_DROP = 1, DEXLOAD_STAGE_LOAD = 2, DEXLOAD_STAGE_DELETE = 3 };
+enum { DEXLOAD_STAGE_DROP = 1, DEXLOAD_STAGE_LOAD = 2, DEXLOAD_STAGE_DELETE = 3,
+       DEXLOAD_STAGE_MEMLOAD = 4 };
 struct dexload_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
@@ -237,6 +240,8 @@ struct dexload_detect_event {
     __u8   ncomp;             // valid comp[] slots (0 for delete)
     __u8   truncated;         // path walk stopped before the root
     unsigned char head[8];    // drop: first bytes written
+    __u64  addr;              // memload: region start
+    __u64  len;               // memload: region length
     char   comm[TASK_COMM_LEN];
     char   comp[DEXLOAD_COMP_N][DEXLOAD_COMP_LEN];
 };

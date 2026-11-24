@@ -326,6 +326,13 @@ the tests encode the original phone's environment.
   (drop + delete) but not saved. Fix: opt-in hard link of each dropped file
   at drop time (changes the file's link count -- visible to a check, so not
   default), or a copy from a periodic tick shortly after the drop.
+- **DL3 — `dexload-detect` memload sees ART's named regions only.** A DEX
+  a packer decrypts into its own heap buffer (malloc/`byte[]`) and hands to
+  ART through `InMemoryDexClassLoader` is caught (ART copies it into
+  `dalvik-DEX data`); a custom loader that parses DEX itself, or ART paths
+  that keep the bytes in an unnamed buffer, isn't. A DEX overwritten in its
+  region within 2 s of the naming may be read mid-copy (header check
+  guards against a zero region, not a partial one).
 - **DL2 — `dexload-detect` drop coverage.** Only `vfs_write` at offset 0 is
   hooked: `writev`, `sendfile`/`copy_file_range` (`FileChannel.transferTo`),
   `io_uring` and writes through a shared mapping aren't seen as drops (the
@@ -616,6 +623,18 @@ the tests encode the original phone's environment.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-11-25
+
+- **`dexload-detect` memload (Phase 4c).** DEX held only in memory:
+  `__arm64_sys_prctl` catches ART naming a `dalvik-DEX data` /
+  `dalvik-classes*.dex extracted in memory from <file>` region; the tick
+  reads and validates the header through `/proc/<pid>/mem` (retrying while
+  ART copies it in), drops extractions from system partitions, and saves
+  the DEX + SHA-256. Device test: a loader that reads a DEX, deletes the
+  file and uses `InMemoryDexClassLoader` -- the saved copy hashes identical
+  to the payload. Kept in `mod` rather than `dump` so triage captures it
+  automatically. Known drawback: DL3.
 
 ### 2026-11-24
 

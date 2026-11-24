@@ -519,6 +519,18 @@ int main(void)
     CHECK_HAS(j, "\"stage\":\"delete\",\"kind\":\"dex\",\"path\":null", "dexload_detect delete, path unknown");
     CHECK_HAS(j, "\"exec\":null,\"after_drop_ms\":7,\"saved\":null}", "dexload_detect delete timing");
 
+    // ---- dexload_detect: memload (DEX loaded from memory) ----------------------
+    dl.stage = DEXLOAD_STAGE_MEMLOAD;
+    dl.ino   = 0;
+    dl.addr  = 0x7a00000000ULL;
+    dl.len   = 8192;
+    j.len = 0;
+    mod_emit_dexload_detect(&j, &dl, "dex", NULL, -1, "/data/local/tmp/p/9500-mem-7a00000000.dex", "ef56", 4660);
+    CHECK_HAS(j, "\"stage\":\"memload\",\"kind\":\"dex\",\"path\":null,\"ino\":0,\"start\":\"0x7a00000000\",\"region_size\":8192",
+              "dexload_detect memload region");
+    CHECK_HAS(j, "\"saved\":{\"file\":\"/data/local/tmp/p/9500-mem-7a00000000.dex\",\"sha256\":\"ef56\",\"size\":4660}}",
+              "dexload_detect memload saved");
+
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

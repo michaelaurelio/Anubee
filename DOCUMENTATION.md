@@ -316,9 +316,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   arms `target_uids`, so processes sharing the same app UID are included. Implemented in
   userspace (the `||` gate makes it a map-fill choice).
 - **Follow-fork** (`src/common/follow_fork.bpf.h`): in PID mode an `anubee_follow_fork`
-  program on `sched/sched_process_fork` inserts a child's TGID into `target_pids` when its
-  parent is tracked. On by default; `--no-follow-fork` disables it. Zero cost when
-  `target_pids` is empty (launch/UID mode).
+  program on `tp_btf/sched_process_fork` inserts a child's TGID into `target_pids` when its
+  parent is tracked. New *threads* (child `pid != tgid`) are skipped: the tracepoint fires
+  for thread creation too, and inserting thread ids used to fill the 64-slot map so later
+  child processes were silently not followed. On by default; `--no-follow-fork` disables
+  it. Zero cost when `target_pids` is empty (launch/UID mode).
 - **Uniform no-op warnings (2026-07-18).** Four flag combinations that used to
   resolve silently now print a one-line stderr warning and the run continues
   unchanged (warn, don't error - the flag just has no effect in the chosen
@@ -1175,7 +1177,14 @@ you need them.
 ## 6.6 The `mod` analyzers (`anubee mod`)
 
 `anubee mod <name>` runs a lightweight standalone analyzer that owns its own BPF
-object — no shared skeleton with `funcs`. Available analyzers:
+object — no shared skeleton with `funcs`. Several analyzers run together via
+repeated `-m`; a name given more than once (positional + `-m`, or `-m` + a `-F`
+`mod:` line) runs once with a warning, since each analyzer owns static skeleton
+state (`src/modules/mod_names.c`). All analyzers share one `-o` sink written only
+by the dispatcher's poll thread: work that isn't a ring callback (a map scan, a
+`dumpsys` result) goes through the analyzer's optional `tick` hook
+(`anubee_analyzer_t`, run once per poll pass by `anubee_rb_poll_multi_cb`), never
+straight from a background thread. Available analyzers:
 
 - **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Wires
   `sym_flush_pid` on `ANUBEE_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
@@ -1210,13 +1219,17 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
-- **`exfil-detect`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
-  `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
+- **`exfil-detect`** — `openat`/`openat2`/`sendto`/`write`/`writev` kprobes
+  (stealthy: zero uprobes). Arms a per-process state on a
   media-subdir- or credential-shaped-filename read (reusing `file_access`'s
   pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
-  `path_has_component`), then accumulates outbound byte volume via a
-  per-`(tgid,fd)` "is this fd a tracked non-loopback socket" map armed by
-  `connect()`. Crossing 512 KiB within 30 seconds of the arming read emits
+  `path_has_component`), then accumulates outbound byte volume. A send counts
+  only if its fd resolves (fd table → `struct socket` → `struct sock`) to a
+  socket whose connected peer is a non-loopback IPv4/IPv6 address
+  (`src/modules/exfil_detect_addr.h`), or `sendto` names such a destination
+  explicitly. AF_UNIX traffic (logd, dnsproxyd, fwmarkd) never counts, sockets
+  connected before attach are still seen, and the alert's `dest` is the peer
+  of the send that tripped it. Crossing 512 KiB within 30 seconds of the arming read emits
   an alert -- byte volume to *any* destination, not distinct-destination
   count, since realistic exfiltration is usually one C2 endpoint receiving
   a large payload rather than many small sends to many hosts. Known
@@ -1242,8 +1255,8 @@ object — no shared skeleton with `funcs`. Available analyzers:
   into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
   hook suppresses (deletes) the candidate if ART's own `dalvik-`tagged JIT-cache
   naming call — `prctl(PR_SET_VMA_ANON_NAME, ...)`, a distinct, later syscall from
-  the mmap itself — follows shortly after. A userspace background thread polls
-  `pending_map` every 100ms and alerts on any candidate that survives a 250ms grace
+  the mmap itself — follows shortly after. The analyzer's dispatcher `tick` scans
+  `pending_map` every 100ms (on the poll thread, the `-o` sink's single writer) and alerts on any candidate that survives a 250ms grace
   window unsuppressed. Detects fileless native code execution — the mechanism behind
   native packers/unpackers and multi-stage droppers that hand off to a second-stage
   payload without ever writing it to disk (e.g. NexusRoute's obfuscated-native-
@@ -1255,7 +1268,9 @@ object — no shared skeleton with `funcs`. Available analyzers:
   anonymous executable mappings and will false-positive (see BACKLOG.md).
 - **`screencapture-detect`** — detects an active Android `MediaProjection`
   screen-capture session (stealthy: zero uprobes). Detection is a userspace
-  thread polling `dumpsys activity services <pkg>` once a second for a
+  thread polling `dumpsys activity services <pkg>` once a second (it hands a
+  detected session to the dispatcher `tick`, which emits it -- the `-o` sink is
+  single-writer) for a
   `ServiceRecord` block matching the launched/attached package with
   `isForeground=true` and a `types=0x..` hex mask that has the
   `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed

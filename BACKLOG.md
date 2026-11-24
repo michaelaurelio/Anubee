@@ -293,6 +293,27 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+### Device-test portability — 2026-11-24
+
+Found running the full `make device-test` suite on a second phone (MediaTek,
+GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
+the tests encode the original phone's environment.
+
+- **DT1 — `lib` asserts `bionic/libc.so` appears.** The app inherits libc
+  already mapped from zygote, so a fresh launch on this phone never maps it
+  and the check fails while the engine is working (`[lib]` lines flow). Assert
+  on a library the app itself maps, or accept the maps-seed record.
+- **DT2 — `syscalls-cfi` fails `managed_naming_off:true`** on this phone's ART
+  build. Same root cause as the Major item "CFI / managed-frame naming —
+  generalize beyond one ART build"; this is a second confirming device.
+- **DT3 — default `ANUBEE_TEST_PKG` (`com.android.deskclock`) doesn't exist on
+  vendor skins** (here it's a vendor-prefixed clock), and `dump-now` needs a
+  test app that isn't installed. Pick a package from `pm list packages` at
+  preflight, or fail with a clear "set ANUBEE_TEST_PKG" message.
+- Fixed in passing: the `exfil-detect` test silently needed a default network
+  route (offline, `connect()` failed and SIGPIPE killed the generator). The
+  generator now uses a private network namespace.
+
 ### anubee-mcp full tool sweep — 2026-07-18
 
 - **MCP1 — audit the remaining 28 `@mcp.tool` handlers.** Triggered by a
@@ -582,6 +603,26 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-11-24
+
+- **`mod` hardening for real-malware triage (four fixes).**
+  (1) Shared `-o` sink was written from background threads
+  (`fileless-detect`'s grace-window scan, `screencapture-detect`'s dumpsys
+  poll) concurrently with the poll thread -- corrupt JSONL possible when
+  combining analyzers. New optional `anubee_analyzer_t.tick`, run by
+  `anubee_rb_poll_multi_cb`; fileless-detect's thread removed, screencapture
+  hands sessions to tick. (2) A repeated analyzer name set the analyzer up
+  twice (doubled events); now de-duplicated with a warning
+  (`src/modules/mod_names.c`). (3) Follow-fork inserted every new *thread*
+  into the 64-slot `target_pids` map, so in `-p` mode children of any
+  thread-heavy target were silently not followed; now `tp_btf` and skips
+  `pid != tgid` (affects every engine). (4) `exfil-detect` counted AF_UNIX
+  traffic (logd's `logdw`) as outbound and lost `dest` for sockets connected
+  before the sensitive read; send-path gating now resolves fd → `struct sock`
+  and counts only non-loopback IPv4/IPv6 peers (`exfil_detect_addr.h`), with
+  `dest` taken from the tripping send's socket. The `connect`/`close` hooks
+  are gone.
 
 ### 2026-07-15
 

@@ -8,7 +8,7 @@ you'd have to hand-build with `funcs`/`correlate` specs.
 anubee mod --list                                        # list available analyzers
 anubee mod massdelete-detect -P com.example.app -o out.jsonl
 anubee mod execve -p 12345                                # attach to a running PID
-anubee mod file-access -m file-access -m execve -P com.example.app   # run several at once
+anubee mod -m file-access -m execve -P com.example.app   # run several at once
 ```
 
 | Flag | Meaning |

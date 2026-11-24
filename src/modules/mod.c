@@ -20,6 +20,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
+#include "modules/mod_names.h"
 
 static volatile sig_atomic_t exiting = 0;
 static struct anubee_sink g_sink;
@@ -164,6 +165,11 @@ static void print_ignored_kind_warning(const custom_probe_spec_t *specs, int nsp
     fprintf(stderr, "\n");
 }
 
+static void warn_dup_name(const char *name)
+{
+    fprintf(stderr, "mod: warning — analyzer '%s' given more than once; running it once\n", name);
+}
+
 // MT3: -l/--list needs to short-circuit before argp_parse, same reason
 // anubee_wants_help (engine_args.h) is pre-scanned rather than handled purely
 // via argp's own dispatch — ARGP_KEY_END below rejects a run with no analyzer
@@ -202,6 +208,7 @@ int cmd_mod(int argc, char **argv)
 
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
+    ma.nname = mod_dedupe_names(ma.names, ma.nname, warn_dup_name);
     print_ignored_kind_warning(ma.specs, ma.nspec); // "before run"
 
     const anubee_analyzer_t *ans[16];

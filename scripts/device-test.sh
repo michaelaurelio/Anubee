@@ -467,6 +467,16 @@ test_mod_file_access() {
     else
         echo "  SKIP: no [file] events in this window (app's own data-dir opens are timing-dependent)"
     fi
+
+    # A name given both positionally and via -m must run that analyzer once:
+    # one attach banner, plus a warning naming the duplicate.
+    forcestop
+    local dup; dup="$(anubee "mod file-access -m file-access -P $PKG")"
+    grep -q "analyzer 'file-access' given more than once" <<<"$dup" \
+        || { tail -5 <<<"$dup" >&2; fail "mod-file-access: no duplicate-name warning"; }
+    [ "$(grep -c 'stealthy: file-access uses kernel-only probes' <<<"$dup")" = "1" ] \
+        || { tail -5 <<<"$dup" >&2; fail "mod-file-access: duplicate name still set up twice"; }
+    info "mod-file-access duplicate-name OK - analyzer set up once, warning shown"
 }
 
 # mod massdelete-detect: deterministic trigger via a compiled single-process

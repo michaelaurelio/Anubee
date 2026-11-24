@@ -31,3 +31,13 @@ decoy constants of other types); `IHand` is a hand-written interface
 additionally uses data descriptors (sizes after the data), as real
 `/system/framework` jars do. Used by `tests/test_binder_api_parse.c`; the
 committed files are canonical.
+
+# Network fixtures (`tests/test_net_parse.c`)
+
+- `tls_clienthello.bin` — a real TLS ClientHello (1687 bytes, TLS 1.3 with a
+  post-quantum key share) for server name `api.example-c2.net`, produced by
+  Python's `ssl` module (`wrap_bio(..., server_hostname=...)` +
+  `do_handshake()`, reading the outgoing BIO). The SNI starts at byte 273.
+- `dns_query.bin` — a DNS query message (id 0x1234, RD, one question:
+  `api.example-c2.net` A IN), the payload of a direct UDP/53 query and of
+  netd's `resnsend` command (base64).

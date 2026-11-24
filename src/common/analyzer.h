@@ -72,5 +72,6 @@ extern const anubee_analyzer_t analyzer_screencapture_detect;
 extern const anubee_analyzer_t analyzer_perm_watch;
 extern const anubee_analyzer_t analyzer_binder_api;
 extern const anubee_analyzer_t analyzer_dexload_detect;
+extern const anubee_analyzer_t analyzer_net;
 
 #endif /* __ANUBEE_ANALYZER_H */

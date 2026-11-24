@@ -45,7 +45,8 @@ int main(void)
 
     int n2 = 0;
     (void)anubee_bpf_objects(&n2);
-    CHECK(n2 == 18, "registry has exactly 18 entries (6 engines + 12 analyzers) after dexload-detect lands");
+    CHECK(!anubee_object_writes_target("mod:net"), "mod:net quiet");
+    CHECK(n2 == 19, "registry has exactly 19 entries (6 engines + 13 analyzers) after net lands");
 
     // anubee_quiet_config_ok: a quiet set passes; adding a loud object fails.
     const char *quiet_set[] = { "syscalls", "lib", "dump", "mod:proc-event" };

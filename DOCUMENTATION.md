@@ -1222,15 +1222,18 @@ straight from a background thread. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
-- **`exfil-detect`** — `openat`/`openat2`/`sendto`/`write`/`writev` kprobes
+- **`exfil-detect`** — `openat`/`openat2`/`sendto`/`write`/`writev`/`sendmsg`/
+  `sendmmsg`/`sendfile64` kprobes
   (stealthy: zero uprobes). Arms a per-process state on a
   media-subdir- or credential-shaped-filename read (reusing `file_access`'s
   pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
   `path_has_component`), then accumulates outbound byte volume. A send counts
   only if its fd resolves (fd table → `struct socket` → `struct sock`) to a
   socket whose connected peer is a non-loopback IPv4/IPv6 address
-  (`src/modules/exfil_detect_addr.h`), or `sendto` names such a destination
-  explicitly. AF_UNIX traffic (logd, dnsproxyd, fwmarkd) never counts, sockets
+  (`src/modules/exfil_detect_addr.h`), or `sendto`/`sendmsg` names such a
+  destination explicitly. `sendmsg` sums the message's iovecs, `sendmmsg` the
+  first 8 messages (destination from the first), `sendfile` its `count` (a
+  file streamed to the socket without passing through user memory). AF_UNIX traffic (logd, dnsproxyd, fwmarkd) never counts, sockets
   connected before attach are still seen, and the alert's `dest` is the peer
   of the send that tripped it. Crossing 512 KiB within 30 seconds of the arming read emits
   an alert -- byte volume to *any* destination, not distinct-destination
@@ -1447,6 +1450,49 @@ straight from a background thread. Available analyzers:
   (see `memload` above); legitimate apps that extract native
   libraries (SoLoader/ReLinker), dynamic feature modules or plugin
   frameworks produce the same events.
+- **`net`** — who the app talks to over the network, and how much (stealthy:
+  kprobes only, zero uprobes). One flow per outbound IPv4/IPv6 socket,
+  keyed by its kernel `struct sock`:
+
+  ```mermaid
+  flowchart LR
+    S["kprobe/tcp_sendmsg<br/>udp_sendmsg / udpv6_sendmsg"] -->|first send: insert flows,<br/>first 2 KiB sent| O["open<br/>+ host: SNI / HTTP Host / DNS qname"]
+    S -->|every send| TX[tx +=]
+    R["kprobe/__tcp_cleanup_rbuf<br/>skb_consume_udp"] --> RX[rx +=]
+    C["kprobe/inet_release"] --> CL["close<br/>tx, rx, duration"]
+    U["kprobe/unix_stream_sendmsg<br/>getaddrinfo / gethostbyname / resnsend"] --> D["dns (netd)"]
+  ```
+
+  - **open**: the first send of a traced process on a socket whose peer is
+    not loopback/unspecified creates the flow and ships the first bytes
+    sent (up to 2 KiB). Userspace (`src/modules/net_parse.c`) names the
+    host: the `server_name` of a TLS ClientHello, the `Host:` header of a
+    plaintext HTTP request, or the question of a DNS query to port 53 (an
+    app's own resolver, e.g. Chrome's). Each new (proto, dest, host) prints
+    one line.
+  - **close**: `close()` of the socket (`inet_release`, IPv4 and IPv6)
+    emits the totals: `tx` is bytes passed to sendmsg, `rx` bytes the app
+    read (TCP, through `__tcp_cleanup_rbuf` -- `tcp_cleanup_rbuf` on
+    kernels without it) or datagrams it received (UDP). An unconnected UDP
+    socket that sends to a new peer closes the previous flow and opens
+    another. Flows still open at the end are folded into the summary.
+  - **dns**: every app resolves names by writing a command to netd's
+    `/dev/socket/dnsproxyd` (`getaddrinfo <host> ...`, `gethostbyname
+    <netid> <host> ...`, `resnsend <netid> <flags> <base64 query>`); the
+    command is captured and the name extracted. One line per new name.
+  - Pointers in user buffers carry Android's heap tag in the top byte and
+    are stripped before reading (otherwise every heap buffer read fails).
+  - Summary: destinations by bytes (proto, dest, host, connections, tx,
+    rx), then names looked up with counts. Verified on the test phone: a
+    shell client's `ping` lookup through netd, an HTTP request's Host and
+    exact byte totals (device test `net`); Chrome and YouTube show their
+    DNS names, TLS SNI and QUIC flows.
+  - Limitations: QUIC (UDP 443) encrypts its handshake, so those flows have
+    no host (the dest IP and byte totals are still there); TLS with
+    Encrypted Client Hello shows the outer (public) name; DNS-over-HTTPS
+    lookups are just HTTPS flows; a flow already open when tracing starts
+    has no first bytes, so no host; the IP behind a looked-up name isn't
+    linked to it (replies aren't decoded).
 - **`perm-watch`** — the package's permission state as a timeline (stealthy:
   no BPF program at all). A background thread snapshots, every 2s, the
   package's granted install/runtime permissions (`dumpsys package`, filtered
@@ -1515,6 +1561,8 @@ longer lost from the file:
 - `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
 - `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete|memload","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N[,"start":"0x..","region_size":N],"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; memload adds `start`/`region_size`, `ino` 0, `path` = the source file or null; enum value appended after `binder_api`)
 - `{"type":"dexload_detect_summary","file_count":N,"untracked":N,"files":[{"pid":N,"comm":"..","kind":"..","path":"..","ino":N,"loaded":bool,"exec":bool,"deleted":bool,"memload":bool,"saved":{..}|null},..]}`
+- `{"type":"net","pid":N,"ts_ns":N,"comm":"..","event":"open|close|dns","proto":"tcp|udp"|null,"dest":"ip:port"|"[v6]:port"|null,"host":".."|null,"host_source":"sni|http|dns|netd"|null,"tx":N|null,"rx":N|null,"duration_ms":N|null}` (open at a flow's first send, close with totals, dns per netd lookup; enum value appended after `dexload_detect`)
+- `{"type":"net_summary","destination_count":N,"untracked":N,"destinations":[{"proto":"tcp","dest":"..","host":".."|null,"pid":N,"comm":"..","connections":N,"tx":N,"rx":N},..],"lookups":[{"host":"..","count":N,"pid":N,"comm":".."},..]}`
 - `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
 - `{"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..","stage":"fgs_declared|projection_start|virtual_display","interface":".."|null,"method":".."|null,"code":N|null}` (one per process and stage; `fgs_declared` per session, with nulls)
 - `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"stages":["fgs_declared",..],"fgs_sessions":N},..]}`

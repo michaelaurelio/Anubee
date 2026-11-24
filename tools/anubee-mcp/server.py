@@ -224,7 +224,7 @@ def mod_events(kind: Optional[str] = None, pid: Optional[int] = None, top: int =
     load_trace_structured): spawn, proc_exit, execve, prop, file_access,
     accessibility_detect, screencapture_detect, exfil_detect,
     massdelete_detect, fileless_detect, binder_api, perm_change,
-    dexload_detect. Drill-down complement to summaries()
+    dexload_detect, net. Drill-down complement to summaries()
     -- raw individual events, not aggregated tallies. Filter by kind and/or
     pid; omit both to see everything (capped at top)."""
     return store.mod_events(kind, pid, top)

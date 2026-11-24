@@ -62,6 +62,9 @@ static struct bpf_link        *openat2_link  = NULL;
 static struct bpf_link        *sendto_link   = NULL;
 static struct bpf_link        *write_link    = NULL;
 static struct bpf_link        *writev_link   = NULL;
+static struct bpf_link        *sendmsg_link  = NULL;
+static struct bpf_link        *sendmmsg_link = NULL;
+static struct bpf_link        *sendfile_link = NULL;
 
 // ---- ring-buffer callback ---------------------------------------------------
 
@@ -133,6 +136,9 @@ static struct ring_buffer *eb_setup(int uid, struct anubee_mod_ctx *mc)
     sendto_link  = bpf_program__attach(g_skel->progs.on_sendto);
     write_link   = bpf_program__attach(g_skel->progs.on_write);
     writev_link  = bpf_program__attach(g_skel->progs.on_writev);
+    sendmsg_link  = bpf_program__attach(g_skel->progs.on_sendmsg);
+    sendmmsg_link = bpf_program__attach(g_skel->progs.on_sendmmsg);
+    sendfile_link = bpf_program__attach(g_skel->progs.on_sendfile);
 
     if (!openat_link)
         fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_openat unavailable\n");
@@ -144,12 +150,18 @@ static struct ring_buffer *eb_setup(int uid, struct anubee_mod_ctx *mc)
         fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_write unavailable\n");
     if (!writev_link)
         fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_writev unavailable (non-fatal)\n");
+    if (!sendmsg_link)
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_sendmsg unavailable (non-fatal)\n");
+    if (!sendmmsg_link)
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_sendmmsg unavailable (non-fatal)\n");
+    if (!sendfile_link)
+        fprintf(stderr, "mod exfil-detect: kprobe/__arm64_sys_sendfile64 unavailable (non-fatal)\n");
 
     if (!openat_link && !openat2_link) {
         fprintf(stderr, "mod exfil-detect: no openat kprobe attached, aborting\n");
         goto err;
     }
-    if (!write_link && !writev_link && !sendto_link) {
+    if (!write_link && !writev_link && !sendto_link && !sendmsg_link && !sendmmsg_link && !sendfile_link) {
         fprintf(stderr, "mod exfil-detect: no send-path kprobe attached, aborting\n");
         goto err;
     }
@@ -174,6 +186,9 @@ err:
     if (sendto_link)   { bpf_link__destroy(sendto_link);   sendto_link   = NULL; }
     if (write_link)    { bpf_link__destroy(write_link);    write_link    = NULL; }
     if (writev_link)   { bpf_link__destroy(writev_link);   writev_link   = NULL; }
+    if (sendmsg_link)  { bpf_link__destroy(sendmsg_link);  sendmsg_link  = NULL; }
+    if (sendmmsg_link) { bpf_link__destroy(sendmmsg_link); sendmmsg_link = NULL; }
+    if (sendfile_link) { bpf_link__destroy(sendfile_link); sendfile_link = NULL; }
     if (g_skel)        { exfil_detect_bpf__destroy(g_skel); g_skel        = NULL; }
     return NULL;
 }
@@ -186,6 +201,9 @@ static void eb_teardown(void)
     if (sendto_link)   { bpf_link__destroy(sendto_link);   sendto_link   = NULL; }
     if (write_link)    { bpf_link__destroy(write_link);    write_link    = NULL; }
     if (writev_link)   { bpf_link__destroy(writev_link);   writev_link   = NULL; }
+    if (sendmsg_link)  { bpf_link__destroy(sendmsg_link);  sendmsg_link  = NULL; }
+    if (sendmmsg_link) { bpf_link__destroy(sendmmsg_link); sendmmsg_link = NULL; }
+    if (sendfile_link) { bpf_link__destroy(sendfile_link); sendfile_link = NULL; }
     if (g_rb)          { ring_buffer__free(g_rb);          g_rb          = NULL; }
     if (g_skel)        { exfil_detect_bpf__destroy(g_skel); g_skel        = NULL; }
 }

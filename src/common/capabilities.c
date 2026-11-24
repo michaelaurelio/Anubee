@@ -22,11 +22,12 @@ static const struct anubee_bpf_object g_objects[] = {
     { "mod:prop-read",  true  },  // uprobes on libc; writes target memory
     { "mod:file-access", false }, // kprobes on openat/openat2; zero uprobes
     { "mod:massdelete-detect", false }, // kprobes on renameat/renameat2/unlinkat; zero uprobes
-    { "mod:exfil-detect", false }, // kprobes on openat/openat2/sendto/write/writev; zero uprobes
+    { "mod:exfil-detect", false }, // kprobes on openat/openat2/sendto/write/writev/sendmsg/sendmmsg/sendfile64; zero uprobes
     { "mod:accessibility-detect", false }, // tracepoint on binder_transaction; zero uprobes
     { "mod:dexload-detect", false }, // kprobes on vfs_write/security_mmap_file/security_inode_unlink/__arm64_sys_prctl; zero uprobes
     { "mod:fileless-detect", false }, // kprobes on do_mmap/security_file_mprotect/security_mmap_file; zero uprobes
     { "mod:screencapture-detect", false }, // tracepoint on binder_transaction (context only) + dumpsys poll; zero uprobes
+    { "mod:net", false }, // kprobes on tcp/udp sendmsg, tcp_cleanup_rbuf, skb_consume_udp, inet_release, unix_stream_sendmsg; zero uprobes
     { "mod:binder-api", false }, // kprobe on binder_transaction (bpf_probe_read_user of the sender's Parcel); zero uprobes
     { "mod:perm-watch", false }, // shell polling only (dumpsys/appops/settings); no BPF program at all
 };

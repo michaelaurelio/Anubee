@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -606,13 +606,17 @@ test_exfil_detect() {
     adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-detect: push failed"
     adb shell "chmod 755 $gen"
     local mode mpid mout
-    for mode in preconnect unix; do
+    for mode in preconnect unix sendmsg sendmmsg sendfile; do
         mpid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_exfil_test/DCIM $mode >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
         mout="$(anubee "mod exfil-detect -p $mpid")"
         if [ "$mode" = preconnect ]; then
             grep -q '^\[exfil-detect\] .*dest 192\.0\.2\.1:9' <<<"$mout" \
                 || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: preconnect burst not attributed to 192.0.2.1:9 (dest lost for a socket connected before the sensitive read)"; }
             info "exfil-detect preconnect OK — dest names the pre-existing connection's peer"
+        elif [ "$mode" != unix ]; then
+            grep -q '^\[exfil-detect\] .*dest 192\.0\.2\.1:9' <<<"$mout" \
+                || { tail -5 <<<"$mout" >&2; fail "exfil-detect: a burst sent with $mode() was not counted"; }
+            info "exfil-detect $mode OK — burst sent with $mode() counted"
         else
             ! grep -q '^\[exfil-detect\] PID' <<<"$mout" \
                 || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: AF_UNIX burst raised an exfil alert (local IPC counted as outbound)"; }
@@ -1174,6 +1178,47 @@ test_mod_follow_fork() {
     info "follow-fork OK - child of a 100-thread target traced"
 }
 
+test_net() {
+    echo "=== mod net (netd DNS lookup, HTTP flow with Host and byte totals) ==="
+    # A shell client stands in for the app: ping resolves example.com through
+    # netd (dnsproxyd), nc sends a plain HTTP request with a Host header and
+    # reads the reply. Needs the device online; SKIP if nc gets no reply.
+    local out_jsonl=/data/local/tmp/anubee_net.jsonl reply=/data/local/tmp/anubee_net.reply
+    local drv="$ROOT/build/anubee_net_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+sleep 3
+ping -c 1 -W 2 example.com >/dev/null 2>&1
+(printf 'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n'; sleep 3) | nc -w 5 example.com 80 > $reply 2>&1
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_net_drive.sh >/dev/null || fail "net: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_net_drive.sh; rm -f $out_jsonl $reply'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_net_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "net: could not start the driver"
+    local out; out="$(anubee "mod net -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    local got; got="$(adb shell "su -c 'wc -c < $reply'" 2>/dev/null | tr -d '\r ')"
+    adb shell "su -c 'rm -f $out_jsonl $reply /data/local/tmp/anubee_net_drive.sh'" >/dev/null 2>&1 || true
+
+    if grep -qi 'failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -15 <<<"$out" >&2; fail "net: BPF load/attach failed"
+    fi
+    if [ -z "$got" ] || [ "$got" -eq 0 ] 2>/dev/null; then
+        info "net SKIP - no HTTP reply from example.com (device offline?)"
+        return 0
+    fi
+    grep -q '"event":"dns".*"host":"example.com","host_source":"netd"' <<<"$rec" \
+        || { tail -10 <<<"$out" >&2; fail "net: netd DNS lookup of example.com not reported"; }
+    grep -q '"event":"open","proto":"tcp","dest":"[0-9.]*:80","host":"example.com","host_source":"http"' <<<"$rec" \
+        || { tail -10 <<<"$out" >&2; fail "net: HTTP flow with its Host header not reported"; }
+    grep -q "\"event\":\"close\".*\"host\":\"example.com\".*\"tx\":56,\"rx\":$got," <<<"$rec" \
+        || { grep close <<<"$rec" >&2; fail "net: close totals wrong (want tx 56, rx $got = bytes nc received)"; }
+    grep -q '"type":"net_summary"' <<<"$rec" || fail "net: summary record missing"
+    info "net OK - netd lookup, HTTP Host, exact tx/rx byte totals"
+}
+
 test_dexload_detect() {
     echo "=== mod dexload-detect (payload drop -> load -> delete, copy saved) ==="
     # A shell stands in for a dropper: writes a real DEX (from a framework jar)
@@ -1287,11 +1332,12 @@ case "$WHAT" in
     accessibility-detect)        test_accessibility_detect ;;
     fileless-detect)     test_fileless_detect ;;
     dexload-detect)      test_dexload_detect ;;
+    net)                 test_net ;;
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

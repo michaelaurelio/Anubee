@@ -32,6 +32,8 @@ void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_de
 void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
                          const char *iface, const char *method,
                          const struct binder_cp_detail *cp);
+void mod_emit_net(struct jbuf *j, const struct net_event *e, const char *dest,
+                  const char *host, const char *host_source);
 void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
                              const char *kind, const char *path, long long after_drop_ms,
                              const char *saved, const char *sha256, long long size);
@@ -530,6 +532,38 @@ int main(void)
               "dexload_detect memload region");
     CHECK_HAS(j, "\"saved\":{\"file\":\"/data/local/tmp/p/9500-mem-7a00000000.dex\",\"sha256\":\"ef56\",\"size\":4660}}",
               "dexload_detect memload saved");
+
+    // ---- net: open (TLS SNI), close (byte totals), dns (netd) -----------------
+    struct net_event ne = {0};
+    ne.h.pid = 9600;
+    ne.ts_ns = 200000000000ULL;
+    strcpy(ne.comm, "fakebank");
+    ne.kind = NET_EV_OPEN;
+    ne.proto = NET_PROTO_TCP;
+    j.len = 0;
+    mod_emit_net(&j, &ne, "93.184.216.34:443", "api.example-c2.net", "sni");
+    CHECK_HAS(j, "{\"type\":\"net\",\"pid\":9600,\"ts_ns\":200000000000,\"comm\":\"fakebank\",\"event\":\"open\"",
+              "net open header");
+    CHECK_HAS(j, "\"proto\":\"tcp\",\"dest\":\"93.184.216.34:443\",\"host\":\"api.example-c2.net\",\"host_source\":\"sni\"",
+              "net open dest + SNI");
+    CHECK_HAS(j, "\"tx\":null,\"rx\":null,\"duration_ms\":null}", "net open has no totals");
+
+    ne.kind = NET_EV_CLOSE;
+    ne.proto = NET_PROTO_UDP;
+    ne.first_ts_ns = 199000000000ULL;
+    ne.tx = 1234; ne.rx = 56789;
+    j.len = 0;
+    mod_emit_net(&j, &ne, "[2001:db8::1]:53", NULL, NULL);
+    CHECK_HAS(j, "\"event\":\"close\",\"proto\":\"udp\",\"dest\":\"[2001:db8::1]:53\",\"host\":null,\"host_source\":null",
+              "net close dest, no host");
+    CHECK_HAS(j, "\"tx\":1234,\"rx\":56789,\"duration_ms\":1000}", "net close totals + duration");
+
+    ne.kind = NET_EV_DNS;
+    ne.proto = 0;
+    j.len = 0;
+    mod_emit_net(&j, &ne, NULL, "api.example-c2.net", "netd");
+    CHECK_HAS(j, "\"event\":\"dns\",\"proto\":null,\"dest\":null,\"host\":\"api.example-c2.net\",\"host_source\":\"netd\"",
+              "net dns lookup");
 
     free(j.b);
     printf("%d checks, %d failures\n", checks, failures);

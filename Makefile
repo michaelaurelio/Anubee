@@ -88,6 +88,8 @@ FILELESS_DETECT_BPF_OBJ := $(BUILD)/fileless_detect.bpf.o
 FILELESS_DETECT_SKEL    := $(BUILD)/fileless_detect.skel.h
 DEXLOAD_DETECT_BPF_OBJ  := $(BUILD)/dexload_detect.bpf.o
 DEXLOAD_DETECT_SKEL     := $(BUILD)/dexload_detect.skel.h
+NET_BPF_OBJ             := $(BUILD)/net.bpf.o
+NET_SKEL                := $(BUILD)/net.skel.h
 SCREENCAPTURE_DETECT_BPF_OBJ := $(BUILD)/screencapture_detect.bpf.o
 SCREENCAPTURE_DETECT_SKEL    := $(BUILD)/screencapture_detect.skel.h
 BINDER_API_BPF_OBJ := $(BUILD)/binder_api.bpf.o
@@ -180,7 +182,7 @@ TRACE_CSRC := $(SRC)/trace/trace.c $(SRC)/trace/trace_args.c
 TRACE_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(TRACE_CSRC))
 TRACE_PART := $(BUILD)/trace.part.o
 
-MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_names_load.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/dexload_detect_parse.c $(SRC)/modules/payload_store.c $(SRC)/modules/dexload_detect.c $(SRC)/modules/fileless_detect_parse.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
+MOD_CSRC   := $(SRC)/modules/mod_emit.c $(SRC)/modules/file_access_classify.c $(SRC)/modules/massdelete_detect_classify.c $(SRC)/modules/accessibility_detect_classify.c $(SRC)/modules/screencapture_detect_parse.c $(SRC)/modules/mod_names.c $(SRC)/modules/perm_watch_parse.c $(SRC)/modules/perm_watch.c $(SRC)/modules/binder_api_parse.c $(SRC)/modules/binder_names_load.c $(SRC)/modules/binder_api.c $(SRC)/modules/proc_event.c $(SRC)/modules/execve.c $(SRC)/modules/prop_read.c $(SRC)/modules/file_access.c $(SRC)/modules/massdelete_detect.c $(SRC)/modules/exfil_detect.c $(SRC)/modules/accessibility_detect.c $(SRC)/modules/fileless_detect.c $(SRC)/modules/dexload_detect_parse.c $(SRC)/modules/payload_store.c $(SRC)/modules/dexload_detect.c $(SRC)/modules/net_parse.c $(SRC)/modules/net.c $(SRC)/modules/fileless_detect_parse.c $(SRC)/modules/screencapture_detect.c $(SRC)/modules/mod.c
 MOD_OBJ    := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(MOD_CSRC))
 MOD_PART   := $(BUILD)/mod.part.o
 MOD_CFLAGS := -O2 -Wall -Wextra -I$(SRC) -I$(SRC)/modules -I$(BUILD) -I$(LIBBPF_INC) $(DEPFLAGS)
@@ -328,6 +330,13 @@ $(DEXLOAD_DETECT_BPF_OBJ): $(SRC)/modules/dexload_detect.bpf.c vmlinux.h $(LIBBP
 $(DEXLOAD_DETECT_SKEL): $(DEXLOAD_DETECT_BPF_OBJ)
 	$(BPFTOOL) gen skeleton $< name dexload_detect_bpf > $@
 
+$(NET_BPF_OBJ): $(SRC)/modules/net.bpf.c $(SRC)/modules/exfil_detect_addr.h vmlinux.h $(LIBBPF_A)
+	mkdir -p $(BUILD)
+	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
+	llvm-strip -g $@ 2>/dev/null || true
+$(NET_SKEL): $(NET_BPF_OBJ)
+	$(BPFTOOL) gen skeleton $< name net_bpf > $@
+
 $(BINDER_API_BPF_OBJ): $(SRC)/modules/binder_api.bpf.c $(SRC)/modules/binder_token.bpf.h vmlinux.h $(LIBBPF_A)
 	mkdir -p $(BUILD)
 	$(BPF_CLANG) $(BPF_CFLAGS_COMMON) -I$(SRC) -I$(SRC)/modules -c $< -o $@
@@ -388,7 +397,7 @@ $(BUILD)/trace/%.o: $(SRC)/trace/%.c $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(TRACE_CFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(MASSDELETE_DETECT_SKEL) $(EXFIL_DETECT_SKEL) $(ACCESSIBILITY_DETECT_SKEL) $(FILELESS_DETECT_SKEL) $(DEXLOAD_DETECT_SKEL) $(SCREENCAPTURE_DETECT_SKEL) $(BINDER_API_SKEL) $(LIBBPF_A)
+$(BUILD)/modules/%.o: $(SRC)/modules/%.c $(PROC_EVENT_SKEL) $(EXECVE_SKEL) $(PROP_READ_SKEL) $(FILE_ACCESS_SKEL) $(MASSDELETE_DETECT_SKEL) $(EXFIL_DETECT_SKEL) $(ACCESSIBILITY_DETECT_SKEL) $(FILELESS_DETECT_SKEL) $(DEXLOAD_DETECT_SKEL) $(NET_SKEL) $(SCREENCAPTURE_DETECT_SKEL) $(BINDER_API_SKEL) $(LIBBPF_A)
 	mkdir -p $(dir $@)
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
@@ -581,6 +590,8 @@ test:
 	$(BUILD)/test_fileless_detect_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_payload_store.c src/modules/payload_store.c src/modules/dexload_detect_parse.c src/common/proc_mem.c src/common/sha256.c -o $(BUILD)/test_payload_store
 	$(BUILD)/test_payload_store
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_net_parse.c src/modules/net_parse.c -o $(BUILD)/test_net_parse
+	$(BUILD)/test_net_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_mod_names.c src/modules/mod_names.c -o $(BUILD)/test_mod_names
 	$(BUILD)/test_mod_names
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_exfil_detect_addr.c -o $(BUILD)/test_exfil_detect_addr
@@ -630,5 +641,5 @@ ALL_OBJS     := $(SYSC_OBJ) $(FUNC_OBJ) $(COMMON_OBJ) $(LIB_OBJ) $(CORR_OBJ) \
 ALL_BPF_OBJS := $(SYSC_BPF_OBJ) $(FUNC_BPF_OBJ) $(LIB_BPF_OBJ) $(CORR_BPF_OBJ) \
                 $(DUMP_BPF_OBJ) $(PROC_EVENT_BPF_OBJ) $(EXECVE_BPF_OBJ) $(PROP_READ_BPF_OBJ) \
                 $(FILE_ACCESS_BPF_OBJ) $(MASSDELETE_DETECT_BPF_OBJ) $(EXFIL_DETECT_BPF_OBJ) \
-                $(ACCESSIBILITY_DETECT_BPF_OBJ) $(FILELESS_DETECT_BPF_OBJ) $(DEXLOAD_DETECT_BPF_OBJ) $(SCREENCAPTURE_DETECT_BPF_OBJ) $(BINDER_API_BPF_OBJ)
+                $(ACCESSIBILITY_DETECT_BPF_OBJ) $(FILELESS_DETECT_BPF_OBJ) $(DEXLOAD_DETECT_BPF_OBJ) $(NET_BPF_OBJ) $(SCREENCAPTURE_DETECT_BPF_OBJ) $(BINDER_API_BPF_OBJ)
 -include $(ALL_OBJS:.o=.d) $(ALL_BPF_OBJS:.o=.d)

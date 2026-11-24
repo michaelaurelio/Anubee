@@ -320,6 +320,15 @@ the tests encode the original phone's environment.
 - **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
   a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
   and cursor-window decoding.
+- **NET1 — `net` has no host for QUIC flows.** QUIC (UDP 443, most Google
+  traffic) encrypts the ClientHello with keys derived from the connection
+  ID; decrypting the Initial packet (HKDF + AES-128-GCM, RFC 9001) would
+  give its SNI. Until then those flows show dest IP + bytes only.
+- **NET2 — `net` doesn't link a looked-up name to the IPs it resolved to.**
+  Needs the dnsproxyd reply (or the UDP/53 answer) decoded; a flow with no
+  SNI/Host (raw TCP C2, QUIC) then has no name.
+- **NET3 — `net` misses the first bytes of a flow opened before attach**
+  (no host), and a ClientHello whose SNI lies beyond the first 2 KiB.
 - **DL1 — `dexload-detect` misses a payload deleted before it is mapped.**
   The copy is taken on load (or from `map_files`/open fds after unlink); a
   file written, never mapped and unlinked within milliseconds is reported
@@ -625,6 +634,16 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
+
+- **`mod net` (Phase 5).** Outbound IPv4/IPv6 flows: destination, host
+  named in the first bytes (TLS SNI, HTTP Host, DNS question), bytes sent
+  and received, duration; plus every lookup through netd's dnsproxyd.
+  kprobes on tcp/udp sendmsg, `__tcp_cleanup_rbuf`, `skb_consume_udp`,
+  `inet_release`, `unix_stream_sendmsg`; joins `triage`. Device test `net`:
+  netd lookup, HTTP Host, tx/rx equal to what the client sent/received.
+  Known drawbacks: NET1-3.
+- **`exfil-detect` counts `sendmsg`, `sendmmsg`, `sendfile`.** Bursts through
+  those calls were invisible; the device test now drives one burst per call.
 
 - **`dexload-detect` memload (Phase 4c).** DEX held only in memory:
   `__arm64_sys_prctl` catches ART naming a `dalvik-DEX data` /

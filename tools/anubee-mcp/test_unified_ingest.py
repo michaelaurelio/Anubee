@@ -91,6 +91,31 @@ def main():
     check(len(dl_sum) == 1 and dl_sum[0]["files"][0]["loaded"] is True,
           f"dexload_detect_summary queryable, files kept (got {dl_sum})")
 
+    # mod net: per-flow open/close and dns records, and the summary.
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write('{"type":"net","pid":7,"ts_ns":9,"comm":"x","event":"dns","proto":null,'
+                '"dest":null,"host":"api.example-c2.net","host_source":"netd","tx":null,'
+                '"rx":null,"duration_ms":null}\n')
+        f.write('{"type":"net","pid":7,"ts_ns":10,"comm":"x","event":"close","proto":"tcp",'
+                '"dest":"192.0.2.1:443","host":"api.example-c2.net","host_source":"sni",'
+                '"tx":5000,"rx":40,"duration_ms":12}\n')
+        f.write('{"type":"net_summary","destination_count":1,"untracked":0,'
+                '"destinations":[{"proto":"tcp","dest":"192.0.2.1:443","host":"api.example-c2.net",'
+                '"pid":7,"comm":"x","connections":1,"tx":5000,"rx":40}],'
+                '"lookups":[{"host":"api.example-c2.net","count":1,"pid":7,"comm":"x"}]}\n')
+        net_path = f.name
+    nts = TraceStore()
+    _, net_skipped = nts.load_structured(net_path)
+    os.unlink(net_path)
+    check(net_skipped == 0, f"net + summary recognized (skipped {net_skipped})")
+    net_rows = nts.mod_events(kind="net")
+    check(len(net_rows) == 2 and any(r.get("tx") == 5000 for r in net_rows),
+          f"net queryable via mod_events(kind=) (got {net_rows})")
+    net_sum = nts.summaries(kind="net_summary")
+    check(len(net_sum) == 1 and net_sum[0]["destinations"][0]["host"] == "api.example-c2.net"
+          and net_sum[0]["lookups"][0]["count"] == 1,
+          f"net_summary queryable, destinations + lookups kept (got {net_sum})")
+
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0
 

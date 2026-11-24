@@ -85,6 +85,7 @@ enum {
     MOD_EV_SCREENCAPTURE_DETECT = 13,
     MOD_EV_BINDER_API = 14,
     MOD_EV_DEXLOAD_DETECT = 15,
+    MOD_EV_NET = 16,
 };
 
 struct spawn_event {
@@ -252,6 +253,41 @@ struct dexload_val {
     __u64 drop_ts_ns;
     __u32 pid;
     __u8  loaded, deleted, _p[2];
+};
+
+// net: one record per outbound IPv4/IPv6 flow (a socket, keyed by its struct
+// sock) -- OPEN at its first send, with the first bytes sent (TLS
+// ClientHello / HTTP request / DNS query), CLOSE when the socket is released,
+// with byte totals -- and DNS for a lookup the app asks netd's dnsproxyd for
+// (payload = the command text). See net.bpf.c.
+#define NET_PAYLOAD_LEN 2048   // power of two (BPF length masking)
+enum { NET_EV_OPEN = 1, NET_EV_CLOSE = 2, NET_EV_DNS = 3 };
+enum { NET_PROTO_TCP = 6, NET_PROTO_UDP = 17 };
+struct net_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  sk;                 // flow identity (kernel struct sock address)
+    __u64  first_ts_ns;        // close: when the flow's first send was seen
+    __u64  tx, rx;             // close: bytes sent / received while traced
+    __u8   kind;               // NET_EV_*
+    __u8   proto;              // NET_PROTO_* (0 for DNS)
+    __u8   family;             // 2 = AF_INET, 10 = AF_INET6
+    __u8   _pad;
+    __u16  dport;              // host order
+    __u16  payload_len;        // valid payload[] bytes
+    __u8   daddr[16];          // network order (AF_INET: first 4 bytes)
+    char   comm[TASK_COMM_LEN];
+    unsigned char payload[NET_PAYLOAD_LEN];   // CLOSE events stop before this
+};
+
+// net flows map value (key: struct sock address).
+struct net_flow {
+    __u64 first_ts_ns, tx, rx;
+    __u32 pid;
+    __u8  proto, family;
+    __u16 dport;
+    __u8  daddr[16];
+    char  comm[TASK_COMM_LEN];
 };
 
 #endif /* __ANUBEE_MOD_EVENTS_H */

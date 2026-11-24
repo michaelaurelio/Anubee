@@ -119,6 +119,16 @@ void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *
                              const char *kind, const char *path, long long after_drop_ms,
                              const char *saved, const char *sha256, long long size);
 
+// {"type":"net","pid":N,"ts_ns":N,"comm":"..","event":"open|close|dns",
+//  "proto":"tcp|udp"|null,"dest":"ip:port"|null,"host":".."|null,
+//  "host_source":"sni|http|dns|netd"|null,"tx":N|null,"rx":N|null,
+//  "duration_ms":N|null} -- open at a flow's first send (host from the first
+// bytes: TLS SNI, HTTP Host, DNS question), close with byte totals, dns for a
+// lookup sent to netd. Totals/duration only on close.
+struct net_event;
+void mod_emit_net(struct jbuf *j, const struct net_event *e, const char *dest,
+                  const char *host, const char *host_source);
+
 // {"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,
 //  "method":".."|null,"code":N,"oneway":bool} -- first call of (interface, method)
 // by this process. iface NULL = token not decodable; method NULL = code not in

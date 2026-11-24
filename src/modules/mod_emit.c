@@ -344,3 +344,29 @@ void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
     }
     jb_c(j, '}');
 }
+
+void mod_emit_net(struct jbuf *j, const struct net_event *e, const char *dest,
+                  const char *host, const char *host_source)
+{
+    static const char *const kinds[] = { "?", "open", "close", "dns" };
+    const char *proto = e->proto == NET_PROTO_TCP ? "tcp" : e->proto == NET_PROTO_UDP ? "udp" : NULL;
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");     jb_s(j, trace_type_name(TRACE_NET)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");        jb_u64(j, e->h.pid);
+    jb_s(j, ",\"ts_ns\":");      jb_u64(j, e->ts_ns);
+    jb_s(j, ",\"comm\":\"");     jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"event\":\"");    jb_s(j, kinds[e->kind <= NET_EV_DNS ? e->kind : 0]); jb_c(j, '"');
+    jb_s(j, ",\"proto\":");      jb_str_or_null(j, proto);
+    jb_s(j, ",\"dest\":");       jb_str_or_null(j, dest);
+    jb_s(j, ",\"host\":");       jb_str_or_null(j, host);
+    jb_s(j, ",\"host_source\":"); jb_str_or_null(j, host_source);
+    if (e->kind == NET_EV_CLOSE) {
+        jb_s(j, ",\"tx\":");          jb_u64(j, e->tx);
+        jb_s(j, ",\"rx\":");          jb_u64(j, e->rx);
+        jb_s(j, ",\"duration_ms\":"); jb_u64(j, e->ts_ns > e->first_ts_ns
+                                              ? (e->ts_ns - e->first_ts_ns) / 1000000ULL : 0);
+    } else {
+        jb_s(j, ",\"tx\":null,\"rx\":null,\"duration_ms\":null");
+    }
+    jb_c(j, '}');
+}

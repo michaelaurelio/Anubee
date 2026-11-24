@@ -43,6 +43,7 @@ map_bpf_obj() {
     mod:dexload-detect) echo dexload_detect.bpf.o ;;
     mod:screencapture-detect) echo screencapture_detect.bpf.o ;;
     mod:binder-api) echo binder_api.bpf.o ;;
+    mod:net)        echo net.bpf.o ;;
     mod:perm-watch) echo SKIP ;;   # no BPF object: shell polling + an empty ring map
     *)              echo UNMAPPED ;;
   esac
@@ -100,6 +101,7 @@ owner_of() {
     $BUILD/modules/accessibility_detect.o) echo mod:accessibility-detect ;;
     $BUILD/modules/fileless_detect.o) echo mod:fileless-detect ;;
     $BUILD/modules/dexload_detect.o) echo mod:dexload-detect ;;
+    $BUILD/modules/net.o) echo mod:net ;;
     $BUILD/modules/screencapture_detect.o) echo mod:screencapture-detect ;;
     $BUILD/modules/*)           echo shared ;;   # mod.o / mod_emit.o dispatcher
     $BUILD/main.o)              echo shared ;;

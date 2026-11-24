@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 // BPF object for the exfil-detect analyzer: trace openat/openat2 (gated to
 // media/credential-classified reads -- arms detection, doesn't count) and
-// sendto/write/writev (byte-volume accumulation once armed+primed, counted
+// sendto/write/writev/sendmsg/sendmmsg/sendfile (byte-volume accumulation
+// once armed+primed, counted
 // only when the fd is a socket whose kernel-side peer is a non-loopback
 // IPv4/IPv6 address -- see fd_outbound_peer). Flags a per-process byte-volume burst to any
 // destination shortly after a sensitive-file read -- the syscall-level
@@ -385,10 +386,26 @@ int BPF_KPROBE(on_write, const struct pt_regs *regs)
     return 0;
 }
 
-// writev(fd, iov, iovcnt): regs[0]=fd, regs[1]=iov, regs[2]=iovcnt. Sums
-// iov_len across up to 8 entries (bounded, unrolled -- typical writev calls
-// use far fewer; extra entries beyond 8 are a documented undercount, not a
-// correctness bug).
+// Sum of iov_len across up to 8 entries of a user iovec array (bounded,
+// unrolled -- typical calls use far fewer; extra entries beyond 8 are a
+// documented undercount, not a correctness bug).
+static __always_inline __u64 iov_total(unsigned long iov_ptr, __u64 iovcnt)
+{
+    __u64 total = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        if (i >= iovcnt)
+            break;
+        struct iovec iov;
+        if (bpf_probe_read_user(&iov, sizeof(iov),
+                                 (void *)(iov_ptr + i * sizeof(struct iovec))) != 0)
+            break;
+        total += iov.iov_len;
+    }
+    return total;
+}
+
+// writev(fd, iov, iovcnt): regs[0]=fd, regs[1]=iov, regs[2]=iovcnt.
 SEC("kprobe/__arm64_sys_writev")
 int BPF_KPROBE(on_writev, const struct pt_regs *regs)
 {
@@ -402,18 +419,91 @@ int BPF_KPROBE(on_writev, const struct pt_regs *regs)
 
     unsigned long iov_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
     __u64 iovcnt = BPF_CORE_READ(regs, regs[2]);
+    record_bytes(iov_total(iov_ptr, iovcnt), sa);
+    return 0;
+}
+
+// Destination of a user msghdr: its msg_name if that is an outbound
+// IPv4/IPv6 address (unconnected UDP), else the socket's connected peer.
+static __always_inline int msghdr_dest(__s32 fd, const struct user_msghdr *m, unsigned char *sa)
+{
+    unsigned long name = (unsigned long)m->msg_name & 0x00FFFFFFFFFFFFFFul;
+    if (name) {
+        __u32 cnt = (__u32)m->msg_namelen & 31;
+        if (cnt > 28)
+            cnt = 28;
+        __builtin_memset(sa, 0, 28);
+        if (cnt && bpf_probe_read_user(sa, cnt, (void *)name) == 0 &&
+            exfil_sockaddr_is_outbound(sa))
+            return 1;
+    }
+    return fd_outbound_peer(fd, sa);
+}
+
+// sendmsg(fd, msg, flags): regs[0]=fd, regs[1]=struct user_msghdr *.
+SEC("kprobe/__arm64_sys_sendmsg")
+int BPF_KPROBE(on_sendmsg, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned long mp = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    struct user_msghdr m;
+    if (bpf_probe_read_user(&m, sizeof(m), (void *)mp) != 0)
+        return 0;
+    unsigned char sa[28];
+    if (!msghdr_dest(fd, &m, sa))
+        return 0;
+    record_bytes(iov_total((unsigned long)m.msg_iov & 0x00FFFFFFFFFFFFFFul, m.msg_iovlen), sa);
+    return 0;
+}
+
+// sendmmsg(fd, msgvec, vlen, flags): regs[0]=fd, regs[1]=struct mmsghdr *,
+// regs[2]=vlen. Sums up to 8 messages (same undercount bound as writev's
+// iovecs); the destination is the first message's.
+SEC("kprobe/__arm64_sys_sendmmsg")
+int BPF_KPROBE(on_sendmmsg, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned long vp = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    __u32 vlen = (__u32)BPF_CORE_READ(regs, regs[2]);
+    struct mmsghdr mm;
+    if (!vlen || bpf_probe_read_user(&mm, sizeof(mm), (void *)vp) != 0)
+        return 0;
+    unsigned char sa[28];
+    if (!msghdr_dest(fd, &mm.msg_hdr, sa))
+        return 0;
 
     __u64 total = 0;
     #pragma unroll
     for (int i = 0; i < 8; i++) {
-        if (i >= iovcnt)
+        if (i >= vlen)
             break;
-        struct iovec iov;
-        if (bpf_probe_read_user(&iov, sizeof(iov),
-                                 (void *)(iov_ptr + i * sizeof(struct iovec))) != 0)
+        if (i && bpf_probe_read_user(&mm, sizeof(mm), (void *)(vp + i * sizeof(struct mmsghdr))) != 0)
             break;
-        total += iov.iov_len;
+        total += iov_total((unsigned long)mm.msg_hdr.msg_iov & 0x00FFFFFFFFFFFFFFul,
+                           mm.msg_hdr.msg_iovlen);
     }
     record_bytes(total, sa);
+    return 0;
+}
+
+// sendfile(out_fd, in_fd, offset, count): regs[0]=out_fd, regs[3]=count --
+// a file streamed to a socket without passing through user memory.
+SEC("kprobe/__arm64_sys_sendfile64")
+int BPF_KPROBE(on_sendfile, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned char sa[28];
+    if (!fd_outbound_peer(fd, sa))
+        return 0;
+    record_bytes(BPF_CORE_READ(regs, regs[3]), sa);
     return 0;
 }

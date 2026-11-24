@@ -23,6 +23,9 @@
 //              arming -- pooled keep-alive -- is still attributed)
 //   unix       sensitive read, then the burst over a connected AF_UNIX socket
 //              (the shape of logd/dnsproxyd IPC) -> NO alert expected
+//   sendmsg / sendmmsg / sendfile
+//              as the default mode, but the burst goes through that syscall
+//              instead of write() -> alert expected, dest 192.0.2.1:9
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <net/if.h>
@@ -36,6 +39,7 @@
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 
@@ -142,10 +146,40 @@ int main(int argc, char **argv)
     if (sock < 0)
         return 1;
 
-    char payload[65536];
+    static char payload[65536];
     memset(payload, 'x', sizeof(payload));
-    for (int i = 0; i < 9; i++) // 9 * 64KiB = 576KiB > 512KiB threshold
-        write(sock, payload, sizeof(payload)); // EAGAIN once the buffer fills -- see header
+    if (strcmp(mode, "sendmsg") == 0) {
+        // two iovecs per message: 9 * (32+32 KiB)
+        struct iovec iov[2] = { { payload, 32768 }, { payload + 32768, 32768 } };
+        struct msghdr m = { .msg_iov = iov, .msg_iovlen = 2 };
+        for (int i = 0; i < 9; i++)
+            sendmsg(sock, &m, MSG_DONTWAIT);
+    } else if (strcmp(mode, "sendmmsg") == 0) {
+        // 3 calls of 3 messages of 64 KiB
+        struct iovec iov = { payload, sizeof(payload) };
+        struct mmsghdr mm[3];
+        memset(mm, 0, sizeof(mm));
+        for (int k = 0; k < 3; k++) { mm[k].msg_hdr.msg_iov = &iov; mm[k].msg_hdr.msg_iovlen = 1; }
+        for (int i = 0; i < 3; i++)
+            sendmmsg(sock, mm, 3, MSG_DONTWAIT);
+    } else if (strcmp(mode, "sendfile") == 0) {
+        // the burst comes straight from a file: 9 x 64 KiB
+        const char *src = "/data/local/tmp/anubee_exfil_src";
+        int in = open(src, O_CREAT | O_RDWR | O_TRUNC, 0600);
+        if (in < 0)
+            return 1;
+        for (int i = 0; i < 9; i++)
+            write(in, payload, sizeof(payload));
+        for (int i = 0; i < 9; i++) {
+            off_t off = (off_t)i * (off_t)sizeof(payload);
+            sendfile(sock, in, &off, sizeof(payload));
+        }
+        close(in);
+        unlink(src);
+    } else {
+        for (int i = 0; i < 9; i++) // 9 * 64KiB = 576KiB > 512KiB threshold
+            write(sock, payload, sizeof(payload)); // EAGAIN once the buffer fills -- see header
+    }
     close(sock);
     return 0;
 }

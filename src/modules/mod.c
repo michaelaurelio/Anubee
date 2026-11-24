@@ -40,6 +40,7 @@ static const anubee_analyzer_t *const registry[] = {
     &analyzer_perm_watch,
     &analyzer_binder_api,
     &analyzer_dexload_detect,
+    &analyzer_net,
     NULL,
 };
 

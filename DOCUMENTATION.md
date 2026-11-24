@@ -1186,7 +1186,10 @@ by the dispatcher's poll thread: work that isn't a ring callback (a map scan, a
 (`anubee_analyzer_t`, run once per poll pass by `anubee_rb_poll_multi_cb`), never
 straight from a background thread. Available analyzers:
 
-- **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Wires
+- **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Process
+  spawns only: the fork hook is `tp_btf` and skips children whose `pid != tgid`
+  (thread creation fires the same tracepoint), as the exit hook skips
+  non-main-thread exits. Wires
   `sym_flush_pid` on `ANUBEE_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
 - **`execve`** — execve kprobes (stealthy: zero uprobes). Captures exec events for
   child-process correlation.

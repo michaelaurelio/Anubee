@@ -264,7 +264,7 @@ int cmd_mod(int argc, char **argv)
         if (!anubee_quiet_config_ok(loaded, 1))
             printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ans[i]->name);
         else
-            printf("[mod]   > stealthy: %s uses kernel-only probes\n", ans[i]->name);
+            printf("[mod]   > stealthy: %s writes nothing into the target\n", ans[i]->name);
     }
 
     int uid;

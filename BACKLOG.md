@@ -310,10 +310,9 @@ the tests encode the original phone's environment.
   vendor skins** (here it's a vendor-prefixed clock), and `dump-now` needs a
   test app that isn't installed. Pick a package from `pm list packages` at
   preflight, or fail with a clear "set ANUBEE_TEST_PKG" message.
-- **DT4 — `proc-event` counts threads as forks.** A triage run on the clock app
-  reported 105 "forks, 0 exits": `sched_process_fork` fires for thread
-  creation too (the same root cause as the follow-fork fix). Emit a spawn only
-  for `pid == tgid` children, or label thread spawns separately.
+- **DT4 — `proc-event` counted threads as forks — fixed.** A triage run on the
+  clock app reported 105 "forks, 0 exits"; the fork hook now skips thread
+  creation (device test `mod-proc-event`).
 - **DT5 — `accessibility-detect` fires on a benign app.** 7 bursts from the
   stock clock app in a 12s triage run (a granted service wasn't even
   required to raise the burst). Expected for a volume-only signal; resolved by

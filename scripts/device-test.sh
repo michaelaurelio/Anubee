@@ -458,7 +458,7 @@ test_mod_file_access() {
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "mod-file-access: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    grep -q 'stealthy: file-access uses kernel-only probes' <<<"$out" \
+    grep -q 'stealthy: file-access writes nothing into the target' <<<"$out" \
         || { tail -5 <<<"$out" >&2; fail "mod-file-access: no stealthy-attach banner"; }
     # SYM1 Phase 4c put file-access's live line on ts_print (adds "HH:MM:SS "
     # ahead of the tag) -- tolerate that optional prefix.
@@ -474,7 +474,7 @@ test_mod_file_access() {
     local dup; dup="$(anubee "mod file-access -m file-access -P $PKG")"
     grep -q "analyzer 'file-access' given more than once" <<<"$dup" \
         || { tail -5 <<<"$dup" >&2; fail "mod-file-access: no duplicate-name warning"; }
-    [ "$(grep -c 'stealthy: file-access uses kernel-only probes' <<<"$dup")" = "1" ] \
+    [ "$(grep -c 'stealthy: file-access writes nothing into the target' <<<"$dup")" = "1" ] \
         || { tail -5 <<<"$dup" >&2; fail "mod-file-access: duplicate name still set up twice"; }
     info "mod-file-access duplicate-name OK - analyzer set up once, warning shown"
 }
@@ -1092,6 +1092,27 @@ SH
     info "pkg-inject OK - hostile cmdline rejected as a package name"
 }
 
+test_mod_proc_event() {
+    echo "=== mod proc-event (process spawns, not thread creations) ==="
+    # sched_process_fork fires for thread creation too; a spawn record must
+    # mean a new process. The generator creates 100 threads, then forks once.
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "proc-event: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/anubee_forkfollow_gen"
+    aarch64-linux-gnu-gcc -static -O2 -pthread -o "$gen_bin" "$ROOT/scripts/anubee_forkfollow_gen.c" \
+        || fail "proc-event: failed to compile generator"
+    local gen="/data/local/tmp/anubee_forkfollow_gen" out="/data/local/tmp/anubee_proc_event.jsonl"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "proc-event: push failed"
+    adb shell "chmod 755 $gen"
+    local gen_pid
+    gen_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ "${gen_pid:-0}" -gt 0 ] 2>/dev/null || fail "proc-event: could not start generator"
+    anubee "mod proc-event -p $gen_pid --no-follow-fork -q -o $out" >/dev/null
+    local n; n="$(adb shell "su -c 'grep -c spawn $out; rm -f $out $gen'" | tr -d '\r' | head -1)"
+    [ "$n" = "1" ] || fail "proc-event: $n spawn record(s) for 100 threads + 1 fork, expected 1"
+    info "proc-event OK - 1 spawn for 100 threads + 1 fork"
+}
+
 test_mod_follow_fork() {
     echo "=== mod -p follow-fork (children followed past many threads) ==="
     command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
@@ -1132,6 +1153,7 @@ case "$WHAT" in
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
     mod-follow-fork)   test_mod_follow_fork ;;
+    mod-proc-event)    test_mod_proc_event ;;
     mod-pkg-inject)    test_mod_pkg_inject ;;
     mod-perm-watch)    test_mod_perm_watch ;;
     mod-no-launch)     test_mod_no_launch ;;
@@ -1143,8 +1165,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_pkg_inject; test_mod_perm_watch; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-pkg-inject | mod-perm-watch | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

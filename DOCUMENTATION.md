@@ -1291,6 +1291,35 @@ straight from a background thread. Available analyzers:
   category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
   proves a capture session was active, not that data left the device (no
   frame-content or exfil-volume corroboration).
+- **`perm-watch`** — the package's permission state as a timeline (stealthy:
+  no BPF program at all). A background thread snapshots, every 2s, the
+  package's granted install/runtime permissions (`dumpsys package`, filtered
+  on-device with grep since big packages dump megabytes), app-op modes
+  (`appops get`; the `;time=` suffix is dropped so normal use doesn't churn),
+  Accessibility and notification-listener enablement (`settings get secure`),
+  device-admin status (`dumpsys device_policy`), role holdership
+  (`dumpsys role`) and installed-ness, as key=value facts
+  (`src/modules/perm_watch_parse.c`), diffs it against the previous one, and
+  queues the changes for the dispatcher `tick`. The first snapshot is taken in
+  `setup()` (before any launch) and emitted as `baseline` records. Every shell
+  read carries an end marker, so a failed or truncated read skips that
+  snapshot instead of reading as a mass revoke. The dispatcher still needs a
+  ring to poll, so `setup()` creates an empty BPF ring-buffer *map* (no
+  program; the firewall gate maps the capability to `SKIP`). Without a
+  resolvable package (`-p` on a native process) it stays inert and its
+  coverage record is exempt with the reason, via the analyzer's `inactive`
+  hook. Known limitations: 2s resolution (a grant and revert inside one poll is
+  missed); records the state change, not the dialog or API call that caused it;
+  multi-user/work-profile output is flattened into one set.
+
+**Presets and `--no-launch`.** `triage` is a preset name, not an analyzer:
+`mod_expand_presets` (`src/modules/mod_names.c`) replaces it with every
+analyzer whose `mod:<name>` row in `capabilities.c` is quiet, before
+de-duplication, so a loud analyzer can never enter a triage run. `--no-launch`
+(with `-P`) resolves and arms the UID but skips `anubee_launch_app` -- no
+force-stop, no `am start` -- so the app is traced whenever and however it
+starts. Since the gate is the UID, any process of that UID already running
+is traced too.
 
 **Event timestamps.** Every mod analyzer event JSON record carries a `ts_ns`
 field — nanoseconds since boot (`bpf_ktime_get_ns()`'s clock base), captured
@@ -1300,7 +1329,9 @@ not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
 call at detection time, accurate only to the analyzer's 1s poll interval;
 `fileless-detect`'s alert event reuses the timestamp already captured at the
 original `do_mmap` return (not the later moment the alert graduates past its
-grace window), since that's the more accurate instant. `ts_ns` is
+grace window), since that's the more accurate instant; `perm-watch`'s
+`perm_change` records are also userspace `CLOCK_MONOTONIC` stamps, taken when
+the snapshot that saw the change began (2s resolution). `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
 separate runs or as wall-clock time.
 
@@ -1322,6 +1353,7 @@ longer lost from the file:
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
 - `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
@@ -1624,10 +1656,11 @@ Design points worth knowing:
   hardcoded key list does not include — those records currently fall through
   ingest unrecognized by `_summaries` (same "retained but unhandled" outcome
   as any unknown `type`, not a crash, just not queryable via the `summaries`
-  tool below yet). `load_structured()` also loads all 10 per-event mod-analyzer record
+  tool below yet). `load_structured()` also loads all 11 per-event mod-analyzer record
   types (`accessibility_detect`/`screencapture_detect`/`exfil_detect`/
   `massdelete_detect`/`fileless_detect`/`spawn`/`proc_exit`/`execve`/`prop`/
-  `file_access`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
+  `file_access`, plus `perm_change` -- which has no `pid`, being
+  package-scoped) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
   consumed by the `incidents` and `mod_events` tools below. `_SUMMARY_TYPES`
   now covers all 9 mod-analyzer teardown summary types (the original 5 plus
   `accessibility_detect_summary`/`exfil_detect_summary`/

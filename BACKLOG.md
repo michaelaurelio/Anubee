@@ -310,6 +310,14 @@ the tests encode the original phone's environment.
   vendor skins** (here it's a vendor-prefixed clock), and `dump-now` needs a
   test app that isn't installed. Pick a package from `pm list packages` at
   preflight, or fail with a clear "set ANUBEE_TEST_PKG" message.
+- **DT4 — `proc-event` counts threads as forks.** A triage run on the clock app
+  reported 105 "forks, 0 exits": `sched_process_fork` fires for thread
+  creation too (the same root cause as the follow-fork fix). Emit a spawn only
+  for `pid == tgid` children, or label thread spawns separately.
+- **DT5 — `accessibility-detect` fires on a benign app.** 7 bursts from the
+  stock clock app in a 12s triage run (a granted service wasn't even
+  required to raise the burst). Expected for a volume-only signal; resolved by
+  the planned Binder interface/method decode, not by tuning the threshold.
 - Fixed in passing: the `exfil-detect` test silently needed a default network
   route (offline, `connect()` failed and SIGPIPE killed the generator). The
   generator now uses a private network namespace.
@@ -605,6 +613,19 @@ Reverse-chronological. Identifiers preserved for traceability; full technical de
 is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-24
+
+- **`mod` triage workflow (Phase 2).** `perm-watch` analyzer (permission /
+  app-op / special-access / role / installed timeline, `perm_change` record,
+  ingested by anubee-mcp); `triage` preset (every stealthy analyzer, derived
+  from the capability table); `--no-launch` (arm the UID, never start or stop
+  the app); `inactive()` analyzer hook so a non-running analyzer's coverage
+  is exempt, not "full". Security fix shipped alongside: `-p` package names
+  read from a target's `cmdline` were interpolated unvalidated into root
+  shell commands (a traced sample could run commands as root); now
+  rejected unless a well-formed package name.
+  **Known drawback:** `perm-watch` is 2s polling -- a grant+revert inside one
+  poll is missed, and it can't say which dialog/API made the change (the
+  Binder decode would).
 
 - **`mod` hardening for real-malware triage (four fixes).**
   (1) Shared `-o` sink was written from background threads

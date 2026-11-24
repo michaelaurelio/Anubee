@@ -111,7 +111,7 @@ Anubee shows you, no matter how well it's hidden.
 | `anubee dump` | Pulls packed or encrypted code out of a running app and rebuilds it into a file you can open in a disassembler |
 | `anubee correlate` | Ties a specific function to the syscalls it triggers |
 | `anubee trace` | Runs `syscalls` and `funcs`/`lib` together in one launch |
-| `anubee mod` | Runs ready-made analyzers for specific malware behavior |
+| `anubee mod` | Runs ready-made analyzers for specific malware behavior; `anubee mod triage` runs every stealthy one at once |
 
 ---
 

@@ -9,13 +9,22 @@ anubee mod --list                                        # list available analyz
 anubee mod massdelete-detect -P com.example.app -o out.jsonl
 anubee mod execve -p 12345                                # attach to a running PID
 anubee mod -m file-access -m execve -P com.example.app   # run several at once
+anubee mod triage -P com.example.app -o out.jsonl         # every stealthy analyzer at once
+anubee mod triage -P com.example.app --no-launch          # wait for the app to start by itself
 ```
+
+**Start with `triage` on an unknown sample.** It runs every stealthy analyzer
+into one JSONL (zero writes into the target), so the first run shows which
+behaviors are present; then rerun the relevant analyzers alone with `-v`.
+Use `--no-launch` when the sample has no launcher icon, starts from a
+receiver (boot, SMS, alarm, push), or you want to start it by hand.
 
 | Flag | Meaning |
 |---|---|
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
 | `-A ACTIVITY` | Override launch activity component |
-| `-m NAME` | Analyzer to run; repeat `-m` to run several concurrently (or pass `NAME` positionally) |
+| `--no-launch` | With `-P`: trace the package's UID without force-stopping or launching it; the app is caught whenever it starts |
+| `-m NAME` | Analyzer to run; repeat `-m` to run several concurrently (or pass `NAME` positionally). `triage` = every stealthy analyzer. A name given twice runs once |
 | `-o FILE` | Export structured JSONL to `FILE` |
 | `-v` | Verbose output (e.g. `execve`: full backtrace frames) |
 | `-q` | Suppress per-event console output |
@@ -35,9 +44,11 @@ anubee mod -m file-access -m execve -P com.example.app   # run several at once
 | `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
 | `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
+| `perm-watch` | Baseline + every change of the package's granted permissions, app-op modes, Accessibility / notification-listener / device-admin enablement, roles (default SMS, dialer, home...), and installed-ness (polls shell tools, 2s) | Stealthy |
 
 `prop-read` is the only analyzer that writes a `BRK` into the target; every
-other analyzer is a kprobe/tracepoint. Each run also prints (and, with `-o`,
+other analyzer is a kprobe/tracepoint (or, for `perm-watch`, shell polling
+from anubee's own process). Each run also prints (and, with `-o`,
 writes) an end-of-run summary record, see [`reading-traces.md`](reading-traces.md).
 
 ## Testing massdelete-detect/exfil-detect against a real app (manual)
@@ -67,6 +78,15 @@ appear from that one run. Rebuild from source with
 - **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
   Screen-share/remote-support apps and legitimate accessibility services trip
   the same signal as abuse.
+- **`exfil-detect` counts only sends to a non-loopback IPv4/IPv6 peer.** The
+  fd is resolved to its kernel socket at send time, so AF_UNIX (logd, netd)
+  never counts, connections opened before the analyzer attached are seen,
+  and `dest` is the socket the bytes went to.
+- **`perm-watch` sees state, not the request.** It records that a permission
+  or app-op *changed* (2s resolution), not which dialog or `appops`/Settings
+  call changed it. A grant that is made and reverted within one poll is
+  missed. With `-p` on a process that isn't an app (no package name), it is
+  inactive and its coverage record says so.
 - **`exfil-detect`'s `sample_path`/`sensitive_paths` are correlational, not
   proof of transfer.** They list sensitive-classified files the process
   opened within a few seconds of the network burst (`EXFIL_RECENT_NS`) —

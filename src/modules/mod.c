@@ -176,6 +176,17 @@ static bool mod_wants_list(int argc, char **argv)
     return false;
 }
 
+// Per-pass tick fan-out: runs each selected analyzer's optional tick() on the
+// poll thread (see anubee_analyzer_t.tick).
+struct mod_tick_ctx { const anubee_analyzer_t *const *ans; int n; };
+
+static void mod_tick(void *ctx)
+{
+    const struct mod_tick_ctx *t = ctx;
+    for (int i = 0; i < t->n; i++)
+        if (t->ans[i]->tick) t->ans[i]->tick();
+}
+
 // ---- entry point -------------------------------------------------------------
 
 int cmd_mod(int argc, char **argv)
@@ -288,7 +299,9 @@ int cmd_mod(int argc, char **argv)
 
     printf("tracing uid %d (%d analyzer%s) ... Ctrl-C to stop\n",
            uid, nan, nan == 1 ? "" : "s");
-    anubee_rb_poll_multi(rbs, nrb, &exiting);
+    struct mod_tick_ctx tctx = { ans, nan };
+    anubee_rb_poll_multi_cb(rbs, nrb, &exiting, mod_tick, &tctx);
+    mod_tick(&tctx); // final pass: flush anything handed over since the last poll pass
 
     for (int i = nan - 1; i >= 0; i--) {
         // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE

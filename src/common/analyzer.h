@@ -44,6 +44,13 @@ typedef struct {
     // the fd BEFORE teardown() destroys the skeleton — call this first. May be
     // NULL only for an analyzer that genuinely can't drop events (none today).
     unsigned long long (*drops)(void);
+    // Periodic work on the dispatcher's poll thread (once per poll pass, <=100ms
+    // apart when idle, more often under load -- self-throttle). The only safe
+    // place for work that isn't a ring callback to print or write the sink:
+    // the sink is single-writer, so a background thread must hand its results
+    // here instead of emitting itself. Also called once after the poll loop
+    // exits, before teardown(). May be NULL.
+    void (*tick)(void);
 } anubee_analyzer_t;
 
 // Defined in each analyzer's .c; the dispatcher references them by pointer in

@@ -704,6 +704,26 @@ test_fileless_detect() {
         fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
     fi
 
+    # Shared-sink wiring: fileless-detect's alerts are produced off the ring
+    # path (pending_map scan), and must reach the single-writer -o sink via the
+    # dispatcher tick alongside another analyzer's records. Assert the alert
+    # record lands and every line of the combined file is intact JSON.
+    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-detect: push failed"
+    adb shell "chmod 755 $gen"
+    local mix_pid
+    mix_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    local mix_file="/data/local/tmp/fileless_mix.jsonl"
+    anubee "mod -m fileless-detect -m proc-event -p $mix_pid -o $mix_file -q" >/dev/null
+    local mix_out; mix_out="$(adb shell "su -c 'cat $mix_file'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $mix_file $gen'" >/dev/null 2>&1 || true
+    grep -q '"type":"fileless_detect"' <<<"$mix_out" \
+        || { tail -5 <<<"$mix_out" >&2; fail "fileless-detect: no fileless_detect record in a combined -m fileless-detect -m proc-event -o run"; }
+    python3 -c 'import json,sys
+for n,l in enumerate(sys.stdin,1):
+    if l.strip(): json.loads(l)' <<<"$mix_out" \
+        || fail "fileless-detect: combined -o file has a corrupt JSONL line"
+    info "fileless-detect shared-sink OK — alert record present, combined JSONL intact"
+
     local jit_out; jit_out="$(anubee "mod fileless-detect -P $PKG")"
     forcestop
     local jit_lines

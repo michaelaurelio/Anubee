@@ -40,16 +40,13 @@ typedef struct {
 
 static mediaproj_stat_t mediaproj_stats[MEDIAPROJ_STAT_MAX];
 static int              mediaproj_stat_count = 0;
-static pthread_mutex_t  mediaproj_stat_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void mediaproj_stat_add(__u32 pid, const char *comm, __u64 binder_calls)
 {
-    pthread_mutex_lock(&mediaproj_stat_lock);
     for (int i = 0; i < mediaproj_stat_count; i++) {
         if (mediaproj_stats[i].pid == pid) {
             mediaproj_stats[i].sessions++;
             mediaproj_stats[i].total_binder_calls += binder_calls;
-            pthread_mutex_unlock(&mediaproj_stat_lock);
             return;
         }
     }
@@ -60,7 +57,6 @@ static void mediaproj_stat_add(__u32 pid, const char *comm, __u64 binder_calls)
         mediaproj_stats[mediaproj_stat_count].total_binder_calls = binder_calls;
         mediaproj_stat_count++;
     }
-    pthread_mutex_unlock(&mediaproj_stat_lock);
 }
 
 static struct screencapture_detect_bpf *g_skel = NULL;
@@ -91,6 +87,22 @@ static volatile int  g_poll_stop = 0;
 static int           g_poll_thread_running = 0;
 static enum mediaproj_state g_mp_state = MP_UNKNOWN;
 
+// Hand-off from the dumpsys poll thread to the dispatcher thread: the sink is
+// single-writer (see anubee_analyzer_t.tick), so the poll thread only records
+// a detected session here and mediaproj_tick() emits it. One slot suffices:
+// sessions are detected on 1s dumpsys polls, the dispatcher drains every
+// <=100ms; a second session landing before a drain overwrites the first
+// (counted in g_pending_overwritten, surfaced at teardown).
+static pthread_mutex_t g_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    int   valid;
+    __u32 pid;
+    char  comm[TASK_COMM_LEN];
+    __u64 binder_calls;
+    __u64 ts_ns;
+} g_pending;
+static unsigned long g_pending_overwritten = 0;
+
 static __u64 mediaproj_read_and_reset_binder_count(__u32 pid)
 {
     if (!g_skel) return 0;
@@ -101,15 +113,13 @@ static __u64 mediaproj_read_and_reset_binder_count(__u32 pid)
     return val;
 }
 
-static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls)
+static void mediaproj_emit_one(__u32 pid, const char *comm, __u64 binder_calls, __u64 ts_ns)
 {
     struct screencapture_detect_event e = {0};
     e.h.type = MOD_EV_SCREENCAPTURE_DETECT;
     e.h.pid  = pid;
     e.h.tid  = pid;
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    e.ts_ns = (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
+    e.ts_ns = ts_ns;
     e.binder_calls_context = binder_calls;
     snprintf(e.comm, TASK_COMM_LEN, "%s", comm);
 
@@ -168,15 +178,43 @@ static void *mediaproj_poll_loop(void *arg)
             __u64 binder_calls = upid ? mediaproj_read_and_reset_binder_count(upid) : 0;
             char comm[TASK_COMM_LEN] = "?";
             if (upid) mediaproj_read_comm((int)upid, comm, sizeof(comm));
-            mediaproj_emit_one(upid, comm, binder_calls);
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            pthread_mutex_lock(&g_pending_lock);
+            if (g_pending.valid) g_pending_overwritten++;
+            g_pending.valid = 1;
+            g_pending.pid = upid;
+            snprintf(g_pending.comm, sizeof(g_pending.comm), "%s", comm);
+            g_pending.binder_calls = binder_calls;
+            g_pending.ts_ns = (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
+            pthread_mutex_unlock(&g_pending_lock);
         }
         g_mp_state = now;
     }
     return NULL;
 }
 
+// Dispatcher-thread drain of the hand-off slot (anubee_analyzer_t.tick). Also
+// called from teardown after the poll thread is joined, so a session detected
+// after the dispatcher's last pass is still emitted (the sink is open then).
+static void mediaproj_tick(void)
+{
+    pthread_mutex_lock(&g_pending_lock);
+    int valid = g_pending.valid;
+    __u32 pid = g_pending.pid;
+    char comm[TASK_COMM_LEN];
+    snprintf(comm, sizeof(comm), "%s", g_pending.comm);
+    __u64 binder_calls = g_pending.binder_calls, ts_ns = g_pending.ts_ns;
+    g_pending.valid = 0;
+    pthread_mutex_unlock(&g_pending_lock);
+
+    if (valid)
+        mediaproj_emit_one(pid, comm, binder_calls, ts_ns);
+}
+
 // ---- ring-buffer callback ---------------------------------------------------
-// Unused: detection flows through the poll thread above, not events_rb.
+// Unused: detection flows through the poll thread above (emitted via
+// mediaproj_tick), not events_rb.
 // Kept only because ring_buffer__new() requires a non-NULL sample callback
 // and anubee_analyzer_t.setup() must return a non-NULL ring_buffer* for the
 // dispatcher's poll loop -- same precedent as fileless-detect's
@@ -266,6 +304,10 @@ static void mediaproj_teardown(void)
         pthread_join(g_poll_thread, NULL);
         g_poll_thread_running = 0;
     }
+    mediaproj_tick();   // poll thread is joined: flush a last-moment detection
+    if (g_pending_overwritten)
+        fprintf(stderr, "mod screencapture-detect: %lu session alert(s) overwritten "
+                        "before the dispatcher drained them\n", g_pending_overwritten);
 
     if (binder_link)  { bpf_link__destroy(binder_link);  binder_link  = NULL; }
     if (mediaproj_ff) { bpf_link__destroy(mediaproj_ff); mediaproj_ff = NULL; }
@@ -274,9 +316,8 @@ static void mediaproj_teardown(void)
 }
 
 // ---- summary ----------------------------------------------------------------
-// Lock-free reads of mediaproj_stats/mediaproj_stat_count are safe here only
-// because mod.c always calls teardown() (joining the poll thread) before
-// print_summary()/emit_summary() -- same invariant fileless-detect documents.
+// mediaproj_stats is only written by mediaproj_emit_one, which runs on the
+// dispatcher thread (tick/teardown) -- no lock needed.
 
 static void mediaproj_print_summary(void)
 {
@@ -338,4 +379,5 @@ const anubee_analyzer_t analyzer_screencapture_detect = {
     .print_summary = mediaproj_print_summary,
     .emit_summary  = mediaproj_emit_summary,
     .drops         = mediaproj_drops,
+    .tick          = mediaproj_tick,
 };

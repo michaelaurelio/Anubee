@@ -34,6 +34,54 @@ void anubee_drops_report(unsigned long long kdrops, unsigned long long qdrops);
 // power-of-two sizes.
 unsigned long anubee_round_pow2(unsigned long v);
 
+// Multi-rb drain loop -- outside the libbpf guard so it stays host-testable:
+// it needs only ring_buffer__consume, declared here with libbpf's exact
+// signature (a compatible redeclaration when <bpf/libbpf.h> is also included).
+#include <stdio.h>
+#include <time.h>
+struct ring_buffer;
+int ring_buffer__consume(struct ring_buffer *rb);
+
+// Drain N independent ring buffers from one thread until *stop. Non-blocking
+// consume across all rbs; sleep 100ms only when a full pass drained nothing, so
+// a steady event stream never sleeps. Single writer => callers share one sink
+// with no locking. tick (if non-NULL) runs on this same thread once per pass,
+// after every rb is drained -- the place for periodic work that must write the
+// shared sink (a background thread writing it directly would break the
+// single-writer contract). tick self-throttles; a pass can be shorter than the
+// 100ms idle sleep when events are flowing.
+// ponytail: 100ms idle ceiling bounds Ctrl-C latency; swap to a merged epoll over
+// ring_buffer__epoll_fd() if sub-100ms first-event latency ever matters.
+static inline void anubee_rb_poll_multi_cb(struct ring_buffer **rbs, int n,
+                                         volatile sig_atomic_t *stop,
+                                         void (*tick)(void *), void *ctx)
+{
+	while (!*stop) {
+		int total = 0;
+		for (int i = 0; i < n; i++) {
+			int c = ring_buffer__consume(rbs[i]);   // non-blocking
+			if (c > 0) total += c;
+		}
+		if (tick)
+			tick(ctx);
+		// see anubee_rb_poll_until_cb's comment: bionic doesn't reliably
+		// line-buffer stdout over adb shell's non-tty pipe. Flush every
+		// pass, not just when idle -- a busy multi-analyzer trace never
+		// hits the sleep branch below and would otherwise never flush.
+		fflush(stdout);
+		if (total == 0) {
+			struct timespec ts = { 0, 100 * 1000 * 1000 };
+			nanosleep(&ts, NULL);                    // wakes early on SIGINT (EINTR)
+		}
+	}
+}
+
+static inline void anubee_rb_poll_multi(struct ring_buffer **rbs, int n,
+                                      volatile sig_atomic_t *stop)
+{
+	anubee_rb_poll_multi_cb(rbs, n, stop, NULL, NULL);
+}
+
 // BPF-dependent helpers — activated when <bpf/libbpf.h> was included first.
 // Defined as static inline so runtime.c has no libbpf dependency.
 #ifdef __LIBBPF_LIBBPF_H
@@ -90,33 +138,6 @@ static inline void anubee_rb_poll_until(struct ring_buffer *rb,
                                       volatile sig_atomic_t *stop)
 {
 	(void)anubee_rb_poll_until_cb(rb, stop, NULL, NULL);
-}
-
-// Drain N independent ring buffers from one thread until *stop. Non-blocking
-// consume across all rbs; sleep 100ms only when a full pass drained nothing, so
-// a steady event stream never sleeps. Single writer => callers share one sink
-// with no locking.
-// ponytail: 100ms idle ceiling bounds Ctrl-C latency; swap to a merged epoll over
-// ring_buffer__epoll_fd() if sub-100ms first-event latency ever matters.
-static inline void anubee_rb_poll_multi(struct ring_buffer **rbs, int n,
-                                      volatile sig_atomic_t *stop)
-{
-	while (!*stop) {
-		int total = 0;
-		for (int i = 0; i < n; i++) {
-			int c = ring_buffer__consume(rbs[i]);   // non-blocking
-			if (c > 0) total += c;
-		}
-		// see anubee_rb_poll_until_cb's comment: bionic doesn't reliably
-		// line-buffer stdout over adb shell's non-tty pipe. Flush every
-		// pass, not just when idle -- a busy multi-analyzer trace never
-		// hits the sleep branch below and would otherwise never flush.
-		fflush(stdout);
-		if (total == 0) {
-			struct timespec ts = { 0, 100 * 1000 * 1000 };
-			nanosleep(&ts, NULL);                    // wakes early on SIGINT (EINTR)
-		}
-	}
 }
 
 // Sum per-CPU dropped-event counters from a BPF PERCPU_ARRAY at key 0.

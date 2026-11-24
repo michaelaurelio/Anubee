@@ -33,8 +33,8 @@ struct {
 // candidate if a matching dalvik-tagged prctl(PR_SET_VMA_ANON_NAME) call
 // follows shortly after (ART's own JIT-cache naming is a distinct, later
 // syscall -- confirmed via ART source, so no single mmap-time hook could
-// ever see the name). Userspace (fileless_detect.c) polls pending_map on a
-// background thread and alerts on anything that survives the grace window
+// ever see the name). Userspace (fileless_detect.c) scans pending_map from a
+// periodic dispatcher tick and alerts on anything that survives the grace window
 // unsuppressed. No ringbuf event is written by either hook.
 
 #define FILELESS_PROT_EXEC 0x4UL   // PROT_EXEC, from <sys/mman.h> -- do_mmap's
@@ -65,7 +65,7 @@ struct {
 } entry_scratch SEC(".maps");
 
 // Candidate anon+exec mappings awaiting either suppression (dalvik-tagged
-// prctl arrives) or graduation into an alert (userspace background thread
+// prctl arrives) or graduation into an alert (userspace dispatcher tick
 // reads FILELESS_DETECT_GRACE_NS-old entries that are still present). No ringbuf
 // traffic -- this map IS the signal path. At capacity (1024), a new
 // candidate is silently not inserted (BPF_MAP_TYPE_HASH has no eviction) --

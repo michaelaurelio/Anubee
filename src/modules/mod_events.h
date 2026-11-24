@@ -64,7 +64,7 @@
 // that gets suppressed if a matching dalvik-tagged
 // prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_DETECT_GRACE_NS, or
 // graduates into an alert if not. Shared between fileless_detect.bpf.c
-// (writer, both hooks) and fileless_detect.c (background-thread reader).
+// (writer, both hooks) and fileless_detect.c (dispatcher-tick reader).
 struct fileless_pending_key {
     __u32 pid;
     __u32 _pad;

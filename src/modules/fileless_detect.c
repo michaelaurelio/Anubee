@@ -7,19 +7,17 @@
 // Revision 1: detection is no longer ringbuf-driven. do_mmap
 // entry/return writes a candidate into pending_map; __arm64_sys_prctl
 // deletes (suppresses) it if ART's own dalvik- naming follows shortly
-// after. This file owns the other half: a background thread that polls
-// pending_map on a short interval and, for any entry that survives
+// after. This file owns the other half: a tick() (run by the mod dispatcher
+// on its poll thread -- the sink's single writer) that scans pending_map on a
+// short interval and, for any entry that survives
 // FILELESS_DETECT_GRACE_NS unsuppressed, builds a struct fileless_detect_event and
-// emits it through the existing mod_emit_fileless_detect()/console-line path
-// -- unchanged from before this revision. events_rb/the ring buffer
+// emits it through the existing mod_emit_fileless_detect()/console-line path. events_rb/the ring buffer
 // anubee_analyzer_t.setup() must return exists only to satisfy that
 // interface; it carries no traffic for this analyzer.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <time.h>
-#include <unistd.h>
 #include <linux/types.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -43,15 +41,12 @@ typedef struct {
 
 static fileless_stat_t fileless_stats[FILELESS_STAT_MAX];
 static int              fileless_stat_count = 0;
-static pthread_mutex_t  fileless_stat_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void fileless_stat_add(__u32 pid, const char *comm)
 {
-    pthread_mutex_lock(&fileless_stat_lock);
     for (int i = 0; i < fileless_stat_count; i++) {
         if (fileless_stats[i].pid == pid) {
             fileless_stats[i].count++;
-            pthread_mutex_unlock(&fileless_stat_lock);
             return;
         }
     }
@@ -61,7 +56,6 @@ static void fileless_stat_add(__u32 pid, const char *comm)
         fileless_stats[fileless_stat_count].count = 1;
         fileless_stat_count++;
     }
-    pthread_mutex_unlock(&fileless_stat_lock);
 }
 
 static struct fileless_detect_bpf *g_skel = NULL;
@@ -72,16 +66,12 @@ static struct bpf_link          *mmap_ret_link = NULL;
 static struct bpf_link          *prctl_link = NULL;
 static struct anubee_mod_ctx      *g_mc = NULL;
 
-// ── grace-window background thread ──────────────────────────────────────
-// Polls pending_map every FILELESS_POLL_MS; any entry older than
+// ── grace-window scan (dispatcher tick) ─────────────────────────────────
+// Scans pending_map at most every FILELESS_POLL_MS; any entry older than
 // FILELESS_DETECT_GRACE_NS that's still present (never suppressed by a
 // dalvik-tagged prctl) graduates into an alert.
 
 #define FILELESS_POLL_MS 100
-
-static pthread_t g_poll_thread;
-static volatile int g_poll_stop = 0;
-static int g_poll_thread_running = 0;
 
 static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, const char *comm)
 {
@@ -113,37 +103,38 @@ static __u64 fileless_now_ns(void)
     return (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
 }
 
-static void *fileless_poll_loop(void *arg)
+static void fileless_tick(void)
 {
-    (void)arg;
+    static __u64 last_scan_ns;
+    if (!g_skel)
+        return;
+    __u64 now = fileless_now_ns();
+    if (now - last_scan_ns < FILELESS_POLL_MS * 1000000ULL)
+        return;
+    last_scan_ns = now;
+
     int map_fd = bpf_map__fd(g_skel->maps.pending_map);
-
-    while (!g_poll_stop) {
-        usleep(FILELESS_POLL_MS * 1000);
-
-        struct fileless_pending_key key = {0}, next_key;
-        while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-            struct fileless_pending_val val;
-            if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
-                fileless_now_ns() - val.ts_ns >= FILELESS_DETECT_GRACE_NS) {
-                fileless_emit_one(next_key.pid, next_key.addr, val.size, val.ts_ns, val.comm);
-                bpf_map_delete_elem(map_fd, &next_key);
-                // A delete mutates the map's iteration order; restart the
-                // walk from the beginning rather than continuing from a
-                // now-stale key. Cheap: max_entries is 1024, polled every
-                // FILELESS_POLL_MS.
-                key = (struct fileless_pending_key){0};
-                continue;
-            }
-            key = next_key;
+    struct fileless_pending_key key = {0}, next_key;
+    while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
+        struct fileless_pending_val val;
+        if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
+            fileless_now_ns() - val.ts_ns >= FILELESS_DETECT_GRACE_NS) {
+            fileless_emit_one(next_key.pid, next_key.addr, val.size, val.ts_ns, val.comm);
+            bpf_map_delete_elem(map_fd, &next_key);
+            // A delete mutates the map's iteration order; restart the
+            // walk from the beginning rather than continuing from a
+            // now-stale key. Cheap: max_entries is 1024, scanned every
+            // FILELESS_POLL_MS.
+            key = (struct fileless_pending_key){0};
+            continue;
         }
+        key = next_key;
     }
-    return NULL;
 }
 
 // ---- ring-buffer callback ---------------------------------------------------
 // Unused: detection no longer flows through events_rb (see Revision 1 note
-// above). Kept only because ring_buffer__new() requires a non-NULL sample
+// above; alerts come from fileless_tick). Kept only because ring_buffer__new() requires a non-NULL sample
 // callback and anubee_analyzer_t.setup() must return a non-NULL ring_buffer*
 // for the dispatcher's poll loop.
 
@@ -209,13 +200,6 @@ static struct ring_buffer *fileless_setup(int uid, struct anubee_mod_ctx *mc)
         goto err;
     }
 
-    g_poll_stop = 0;
-    if (pthread_create(&g_poll_thread, NULL, fileless_poll_loop, NULL) != 0) {
-        fprintf(stderr, "mod fileless-detect: failed to start grace-window poll thread\n");
-        goto err;
-    }
-    g_poll_thread_running = 1;
-
     return g_rb;
 
 err:
@@ -230,12 +214,6 @@ err:
 
 static void fileless_teardown(void)
 {
-    if (g_poll_thread_running) {
-        g_poll_stop = 1;
-        pthread_join(g_poll_thread, NULL);
-        g_poll_thread_running = 0;
-    }
-
     if (mmap_entry_link) { bpf_link__destroy(mmap_entry_link); mmap_entry_link = NULL; }
     if (mmap_ret_link)   { bpf_link__destroy(mmap_ret_link);   mmap_ret_link   = NULL; }
     if (prctl_link)      { bpf_link__destroy(prctl_link);      prctl_link      = NULL; }
@@ -245,10 +223,6 @@ static void fileless_teardown(void)
 }
 
 // ---- summary ----------------------------------------------------------------
-// Lock-free reads of fileless_stats/fileless_stat_count are safe here
-// only because mod.c always calls teardown() (joining the poll thread)
-// before print_summary() or emit_summary(); changing that call order would
-// require adding lock protection to these functions.
 
 static void fileless_print_summary(void)
 {
@@ -305,4 +279,5 @@ const anubee_analyzer_t analyzer_fileless_detect = {
     .print_summary = fileless_print_summary,
     .emit_summary  = fileless_emit_summary,
     .drops         = fileless_drops,
+    .tick          = fileless_tick,
 };

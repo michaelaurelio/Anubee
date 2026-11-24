@@ -92,6 +92,7 @@ enum {
     MOD_EV_ACCESSIBILITY_DETECT = 11,
     MOD_EV_FILELESS_DETECT = 12,
     MOD_EV_SCREENCAPTURE_DETECT = 13,
+    MOD_EV_BINDER_API = 14,
 };
 
 struct spawn_event {
@@ -186,6 +187,36 @@ struct screencapture_detect_event {
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
     __u64  binder_calls_context;
+};
+
+// binder-api: first outbound transaction of a given (process, interface,
+// method) -- or every call, for interfaces userspace put in
+// binder_api_always (IContentProvider: the URI differs per call). The kernel
+// counts every call (binder_api_counts); userspace decodes the interface
+// token and any content:// URI from raw[] (the start of the Parcel) and names
+// the method from code.
+#define BINDER_API_RAW 1024    // power of two (BPF index masking); room for a content:// URI after the token + AttributionSource
+struct binder_api_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  token_hash;        // FNV-1a over the token's UTF-16 bytes; 0 = no token found
+    __u32  code;              // transaction code (FIRST_CALL_TRANSACTION + n for AIDL)
+    __u32  flags;             // TF_ONE_WAY = 0x01
+    __u32  data_size;         // full Parcel size
+    __u32  raw_len;           // bytes valid in raw[]
+    char   comm[TASK_COMM_LEN];
+    unsigned char raw[BINDER_API_RAW];
+};
+
+// binder_api_counts key/value (shared by BPF and userspace).
+struct binder_api_key {
+    __u32 tgid;
+    __u32 code;
+    __u64 token_hash;
+};
+struct binder_api_val {
+    __u64 count;
+    __u64 first_ts_ns;
 };
 
 #endif /* __ANUBEE_MOD_EVENTS_H */

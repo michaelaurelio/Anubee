@@ -17,6 +17,7 @@ struct exfil_detect_event; // modules/mod_events.h
 struct accessibility_detect_event; // modules/mod_events.h
 struct fileless_detect_event; // modules/mod_events.h
 struct screencapture_detect_event; // modules/mod_events.h
+struct binder_api_event;          // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -105,6 +106,17 @@ void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event
 // severity fields, same "raw fields, no baked-in verdict" convention as
 // every prior mod analyzer.
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+
+// {"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,
+//  "method":".."|null,"code":N,"oneway":bool} -- first call of (interface, method)
+// by this process. iface NULL = token not decodable; method NULL = code not in
+// the device's framework stubs (app-private or vendor AIDL, or a non-AIDL call).
+// cp (may be NULL): IContentProvider detail -> adds "uri":".." or
+// "call":{"authority":..,"method":..,"arg":..|null}.
+struct binder_cp_detail;
+void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
+                         const char *iface, const char *method,
+                         const struct binder_cp_detail *cp);
 
 // {"type":"perm_change","ts_ns":N,"package":"..","category":"..","name":"..",
 //  "change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}

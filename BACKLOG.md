@@ -313,6 +313,13 @@ the tests encode the original phone's environment.
 - **DT4 — `proc-event` counted threads as forks — fixed.** A triage run on the
   clock app reported 105 "forks, 0 exits"; the fork hook now skips thread
   creation (device test `mod-proc-event`).
+- **BA1 — `binder-api` naming gaps.** Native-only interfaces (C++ AIDL in
+  `libgui`/HALs: `ISurfaceComposer`, `media.c2.*`) and app-private AIDL show as
+  `#code`. App AIDL could be named the same way from the target's own APK
+  DEX; native ones need the `.so`'s generated `BnX::onTransact` tables.
+- **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
+  a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
+  and cursor-window decoding.
 - **DT5 — `accessibility-detect` fires on a benign app.** 7 bursts from the
   stock clock app in a 12s triage run (a granted service wasn't even
   required to raise the burst). Expected for a volume-only signal; resolved by
@@ -613,6 +620,12 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-24
 
+- **`mod binder-api` (Phase 3a).** Binder interface/method timeline for the
+  traced app with names from the device's own framework jars (AIDL `$Stub`
+  `TRANSACTION_*` and hand-written `*_TRANSACTION` constants, keyed by the
+  wire descriptor), and every ContentProvider call's URI or `CALL` target.
+  Next: rebase `accessibility-detect`/`screencapture-detect` on these decoded
+  calls (DT5).
 - **`mod` triage workflow (Phase 2).** `perm-watch` analyzer (permission /
   app-op / special-access / role / installed timeline, `perm_change` record,
   ingested by anubee-mcp); `triage` preset (every stealthy analyzer, derived

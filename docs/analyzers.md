@@ -44,6 +44,7 @@ receiver (boot, SMS, alarm, push), or you want to start it by hand.
 | `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
 | `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
 | `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
+| `binder-api` | Which Binder interfaces/methods the app calls (`IActivityManager.getRunningAppProcesses`, `IPackageManager.getInstalledPackages`...), named from the device's own framework jars; every ContentProvider call with its URI (`QUERY content://sms/inbox`) or `CALL` target (`settings GET_secure android_id`) | Stealthy |
 | `perm-watch` | Baseline + every change of the package's granted permissions, app-op modes, Accessibility / notification-listener / device-admin enablement, roles (default SMS, dialer, home...), and installed-ness (polls shell tools, 2s) | Stealthy |
 
 `prop-read` is the only analyzer that writes a `BRK` into the target; every
@@ -82,6 +83,14 @@ appear from that one run. Rebuild from source with
   fd is resolved to its kernel socket at send time, so AF_UNIX (logd, netd)
   never counts, connections opened before the analyzer attached are seen,
   and `dest` is the socket the bytes went to.
+- **`binder-api` logs the first call of each method, then counts.** Every
+  call is counted; only the first per (process, interface, method) is printed
+  and written, except ContentProvider calls (each URI/`CALL` printed once,
+  all written). Native-only interfaces (`ISurfaceComposer`, `media.c2.*`) and
+  app-private AIDL show as `#<code>`, unnamed. A URI marshalled as separate
+  scheme/authority/path parts isn't decoded (not seen on Android 16). It is
+  per-process and synchronous: it shows what the app *asked for*, not the
+  reply.
 - **`perm-watch` sees state, not the request.** It records that a permission
   or app-op *changed* (2s resolution), not which dialog or `appops`/Settings
   call changed it. A grant that is made and reverted within one poll is

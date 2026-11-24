@@ -19,3 +19,15 @@ bytes later:
 | `add`   | `[0x170, 0x174)`|
 | `greet` | `[0x184, 0x1ac)`|
 | `<init>`| `[0x1bc, 0x1c4)`|
+
+# Binder AIDL-stub fixtures
+
+`binder_stub.dex`, `binder_stub.jar`, `binder_stub_dd.jar` — built from
+`binder_stub/IFoo.java` by `./gen_binder_stub.sh` (javac + d8 + zip + python3).
+`IFoo$Stub` has the AIDL shape (`TRANSACTION_<method>` int constants, plus
+decoy constants of other types); `IHand` is a hand-written interface
+(`<NAME>_TRANSACTION`, wire `descriptor` differing from the class name).
+`binder_stub.jar` stores `classes.dex` uncompressed; `binder_stub_dd.jar`
+additionally uses data descriptors (sizes after the data), as real
+`/system/framework` jars do. Used by `tests/test_binder_api_parse.c`; the
+committed files are canonical.

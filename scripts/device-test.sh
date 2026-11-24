@@ -1033,6 +1033,35 @@ test_mod_triage() {
     info "triage OK - $got stealthy analyzers, valid shared JSONL, $ncov coverage records"
 }
 
+test_mod_binder_api() {
+    echo "=== mod binder-api (interface/method names, content-provider URIs) ==="
+    # A shell target that makes known Binder calls: the `content` CLI does a
+    # ContentProvider QUERY on content://sms/inbox and a settings CALL. -p on the
+    # shell + follow-fork covers the two app_process children.
+    local out="/data/local/tmp/anubee_binder_api.jsonl" script="/data/local/tmp/anubee_binder_api.sh"
+    adb shell "cat > $script" <<'SH'
+sh -c 'sleep 3; content query --uri content://sms/inbox --projection _id >/dev/null 2>&1; content call --uri content://settings/secure --method GET_secure --arg android_id >/dev/null 2>&1; sleep 1' >/dev/null 2>&1 &
+echo $!
+SH
+    local tpid; tpid="$(adb shell "su -c 'sh $script'" | tr -d '\r' | tail -1)"
+    [ "${tpid:-0}" -gt 0 ] 2>/dev/null || fail "binder-api: could not start the shell target"
+    local con; con="$(anubee "mod binder-api -p $tpid -o $out")"
+    grep -q 'AIDL method name(s) from [1-9]' <<<"$con" \
+        || { head -5 <<<"$con" >&2; fail "binder-api: no method names loaded from the framework jars"; }
+    grep -q 'IActivityManager\.getContentProviderExternal' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: named AIDL method not decoded"; }
+    grep -q 'IContentProvider\.QUERY content://sms/inbox' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: content-provider QUERY URI not decoded"; }
+    grep -q 'IContentProvider\.CALL settings GET_secure android_id' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: content-provider CALL not decoded"; }
+    local recs; recs="$(adb shell "su -c 'cat $out; rm -f $out $script'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "binder-api: -o output is not valid JSONL"
+    grep -q '"uri":"content://sms/inbox"' <<<"$recs" || fail "binder-api: uri field missing from JSONL"
+    grep -q '"type":"binder_api_summary"' <<<"$recs" || fail "binder-api: no summary record"
+    info "binder-api OK - AIDL names, QUERY content://sms/inbox, CALL settings GET_secure android_id"
+}
+
 test_mod_perm_watch() {
     echo "=== mod perm-watch (baseline + app-op change timeline) ==="
     # Flip SYSTEM_ALERT_WINDOW (overlay -- the banking-trojan staple) on the
@@ -1156,6 +1185,7 @@ case "$WHAT" in
     mod-proc-event)    test_mod_proc_event ;;
     mod-pkg-inject)    test_mod_pkg_inject ;;
     mod-perm-watch)    test_mod_perm_watch ;;
+    mod-binder-api)    test_mod_binder_api ;;
     mod-no-launch)     test_mod_no_launch ;;
     mod-triage)        test_mod_triage ;;
     massdelete-detect)  test_massdelete_detect ;;
@@ -1165,8 +1195,8 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

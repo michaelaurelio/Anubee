@@ -51,6 +51,25 @@ def main():
     check(len(perm_rows) == 1 and perm_rows[0].get("name") == "SYSTEM_ALERT_WINDOW",
           f"perm_change queryable via mod_events(kind=) (got {perm_rows})")
 
+    # mod binder-api: per-event binder_api records and the binder_api_summary.
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write('{"type":"binder_api","pid":7,"tid":7,"ts_ns":9,"comm":"x",'
+                '"interface":"android.content.IContentProvider","method":"QUERY","code":1,'
+                '"oneway":false,"uri":"content://sms/inbox"}\n')
+        f.write('{"type":"binder_api_summary","processes":[{"pid":7,"calls":[]}],'
+                '"content_access":[{"pid":7,"method":"QUERY","detail":"content://sms/inbox","count":3}]}\n')
+        ba_path = f.name
+    bts = TraceStore()
+    _, ba_skipped = bts.load_structured(ba_path)
+    os.unlink(ba_path)
+    check(ba_skipped == 0, f"binder_api + summary recognized (skipped {ba_skipped})")
+    ba_rows = bts.mod_events(kind="binder_api")
+    check(len(ba_rows) == 1 and ba_rows[0].get("uri") == "content://sms/inbox",
+          f"binder_api queryable via mod_events(kind=) (got {ba_rows})")
+    ba_sum = bts.summaries(kind="binder_api_summary")
+    check(len(ba_sum) == 1 and ba_sum[0]["content_access"][0]["count"] == 3,
+          f"binder_api_summary queryable, content_access kept (got {ba_sum})")
+
     print(f"{checks} checks, {failures} failures")
     return 1 if failures else 0
 

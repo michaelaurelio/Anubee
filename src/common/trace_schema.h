@@ -41,6 +41,7 @@ enum trace_event_type {
     TRACE_SCREENCAPTURE_DETECT, // active MediaProjection screen-capture session (mod screencapture-detect)
     TRACE_MODCMP,      // module memory-vs-disk comparison (dump --check)
     TRACE_PERM_CHANGE, // permission / app-op / special-access / role fact (mod perm-watch)
+    TRACE_BINDER_API,  // first call of a Binder interface method by a process (mod binder-api)
 };
 
 // Map a trace_event_type to its stable string name; "unknown" if out of range.

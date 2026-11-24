@@ -1294,6 +1294,36 @@ straight from a background thread. Available analyzers:
   category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
   proves a capture session was active, not that data left the device (no
   frame-content or exfil-volume corroboration).
+- **`binder-api`** — the Android-API view of the app: which Binder interfaces
+  and methods it calls (stealthy: kprobe, zero uprobes). `kprobe/binder_transaction`
+  runs in the sender's context with `tr` (the kernel's copy of the caller's
+  `binder_transaction_data`), so `tr->data.ptr.buffer` points into the sender's
+  own Parcel; the BPF side reads its first 1 KiB with `bpf_probe_read_user`
+  (after stripping the arm64 top-byte pointer tag, which the uaccess check
+  rejects) straight into a reserved ring-buffer event. An AIDL Parcel starts
+  with the interface token (`writeInterfaceToken`: int32 policy, int32
+  work-source uid, int32 `SYST`/`VNDR`, String16 descriptor); the kernel
+  FNV-1a-hashes it, and only the first `(tgid, token, code)` is submitted --
+  repeats are counted in `binder_api_counts` and the event discarded. Tokens
+  in `binder_api_always` (userspace puts `android.content.IContentProvider`
+  there) are submitted on every call. Userspace decodes the token
+  (`src/modules/binder_api_parse.c`) and names `code` from the device's own
+  framework jars (`/system/framework/framework.jar` +
+  `/apex/*/javalib/framework-*.jar`, mmapped; ~14.5k names in ~20 ms on
+  Android 16): each AIDL `<Iface>$Stub` class's `TRANSACTION_<method>`
+  constants and each hand-written interface's `<NAME>_TRANSACTION` constants,
+  read from the DEX `static_values`, keyed by the class's
+  `DESCRIPTOR`/`descriptor` string constant when it has one (the wire token
+  can differ from the class name). Jars are walked via the zip central
+  directory, since their entries use data descriptors. For
+  `IContentProvider`, the URI (a UTF-8 `content://` String8 as Android 16
+  marshals `Uri`; UTF-16 fallback) or the `CALL` authority/method/arg
+  (String16s before the extras `BNDL`) is extracted. Approach credit:
+  WOOTdroid / WDBind (interface token + transaction code → API method),
+  reimplemented. Known limitations: native-only interfaces (C++ AIDL in
+  `libgui`, HALs) and app-private AIDL are unnamed (`#code`); a `Uri`
+  marshalled as split parts isn't decoded; Parcel contents beyond 1 KiB
+  aren't seen; replies (return values) aren't decoded.
 - **`perm-watch`** — the package's permission state as a timeline (stealthy:
   no BPF program at all). A background thread snapshots, every 2s, the
   package's granted install/runtime permissions (`dumpsys package`, filtered
@@ -1356,6 +1386,8 @@ longer lost from the file:
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
 - `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
+- `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
+- `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
 - `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
 - `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
@@ -1659,11 +1691,11 @@ Design points worth knowing:
   hardcoded key list does not include — those records currently fall through
   ingest unrecognized by `_summaries` (same "retained but unhandled" outcome
   as any unknown `type`, not a crash, just not queryable via the `summaries`
-  tool below yet). `load_structured()` also loads all 11 per-event mod-analyzer record
+  tool below yet). `load_structured()` also loads all 12 per-event mod-analyzer record
   types (`accessibility_detect`/`screencapture_detect`/`exfil_detect`/
   `massdelete_detect`/`fileless_detect`/`spawn`/`proc_exit`/`execve`/`prop`/
   `file_access`, plus `perm_change` -- which has no `pid`, being
-  package-scoped) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
+  package-scoped -- and `binder_api`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
   consumed by the `incidents` and `mod_events` tools below. `_SUMMARY_TYPES`
   now covers all 9 mod-analyzer teardown summary types (the original 5 plus
   `accessibility_detect_summary`/`exfil_detect_summary`/

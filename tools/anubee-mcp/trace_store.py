@@ -27,6 +27,7 @@ _SUMMARY_TYPES = frozenset({
     "massdelete_detect_summary", "proc_event_summary",
     "accessibility_detect_summary", "exfil_detect_summary",
     "fileless_detect_summary", "screencapture_detect_summary",
+    "binder_api_summary",
 })
 _SUMMARY_LIST_FIELD = {
     "execve_summary": "binaries",
@@ -37,6 +38,7 @@ _SUMMARY_LIST_FIELD = {
     "exfil_detect_summary": "processes",
     "fileless_detect_summary": "processes",
     "screencapture_detect_summary": "processes",
+    "binder_api_summary": "content_access",
 }
 
 # All per-event mod-analyzer record types, ingested into the mod_events
@@ -48,7 +50,7 @@ _MOD_EVENT_TYPES = frozenset({
     "accessibility_detect", "screencapture_detect", "exfil_detect",
     "massdelete_detect", "fileless_detect",
     "spawn", "proc_exit", "execve", "prop", "file_access",
-    "perm_change",
+    "perm_change", "binder_api",
 })
 
 _DEFAULT_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correlation_rules.json")

@@ -26,6 +26,7 @@ static const struct anubee_bpf_object g_objects[] = {
     { "mod:accessibility-detect", false }, // tracepoint on binder_transaction; zero uprobes
     { "mod:fileless-detect", false }, // kprobes on do_mmap/__arm64_sys_prctl; zero uprobes
     { "mod:screencapture-detect", false }, // tracepoint on binder_transaction (context only) + dumpsys poll; zero uprobes
+    { "mod:binder-api", false }, // kprobe on binder_transaction (bpf_probe_read_user of the sender's Parcel); zero uprobes
     { "mod:perm-watch", false }, // shell polling only (dumpsys/appops/settings); no BPF program at all
 };
 

@@ -23,6 +23,10 @@ void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
 void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
 void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
 void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+#include "modules/binder_api_parse.h"
+void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
+                         const char *iface, const char *method,
+                         const struct binder_cp_detail *cp);
 void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
                           const char *key, const char *change,
                           const char *old_val, const char *new_val);
@@ -391,6 +395,39 @@ int main(void)
     j.len = 0;
     mod_emit_fileless_detect(&j, &fe);
     CHECK_HAS(j, "\"anon_name\":\"v8-jit\"", "fileless_detect anon_name tagged");
+
+    // ---- binder_api: named method, oneway --------------------------------------
+    {
+        struct binder_api_event be = {0};
+        be.h.pid = 4321; be.h.tid = 4322; be.ts_ns = 77; be.code = 5; be.flags = 0x01;
+        snprintf(be.comm, sizeof be.comm, "%s", "mal");
+        j.len = 0;
+        mod_emit_binder_api(&j, &be, "android.view.accessibility.IAccessibilityManager", "addClient", NULL);
+        CHECK_HAS(j, "\"type\":\"binder_api\"",  "binder_api type");
+        CHECK_HAS(j, "\"pid\":4321,\"tid\":4322", "binder_api pid/tid");
+        CHECK_HAS(j, "\"ts_ns\":77",               "binder_api ts_ns");
+        CHECK_HAS(j, "\"comm\":\"mal\"",          "binder_api comm");
+        CHECK_HAS(j, "\"interface\":\"android.view.accessibility.IAccessibilityManager\"", "binder_api interface");
+        CHECK_HAS(j, "\"method\":\"addClient\",\"code\":5,\"oneway\":true}", "binder_api method/code/oneway (no cp detail -> no extra fields)");
+        // undecodable token and unnamed code -> nulls
+        be.flags = 0;
+        j.len = 0;
+        mod_emit_binder_api(&j, &be, NULL, NULL, NULL);
+        CHECK_HAS(j, "\"interface\":null,\"method\":null,\"code\":5,\"oneway\":false}", "binder_api nulls");
+        // content-provider detail: uri / call
+        struct binder_cp_detail cp = {0};
+        snprintf(cp.uri, sizeof cp.uri, "%s", "content://sms/inbox");
+        j.len = 0;
+        mod_emit_binder_api(&j, &be, "android.content.IContentProvider", "QUERY", &cp);
+        CHECK_HAS(j, "\"oneway\":false,\"uri\":\"content://sms/inbox\"}", "binder_api uri");
+        struct binder_cp_detail cc = {0};
+        snprintf(cc.authority, sizeof cc.authority, "%s", "settings");
+        snprintf(cc.method, sizeof cc.method, "%s", "GET_secure");
+        snprintf(cc.arg, sizeof cc.arg, "%s", "android_id");
+        j.len = 0;
+        mod_emit_binder_api(&j, &be, "android.content.IContentProvider", "CALL", &cc);
+        CHECK_HAS(j, "\"call\":{\"authority\":\"settings\",\"method\":\"GET_secure\",\"arg\":\"android_id\"}}", "binder_api call");
+    }
 
     // ---- perm_change: appop mode change, category + bare name split ----------
     j.len = 0;

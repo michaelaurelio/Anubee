@@ -8,6 +8,7 @@
 #include "modules/mod_events.h"
 #include "modules/file_access_classify.h"
 #include "modules/perm_watch_parse.h"
+#include "modules/binder_api_parse.h"
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e)
 {
@@ -262,5 +263,30 @@ void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *
     jb_s(j, ",\"change\":\""); jb_esc(j, change);   jb_c(j, '"');
     jb_s(j, ",\"old\":");       jb_str_or_null(j, old_val);
     jb_s(j, ",\"new\":");       jb_str_or_null(j, new_val);
+    jb_c(j, '}');
+}
+
+void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
+                         const char *iface, const char *method,
+                         const struct binder_cp_detail *cp)
+{
+    jb_c(j, '{');
+    jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_BINDER_API)); jb_c(j, '"');
+    jb_s(j, ",\"pid\":");         jb_u64(j, e->h.pid);
+    jb_s(j, ",\"tid\":");         jb_u64(j, e->h.tid);
+    jb_s(j, ",\"ts_ns\":");       jb_u64(j, e->ts_ns);
+    jb_s(j, ",\"comm\":\"");     jb_esc(j, e->comm); jb_c(j, '"');
+    jb_s(j, ",\"interface\":");   jb_str_or_null(j, iface);
+    jb_s(j, ",\"method\":");      jb_str_or_null(j, method);
+    jb_s(j, ",\"code\":");        jb_u64(j, e->code);
+    jb_s(j, ",\"oneway\":");      jb_s(j, (e->flags & 0x01) ? "true" : "false");
+    if (cp && cp->uri[0]) {
+        jb_s(j, ",\"uri\":\""); jb_esc(j, cp->uri); jb_c(j, '"');
+    } else if (cp && cp->authority[0]) {
+        jb_s(j, ",\"call\":{\"authority\":\""); jb_esc(j, cp->authority);
+        jb_s(j, "\",\"method\":\"");              jb_esc(j, cp->method);
+        jb_s(j, "\",\"arg\":");                    jb_str_or_null(j, cp->arg[0] ? cp->arg : NULL);
+        jb_c(j, '}');
+    }
     jb_c(j, '}');
 }

@@ -43,6 +43,12 @@ void dl_path_join(const char *comps, int n, size_t stride, int truncated,
 int dl_maps_find_ino(const char *maps, unsigned long ino,
                      unsigned long *start, unsigned long *end);
 
+// Readable, unnamed anonymous regions (inode 0, no name: not [anon:...],
+// [stack], a file or memfd) in a /proc/<pid>/maps text, in order, up to max.
+// ART unpacks a jar's compressed classes.dex into one of these on some
+// releases, so it is where a loaded-then-deleted jar's code survives.
+int dl_maps_unnamed_anon(const char *maps, unsigned long *start, unsigned long *end, int max);
+
 // In-memory DEX (memload): a standard DEX header ("dex\n0NN\0", header_size
 // 0x70, little-endian tag) whose file_size fits in a region of region_len
 // bytes. n is how many header bytes were read (needs 0x70). Sets *file_size.

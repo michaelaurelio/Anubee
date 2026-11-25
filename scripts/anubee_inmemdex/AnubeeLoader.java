@@ -6,6 +6,9 @@
 //                        while it runs: ART holds it in "dalvik-DEX data")
 //   jar <payload.jar> -- load a jar whose classes.dex is compressed, so ART
 //                        extracts it into anonymous memory
+//   jardel <src.jar> <dst.jar> -- write src to dst (a "drop" by this process),
+//                        load dst and delete it at once, the way some
+//                        droppers do: only the unpacked DEX in memory remains
 // Then calls Payload.hello() and stays alive so the tracer can read it.
 // Reflection only, so it compiles against a plain JDK.
 import java.io.File;
@@ -25,6 +28,14 @@ public class AnubeeLoader {
             Class<?> k = Class.forName("dalvik.system.InMemoryDexClassLoader");
             Constructor<?> c = k.getConstructor(ByteBuffer.class, ClassLoader.class);
             cl = (ClassLoader) c.newInstance(ByteBuffer.wrap(dex), parent);
+        } else if (args[0].equals("jardel")) {
+            File dst = new File(args[2]);
+            Files.write(dst.toPath(), Files.readAllBytes(new File(args[1]).toPath()));
+            Class<?> k = Class.forName("dalvik.system.PathClassLoader");
+            Constructor<?> c = k.getConstructor(String.class, ClassLoader.class);
+            cl = (ClassLoader) c.newInstance(dst.getPath(), parent);
+            cl.loadClass("Payload");
+            dst.delete();
         } else {
             Class<?> k = Class.forName("dalvik.system.PathClassLoader");
             Constructor<?> c = k.getConstructor(String.class, ClassLoader.class);

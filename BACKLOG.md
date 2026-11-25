@@ -640,6 +640,15 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
 
+- **`dexload-detect` keeps a copy of fast-deleted payloads.** A live
+  SharkBot run lost an ad-SDK jar written, loaded and deleted within 2 ms
+  (`saved: null`). Dropped files are now held open from the drop, and a
+  loaded jar that is gone anyway has its unpacked DEX recovered from the
+  loader's unnamed anonymous memory (ART's region name for it exceeds the
+  kernel's 80-byte cap on real app paths, so memload never saw it). Known
+  drawbacks: recovery credits *any* unnamed-region DEX in that process to
+  the jar; a plain DEX loaded and deleted before even the drop is handled,
+  by a process that has exited, is still lost.
 - **Syscall outcomes for `execve` and `file-access`.** Live malware runs
   showed both analyzers logged attempts only: a SpyNote build's keylog
   writes all failed (no storage permission) yet read like successes, and one

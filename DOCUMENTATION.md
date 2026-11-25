@@ -1489,10 +1489,24 @@ sequenceDiagram
     name comes from `/proc/<pid>/maps`; extractions from read-only system
     partitions (`/system`, `/system_ext`, `/product`, `/vendor`, `/odm`,
     `/apex`) are the platform's own code and dropped -- on the test phone
-    every app gets two for an OEM framework jar. Observed on Android 16: an
-    app class loader given a jar with a compressed `classes.dex` maps the jar
-    briefly (the `load` stage, with the jar saved) rather than producing a
-    named extraction region, so that case is covered by the file stages.
+    every app gets two for an OEM framework jar. The kernel caps an anon
+    region name at 80 bytes, so for a typical app path (`/data/data/<pkg>/
+    cache/<n>.jar`) ART's naming `prctl` fails and the unpacked DEX sits in
+    an **unnamed** region; the recovery below covers that.
+  - **Saving against a fast delete.** A dropper can load and delete its
+    payload within a few ms (seen live: 2 ms), before userspace handles the
+    load. Two fallbacks, in order:
+    1. *Pin*: when the drop is handled, the file is opened and the fd kept;
+       an fd outlives the unlink, so `load`/`delete`/teardown copy from it
+       (the copy is taken then, so the file is complete). Closed once saved.
+    2. *Recovery from memory*: a loaded ZIP still uncopied after its load or
+       delete is queued; for up to 2 s the tick scans the loader's readable
+       unnamed anonymous regions (`dl_maps_unnamed_anon`) for a valid DEX
+       header at the region start and saves each one not seen before as
+       `<pid>-<ino>-mem-<addr>.dex`, emitted as a `memload` record whose
+       `path` is the jar. Attribution is by process: any such DEX in the
+       loader is credited to the pending jar (unnamed DEX regions are rare
+       otherwise). Not needed when the named region was already saved.
 
   The path is rebuilt in the kernel from the file's dentry chain, crossing
   mount points to the root of the writer's mount namespace (`bpf_loop`, up to

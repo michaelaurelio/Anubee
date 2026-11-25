@@ -85,6 +85,32 @@ int dl_maps_find_ino(const char *maps, unsigned long ino,
     return 0;
 }
 
+int dl_maps_unnamed_anon(const char *maps, unsigned long *start, unsigned long *end, int max)
+{
+    int n = 0;
+    if (!maps) return 0;
+    for (const char *p = maps; *p && n < max; ) {
+        unsigned long s, e, off, in;
+        char perms[8];
+        unsigned maj, min;
+        int used = 0;
+        const char *nl = strchr(p, '\n');
+        if (sscanf(p, "%lx-%lx %7s %lx %x:%x %lu%n", &s, &e, perms, &off, &maj, &min, &in, &used) == 7
+            && in == 0 && perms[0] == 'r') {
+            const char *q = p + used;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '\n' || *q == '\0') {
+                start[n] = s;
+                end[n] = e;
+                n++;
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return n;
+}
+
 static unsigned rd_le32(const unsigned char *p)
 {
     return (unsigned)p[0] | (unsigned)p[1] << 8 | (unsigned)p[2] << 16 | (unsigned)p[3] << 24;

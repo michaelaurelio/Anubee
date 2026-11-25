@@ -1422,6 +1422,30 @@ DRV
     grep -q "\"stage\":\"memload\".*\"sha256\":\"$pay_sha\"" <<<"$rec" \
         || { echo "$rec" | head -5 >&2; fail "dexload-detect: in-memory DEX copy missing or its sha256 differs from the payload"; }
     info "dexload-detect memload OK - DEX loaded from memory (file deleted first) captured, sha256 matches"
+
+    # A jar the process writes, loads and deletes at once (seen in the wild with
+    # a 2 ms window), under a long path: ART's "extracted in memory from <path>"
+    # region name then exceeds the kernel's 80-byte cap and stays unnamed.
+    # Whichever wins the race, a copy must exist: the jar itself, or its DEX
+    # recovered from the unnamed region (sha256 = the payload's classes.dex).
+    command -v zip >/dev/null 2>&1 || { info "dexload-detect jar-delete SKIP - zip not on PATH"; return 0; }
+    (cd "$b/pay" && rm -f ../pay.jar && zip -q -9 ../pay.jar classes.dex) || fail "dexload-detect: zip of the payload failed"
+    local jd=$t/a_rather_long_cache_directory_name_for_the_test
+    adb shell "su -c 'rm -rf $t; mkdir -p $jd; chmod -R 777 $t'" >/dev/null
+    adb push "$b/ldr/classes.dex" "$t/loader.dex" >/dev/null && adb push "$b/pay.jar" "$t/src.jar" >/dev/null \
+        || fail "dexload-detect: push of the jar-delete fixtures failed"
+    ld_pid="$(adb shell "su -c 'nohup setsid dalvikvm64 -cp $t/loader.dex AnubeeLoader jardel $t/src.jar $jd/1787936389793000.jar >$t/out 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$ld_pid" ] && [ "$ld_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the jar-delete loader"
+    out="$(anubee "mod dexload-detect -p $ld_pid -o $t/dl.jsonl")"
+    rec="$(adb shell "su -c 'cat $t/dl.jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $t'" >/dev/null 2>&1 || true
+    if grep -q "\"stage\":\"memload\".*1787936389793000.jar.*\"sha256\":\"$pay_sha\"" <<<"$rec"; then
+        info "dexload-detect jar-delete OK - jar gone before it could be copied; its DEX recovered from memory, sha256 matches"
+    elif grep -q '"stage":"load","kind":"zip".*1787936389793000.jar.*"saved":{' <<<"$rec"; then
+        info "dexload-detect jar-delete OK - jar copied before the delete (memory recovery not needed this run)"
+    else
+        echo "$rec" | head -6 >&2; fail "dexload-detect: loaded-then-deleted jar left no copy (neither the jar nor its DEX)"
+    fi
 }
 
 case "$WHAT" in

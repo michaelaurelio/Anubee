@@ -585,6 +585,8 @@ test:
 	$(BUILD)/test_human_out
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_argtypes.c -o $(BUILD)/test_syscall_argtypes
 	$(BUILD)/test_syscall_argtypes
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_strargs.c -o $(BUILD)/test_syscall_strargs
+	$(BUILD)/test_syscall_strargs
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_registry.c src/common/target_registry.c src/common/maps.c -o $(BUILD)/test_target_registry -lpthread
 	$(BUILD)/test_target_registry
 	sh tests/check_driver_symbols.sh

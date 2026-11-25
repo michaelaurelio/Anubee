@@ -39,7 +39,7 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
     e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
-    e->h._pad = anubee_hdr_aux(221);
+    e->h._pad = anubee_hdr_aux(221, (__u32)(id >> 32), (__u32)id);
     e->ts_ns  = bpf_ktime_get_ns();
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
@@ -94,7 +94,7 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
     e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
-    e->h._pad = anubee_hdr_aux(281);
+    e->h._pad = anubee_hdr_aux(281, (__u32)(id >> 32), (__u32)id);
     e->ts_ns  = bpf_ktime_get_ns();
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
@@ -146,7 +146,7 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
     e->h.type = MOD_EV_EXECVE;
     e->h.pid  = (__u32)(id >> 32);
     e->h.tid  = (__u32)id;
-    e->h._pad = anubee_hdr_aux(0);
+    e->h._pad = anubee_hdr_aux(0, (__u32)(id >> 32), (__u32)id);
     e->ts_ns  = bpf_ktime_get_ns();
     e->argc       = 0;
     e->stack_depth = 0;

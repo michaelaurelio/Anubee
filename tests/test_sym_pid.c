@@ -2,6 +2,7 @@
 // Host unit test for the pure aux/pid selection helpers in common/sym_pid.h.
 #include <linux/types.h>
 #include <stdio.h>
+#include <string.h>
 #include "common/sym_pid.h"
 
 static int fails;
@@ -36,6 +37,51 @@ int main(void)
           "reparented to init -> own pid");
     CHECK(sym_pick_pid(100, sym_aux_make(0, 1), 1) == 100,
           "ppid 0 -> own pid");
+
+    // The parent lookup matters only for exec events and for a process's
+    // single-threaded pre-exec phase, where tid == tgid.
+    CHECK(sym_aux_wanted(0, 100, 100) == 1,
+          "leader thread -> parent read wanted");
+    CHECK(sym_aux_wanted(0, 100, 101) == 0,
+          "non-leader thread -> parent read skipped");
+    CHECK(sym_aux_wanted(1, 100, 101) == 1,
+          "exec from any thread -> parent read wanted");
+
+    // Per-pid decision cache: direct mapped, alive and gone TTLs differ.
+    struct sym_pidc cache = {0};
+    int gone = -1;
+    CHECK(sym_pidc_get(&cache, 100, 1100, &gone) == 0,
+          "empty cache -> miss");
+
+    sym_pidc_put(&cache, 100, 0, 1000);
+    CHECK(sym_pidc_get(&cache, 100, 1100, &gone) == 1 && gone == 0,
+          "alive entry hits before TTL");
+    CHECK(sym_pidc_get(&cache, 100, 1251, &gone) == 0,
+          "alive entry expires after 250 ms");
+
+    sym_pidc_put(&cache, 100, 1, 1000);
+    CHECK(sym_pidc_get(&cache, 100, 5999, &gone) == 1 && gone == 1,
+          "gone entry hits before TTL");
+    CHECK(sym_pidc_get(&cache, 100, 6001, &gone) == 0,
+          "gone entry expires after 5000 ms");
+
+    // Pids separated by the slot count share a direct-mapped slot.
+    struct sym_pidc collisions = {0};
+    sym_pidc_put(&collisions, 100, 0, 1000);
+    sym_pidc_put(&collisions, 100 + SYM_PIDC_SLOTS, 0, 1000);
+    CHECK(sym_pidc_get(&collisions, 100, 1100, &gone) == 0,
+          "colliding pid replaces the old entry");
+    CHECK(sym_pidc_get(&collisions, 100 + SYM_PIDC_SLOTS, 1100, &gone) == 1 &&
+          gone == 0,
+          "new colliding pid hits");
+
+    // A zeroed cache must look empty even for pid 0.
+    struct sym_pidc zeroed;
+    memset(&zeroed, 0, sizeof(zeroed));
+    CHECK(sym_pidc_get(&zeroed, 0, 1000, &gone) == 0,
+          "pid 0 never hits a zeroed cache");
+    CHECK(sym_pidc_get(&zeroed, 100, 1000, &gone) == 0,
+          "zeroed cache has no entries");
 
     if (fails) { printf("FAILED: %d check(s)\n", fails); return 1; }
     printf("test_sym_pid: all checks passed\n");

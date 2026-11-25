@@ -206,6 +206,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 			return 0;
 	}
 
+	__u32 aux = anubee_hdr_aux(nr, tgid, (__u32)id);
+
 	// Stack snapshot (option A dedup): the first time we see a given stack for
 	// this process, ship its registers + stack bytes for off-device unwinding;
 	// thereafter the syscall event just carries the stack_id. Filtered mode only
@@ -217,7 +219,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
 			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
-						   anubee_hdr_aux(nr));
+						   aux);
 		}
 	}
 
@@ -235,7 +237,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = anubee_hdr_aux(nr);
+	e->h._pad = aux;
 
 	e->nr      = nr;
 	e->ktime   = ktime;
@@ -367,6 +369,8 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 			return 0;
 	}
 
+	__u32 aux = anubee_hdr_aux(0, tgid, (__u32)id);
+
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
 		stack_id = anubee_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
@@ -374,7 +378,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
 			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
-						   anubee_hdr_aux(0));
+						   aux);
 		}
 	}
 
@@ -390,7 +394,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = anubee_hdr_aux(0);
+	e->h._pad = aux;
 
 	e->nr      = nr;
 	e->ktime   = ktime;

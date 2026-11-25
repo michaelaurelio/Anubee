@@ -17,6 +17,64 @@
 
 #define SYM_AUX_EXEC 0x80000000u
 
+/* The parent lookup is useful only for exec events and for the single-threaded
+ * phase of a process, where the thread id equals the thread group id. */
+static inline int sym_aux_wanted(int is_exec, __u32 tgid, __u32 tid)
+{
+	return is_exec || tgid == tid;
+}
+
+/* Per-pid cache for "the child's maps are gone". Direct mapped, so a slot
+ * collision replaces the previous entry. */
+#define SYM_PIDC_SLOTS 64
+#define SYM_PIDC_ALIVE_MS 250
+#define SYM_PIDC_GONE_MS 5000
+
+struct sym_pidc_slot {
+	int pid;
+	int gone;
+	long long stamp_ms;
+};
+
+struct sym_pidc {
+	struct sym_pidc_slot s[SYM_PIDC_SLOTS];
+};
+
+/* Return 1 and fill *gone on a live cache hit, 0 on a miss or expired entry.
+ * Alive and gone entries use separate lifetimes. */
+static inline int sym_pidc_get(struct sym_pidc *c, int pid, long long now_ms,
+			       int *gone)
+{
+	if (pid <= 0)
+		return 0;
+
+	struct sym_pidc_slot *slot = &c->s[(unsigned int)pid & (SYM_PIDC_SLOTS - 1)];
+	long long age;
+
+	if (slot->pid != pid)
+		return 0;
+	age = now_ms - slot->stamp_ms;
+	if (age < 0)
+		return 0;
+	if (age >= (slot->gone ? SYM_PIDC_GONE_MS : SYM_PIDC_ALIVE_MS))
+		return 0;
+
+	if (gone)
+		*gone = slot->gone;
+	return 1;
+}
+
+/* Store a pid decision with the current timestamp. */
+static inline void sym_pidc_put(struct sym_pidc *c, int pid, int gone,
+				long long now_ms)
+{
+	struct sym_pidc_slot *slot = &c->s[(unsigned int)pid & (SYM_PIDC_SLOTS - 1)];
+
+	slot->pid = pid;
+	slot->gone = gone ? 1 : 0;
+	slot->stamp_ms = now_ms;
+}
+
 /* Pack a parent tgid and the exec flag. An unusable ppid means "unknown", so
  * the flag is dropped too. */
 static inline __u32 sym_aux_make(int ppid, int is_exec)

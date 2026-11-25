@@ -169,14 +169,26 @@ int sym_effective_pid(int pid, unsigned int aux)
 	if (sym_aux_ppid(aux) <= 1 || sym_aux_ppid(aux) == pid)
 		return pid;
 
-	// The maps cache is under g_lock; an exec event always wants the parent,
-	// so only a non-exec one needs to know whether the child's maps are gone.
+	// The maps cache is under g_lock; an exec event always wants the parent, so
+	// only a non-exec one needs to know whether the child's maps are gone.
+	if (sym_aux_is_exec(aux))
+		return sym_pick_pid(pid, aux, 0);
+
+	// Cache the per-pid decision per worker thread. A hit avoids the global lock
+	// and the maps lookup; a miss rechecks the maps and refreshes the entry.
+	static _Thread_local struct sym_pidc cache;
+	struct timespec ts;
+	// Coarse clock: no syscall, and millisecond accuracy is plenty for a TTL.
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+	long long now_ms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 	int gone = 0;
-	if (!sym_aux_is_exec(aux)) {
+
+	if (!sym_pidc_get(&cache, pid, now_ms, &gone)) {
 		pthread_mutex_lock(&g_lock);
 		struct procmaps *pm = pm_get(pid);
 		gone = pm && pm->gone;
 		pthread_mutex_unlock(&g_lock);
+		sym_pidc_put(&cache, pid, gone, now_ms);
 	}
 	return sym_pick_pid(pid, aux, gone);
 }

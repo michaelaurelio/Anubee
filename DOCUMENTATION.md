@@ -478,7 +478,11 @@ frame pointer) rather than reporting a false miss.
 
 **Forked-child attribution.** A forked child's frames are resolved against the parent's
 address space when the child's own maps are already gone (it exited) or the stack predates
-an `execve` that replaced its image. This is best effort: if the parent has also exited,
+an `execve` that replaced its image. The parent tgid is recorded only for a
+process's main thread (where thread id equals thread group id) and for `execve`,
+which covers a forked child while it is still single-threaded (events of other
+threads resolve against their own pid); userspace caches
+the per-pid decision briefly. This is best effort: if the parent has also exited,
 the frames stay unresolved.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real

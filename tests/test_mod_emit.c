@@ -12,12 +12,14 @@
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
+#include "modules/sysret_pend.h"
 void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
-                     const char *flags);
+                     const char *flags, const struct sys_result *r);
 void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 #include "modules/file_access_classify.h"
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
-                           unsigned categories, const char *const *flag_strs, int n_flags);
+                           unsigned categories, const char *const *flag_strs, int n_flags,
+                           const struct sys_result *r);
 void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_event *e,
                                 int distinct_estimate, int manage_ext_storage, int verbose);
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
@@ -48,6 +50,14 @@ static int checks = 0, failures = 0;
     char tmp[4096]; int n = (int)(j).len; if (n > 4095) n = 4095;    \
     memcpy(tmp, (j).b, n); tmp[n] = 0;                               \
     if (!strstr(tmp, sub)) { failures++;                            \
+        printf("  FAIL: %s\n    in: %s\n", msg, tmp); }              \
+} while (0)
+
+#define CHECK_LACKS(j, sub, msg) do {                                \
+    checks++;                                                        \
+    char tmp[4096]; int n = (int)(j).len; if (n > 4095) n = 4095;    \
+    memcpy(tmp, (j).b, n); tmp[n] = 0;                               \
+    if (strstr(tmp, sub)) { failures++;                             \
         printf("  FAIL: %s\n    in: %s\n", msg, tmp); }              \
 } while (0)
 
@@ -122,7 +132,7 @@ int main(void)
 
     // addr-only: syms=NULL → no "symbol" field
     j.len = 0;
-    mod_emit_execve(&j, &ex, NULL, "shell,recon");
+    mod_emit_execve(&j, &ex, NULL, "shell,recon", NULL);
     CHECK_HAS(j, "\"type\":\"execve\"",  "execve type");
     CHECK_HAS(j, "\"pid\":5000",          "execve pid");
     CHECK_HAS(j, "\"ts_ns\":100000000003", "execve ts_ns");
@@ -141,10 +151,24 @@ int main(void)
     const char *syms2[2] = { "libc.so!fork+0x10", "app!main+0x40" };
     j.len = 0;
     ex.truncated = EXEC_TRUNC_MORE_ARGS;
-    mod_emit_execve(&j, &ex, syms2, "");
+    mod_emit_execve(&j, &ex, syms2, "", NULL);
     CHECK_HAS(j, "\"argv_truncated\":true,\"flags\":[]", "execve truncated, no flags");
     CHECK_HAS(j, "\"symbol\":\"libc.so!fork+0x10\"", "execve symbol frame 0");
     CHECK_HAS(j, "\"symbol\":\"app!main+0x40\"",      "execve symbol frame 1");
+    CHECK_LACKS(j, "\"result\"", "execve: no result field without a result");
+
+    // outcome: a PATH search probe that failed, one that ran, one never seen
+    struct sys_result enoent = { -2, 1 }, ok0 = { 0, 1 }, unknown = { 0, 0 };
+    j.len = 0;
+    mod_emit_execve(&j, &ex, NULL, "", &enoent);
+    CHECK_HAS(j, "\"result\":-2,\"error\":\"ENOENT\"", "execve failed: result + errno name");
+    j.len = 0;
+    mod_emit_execve(&j, &ex, NULL, "", &ok0);
+    CHECK_HAS(j, "\"result\":0", "execve succeeded: result 0");
+    CHECK_LACKS(j, "\"error\"", "execve succeeded: no error field");
+    j.len = 0;
+    mod_emit_execve(&j, &ex, NULL, "", &unknown);
+    CHECK_HAS(j, "\"result\":null", "execve outcome unknown: result null");
 
     // ---- prop GET call (is_ret=0) --------------------------------------------
     struct prop_event pg = {0};
@@ -216,7 +240,7 @@ int main(void)
 
     const char *flags1[1] = { "O_RDONLY" };
     j.len = 0;
-    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE | FA_MEDIA_SUBDIR, flags1, 1);
+    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE | FA_MEDIA_SUBDIR, flags1, 1, NULL);
     CHECK_HAS(j, "\"type\":\"file_access\"",      "file_access type");
     CHECK_HAS(j, "\"pid\":8000",                  "file_access pid");
     CHECK_HAS(j, "\"ts_ns\":100000000005",        "file_access ts_ns");
@@ -235,7 +259,7 @@ int main(void)
 
     const char *flags2[2] = { "O_WRONLY", "O_CREAT" };
     j.len = 0;
-    mod_emit_file_access(&j, &fa2, FA_FOREIGN_APP_DIR, flags2, 2);
+    mod_emit_file_access(&j, &fa2, FA_FOREIGN_APP_DIR, flags2, 2, NULL);
     CHECK_HAS(j, "\"foreign_app_dir\"",           "file_access foreign_app_dir category");
     CHECK_HAS(j, "\"flags\":[\"O_WRONLY\",\"O_CREAT\"]", "file_access multi-flag array");
 
@@ -247,8 +271,21 @@ int main(void)
     strncpy(fa3.path, "/data/data/com.example.app/files/x", sizeof(fa3.path) - 1);
 
     j.len = 0;
-    mod_emit_file_access(&j, &fa3, 0, flags1, 1);
+    mod_emit_file_access(&j, &fa3, 0, flags1, 1, NULL);
     CHECK_HAS(j, "\"categories\":[]", "file_access empty categories array when uncategorized");
+    CHECK_LACKS(j, "\"result\"", "file_access: no result field without a result");
+
+    // ---- file_access outcome: opened (fd), refused, unknown -----------------
+    struct sys_result fd3 = { 3, 1 }, eacces = { -13, 1 }, fa_unknown = { 0, 0 };
+    j.len = 0;
+    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE, flags1, 1, &fd3);
+    CHECK_HAS(j, "\"result\":3}", "file_access opened: result is the fd, last field");
+    j.len = 0;
+    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE, flags1, 1, &eacces);
+    CHECK_HAS(j, "\"result\":-13,\"error\":\"EACCES\"}", "file_access refused: errno name");
+    j.len = 0;
+    mod_emit_file_access(&j, &fa, FA_EXTERNAL_STORAGE, flags1, 1, &fa_unknown);
+    CHECK_HAS(j, "\"result\":null}", "file_access outcome unknown: result null");
 
     // ---- massdelete_detect: full event, MANAGE_EXTERNAL_STORAGE granted ------
     struct massdelete_detect_event rb = {0};

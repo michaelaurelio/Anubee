@@ -10,6 +10,17 @@
 #include "modules/file_access_classify.h"
 #include "modules/perm_watch_parse.h"
 #include "modules/binder_api_parse.h"
+#include "modules/sysret_pend.h"
+
+// ,"result":N[,"error":"ENAME"] or ,"result":null; nothing when r is NULL.
+static void emit_result(struct jbuf *j, const struct sys_result *r)
+{
+    if (!r) return;
+    if (!r->known) { jb_s(j, ",\"result\":null"); return; }
+    jb_s(j, ",\"result\":"); jb_i64(j, r->ret);
+    const char *name = sys_errno_name(r->ret);
+    if (name) { jb_s(j, ",\"error\":\""); jb_s(j, name); jb_c(j, '"'); }
+}
 
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e)
 {
@@ -44,7 +55,7 @@ void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e)
 // syms: resolved symbol strings for each frame (NULL or syms[i]==NULL/"" → omit symbol field).
 // Caller (execve.c) resolves via sym_resolve; passing NULL produces addr-only output.
 void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
-                     const char *flags)
+                     const char *flags, const struct sys_result *r)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");       jb_s(j, trace_type_name(TRACE_EXECVE)); jb_c(j, '"');
@@ -87,6 +98,7 @@ void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *c
         if (*p == ',') p++;
     }
     jb_c(j, ']');
+    emit_result(j, r);
     jb_c(j, '}');
 }
 
@@ -118,7 +130,8 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e)
 }
 
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
-                           unsigned categories, const char *const *flag_strs, int n_flags)
+                           unsigned categories, const char *const *flag_strs, int n_flags,
+                           const struct sys_result *r)
 {
     jb_c(j, '{');
     jb_s(j, "\"type\":\"");      jb_s(j, trace_type_name(TRACE_FILE_ACCESS)); jb_c(j, '"');
@@ -155,6 +168,7 @@ void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
         jb_c(j, '"'); jb_s(j, tags[i].name); jb_c(j, '"');
     }
     jb_c(j, ']');
+    emit_result(j, r);
 
     jb_c(j, '}');
 }

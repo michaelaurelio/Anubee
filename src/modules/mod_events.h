@@ -86,6 +86,14 @@ enum {
     MOD_EV_BINDER_API = 14,
     MOD_EV_DEXLOAD_DETECT = 15,
     MOD_EV_NET = 16,
+    MOD_EV_SYSRET = 17,     // a syscall's return value; pairs with the entry event by tid
+};
+
+// Emitted by a kretprobe for a thread whose entry event was sent (sysret.bpf.h).
+struct sysret_event {
+    struct trace_event_header h;
+    __u64 ts_ns;
+    __s64 ret;
 };
 
 struct spawn_event {

@@ -640,6 +640,15 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
 
+- **Syscall outcomes for `execve` and `file-access`.** Live malware runs
+  showed both analyzers logged attempts only: a SpyNote build's keylog
+  writes all failed (no storage permission) yet read like successes, and one
+  `Runtime.exec("getprop")` showed as six EXECs (one per PATH directory).
+  Kretprobes now send each recorded call's return value; records carry
+  `result`/`error`, summaries a `failed` count. Known drawback: a
+  multithreaded exec that succeeds can't be paired (its tid becomes the
+  pid), so that record says `result: null`.
+
 - **Malware-analysis guide (Phase 7, part 1).** User docs gain a
   step-by-step workflow: lab prep, install without launching, `triage
   --no-launch`, which analyzer answers which question, focused re-runs, when

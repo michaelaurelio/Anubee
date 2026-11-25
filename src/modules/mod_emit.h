@@ -33,8 +33,11 @@ void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
 //  "argv_truncated":bool,"flags":["root","recon",..]}
 // syms: per-frame resolved strings (NULL → addr-only; syms[i]==NULL/"" → omit that frame's symbol).
 // flags: execve_classify.h names, comma-joined ("" or NULL = none).
+// r: the exec's outcome (NULL = no result field). Appends "result":N plus
+// "error":"ENAME" on failure, or "result":null when the outcome never arrived.
+struct sys_result;
 void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
-                     const char *flags);
+                     const char *flags, const struct sys_result *r);
 
 // {"type":"prop","op":"get|find|read","pid":N,"tid":N,"comm":"..",
 //  "name":"..","value":"..","is_ret":N,"found":N}
@@ -50,7 +53,8 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 // pre-decoded via file_access_decode_flags (caller decodes; keeps this builder
 // free of the flags bit-layout).
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
-                           unsigned categories, const char *const *flag_strs, int n_flags);
+                           unsigned categories, const char *const *flag_strs, int n_flags,
+                           const struct sys_result *r);   // r as for mod_emit_execve
 
 // {"type":"massdelete_detect","pid":N,"comm":"..","touch_count":N,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",

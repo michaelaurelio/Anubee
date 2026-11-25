@@ -23,6 +23,7 @@ struct {
 #include "common/path_gate.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/sysret.bpf.h"
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
 // enormous (every .so/.apk/.oat/cache file at startup). Only forward opens
@@ -72,6 +73,7 @@ int BPF_KPROBE(on_openat, const struct pt_regs *regs)
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
 }
 
@@ -114,5 +116,19 @@ int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
+}
+
+// Outcomes: the fd, or -errno (a refused or missing path is the telling case).
+SEC("kretprobe/__arm64_sys_openat")
+int BPF_KRETPROBE(on_openat_ret, long ret)
+{
+    return sysret_emit(ret);
+}
+
+SEC("kretprobe/__arm64_sys_openat2")
+int BPF_KRETPROBE(on_openat2_ret, long ret)
+{
+    return sysret_emit(ret);
 }

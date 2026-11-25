@@ -18,6 +18,7 @@ struct {
 #include "common/follow_fork.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/sysret.bpf.h"
 
 // A bpf_probe_read_user_str() that filled the whole buffer may have cut the
 // string: it did if the byte at the last position isn't the terminator.
@@ -94,6 +95,7 @@ int BPF_KPROBE(on_execve, const struct pt_regs *regs)
     e->stack_depth = (sr > 0) ? (__u32)((__u64)sr >> 3) : 0;
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
 }
 
@@ -157,6 +159,7 @@ int BPF_KPROBE(on_execveat, const struct pt_regs *regs)
     e->stack_depth = (sr > 0) ? (__u32)((__u64)sr >> 3) : 0;
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
 }
 
@@ -192,4 +195,18 @@ int on_proc_exec(struct trace_event_raw_sched_process_exec *ctx)
 
     bpf_ringbuf_submit(e, 0);
     return 0;
+}
+
+// Outcomes: 0 when the new image runs, -errno when it doesn't (a shell's PATH
+// search makes one failed attempt per directory before the one that works).
+SEC("kretprobe/__arm64_sys_execve")
+int BPF_KRETPROBE(on_execve_ret, long ret)
+{
+    return sysret_emit(ret);
+}
+
+SEC("kretprobe/__arm64_sys_execveat")
+int BPF_KRETPROBE(on_execveat_ret, long ret)
+{
+    return sysret_emit(ret);
 }

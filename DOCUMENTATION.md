@@ -1206,7 +1206,10 @@ straight from a background thread. Available analyzers:
   `argv_truncated` marks a run whose argv didn't fit: more than 8 arguments,
   an argument over 127 bytes, or a path over 127 bytes (the kernel side
   checks the byte after the buffer). The summary carries the union of flags
-  per binary.
+  per binary. Each run also carries its outcome (see **Syscall outcomes**
+  below): a shell or `Runtime.exec` PATH search shows up as one failed
+  `ENOENT` attempt per directory before the one that runs, and the summary
+  counts `failed` per binary.
 - **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
   `BRK` into the target's libc pages). Each property is classified
   (`src/modules/prop_read_classify.c`) as a `root` check (ro.debuggable,
@@ -1220,6 +1223,32 @@ straight from a background thread. Available analyzers:
   any app exists, so an app reading `Build.MODEL` / `Build.FINGERPRINT` /
   `Build.HARDWARE` touches no property and is invisible here; only explicit
   `SystemProperties.get` / `__system_property_get` / `getprop` calls show.
+- **Syscall outcomes (`execve`, `file-access`)** — the entry kprobe records the
+  call; a kretprobe on the same syscall (still stealthy: kernel-side only)
+  sends just the return value, and only for threads whose entry was recorded
+  (`src/modules/sysret.bpf.h`'s per-tid `sysret_armed` map), so it adds no
+  volume for calls the gate dropped. Userspace holds each entry until its
+  thread's result arrives (`src/modules/sysret_pend.c`; a thread has one
+  syscall in flight) and emits the two as one record: `"result":N` (fd, or 0
+  for exec) or `"result":-N,"error":"ENOENT"`; `"result":null` when the
+  result never arrived (lost, or the run ended first -- nothing is dropped
+  waiting for it). execve frames are symbolized when the entry is handled,
+  not after, because a successful exec has replaced `/proc/<pid>/maps` by
+  the time it returns. A multithreaded exec that succeeds changes the
+  thread's id to the pid, so its result can't be paired: that record shows
+  `null`.
+
+```mermaid
+sequenceDiagram
+    participant K as entry kprobe
+    participant R as kretprobe
+    participant U as analyzer (userspace)
+    K->>U: entry event (tid, path/argv) + arm tid
+    Note over U: held per tid
+    R->>U: result event (tid, ret) -- armed tids only
+    U->>U: one record with "result"
+```
+
 - **`file-access`** — `openat`/`openat2` kprobes (stealthy: zero uprobes), gated
   in-kernel to 5 fixed path prefixes (external storage, `/data/data`,
   `/data/user`, `/proc`) to keep ring-buffer volume sane. Userspace classifies each hit
@@ -1585,9 +1614,9 @@ active, the same tally is additionally written as one final `*_summary` record
 (before the `coverage` footer, via the analyzer's `emit_summary` hook in
 `anubee_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
 longer lost from the file:
-- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool,"flags":["root"|"recon"|"tamper"|"control"|"shell"|"app_dir"|"memfd",..]},..]}` (per-event `execve` records gain `"argv_truncated":bool,"flags":[..]`)
+- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool,"flags":["root"|"recon"|"tamper"|"control"|"shell"|"app_dir"|"memfd",..]},..]}` (per-event `execve` records gain `"argv_truncated":bool,"flags":[..]` and `"result":N|null` plus `"error":"ENAME"` on failure; summary binaries gain `"failed":N`)
 - `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool,"category":"root"|"emulator"|"device"|null},..]}`
-- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}` (categories: `external_storage`, `media_subdir`, `credential_pattern`, `foreign_app_dir`, `unknown_self`, `own_app_dir`, `proc_self`, `proc_other_process`, `proc_system`; `/proc` paths use `self` and `task/*`)
+- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"failed":N,"categories":[..]},..]}` (per-event `file_access` records end with `"result":fd|-errno|null` and `"error":"ENAME"` on failure) (categories: `external_storage`, `media_subdir`, `credential_pattern`, `foreign_app_dir`, `unknown_self`, `own_app_dir`, `proc_self`, `proc_other_process`, `proc_system`; `/proc` paths use `self` and `task/*`)
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
 - `{"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read|action|gesture|global_action|screenshot|input_method","method":".."|null,"code":N,"granted":true|false|null}` (first call per process and category)

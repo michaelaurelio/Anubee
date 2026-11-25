@@ -487,6 +487,7 @@ test_mod_file_access() {
 #!/system/bin/sh
 sleep 3
 cat /proc/self/maps /proc/self/status /proc/1/cmdline /proc/net/tcp /proc/self/stat /proc/meminfo >/dev/null 2>&1
+cat /sdcard/.anubee_fa_missing >/dev/null 2>&1
 sleep 1
 DRV
     adb push "$drv" /data/local/tmp/anubee_fa_drive.sh >/dev/null || fail "mod-file-access: push failed"
@@ -495,17 +496,26 @@ DRV
     drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_fa_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
     [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "mod-file-access: could not start the /proc driver"
     out="$(anubee "mod file-access -p $drv_pid -o $out_jsonl")"
-    local rec; rec="$(adb shell "su -c 'grep file_access_summary $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    local all; all="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    local rec; rec="$(grep file_access_summary <<<"$all")"
     adb shell "su -c 'rm -f $out_jsonl /data/local/tmp/anubee_fa_drive.sh'" >/dev/null 2>&1 || true
     local p c
     for p in /proc/self/maps:proc_self /proc/self/status:proc_self /proc/1/cmdline:proc_other_process /proc/net/tcp:proc_system; do
         c="${p#*:}"; p="${p%%:*}"
-        grep -q "\"path\":\"$p\",\"count\":[0-9]*,\"categories\":\[\"$c\"\]" <<<"$rec" \
+        grep -q "\"path\":\"$p\",\"count\":[0-9]*,\"failed\":0,\"categories\":\[\"$c\"\]" <<<"$rec" \
             || { tail -10 <<<"$out" >&2; fail "mod-file-access: $p not reported as $c"; }
     done
     ! grep -q '/proc/self/stat"\|/proc/meminfo' <<<"$rec" \
         || fail "mod-file-access: ordinary /proc reads (stat, meminfo) reported"
     info "mod-file-access /proc OK - self maps/status, other process, net/tcp; ordinary reads silent"
+    # Outcomes (kretprobe): an open that worked carries its fd, a missing file its errno.
+    grep -q '"path":"/proc/self/maps".*"result":[0-9]' <<<"$all" \
+        || { grep '/proc/self/maps' <<<"$all" | head -2 >&2; fail "mod-file-access: successful open has no fd result"; }
+    grep -q '"path":"/sdcard/.anubee_fa_missing".*"result":-2,"error":"ENOENT"' <<<"$all" \
+        || { grep anubee_fa_missing <<<"$all" | head -2 >&2; fail "mod-file-access: missing file not reported as ENOENT"; }
+    grep -q '"path":"/sdcard/.anubee_fa_missing","count":1,"failed":1' <<<"$rec" \
+        || fail "mod-file-access: summary doesn't count the failed open"
+    info "mod-file-access outcomes OK - fd on success, ENOENT on a missing file, failures counted"
 }
 
 # mod massdelete-detect: deterministic trigger via a compiled single-process
@@ -1220,6 +1230,7 @@ cp /system/bin/toybox $bin; chmod 755 $bin
 $bin true
 /system/bin/toybox echo 1 2 3 4 5 6 7 8 9 10 >/dev/null
 /system/bin/toybox echo $long >/dev/null
+/system/bin/toybox env /anubee_no_such_dir/nobin 2>/dev/null
 rm -f $bin
 sleep 1
 DRV
@@ -1240,7 +1251,13 @@ DRV
         || { grep toybox <<<"$rec" >&2; fail "execve: 10-argument and 200-byte-argument runs not marked argv_truncated"; }
     grep -q '"type":"execve_summary".*"flags":\["recon","shell"\]' <<<"$rec" \
         || fail "execve: summary lacks per-binary flags"
-    info "execve OK - recon+shell from sh -c, app_dir, cut-off argv marked"
+    grep -q '"filename":"/anubee_no_such_dir/nobin".*"result":-2,"error":"ENOENT"' <<<"$rec" \
+        || { grep nobin <<<"$rec" >&2; fail "execve: exec of a missing binary not reported as ENOENT"; }
+    grep -q "\"filename\":\"$bin\".*\"result\":0" <<<"$rec" \
+        || fail "execve: successful exec has no result 0"
+    grep -q '"path":"/anubee_no_such_dir/nobin","count":1,"failed":1' <<<"$rec" \
+        || fail "execve: summary doesn't count the failed exec"
+    info "execve OK - recon+shell from sh -c, app_dir, cut-off argv marked, outcomes (0 / ENOENT) recorded"
 }
 
 test_mod_prop_read() {

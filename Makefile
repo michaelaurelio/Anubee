@@ -145,7 +145,7 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \
                anubee_jcache_reset anubee_managed_chain anubee_emit_cfi_stack_json \
                anubee_is_interp_frame \
-               anubee_coverage_report anubee_cfi_stop_name \
+               anubee_coverage_report anubee_drop_summary anubee_cfi_stop_name \
                anubee_art_naming_disabled \
                anubee_syscall_table anubee_syscall_table_count \
                validate_pid_or_package validate_have_selector \
@@ -510,6 +510,8 @@ test:
 	$(BUILD)/test_runtime
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread
 	$(BUILD)/test_evqueue
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_sysc_evpack.c src/common/evqueue.c -o $(BUILD)/test_sysc_evpack -lpthread
+	$(BUILD)/test_sysc_evpack
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_unwind_regs.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_unwind_regs
 	$(BUILD)/test_unwind_regs
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_stack_snapshot.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_stack_snapshot

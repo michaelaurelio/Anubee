@@ -30,6 +30,30 @@ const char *anubee_cfi_stop_name(int reason)
 	return k_stop_name[reason];
 }
 
+int anubee_drop_summary(char *out, size_t n, unsigned long long ring,
+			unsigned long long queue, unsigned long long offered)
+{
+	unsigned long long d = ring + queue;
+
+	if (d == 0 || !out || n == 0)
+		return 0;
+
+	// Integer tenths keeps the ratio host-independent and avoids floating point.
+	unsigned long long tenths = offered ? d * 1000 / offered : 0;
+	size_t used;
+	if (offered)
+		used = (size_t)snprintf(out, n,
+			"%llu of %llu events dropped (%llu.%llu%%): ring %llu, queue %llu",
+			d, offered, tenths / 10, tenths % 10, ring, queue);
+	else
+		used = (size_t)snprintf(out, n,
+			"%llu events dropped: ring %llu, queue %llu",
+			d, ring, queue);
+	if (offered && tenths >= 10 && used < n)
+		snprintf(out + used, n - used, " - raise -Q, or narrow with -s/-x");
+	return 1;
+}
+
 // True if the record carries any degradation signal at all.
 static int cov_degraded(const struct anubee_coverage *c)
 {

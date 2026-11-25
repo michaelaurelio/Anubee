@@ -59,6 +59,7 @@
 #include "common/stack_snapshot.h"
 #include "common/art_nterp.h"
 #include "syscalls/snapshot_gate.h"
+#include "syscalls/evpack.h"
 #include "common/decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
@@ -261,6 +262,10 @@ static void sysc_emit_summary(struct anubee_sink *s)
 // on process_event); read at teardown only after pthread_join(g_worker, ...)
 // has returned, so the worker is no longer running - no lock needed.
 static struct anubee_coverage g_cov = { .engine = "syscalls" };
+
+// Final capture-loss tally saved before the queue is destroyed, printed as the
+// last teardown line.
+static unsigned long long g_fin_ring, g_fin_queue, g_fin_offered;
 
 // ---- engine state shared across setup / run / teardown -------------------
 // Promoted from cmd_syscalls locals so the engine can be driven in three phases
@@ -936,6 +941,7 @@ static void handle_return(const struct syscalls_return_event *r)
 
 // Process one event — the heavy path (symbolization + JSON). Runs ONLY on the
 // worker thread, so all the caches/pending state it touches stay single-threaded.
+// Records arrive in the compact queue format (see syscalls/evpack.h).
 static void process_event(const void *data, size_t sz)
 {
 	if (sz < sizeof(struct trace_event_header))
@@ -975,18 +981,20 @@ static void process_event(const void *data, size_t sz)
 			anubee_libtrace_emit_unlib(&g_sink, 1, u);
 		break;
 	}
-	case SYSC_EV_SYSCALL:
-		if (sz < sizeof(struct syscalls_syscall_event))
+	case SYSC_EV_SYSCALL: {
+		static struct syscalls_syscall_event full;
+		if (sysc_unpack_syscall(data, sz, &full) != 0)
 			return;
-		handle_syscall(data);
+		handle_syscall(&full);
 		break;
+	}
 	case SYSC_EV_RETURN:
 		if (sz < sizeof(struct syscalls_return_event))
 			return;
 		handle_return(data);
 		break;
 	case SYSC_EV_STACK:
-		if (sz < sizeof(struct anubee_stack_snapshot))
+		if (!sysc_stack_rec_ok(data, sz))
 			return;
 		json_emit_stack(data);
 		break;
@@ -1003,8 +1011,9 @@ static void process_event(const void *data, size_t sz)
 
 static struct anubee_evq g_q;
 
-// ring_buffer callback (drain thread): copy the raw event into the queue. Also
-// arms the target-library range here, synchronously, for SYSC_EV_MAP events —
+// ring_buffer callback (drain thread): copy the raw event into the queue. Syscall
+// records and stack snapshots are queued in compact form (see syscalls/evpack.h).
+// Also arms the target-library range here, synchronously, for SYSC_EV_MAP events —
 // rather than waiting for the worker thread to reach it off the queue — to
 // shrink the pre-arm window (CR2): any syscall the library issues before its
 // range is armed is dropped in-kernel (see COV_PREARM), and the queue hop was
@@ -1025,6 +1034,16 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 			for (int i = 0; i < g_nscopes; i++)
 				if (lib_selector_matches_any(m->name, g_scopes[i].lib_pats, g_scopes[i].npat))
 					push_scope_range(&g_scopes[i].ranges, m->start, m->end);
+		}
+		if (h->type == SYSC_EV_SYSCALL && sz >= sizeof(struct syscalls_syscall_event)) {
+			unsigned char pk[sizeof(struct syscalls_syscall_event)];
+			size_t pn = sysc_pack_syscall(data, pk);
+			anubee_evq_push(&g_q, pk, pn);
+			return 0;
+		}
+		if (h->type == SYSC_EV_STACK && sz >= sizeof(struct anubee_stack_snapshot)) {
+			anubee_evq_push(&g_q, data, sysc_stack_pack_len(data));
+			return 0;
 		}
 	}
 	anubee_evq_push(&g_q, data, sz);
@@ -1654,6 +1673,9 @@ void syscalls_teardown(void)
 		g_cov.prearm_drops    = anubee_coverage_read(covfd, COV_PREARM);
 		g_cov.ring_drops      = anubee_drops_read(g_dropfd);
 		g_cov.queue_drops     = g_q.dropped;
+		g_fin_ring    = g_cov.ring_drops;
+		g_fin_queue   = g_cov.queue_drops;
+		g_fin_offered = g_q.pushed + g_q.dropped + g_cov.ring_drops;
 		g_cov.managed_naming_off = anubee_art_naming_disabled();
 		anubee_coverage_report(&g_sink, &g_cov);
 		// SYM1 Phase 5c: end-of-run content summary, same slot as coverage
@@ -1694,6 +1716,11 @@ void syscalls_teardown(void)
 		syscalls__destroy(g_skel);
 		g_skel = NULL;
 	}
+
+	char dl[256];
+	if (anubee_drop_summary(dl, sizeof dl, g_fin_ring, g_fin_queue, g_fin_offered))
+		fprintf(stderr, "[drops] %s\n", dl);
+	g_fin_ring = g_fin_queue = g_fin_offered = 0;
 }
 
 int cmd_syscalls(int argc, char **argv)

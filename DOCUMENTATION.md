@@ -368,6 +368,12 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   is dropped, not mis-filtered, counted by the `prearm_drops` coverage field.
   The window is minimized (armed on the drain thread, ahead of the processing
   queue) but not eliminated.
+- **Compact drain queue storage.** Syscall records and stack snapshots are
+  stored in the `-Q` queue in compact form (`src/syscalls/evpack.h`: only the
+  valid stack, string, sockaddr and snapshot bytes), so the same queue holds
+  several times more events than the fixed ring record size suggests. A final
+  `[drops] N of M events dropped (P%)` line is printed last at teardown whenever
+  ring or queue drops occurred; the `[coverage]` record and its JSON are unchanged.
 - Output: structured per-event JSONL (see §7) **and** stdout simultaneously —
   `-o` no longer implies `-q` (SYM1 dual-channel-always); `-q` is the sole,
   independent stdout silencer. Live events print via the shared

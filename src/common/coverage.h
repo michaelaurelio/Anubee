@@ -8,6 +8,8 @@
 #include "common/cfi_unwind.h"    // enum cfi_stop_reason
 #include "common/coverage_slots.h"
 
+#include <stddef.h>
+
 struct anubee_sink;   // fwd; full def in common/emit.h
 
 // Histogram width = number of enum cfi_stop_reason values (last + 1). A new
@@ -55,6 +57,14 @@ static inline int anubee_cfi_stop_is_blind(int reason)
 {
 	return reason != CFI_OK && reason != CFI_SNAP_PC_ZERO;
 }
+
+// Human summary of capture loss for the last line of a run. Writes nothing and
+// returns 0 when ring + queue == 0. Otherwise writes e.g.
+//   "286959 of 789519 events dropped (36.3%): ring 0, queue 286959 - raise -Q, or narrow with -s/-x"
+// (the " - raise ..." hint only when the percentage is 1.0 or more; the "of N" and
+// percentage are omitted when offered == 0) and returns 1. Always NUL terminates.
+int anubee_drop_summary(char *out, size_t n, unsigned long long ring,
+                        unsigned long long queue, unsigned long long offered);
 
 // libbpf-backed reader, header-only (mirrors anubee_drops_read in runtime.h) so
 // coverage.c stays free of a libbpf dependency and remains host-testable.

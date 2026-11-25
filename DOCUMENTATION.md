@@ -1953,9 +1953,34 @@ Design points worth knowing:
   now covers all 9 mod-analyzer teardown summary types (the original 5 plus
   `accessibility_detect_summary`/`exfil_detect_summary`/
   `fileless_detect_summary`/`screencapture_detect_summary`).
+- `mod_findings.py` — stdlib-only (the lab harness runs it without the MCP
+  server): the "what's new" view of an `anubee mod` run. Each record reduces
+  to a `(section, key)`: binder `interface.method`, a probed path, the argv,
+  `proto host`, a permission change, an accessibility call, a dexload stage
+  -- with the package, `/data/app/~~…/` install dir, `/proc/<pid>`,
+  `task/<tid>`, hex and 6+-digit numbers normalized out. A *noise profile*
+  counts, per key, how many benign baseline apps showed it; a key seen in at
+  least `min_apps` of them (default half, rounded up) is device noise.
+  Snapshots (`perm_change` baseline), summaries and own-folder opens are not
+  behaviour; record types it doesn't know are always shown. The view groups
+  findings per section in first-appearance order with count, first-seen
+  seconds and failed outcomes, counts what it hid, and carries degraded
+  coverage so an empty section can't read as "checked, nothing there".
+
+```mermaid
+flowchart LR
+    B["benign apps, traced<br/>like the samples"] -->|profile| P[(noise profile<br/>key -> #apps)]
+    S["sample run JSONL"] --> K["record -> (section, key)<br/>normalized"]
+    P --> F{"seen in >= min_apps<br/>benign apps?"}
+    K --> F
+    F -->|yes| H["hidden (counted)"]
+    F -->|no| V["finding: count, first seen, errors"]
+```
+
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
+  `mod_findings_view` / `mod_noise_profile` (see `mod_findings.py` below),
   plus on-device `list_libraries` (via `anubee lib`) / `dump_library` (via
   `anubee dump`). Over the `load_structured()` path: `coverage` (per-engine
   coverage-health rows — "was this trace clean"), `call_histogram` (call counts by

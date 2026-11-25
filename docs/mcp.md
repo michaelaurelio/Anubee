@@ -63,6 +63,7 @@ restart the app after editing.
 | `wx_scan(top)` | Self-modifying/unpacking + anti-tamper ops: RWX maps, W→X transitions, self-`ptrace` |
 | `query(...)` / `get_event(id)` / `search(text)` | Filtered/full-detail/text-search event lookup |
 | `diff_traces(baseline,compare,top,via)` | What fired only in `compare` vs `baseline`: the go-to for clean-vs-rooted RASP triage |
+| `mod_findings_view(trace,profile,package)` / `mod_noise_profile(out,baseline_traces,min_apps)` | `anubee mod` run reduced to what benign apps on the same device never did, per section with counts, first-seen time, failed outcomes; the profile is learned from benign baseline runs |
 | `load_structured(path)` | Ingest `funcs -o` / `correlate -o` JSONL into `calls`/`returns`/`func_spans`/`span_syscalls` |
 | `correlate_spans(top)` | Join `span_syscalls`→`func_spans`: one row per in-span syscall with its enclosing function |
 | `coverage()` | Per-engine coverage-health rows: was the trace clean? (see [`reading-traces.md`](reading-traces.md)) |

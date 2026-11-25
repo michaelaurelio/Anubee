@@ -640,6 +640,14 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-25
 
+- **"What's new" findings view for `anubee mod` runs** (`mod_findings.py`,
+  MCP `mod_findings_view` / `mod_noise_profile`). Across 13 lab apps, 95 of
+  264 distinct binder calls appeared in every app; the view hides what
+  benign apps traced the same way also did, learned per device instead of a
+  hard-coded list. Known drawbacks: keys are coarse (a binder method is noise
+  regardless of its arguments, so a sample's `getInstalledPackages` hides if
+  a benign app also called it); the profile is only as representative as
+  the benign apps chosen; post-processing only, the live console is unchanged.
 - **`dexload-detect` keeps a copy of fast-deleted payloads.** A live
   SharkBot run lost an ad-SDK jar written, loaded and deleted within 2 ms
   (`saved: null`). Dropped files are now held open from the drop. The jar's

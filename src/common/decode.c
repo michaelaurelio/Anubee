@@ -346,6 +346,30 @@ static const struct flagdef t_prctl[] = {
 };
 #endif
 
+#ifdef __NR_ptrace
+// ptrace request numbers are stable kernel ABI (include/uapi/linux/ptrace.h),
+// written out literally so the table is identical on host and target builds.
+// Requests that are 32-bit/x86-only (12-15) or whose meaning differs between
+// architectures (31-34) are left out and render as hex.
+#define PT(name, v) { (unsigned long long)(v), "PTRACE_" #name }
+static const struct flagdef t_ptrace[] = {
+	PT(TRACEME, 0), PT(PEEKTEXT, 1), PT(PEEKDATA, 2), PT(PEEKUSR, 3),
+	PT(POKETEXT, 4), PT(POKEDATA, 5), PT(POKEUSR, 6), PT(CONT, 7),
+	PT(KILL, 8), PT(SINGLESTEP, 9), PT(ATTACH, 16), PT(DETACH, 17),
+	PT(SYSCALL, 24),
+	PT(SETOPTIONS, 0x4200), PT(GETEVENTMSG, 0x4201), PT(GETSIGINFO, 0x4202),
+	PT(SETSIGINFO, 0x4203), PT(GETREGSET, 0x4204), PT(SETREGSET, 0x4205),
+	PT(SEIZE, 0x4206), PT(INTERRUPT, 0x4207), PT(LISTEN, 0x4208),
+	PT(PEEKSIGINFO, 0x4209), PT(GETSIGMASK, 0x420a), PT(SETSIGMASK, 0x420b),
+	PT(SECCOMP_GET_FILTER, 0x420c), PT(SECCOMP_GET_METADATA, 0x420d),
+	PT(GET_SYSCALL_INFO, 0x420e), PT(GET_RSEQ_CONFIGURATION, 0x420f),
+	PT(SET_SYSCALL_USER_DISPATCH_CONFIG, 0x4210),
+	PT(GET_SYSCALL_USER_DISPATCH_CONFIG, 0x4211),
+	PT(SET_SYSCALL_INFO, 0x4212),
+};
+#undef PT
+#endif
+
 #ifdef MFD_CLOEXEC
 static const struct flagdef t_mfd[] = {
 	F(MFD_CLOEXEC),
@@ -675,6 +699,11 @@ int flags_decode_arg(long nr, int arg, unsigned long long v, char *out, size_t o
 #if defined(__NR_prctl) && defined(PR_SET_NAME)
 	case __NR_prctl:
 		if (arg == 0) { dec_enum(v, t_prctl, NELEMS(t_prctl), out, outsz); return 1; }
+		break;
+#endif
+#ifdef __NR_ptrace
+	case __NR_ptrace:
+		if (arg == 0) { dec_enum(v, t_ptrace, NELEMS(t_ptrace), out, outsz); return 1; }
 		break;
 #endif
 	default:

@@ -73,6 +73,31 @@ int main(void)
     CHECK(strstr(out, "SOCK_NONBLOCK") != NULL, "SOCK_NONBLOCK rendered");
     CHECK(strstr(out, "SOCK_CLOEXEC") != NULL, "SOCK_CLOEXEC rendered");
 
+    // ptrace(): arg 0 is the request and decodes to its PTRACE_* name; the
+    // remaining args (pid, addr, data) stay raw.
+    rc = flags_decode_arg((long)__NR_ptrace, /*arg=*/0, 0x4206ULL, out, sizeof(out));
+    CHECK(rc == 1, "ptrace request decode applies");
+    CHECK(strcmp(out, "PTRACE_SEIZE") == 0, "0x4206 -> PTRACE_SEIZE");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4204ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_GETREGSET") == 0, "0x4204 -> PTRACE_GETREGSET");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_TRACEME") == 0, "0 -> PTRACE_TRACEME");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 16ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_ATTACH") == 0, "16 -> PTRACE_ATTACH");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4200ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_SETOPTIONS") == 0, "0x4200 -> PTRACE_SETOPTIONS");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x9999ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "0x9999") == 0, "unknown ptrace request falls back to hex");
+    for (int a = 1; a <= 3; a++) {
+        rc = flags_decode_arg((long)__NR_ptrace, a, 0x4206ULL, out, sizeof(out));
+        CHECK(rc == 0, "ptrace args after the request are not decoded");
+    }
+    {
+        char tiny[8];
+        rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4206ULL, tiny, sizeof(tiny));
+        CHECK(rc == 1 && strlen(tiny) < sizeof(tiny), "ptrace tiny-buffer decode stays in bounds");
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

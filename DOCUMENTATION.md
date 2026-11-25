@@ -1358,6 +1358,10 @@ don't assume "what printed" equals "what's in the file." (See BACKLOG.md U1/U2 f
 the separate, explicitly-not-recommended idea of also unifying console *styling*
 across engines — a cosmetic concern, distinct from this content-parity question.)
 
+- `ptrace` records carry the request decoded in `decoded_args`: argument 0 renders as its
+  `PTRACE_*` name (for example `{"0":"PTRACE_SEIZE"}`), or as hex when the request is not in
+  the table. The pid, addr and data arguments stay raw. The decoding is shared, so `syscalls`
+  (JSONL and console) and `correlate` syscall records show the same names.
 - `anubee syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
   "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,

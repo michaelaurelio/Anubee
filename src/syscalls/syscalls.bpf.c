@@ -41,6 +41,7 @@
 #include "common/lib_trace.h"
 #include "common/bpf_drop.bpf.h"
 #include "common/coverage.bpf.h"
+#include "common/hdr_aux.bpf.h"
 
 #define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
 
@@ -206,7 +207,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
+						   anubee_hdr_aux(nr));
 		}
 	}
 
@@ -224,7 +226,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
+	e->h._pad = anubee_hdr_aux(nr);
 
 	e->nr      = nr;
 	e->ktime   = ktime;
@@ -350,7 +352,8 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
+						   anubee_hdr_aux(0));
 		}
 	}
 
@@ -366,7 +369,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
+	e->h._pad = anubee_hdr_aux(0);
 
 	e->nr      = nr;
 	e->ktime   = ktime;

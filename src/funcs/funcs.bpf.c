@@ -128,7 +128,7 @@ int BPF_KPROBE(uprobe_open, long a1, long a2, long a3, long a4, long a5, long a6
         if (!bpf_map_lookup_elem(&stack_seen, &sid)) {
             __u8 one = 1;
             bpf_map_update_elem(&stack_seen, &sid, &one, BPF_ANY);
-            anubee_emit_stack_snapshot(ctx, pid, tid, sid, ANUBEE_EVENT_STACK);
+            anubee_emit_stack_snapshot(ctx, pid, tid, sid, ANUBEE_EVENT_STACK, 0);
         }
         e->stack_id = sid;
     }

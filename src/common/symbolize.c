@@ -24,6 +24,7 @@
 #include "common/art_nterp.h" // nterp_name
 #include "common/art_shadow.h"   // shadow_frame_chain — switch-interp ShadowFrame naming
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
+#include "common/sym_pid.h"   // sym_pick_pid (pure aux/pid selection)
 #include "common/stack_snapshot.h"
 #include "symbolize_internal.h"
 
@@ -160,6 +161,24 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	if (sym_resolve_uncached(pid, addr, out, outsz))
 		sc_put(pid, (uint64_t)addr, out);
 	pthread_mutex_unlock(&g_lock);
+}
+
+int sym_effective_pid(int pid, unsigned int aux)
+{
+	// Common case: no usable parent recorded, or the event pid is the parent.
+	if (sym_aux_ppid(aux) <= 1 || sym_aux_ppid(aux) == pid)
+		return pid;
+
+	// The maps cache is under g_lock; an exec event always wants the parent,
+	// so only a non-exec one needs to know whether the child's maps are gone.
+	int gone = 0;
+	if (!sym_aux_is_exec(aux)) {
+		pthread_mutex_lock(&g_lock);
+		struct procmaps *pm = pm_get(pid);
+		gone = pm && pm->gone;
+		pthread_mutex_unlock(&g_lock);
+	}
+	return sym_pick_pid(pid, aux, gone);
 }
 
 static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz)

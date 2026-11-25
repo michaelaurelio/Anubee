@@ -18,6 +18,12 @@
  * "libc.so+0x7e0b4", or "0x7..." if no module is found). */
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz);
 
+/* Pick the pid whose /proc maps and memory should be used for an event's
+ * frames. For a forked child whose own maps are gone (or whose stack predates
+ * an execve), this is the parent's pid; otherwise it is `pid` unchanged. The
+ * pid printed in JSON output is always the real one. */
+int sym_effective_pid(int pid, unsigned int aux);
+
 /* Drop cached /proc maps for a pid (e.g. after a large unmap), forcing a reread
  * on the next resolve. Safe to call for unknown pids. */
 void sym_flush_pid(int pid);

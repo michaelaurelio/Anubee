@@ -13,6 +13,8 @@ struct trace_event_header {
     __u32 type;
     __u32 pid;
     __u32 tid;
+    // Engines that symbolize in userspace store the parent tgid (low 31 bits)
+    // and bit 31 = "syscall is execve" here; 0 = unknown. Never printed.
     __u32 _pad;
 };
 

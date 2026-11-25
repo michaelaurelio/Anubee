@@ -237,7 +237,19 @@ int main(void)
         CHECK(sysc_stack_rec_ok(&snap, off + ANUBEE_SNAP_MAX) == 0);
     }
 
-    // 9. Capacity: packed records fit several times more per queue byte.
+    // 9. Header spare word (parent tgid + exec flag) survives queue packing.
+    fill(&e);
+    e.stack_sz = 0;
+    e.str_present = 0;
+    e.sock_len = 0;
+    e.compat = 0;
+    e.h._pad = 0x80000042u;
+    n = sysc_pack_syscall(&e, pk);
+    memset(&out, 0, sizeof out);
+    CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
+    CHECK(out.h._pad == 0x80000042u);
+
+    // 10. Capacity: packed records fit several times more per queue byte.
     {
         struct anubee_evq q;
         int nraw = 0, npk = 0;

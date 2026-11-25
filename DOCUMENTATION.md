@@ -476,6 +476,11 @@ garbage — precisely the RASP/anti-tamper `.so` case this tool is meant for.
 Attribution then falls back to `stack[0]` (the trap PC itself, which needs no
 frame pointer) rather than reporting a false miss.
 
+**Forked-child attribution.** A forked child's frames are resolved against the parent's
+address space when the child's own maps are already gone (it exited) or the stack predates
+an `execve` that replaced its image. This is best effort: if the parent has also exited,
+the frames stay unresolved.
+
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers
 to a live jni-trampoline→managed cross are resolved: **W6** (capture-all snapshots, done

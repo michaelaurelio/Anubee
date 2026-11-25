@@ -49,10 +49,13 @@ static __always_inline __u64 anubee_hash_stack(__u64 *stack, int n, __u32 tgid, 
 /* Emit one stack-snapshot record: full GP register file + a bounded copy of the
  * user stack from sp upward. Two fixed-size attempts so a fault near the top of
  * the stack still yields the smaller window. ev_type is the engine's discriminator
- * value for a stack record (e.g. SYSC_EV_STACK or ANUBEE_EVENT_STACK). */
+ * value for a stack record (e.g. SYSC_EV_STACK or ANUBEE_EVENT_STACK). hdr_aux
+ * fills the header's spare word (parent tgid + exec flag, see common/sym_pid.h);
+ * pass 0 when no parent attribution is known. */
 static __always_inline void anubee_emit_stack_snapshot(struct pt_regs *user_regs,
 						     __u32 tgid, __u32 tid,
-						     __u64 sid, __u32 ev_type)
+						     __u64 sid, __u32 ev_type,
+						     __u32 hdr_aux)
 {
 	struct anubee_stack_snapshot *s =
 		bpf_ringbuf_reserve(&ANUBEE_SNAPSHOT_RB, sizeof(*s), 0);
@@ -63,7 +66,7 @@ static __always_inline void anubee_emit_stack_snapshot(struct pt_regs *user_regs
 	s->h.type = ev_type;
 	s->h.pid  = tgid;
 	s->h.tid  = tid;
-	s->h._pad = 0;
+	s->h._pad = hdr_aux;
 	s->stack_id = sid;
 	s->pc = BPF_CORE_READ(user_regs, pc);
 	s->sp = BPF_CORE_READ(user_regs, sp);

@@ -651,6 +651,7 @@ static void json_emit_stack(const struct anubee_stack_snapshot *s)
 static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 {
 	if (!g_stacks) return;
+	int epid = sym_effective_pid((int)s->h.pid, s->h._pad);
 	uint64_t pcs[64];
 	uint64_t sps[64];
 	static int dbg = -1;
@@ -665,7 +666,7 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	// memset left the terminal slot as uninitialized stack garbage that
 	// could alias a valid enum value and silently corrupt g_cov.cfi_stop[].
 	// Zero-init means an unwritten terminal reads as CFI_OK (0).
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
+	int n = cfi_unwind_snapshot(epid, s, pcs, 64, sps, diags);
 	if (n <= 0) return;
 
 	g_cov.snaps_total++;
@@ -680,16 +681,16 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	const char *syms[64];
 	int nsym = n < 64 ? n : 64;
 	for (int i = 0; i < nsym; i++) {
-		sym_resolve((int)s->h.pid, pcs[i], sym_store[i], sizeof(sym_store[i]));
+		sym_resolve(epid, pcs[i], sym_store[i], sizeof(sym_store[i]));
 		syms[i] = sym_store[i];
 	}
 
 	struct jbuf *j = &g_sink.jb; j->len = 0;
-	anubee_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, syms, dbg ? diags : NULL);
+	anubee_emit_cfi_stack_json(j, epid, s, pcs, sps, n, syms, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
 	char frag[208];
-	if (anubee_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
+	if (anubee_managed_chain(epid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
 		anubee_jcache_put(s->stack_id, frag);
 }
 
@@ -773,10 +774,11 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
+	int epid = sym_effective_pid((int)e->h.pid, e->h._pad);
 	char sym[320];
 	for (int i = 0, first = 1; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 		if (e->stack[i] == 0) break;
-		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+		sym_resolve(epid, e->stack[i], sym, sizeof(sym));
 		if (!first)
 			jb_c(j, ',');
 		first = 0;
@@ -904,11 +906,12 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		}
 
 		int n = e->stack_sz / (int)sizeof(__u64);
+		int epid = sym_effective_pid((int)e->h.pid, e->h._pad);
 		char sym[320];
 		for (int i = 0; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 			if (e->stack[i] == 0)
 				break;
-			sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+			sym_resolve(epid, e->stack[i], sym, sizeof(sym));
 			human_detail("syscall", "#%d %s\n", i, sym);
 		}
 		fflush(stdout);

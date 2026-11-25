@@ -88,6 +88,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         return 0;
 
     const struct execve_event *e = data;
+    int epid = sym_effective_pid((int)hdr->pid, hdr->_pad);
 
     exec_stat_add(e->filename);
 
@@ -115,14 +116,14 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
             __u32 start = 1;
             if (start < e->stack_depth && e->call_stack[start]) {
                 char caller_sym[320];
-                sym_resolve(hdr->pid, e->call_stack[start], caller_sym, sizeof(caller_sym));
+                sym_resolve(epid, e->call_stack[start], caller_sym, sizeof(caller_sym));
                 human_detail("exec", "caller: %s\n", caller_sym);
             }
             if (mc->verbose) {
                 for (__u32 i = start + 1; i < e->stack_depth; i++) {
                     if (!e->call_stack[i]) break;
                     char frame_sym[320];
-                    sym_resolve(hdr->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
+                    sym_resolve(epid, e->call_stack[i], frame_sym, sizeof(frame_sym));
                     human_detail("exec", "#%u %s\n", i, frame_sym);
                 }
             }
@@ -134,7 +135,7 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
         const char *syms[STACK_DEPTH];
         for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
             if (!e->call_stack[i]) { syms[i] = NULL; continue; }
-            sym_resolve(hdr->pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+            sym_resolve(epid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
             syms[i] = symbuf[i];
         }
         mod_emit_execve(&mc->sink->jb, e, syms);

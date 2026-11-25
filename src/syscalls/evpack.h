@@ -16,6 +16,9 @@
  *      (not including) the first NUL plus one NUL
  *   4. sock: a __u32 length (clamped to SYSC_SOCK_MAX) then that many bytes
  *   5. one byte compat
+ *   6. one byte binder flag; when it is 1, the fixed header of
+ *      struct syscalls_binder_info followed by copied data bytes (at most
+ *      SYSC_BINDER_DATA_MAX)
  *
  * All helpers are static inline and allocate no heap memory, so the drain
  * thread stays a few memcpy calls plus at most SYSC_STR_SLOTS strnlen calls.
@@ -67,6 +70,24 @@ static inline size_t sysc_pack_syscall(const struct syscalls_syscall_event *e, v
 	memcpy(p + o, e->sock, sl);
 	o += sl;
 	p[o++] = e->compat;
+	__u8 bf = e->binder == 1 ? 1 : 0;
+	p[o++] = bf;
+	if (bf) {
+		/* The capture overlays str[3]; copy the fixed header, then only the
+		 * valid payload bytes. */
+		const struct syscalls_binder_info *bi =
+			(const struct syscalls_binder_info *)e->str[3];
+		const size_t hdr = offsetof(struct syscalls_binder_info, data);
+		__u32 copied = bi->copied;
+		if (copied > SYSC_BINDER_DATA_MAX)
+			copied = SYSC_BINDER_DATA_MAX;
+		memcpy(p + o, bi, hdr);
+		memcpy(p + o + offsetof(struct syscalls_binder_info, copied),
+		       &copied, sizeof copied);
+		o += hdr;
+		memcpy(p + o, bi->data, copied);
+		o += copied;
+	}
 	return o;
 }
 
@@ -118,6 +139,28 @@ static inline int sysc_unpack_syscall(const void *in, size_t n,
 	out->sock_len = sl;
 	o += sl;
 	out->compat = p[o++];
+
+	if (o + 1 > n)
+		goto bad;
+	__u8 bf = p[o++];
+	if (bf > 1)
+		goto bad;
+	if (bf == 1) {
+		struct syscalls_binder_info *bi =
+			(struct syscalls_binder_info *)out->str[3];
+		const size_t hdr = offsetof(struct syscalls_binder_info, data);
+		if (o + hdr > n)
+			goto bad;
+		memcpy(bi, p + o, hdr);
+		o += hdr;
+		if (bi->copied > SYSC_BINDER_DATA_MAX)
+			goto bad;
+		if (o + bi->copied > n)
+			goto bad;
+		memcpy(bi->data, p + o, bi->copied);
+		o += bi->copied;
+		out->binder = 1;
+	}
 
 	if (o != n)
 		goto bad;

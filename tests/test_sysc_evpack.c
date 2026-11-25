@@ -27,6 +27,12 @@ static void fill(struct syscalls_syscall_event *e)
     e->stack_id = 0xdeadbeef;
 }
 
+// The binder capture overlays str[3] of an ioctl record (see syscalls.h).
+static struct syscalls_binder_info *binder_info(struct syscalls_syscall_event *e)
+{
+    return (struct syscalls_binder_info *)e->str[3];
+}
+
 int main(void)
 {
     struct syscalls_syscall_event e, out;
@@ -249,7 +255,105 @@ int main(void)
     CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
     CHECK(out.h._pad == 0x80000042u);
 
-    // 10. Capacity: packed records fit several times more per queue byte.
+    // 10. Layout pins: the binder overlay lives inside the existing str area and
+    // the flag byte fits the tail padding, so the ring record does not grow.
+    CHECK(sizeof(struct syscalls_syscall_event) == 1448);
+    CHECK(offsetof(struct syscalls_syscall_event, str) == 352);
+    CHECK(offsetof(struct syscalls_syscall_event, compat) == 1444);
+    CHECK(offsetof(struct syscalls_syscall_event, binder) == 1445);
+    CHECK(sizeof(struct syscalls_binder_info) == 32 + SYSC_BINDER_DATA_MAX);
+    CHECK(offsetof(struct syscalls_binder_info, data) == 32);
+    CHECK(sizeof(struct syscalls_binder_info) <= SYSC_STR_MAX);
+    CHECK(SYSC_BINDER_DATA_MAX == 192);
+
+    // 11. Binder flag byte and capture overlay.
+    // A record without a capture packs one trailing zero flag byte.
+    fill(&e);
+    e.stack_sz = 0;
+    e.str_present = 0;
+    e.sock_len = 0;
+    e.compat = 0;
+    e.binder = 0;
+    n = sysc_pack_syscall(&e, pk);
+    CHECK(pk[n - 1] == 0);
+    memset(&out, 0, sizeof out);
+    CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
+    CHECK(out.binder == 0);
+
+    // A non-1 flag value is treated as "not set" by the packer.
+    e.binder = 2;
+    n = sysc_pack_syscall(&e, pk);
+    CHECK(pk[n - 1] == 0);
+    CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
+    CHECK(out.binder == 0);
+
+    // Copied byte counts 0, 100 and the full 192 round-trip byte-exactly.
+    {
+        static const __u32 copied_cases[] = { 0, 100, SYSC_BINDER_DATA_MAX };
+        for (size_t c = 0; c < sizeof copied_cases / sizeof copied_cases[0]; c++) {
+            __u32 copied = copied_cases[c];
+            fill(&e);
+            e.stack_sz = 0;
+            e.str_present = 0;
+            e.sock_len = 0;
+            e.compat = 0;
+            e.binder = 1;
+            memset(e.str[3], 0, SYSC_STR_MAX);
+            struct syscalls_binder_info *in = binder_info(&e);
+            in->cmd = 0x40406300;
+            in->handle = 7;
+            in->code = 42;
+            in->flags = 0x11;
+            in->data_size = 100000;
+            in->copied = copied;
+            for (__u32 i = 0; i < copied; i++)
+                in->data[i] = (__u8)(i * 3 + 1);
+
+            n = sysc_pack_syscall(&e, pk);
+            memset(&out, 0, sizeof out);
+            CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
+            CHECK(out.binder == 1);
+            const struct syscalls_binder_info *o = binder_info(&out);
+            CHECK(o->cmd == 0x40406300);
+            CHECK(o->handle == 7);
+            CHECK(o->code == 42);
+            CHECK(o->flags == 0x11);
+            CHECK(o->data_size == 100000);
+            CHECK(o->copied == copied);
+            CHECK(memcmp(o->data, in->data, copied) == 0);
+
+            // Truncating the capture overlay is rejected.
+            CHECK(sysc_unpack_syscall(pk, n - 1, &out) == -1);
+            CHECK(out.nr == 0 && out.binder == 0);
+        }
+    }
+
+    // A copied count above the capture limit clamps on pack.
+    fill(&e);
+    e.stack_sz = 0;
+    e.str_present = 0;
+    e.sock_len = 0;
+    e.compat = 0;
+    e.binder = 1;
+    memset(e.str[3], 0, SYSC_STR_MAX);
+    binder_info(&e)->copied = SYSC_BINDER_DATA_MAX + 58;
+    n = sysc_pack_syscall(&e, pk);
+    CHECK(sysc_unpack_syscall(pk, n, &out) == 0);
+    CHECK(binder_info(&out)->copied == SYSC_BINDER_DATA_MAX);
+
+    // ... and an out-of-range copied count in packed input is rejected.
+    {
+        const size_t hdr = offsetof(struct syscalls_binder_info, data);
+        size_t hoff = n - SYSC_BINDER_DATA_MAX - hdr;
+        __u32 bad = SYSC_BINDER_DATA_MAX + 1;
+        memcpy(pk + hoff + offsetof(struct syscalls_binder_info, copied),
+               &bad, sizeof bad);
+        memset(&out, 0x5A, sizeof out);
+        CHECK(sysc_unpack_syscall(pk, n, &out) == -1);
+        CHECK(out.nr == 0 && out.binder == 0);
+    }
+
+    // 12. Capacity: packed records fit several times more per queue byte.
     {
         struct anubee_evq q;
         int nraw = 0, npk = 0;

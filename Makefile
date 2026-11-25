@@ -112,7 +112,8 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
                $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
-               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c
+               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c \
+               $(SRC)/common/binder_decode.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
@@ -155,7 +156,9 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                g_arg_counts g_arg_counts_count \
                jsonl_merge \
                out_print err_print ts_print human_detail \
-               target_registry target_registry_count target_registry_add find_target_by_entry_addr
+               target_registry target_registry_count target_registry_add find_target_by_entry_addr \
+               binder_parse_parcel binder_cmd_name binder_flags_str binder_method_name \
+               binder_emit_json
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -496,6 +499,10 @@ test:
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
 	$(BUILD)/test_decode
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_binder_decode.c src/common/binder_decode.c src/common/emit.c -o $(BUILD)/test_binder_decode
+	$(BUILD)/test_binder_decode
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_binder_capture.c -o $(BUILD)/test_binder_capture
+	$(BUILD)/test_binder_capture
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c src/common/decode.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit

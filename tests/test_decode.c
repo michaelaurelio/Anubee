@@ -44,6 +44,44 @@ int main(void)
     CHECK(strstr(out, "127.0.0.1") != NULL, "ip rendered");
     CHECK(strstr(out, "80") != NULL, "port rendered");
 
+    // ioctl(): arg 1 is the _IOC-encoded command. Build the expected values with
+    // the generic formula (dir << 30 | size << 16 | type << 8 | nr) rather than
+    // relying on a kernel header, and check the decoded names on those numbers.
+    {
+        #define T_IOC(dir, type, nr, size) \
+            (((unsigned long long)(dir) << 30) | \
+             ((unsigned long long)(size) << 16) | \
+             ((unsigned long long)(type) << 8) | (unsigned long long)(nr))
+        unsigned long long wr = T_IOC(3, 'b', 1, 48);       // BINDER_WRITE_READ
+        CHECK(wr == 0xc0306201ULL, "_IOWR('b',1,48) formula gives 0xc0306201");
+        rc = flags_decode_arg((long)__NR_ioctl, /*arg=*/1, wr, out, sizeof(out));
+        CHECK(rc == 1, "ioctl BINDER_WRITE_READ decode applies");
+        CHECK(strcmp(out, "BINDER_WRITE_READ") == 0, "BINDER_WRITE_READ rendered");
+
+        struct { unsigned long long v; const char *name; } binder_cmds[] = {
+            { T_IOC(3, 'b', 9, 4), "BINDER_VERSION" },
+            { T_IOC(1, 'b', 5, 4), "BINDER_SET_MAX_THREADS" },
+            { T_IOC(1, 'b', 7, 4), "BINDER_SET_CONTEXT_MGR" },
+            { T_IOC(1, 'b', 8, 4), "BINDER_THREAD_EXIT" },
+        };
+        for (size_t k = 0; k < sizeof(binder_cmds) / sizeof(binder_cmds[0]); k++) {
+            rc = flags_decode_arg((long)__NR_ioctl, 1, binder_cmds[k].v,
+                                  out, sizeof(out));
+            CHECK(rc == 1, "ioctl binder command decode applies");
+            CHECK(strcmp(out, binder_cmds[k].name) == 0,
+                  "binder ioctl command name rendered");
+        }
+
+        // Unknown ioctls must keep today's behaviour: no decode, raw hex.
+        rc = flags_decode_arg((long)__NR_ioctl, 1, 0x5401ULL, out, sizeof(out));
+        CHECK(rc == 0, "unknown ioctl command is not decoded");
+        for (int a = 0; a <= 2; a += 2) {
+            rc = flags_decode_arg((long)__NR_ioctl, a, wr, out, sizeof(out));
+            CHECK(rc == 0, "ioctl args other than the command are not decoded");
+        }
+        #undef T_IOC
+    }
+
     // clone() flag decode (arg 0). A modest, fitting flag set renders each piece.
     rc = flags_decode_arg((long)__NR_clone, /*arg=*/0,
                           (unsigned long long)(CLONE_VM | CLONE_FS | SIGCHLD),

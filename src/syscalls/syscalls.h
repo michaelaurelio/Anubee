@@ -29,6 +29,27 @@
  * or a unix path prefix), decoded to ip:port in userspace. */
 #define SYSC_SOCK_MAX        64
 
+/* Binder transaction captured for ioctl(fd, BINDER_WRITE_READ, &bwr). The BPF
+ * side stores this struct over str[3] of the same record: arg_types never marks
+ * a string slot for ioctl, so that 256-byte slot is free there and the ring
+ * record does not grow. data[] holds the first bytes of the Parcel data buffer
+ * (interface token + arguments), decoded in userspace by common/binder_decode. */
+#define SYSC_BINDER_DATA_MAX 192
+
+struct syscalls_binder_info {
+	__u32 cmd;        /* BC_* command (BC_TRANSACTION/BC_TRANSACTION_SG) */
+	__u32 handle;     /* target handle of the transaction */
+	__u32 code;       /* transaction code */
+	__u32 flags;      /* TF_* transaction flags */
+	__u64 data_size;  /* full Parcel data length at the source */
+	__u32 copied;     /* valid bytes in data[] (<= SYSC_BINDER_DATA_MAX) */
+	__u32 _pad;
+	__u8  data[SYSC_BINDER_DATA_MAX];
+};
+
+_Static_assert(sizeof(struct syscalls_binder_info) <= SYSC_STR_MAX,
+	       "binder capture must fit in one string slot");
+
 enum syscalls_event_type {
 	SYSC_EV_SYSCALL = 1,
 	SYSC_EV_MAP     = 2,
@@ -57,6 +78,9 @@ struct syscalls_syscall_event {
 			    * EABI syscall-number namespace: str[]/sock[] are
 			    * always empty here since arg_types/sock_args are
 			    * keyed on arm64 numbers (CR2). */
+	__u8  binder;      /* 1 = str[3] holds a struct syscalls_binder_info
+			    * (ioctl BINDER_WRITE_READ capture). Fits the tail
+			    * padding, so the record size is unchanged. */
 };
 
 /* One stack snapshot — now the shared struct anubee_stack_snapshot from

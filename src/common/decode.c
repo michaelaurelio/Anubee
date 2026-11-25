@@ -382,6 +382,22 @@ static const struct flagdef t_mfd[] = {
 };
 #endif
 
+#ifdef __NR_ioctl
+// ioctl commands are _IOC-encoded (dir << 30 | size << 16 | type << 8 | nr) and
+// are stable kernel ABI, written out literally so the table is identical on host
+// and target builds. Only the binder device commands are listed; anything else
+// (including driver-private numbers) stays raw hex.
+static const struct flagdef t_ioctl[] = {
+	{ 0xc0306201ULL, "BINDER_WRITE_READ" },
+	{ 0x40086203ULL, "BINDER_SET_IDLE_TIMEOUT" },
+	{ 0x40046205ULL, "BINDER_SET_MAX_THREADS" },
+	{ 0x40046206ULL, "BINDER_SET_IDLE_PRIORITY" },
+	{ 0x40046207ULL, "BINDER_SET_CONTEXT_MGR" },
+	{ 0x40046208ULL, "BINDER_THREAD_EXIT" },
+	{ 0xc0046209ULL, "BINDER_VERSION" },
+};
+#endif
+
 // ---- specialised decoders ------------------------------------------------
 
 // Append a printf-formatted piece to out[0..n), advancing *pos. Never lets *pos
@@ -704,6 +720,21 @@ int flags_decode_arg(long nr, int arg, unsigned long long v, char *out, size_t o
 #ifdef __NR_ptrace
 	case __NR_ptrace:
 		if (arg == 0) { dec_enum(v, t_ptrace, NELEMS(t_ptrace), out, outsz); return 1; }
+		break;
+#endif
+#ifdef __NR_ioctl
+	case __NR_ioctl:
+		if (arg == 1) {
+			// Unknown commands must not change today's output: report "no
+			// decoder" (caller falls back to hex) instead of dec_enum's hex.
+			for (size_t i = 0; i < NELEMS(t_ioctl); i++) {
+				if (t_ioctl[i].val != v)
+					continue;
+				snprintf(out, outsz, "%s", t_ioctl[i].name);
+				return 1;
+			}
+			return 0;
+		}
 		break;
 #endif
 	default:

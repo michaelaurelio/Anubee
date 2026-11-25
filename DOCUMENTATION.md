@@ -1375,9 +1375,40 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   `PTRACE_*` name (for example `{"0":"PTRACE_SEIZE"}`), or as hex when the request is not in
   the table. The pid, addr and data arguments stay raw. The decoding is shared, so `syscalls`
   (JSONL and console) and `correlate` syscall records show the same names.
+- `ioctl` records carry the command name in `decoded_args["1"]` for the binder device commands
+  that are stable kernel ABI: `BINDER_WRITE_READ`, `BINDER_SET_IDLE_TIMEOUT`,
+  `BINDER_SET_MAX_THREADS`, `BINDER_SET_IDLE_PRIORITY`, `BINDER_SET_CONTEXT_MGR`,
+  `BINDER_THREAD_EXIT`, `BINDER_VERSION`. Any other ioctl command number (including
+  driver-private ones) stays raw hex, and the other ioctl arguments are not decoded.
+- `anubee syscalls` records for `ioctl(fd, BINDER_WRITE_READ, &bwr)` may additionally carry a
+  `binder` object when the not-yet-consumed write buffer holds a transaction:
+  `"binder":{"cmd":"BC_TRANSACTION","handle":N,"code":N,"flags":"TF_ACCEPT_FDS",
+  "data_size":N,"interface":"android.content.IContentProvider","method":"query",
+  "strings":["settings","GET_secure"]}`. The console prints one `binder ...` detail line
+  instead. Details:
+  - Only the first `BC_TRANSACTION` / `BC_TRANSACTION_SG` among the first four commands of the
+    write buffer is captured; earlier `BC_*` commands are skipped by their `_IOC` size.
+    `BC_REPLY`, the read buffer and reply payloads are not decoded (a reply is a result, not
+    the request), and a transaction beyond the fourth command of one write is not seen.
+  - `data_size` is the full Parcel data length; at most the first 192 bytes are copied.
+    `interface` is the Parcel interface token and `strings` holds up to six further String16
+    values (each truncated to 95 characters), which typically are the call arguments (package,
+    setting or service names). `interface` and `strings` are omitted when empty, and `method`
+    only appears for the two interfaces whose transaction codes are stable ABI:
+    `android.os.IServiceManager` and `android.content.IContentProvider`.
+  - The Parcel is parsed heuristically: 4-byte aligned fields are probed and a String16 is
+    accepted when its length is 1..200, it fits the captured bytes, every code unit is
+    printable ASCII and it is NUL-terminated. Arguments packed as other types, beyond the
+    192-byte window or with non-ASCII text are not shown; `interface` then may be empty and
+    the metadata (handle, code, flags, data_size) is still present.
+  - `flags` is the `TF_*` flag string (`0` when none, unnamed bits appended as hex). For other
+    interfaces the transaction code is reported as a number: AIDL codes are method order and
+    change between Android versions, so only the two tables above are named.
+  - The object is absent for every other syscall and for ioctls whose write buffer carries no
+    transaction; the existing keys and the raw `args` are unchanged.
 - `anubee syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
-  "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
+  "string_args":{..},"fd_args":{..},"decoded_args":{..},"binder":{..},"sock_addr":..,
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.

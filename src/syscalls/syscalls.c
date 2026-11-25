@@ -61,6 +61,7 @@
 #include "syscalls/snapshot_gate.h"
 #include "syscalls/evpack.h"
 #include "common/decode.h"
+#include "common/binder_decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/engine_args.h"
@@ -759,6 +760,25 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	}
 	jb_c(j, '}');
 
+	// Binder transaction decode (optional): emitted only for an ioctl whose
+	// BINDER_WRITE_READ write buffer carried a transaction. The capture overlays
+	// str[3] (see syscalls.h); existing keys above are untouched.
+	if (e->binder) {
+		const struct syscalls_binder_info *bi =
+			(const struct syscalls_binder_info *)e->str[3];
+		struct binder_txn_view bv = {
+			.cmd = bi->cmd,
+			.handle = bi->handle,
+			.code = bi->code,
+			.flags = bi->flags,
+			.data_size = bi->data_size,
+			.data = bi->data,
+			.copied = bi->copied,
+		};
+		jb_c(j, ',');
+		binder_emit_json(j, &bv);
+	}
+
 	if (e->sock_len > 0) {
 		char sockbuf[128];
 		if (decode_sockaddr((const unsigned char *)e->sock, (unsigned)e->sock_len, sockbuf, sizeof(sockbuf))) {
@@ -903,6 +923,35 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		for (int i = 0; i < nargs; i++) {
 			render_arg(e, i, fdm, sockidx, arg, sizeof(arg));
 			human_detail("syscall", "args[%d] %s\n", i, arg);
+		}
+
+		// Binder transaction decode: one line with the command, transaction
+		// metadata and the parsed interface/argument strings.
+		if (e->binder) {
+			const struct syscalls_binder_info *bi =
+				(const struct syscalls_binder_info *)e->str[3];
+			struct binder_txn_text bt;
+			char bbuf[1024], bflags[96];
+			binder_parse_parcel(bi->data, bi->copied, &bt);
+			binder_flags_str(bi->flags, bflags, sizeof bflags);
+			const char *bc = binder_cmd_name(bi->cmd);
+			const char *bm = binder_method_name(bt.iface, bi->code);
+			snprintf(bbuf, sizeof bbuf, "binder %s handle=%u code=%u flags=%s",
+				 bc ? bc : "?", bi->handle, bi->code, bflags);
+			size_t bl = strlen(bbuf);
+			if (bm && bl < sizeof bbuf)
+				bl += (size_t)snprintf(bbuf + bl, sizeof bbuf - bl,
+						       " method=%s", bm);
+			if (bt.iface[0] && bl < sizeof bbuf)
+				bl += (size_t)snprintf(bbuf + bl, sizeof bbuf - bl,
+						       " iface=%s", bt.iface);
+			for (int k = 0; k < bt.nstrs && bl < sizeof bbuf; k++) {
+				int w = snprintf(bbuf + bl, sizeof bbuf - bl,
+						 k ? ",%s" : " strings=%s", bt.strs[k]);
+				if (w > 0)
+					bl += (size_t)w;
+			}
+			human_detail("syscall", "%s\n", bbuf);
 		}
 
 		int n = e->stack_sz / (int)sizeof(__u64);

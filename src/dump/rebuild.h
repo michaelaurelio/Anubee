@@ -42,6 +42,11 @@ int dump_sel_matches(const struct dump_sel *sel, const char *path,
 int dump_sel_matches_seg(const struct dump_sel *sel, const char *path,
                          unsigned long long seg_start, unsigned long long seg_end);
 
+/* Does an APK-embedded library named `member` (the stored member's basename)
+ * match the -l patterns? Same rule as dump_name_matches; records hit[]. A base
+ * selector never matches by name. NULL member or empty selector -> 0. */
+int dump_sel_matches_member(const struct dump_sel *sel, const char *member);
+
 /* Invoked once per distinct module of `pid` matching the selector. `memfd` is an
  * already-open /proc/<pid>/mem (the walker owns it; do not close it). `file_off`
  * is the byte offset of the module's base segment within `path` - 0 for an

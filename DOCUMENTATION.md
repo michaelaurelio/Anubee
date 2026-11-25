@@ -104,8 +104,11 @@ flowchart TD
   sources: `.dynsym` / `.symtab` / `.gnu_debugdata` (LZMA mini-debug-info, covers
   most Android system libraries and `dex2oat`-compiled app code); ART/JIT method
   names via `__jit_debug_descriptor` over `/proc/<pid>/mem`; vDSO `.dynsym`; and
-  APK-embedded stored `.so` display names (ZIP central-dir parse). Per-pid
-  Per-pid `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
+  APK-embedded stored `.so` display names (ZIP central-dir parse). The
+  central-directory cache exposes member accessors (`apk_so_count`,
+  `apk_so_get`, `apk_so_at`) and holds up to 512 members per APK across 16
+  cached APKs. Per-pid
+  `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
   refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
   (prevents unbounded growth on fork-heavy traces); the LRU bound is the always-on
   eviction backstop. For prompt per-exit flushing via `sym_flush_pid`, run
@@ -818,14 +821,13 @@ records share the same `type` discriminator as `anubee syscalls` / `anubee lib` 
   `data_start` (`dump_read_apk_member`, `src/dump/rebuild.c`). The `apk` state
   above is reported only when that lookup fails, not merely because the
   backing file is an APK.
-- **`-l` cannot select an APK-embedded library at all.** The selector
-  (`dump_sel_matches`) only ever sees the raw `/proc/<pid>/maps` path, which
-  for an `extractNativeLibs=false` app is just `.../base.apk` for every
-  embedded library - it has no knowledge of the library's resolved SONAME.
-  `--base` is the only selector that reaches such a module, and the emitted
-  `modcmp` record's `"module"` field is correspondingly `"base.apk"`, not the
-  library's name: the record identifies the module by base address, not by
-  name.
+- **`-l` can select an APK-embedded library.** The walker
+  (`dump_walk_pid_modules` plus `dump_sel_matches_member`) matches the `-l`
+  patterns against the stored member containing the segment's file offset
+  (`apk_so_at`, a range match), so `-l libfoo.so` works for an
+  `extractNativeLibs=false` app. `--base` remains an exact selector by load
+  address, and the emitted `modcmp` record's `"module"` field and the dumped
+  file names still say `base.apk`.
 - **`DT_TEXTREL` libraries and JIT regions legitimately report `differ`.** A
   library with text relocations is rewritten in its own executable segments
   by the dynamic linker at load time (an increasingly rare case on modern
@@ -882,7 +884,7 @@ The symbolizer is split across cohesive files behind the private
 cache + `cfi_unwind_snapshot`), `sym_procmaps.c` (`/proc/<pid>/maps` cache),
 `sym_elf.c` (`.dynsym`/`.symtab`/`.gnu_debugdata` + per-module CFI cache + ELF
 file I/O), `sym_jit.c` (ART GDB-JIT walk), `sym_vdso.c` (`[vdso]`), and
-`sym_apk.c` (APK-embedded `.so` names). Only the 5 `COMMON_API` symbols are
+`sym_apk.c` (APK-embedded `.so` names). Only the `COMMON_API` symbols are
 exported; everything else is localized at link.
 
 Both `syscalls` and `funcs` resolve backtrace addresses using the shared

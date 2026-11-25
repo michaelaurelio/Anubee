@@ -138,6 +138,22 @@ int main(void)
         }
     }
 
+    // Member-name selection (APK-embedded libraries): the selector is matched
+    // against the stored member's name with the same glob/substring rule as -l.
+    {
+        const char *mp[] = { "libsentinel.so", "libx*.so" };
+        int hit[2] = { 0, 0 };
+        struct dump_sel msel = { .pats = mp, .npat = 2, .hit = hit };
+        CHECK(dump_sel_matches_member(&msel, "libsentinel.so") == 1, "member: exact name matches");
+        CHECK(hit[0] == 1 && hit[1] == 0, "member: only the matching pattern is marked hit");
+        CHECK(dump_sel_matches_member(&msel, "libxyz.so") == 1, "member: glob matches");
+        CHECK(hit[1] == 1, "member: glob pattern marked hit");
+        CHECK(dump_sel_matches_member(&msel, "libother.so") == 0, "member: non-match");
+        CHECK(dump_sel_matches_member(&msel, NULL) == 0, "member: NULL name is no match");
+        struct dump_sel esel = { 0 };
+        CHECK(dump_sel_matches_member(&esel, "libsentinel.so") == 0, "member: empty selector never matches");
+    }
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

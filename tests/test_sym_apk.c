@@ -37,7 +37,7 @@ static int checks = 0, failures = 0;
 
 // ---- minimal ZIP (stored-only) writer, mirroring sym_apk.c's reader --------
 
-#define ZBUF_CAP 4096
+#define ZBUF_CAP 65536
 static uint8_t zbuf[ZBUF_CAP];
 static size_t  zpos;
 
@@ -176,6 +176,55 @@ int main(void)
 
     // Not an APK path at all.
     CHECK(apk_so_name("/system/lib64/libc.so", 0) == NULL, "so_name: non-.apk path rejected");
+
+    // ---- accessors, ABI tag, and the old 32-member cap ----
+    {
+        enum { NMEM = 40 };
+        struct zentry em[NMEM];
+        char names[NMEM][48];
+        zpos = 0;
+        for (int i = 0; i < NMEM; i++) {
+            // member 5 lives in the 32-bit ABI dir; the rest are arm64-v8a
+            snprintf(names[i], sizeof(names[i]), "lib/%s/libm%02d.so",
+                     i == 5 ? "armeabi-v7a" : "arm64-v8a", i);
+            add_stored_entry(&em[i], names[i], "DATA", 4);
+        }
+        uint32_t cd2 = (uint32_t)zpos;
+        for (int i = 0; i < NMEM; i++) add_central_dir(&em[i]);
+        uint32_t cds2 = (uint32_t)zpos - cd2;
+        put_le32(0x06054b50); put_le16(0); put_le16(0);
+        put_le16(NMEM); put_le16(NMEM);
+        put_le32(cds2); put_le32(cd2); put_le16(0);
+
+        char path2[64];
+        snprintf(path2, sizeof(path2), "/tmp/test_sym_apk2_%d.apk", (int)getpid());
+        FILE *f2 = fopen(path2, "wb");
+        CHECK(f2 != NULL, "many: fopen");
+        if (f2) {
+            fwrite(zbuf, 1, zpos, f2);
+            fclose(f2);
+
+            CHECK(apk_so_count(path2) == NMEM, "many: all 40 members counted (no 32 cap)");
+            struct apk_so_ref r;
+            CHECK(apk_so_get(path2, 39, &r) == 1, "many: member 39 reachable");
+            CHECK(strcmp(r.name, "libm39.so") == 0, "many: member 39 name");
+            CHECK(strcmp(r.abi, "arm64-v8a") == 0, "many: member 39 abi");
+            CHECK(r.data_start == em[39].data_start && r.size == 4, "many: member 39 offsets");
+            CHECK(apk_so_get(path2, 5, &r) == 1 && strcmp(r.abi, "armeabi-v7a") == 0,
+                  "many: member 5 abi is armeabi-v7a");
+            CHECK(apk_so_get(path2, 40, &r) == 0, "many: index past end rejected");
+            CHECK(apk_so_get(path2, -1, &r) == 0, "many: negative index rejected");
+
+            const char *at = apk_so_at(path2, em[39].data_start + 3);
+            CHECK(at != NULL && strcmp(at, "libm39.so") == 0, "at: offset inside member");
+            const char *past = apk_so_at(path2, em[39].data_start + 4);
+            CHECK(past == NULL || strcmp(past, "libm39.so") != 0,
+                  "at: offset one past the member does not match it");
+            CHECK(apk_so_at("/system/lib64/libc.so", 0) == NULL, "at: non-apk path");
+            CHECK(apk_so_count("/nonexistent/x.apk") == 0, "count: unreadable apk is 0");
+            unlink(path2);
+        }
+    }
 
     unlink(path);
 

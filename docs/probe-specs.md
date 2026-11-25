@@ -57,6 +57,23 @@ vaddr). This is the only way to reach a `static` function missing from `.dynsym`
 funcs -e 'libfoo.so@0x4120(S)>V'
 ```
 
+### Libraries stored inside an APK
+
+For an app with `extractNativeLibs=false`, a library's mappings are backed by the APK, so
+`MODULE` is matched against the names of the stored members of a mapped APK (arm64-v8a
+members only). These forms all work:
+
+```
+funcs -e 'libfoo.so!sym'
+funcs -e 'libfoo.so!/regex/'
+funcs -e 'libfoo.so@0x4100'
+```
+
+Resolved offsets are APK file offsets (the member's data start plus the offset inside the
+member), which is what a uprobe on the APK needs. `@OFFSET` is relative to the member's ELF
+start; `base.apk@N` still means a raw file offset into the APK. A `MODULE` containing `/`
+is a path pattern and never matches a stored member.
+
 ## Matching rules
 
 Matching differs by kind, and for `funcs:`/unprefixed lines it also differs by which side of

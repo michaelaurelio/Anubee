@@ -117,7 +117,7 @@ COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_libtrace_emit_lib anubee_libtrace_emit_unlib \
-               anubee_libtrace_emit_packed apk_list_sos \
+               anubee_libtrace_emit_packed apk_list_sos apk_so_count apk_so_get apk_so_at \
                proc_mem_open proc_mem_read nterp_name \
                anubee_sh_exec anubee_resolve_uid anubee_get_pid_uid anubee_resolve_component \
                anubee_resolve_pkg_from_pid \
@@ -127,6 +127,7 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                spec_describe \
                resolve_custom_spec_for_path \
                resolve_custom_spec_matches_for_path custom_spec_matches_path \
+               custom_spec_matches_apk resolve_custom_spec_in_apk \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
                anubee_sink_open anubee_sink_emit anubee_sink_flush \
@@ -460,10 +461,12 @@ $(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilit
 test:
 	@mkdir -p $(BUILD)
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null; then \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/probe_spec_loader.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/probe_spec_loader.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_probe_spec -lelf && \
 	  $(BUILD)/test_probe_spec; \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_regex_resolve -lelf && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_regex_resolve -lelf && \
 	  $(BUILD)/test_regex_resolve; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_apk_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_apk_resolve -lelf && \
+	  $(BUILD)/test_apk_resolve; \
 	 else \
 	  echo "skip: libelf-dev not installed, skipping test_probe_spec/test_regex_resolve (apt install libelf-dev)"; \
 	 fi

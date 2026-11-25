@@ -843,15 +843,10 @@ test_lib_records() {
 # own [lib] line (it already resolves the APK-embedded module's friendly name),
 # so no extra /proc/<pid>/maps parsing is needed on the host side.
 #
-# --check selector note (confirmed by hand before writing this): -l
-# 'libsentinel.so' does NOT match here. dump's --check selector (dump_sel_matches)
-# only matches the raw /proc/<pid>/maps path -- glob on basename, else substring
-# of the full path -- and has no knowledge of the APK member's resolved SONAME;
-# for an extractNativeLibs=false app every embedded library's maps path is just
-# ".../base.apk". A -l pattern of the friendly name matches nothing (0 modules
-# checked), so --base is the only selector that reaches this module, and the
-# emitted modcmp record's "module" field is correspondingly "base.apk" -- the
-# record is identified by base address, not by name.
+# --check selector note: -l 'libsentinel.so' selects the module by its stored
+# APK member name (the walker matches the member containing the segment's file
+# offset); --base is still supported. The emitted modcmp record's "module"
+# field is "base.apk" (the mapped path), so records are matched by base address.
 run_dump_now() {
     # Same on-device timeout guard as anubee() (own su -c; -s INT / -k 3 backstop)
     # -- if --now ever regressed into the old wait-for-Ctrl-C behavior this
@@ -932,6 +927,16 @@ test_dump_now() {
     grep -q '"state":"match"' <<<"$rec" \
         || { echo "  rec: $rec" >&2; fail "dump-now: --check record for libsentinel.so has an unexpected state: $rec"; }
     info "dump-now --check OK - libsentinel.so (APK-embedded) reports state=match"
+
+    # --- Assertion C: -l selects the APK-embedded module by member name -------
+    adb shell "su -c 'rm -f $devdir/check_l.jsonl'" >/dev/null 2>&1
+    run_dump_now "dump --now --check -p $pid -l libsentinel.so -o $devdir/check_l.jsonl"
+    [ "$RUN_DUMP_NOW_STATUS" = "0" ] \
+        || { echo "  out: $RUN_DUMP_NOW_OUT" >&2; fail "dump-now: --now --check -l exited ${RUN_DUMP_NOW_STATUS:-?} (expected 0)"; }
+    local checkl; checkl="$(adb shell "su -c 'cat $devdir/check_l.jsonl 2>/dev/null'" 2>/dev/null | tr -d '\r')"
+    grep '"type":"modcmp"' <<<"$checkl" | grep -q "\"base\":\"$base\"" \
+        || { echo "  check: $checkl" >&2; fail "dump-now: -l libsentinel.so did not select the APK-embedded module at base $base"; }
+    info "dump-now -l OK - -l libsentinel.so selected the APK-embedded module"
 
     adb shell "su -c 'rm -rf $devdir'" >/dev/null 2>&1
 }

@@ -780,30 +780,30 @@ static unsigned char *read_whole_file(const char *path, size_t *len)
 // Returns NULL when no member starts at `off`, or on any read failure.
 unsigned char *dump_read_apk_member(const char *apk, unsigned long long off, size_t *len)
 {
-	struct apk_so_ref refs[32];
-	int n = apk_list_sos(apk, refs, 32);
+	int n = apk_so_count(apk);
 
 	for (int i = 0; i < n; i++) {
-		if (refs[i].data_start != off)
+		struct apk_so_ref ref;
+		if (!apk_so_get(apk, i, &ref) || ref.data_start != off)
 			continue;
-		if (refs[i].size == 0 || refs[i].size > (uint64_t)SIZE_MAX)
+		if (ref.size == 0 || ref.size > (uint64_t)SIZE_MAX)
 			return NULL;
 
 		FILE *f = fopen(apk, "rb");
 		if (!f)
 			return NULL;
-		if (fseeko(f, (off_t)refs[i].data_start, SEEK_SET) != 0) {
+		if (fseeko(f, (off_t)ref.data_start, SEEK_SET) != 0) {
 			fclose(f);
 			return NULL;
 		}
-		unsigned char *b = malloc((size_t)refs[i].size);
+		unsigned char *b = malloc((size_t)ref.size);
 		if (!b) {
 			fclose(f);
 			return NULL;
 		}
-		size_t got = fread(b, 1, (size_t)refs[i].size, f);
+		size_t got = fread(b, 1, (size_t)ref.size, f);
 		fclose(f);
-		if (got != (size_t)refs[i].size) {
+		if (got != (size_t)ref.size) {
 			free(b);
 			return NULL;
 		}
@@ -917,6 +917,13 @@ int dump_sel_matches_seg(const struct dump_sel *sel, const char *path,
 	return 0;
 }
 
+int dump_sel_matches_member(const struct dump_sel *sel, const char *member)
+{
+	if (!member || sel->npat <= 0)
+		return 0;
+	return dump_name_matches_any_track(sel->pats, sel->npat, member, sel->hit);
+}
+
 // The dump-on-exit / snapshot callback: rebuild one module to a file.
 struct dump_write_ctx {
 	const char       *outdir;
@@ -981,7 +988,16 @@ int dump_walk_pid_modules(int pid, const struct dump_sel *sel,
 			continue;
 		uint64_t base = load_base_of(m, i);
 		uint64_t foff = load_off_of(m, i);
-		if (!dump_sel_matches_seg(sel, m[i].path, m[i].start, m[i].end))
+		// extractNativeLibs=false: the path is the APK, so also try the name of
+		// the stored member this segment belongs to (matched by file offset).
+		const char *inner = NULL;
+		{
+			size_t pl = strlen(m[i].path);
+			if (pl >= 4 && strcmp(m[i].path + pl - 4, ".apk") == 0)
+				inner = apk_so_at(m[i].path, m[i].off);
+		}
+		if (!dump_sel_matches_seg(sel, m[i].path, m[i].start, m[i].end) &&
+		    !dump_sel_matches_member(sel, inner))
 			continue;
 
 		int skip = 0;

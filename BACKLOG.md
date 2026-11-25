@@ -32,11 +32,11 @@ items lives in DOCUMENTATION.md and the referenced specs.
   see Resolved/Done; a genuinely authoritative nterp path is a separate, harder project).
 
 **Minor:**
-- `dump --now`/`--base`/`--check` known drawbacks: `-l` cannot select an
-  APK-embedded module (`--base` only, and its `modcmp` record names the
-  module `base.apk`); `DT_TEXTREL` libraries legitimately report `differ`;
-  the `differ` signal itself is not yet proven end-to-end on a device (see
-  Minor section below).
+- `dump --now`/`--base`/`--check` known drawbacks: `DT_TEXTREL` libraries
+  legitimately report `differ`; the `differ` signal itself is not yet proven
+  end-to-end on a device (see Minor section below).
+- dump output files and `modcmp.module` still carry the APK name, not the
+  library name (cosmetic).
 - CR5 follow-on: `dump` coverage field.
 - W5 — JIT `[anon]` frame CFI (deferred; ≈0 payoff on measured workloads).
 - SW1 — switch-interp ShadowFrame walk follow-ups (BuildID rows, precision cross-check,
@@ -538,14 +538,7 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 - **`dump --now`/`--base`/`--check` shipped-with-known-drawbacks (2026-07-16).**
   Device-verified against the reference app (`scripts/device-test.sh`'s
   `dump-now` tier, commit `e9a8d30`); the drawbacks below are what remains.
-  - **`-l` cannot select an APK-embedded library at all.**
-    `dump_sel_matches` (`src/dump/rebuild.c`) only ever sees the raw
-    `/proc/<pid>/maps` path, which for an `extractNativeLibs=false` app is
-    just `.../base.apk` for every embedded library - it has no knowledge of
-    the resolved SONAME. `--base` is the only selector that reaches such a
-    module, and the emitted `modcmp` record's `"module"` field is
-    correspondingly `"base.apk"`, not the library's name - the record
-    identifies the module by base address, not by name.
+  - **Resolved 2026-11-25:** `-l` now matches the stored member name.
   - **`DT_TEXTREL` libraries (and JIT regions) legitimately report
     `differ`.** `--check` names an observation (the executable bytes
     changed since the on-disk baseline), not an inference about intent -

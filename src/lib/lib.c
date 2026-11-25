@@ -162,16 +162,16 @@ static error_t lib_parse_opt(int key, char *arg, struct argp_state *state)
     case ARGP_KEY_ARG:
         if      (!a->pkg && a->tgt.n == 0) a->pkg      = arg;
         else if (!a->activity)             a->activity = arg;
-        else argp_error(state, "unexpected argument '%s'", arg);
+        else ANUBEE_ARGP_FAIL(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "lib");
         if (a->tgt.n > 0 && a->activity)
             fprintf(stderr, "lib: warning - -A/--activity has no effect in -p mode; ignored\n");
         if (a->tgt.n > 0 && a->pkg)
-            argp_error(state, "specify exactly one of -p or -P");
+            ANUBEE_ARGP_FAIL(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)
-            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+            ANUBEE_ARGP_FAIL(state, "specify -P PACKAGE or -p PID[,PID...]");
         break;
     default:
         return parse_common_arg(key, arg, state, &a->c);

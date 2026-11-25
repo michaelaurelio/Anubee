@@ -1153,7 +1153,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case  1 : a->want_snap = 1;   break;
 	case  2 : a->want_snap = 0;   break;
 	case 's':
-		if (a->syscall_mode == 2) argp_error(state, "use either -s or -x, not both");
+		if (a->syscall_mode == 2) ANUBEE_ARGP_FAIL(state, "use either -s or -x, not both");
 		// Repeatable: accumulate into one comma-separated list rather than the
 		// last -s silently overwriting every prior one.
 		if (a->syscall_list[0])
@@ -1162,7 +1162,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		a->syscall_mode = 1;
 		break;
 	case 'x':
-		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
+		if (a->syscall_mode == 1) ANUBEE_ARGP_FAIL(state, "use either -s or -x, not both");
 		if (a->syscall_list[0])
 			strncat(a->syscall_list, ",", sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
 		strncat(a->syscall_list, arg, sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
@@ -1175,14 +1175,14 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 			bool used_default = false;
 			if (parse_custom_probe_spec_ex(arg, &a->specs[a->nspec], SPEC_KIND_SYSCALL,
 			                                &used_default, err_print) != 0)
-				argp_error(state, "invalid spec '%s'", arg);
+				ANUBEE_ARGP_FAIL(state, "invalid spec '%s'", arg);
 			a->spec_defaulted[a->nspec] = used_default;
 			a->nspec++;
 		}
 		break;
 	case 'F':
 		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
-			argp_error(state, "cannot open spec file '%s'", arg);
+			ANUBEE_ARGP_FAIL(state, "cannot open spec file '%s'", arg);
 		break;
 	case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
 		return parse_target_arg(key, arg, state, &a->tgt);
@@ -1193,9 +1193,9 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		if (a->want_snap && !a->c.output_file)
 			fprintf(stderr, "syscalls: warning - --snapshot needs -o FILE for the .stacks sidecar; disabled\n");
 		if (a->tgt.n > 0 && a->package_name[0])
-			argp_error(state, "specify exactly one of -p or -P");
+			ANUBEE_ARGP_FAIL(state, "specify exactly one of -p or -P");
 		if (!a->tgt.n && !a->package_name[0])
-			argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+			ANUBEE_ARGP_FAIL(state, "specify -P PACKAGE or -p PID[,PID...]");
 		{
 			int spec_deny = 0, spec_allow = 0;
 			for (int i = 0; i < a->nspec; i++)
@@ -1203,11 +1203,11 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 					if (a->specs[i].deny) spec_deny = 1; else spec_allow = 1;
 				}
 			if (spec_deny && spec_allow)
-				argp_error(state, "spec file mixes syscall: allow and syscall:! deny lines; use one or the other");
+				ANUBEE_ARGP_FAIL(state, "spec file mixes syscall: allow and syscall:! deny lines; use one or the other");
 			if (a->syscall_mode == 1 && spec_deny)
-				argp_error(state, "-s (allowlist) conflicts with syscall:! deny lines in spec");
+				ANUBEE_ARGP_FAIL(state, "-s (allowlist) conflicts with syscall:! deny lines in spec");
 			if (a->syscall_mode == 2 && spec_allow)
-				argp_error(state, "-x (denylist) conflicts with syscall: allow lines in spec");
+				ANUBEE_ARGP_FAIL(state, "-x (denylist) conflicts with syscall: allow lines in spec");
 			if (a->syscall_mode == 0) {
 				if (spec_deny) a->syscall_mode = 2;
 				else if (spec_allow) a->syscall_mode = 1;
@@ -1227,7 +1227,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 			for (int i = 0; i < a->nspec; i++)
 				if (a->specs[i].kind == SPEC_KIND_SYSCALL && a->specs[i].deny &&
 				    strchr(a->specs[i].mod, '!'))
-					argp_error(state, "syscall: library-scoped spec ('%s') can't combine with deny (!)",
+					ANUBEE_ARGP_FAIL(state, "syscall: library-scoped spec ('%s') can't combine with deny (!)",
 					           a->specs[i].mod);
 			// Pass 2: a syscall NAME can't be both scoped and unscoped in the same
 			// run (bare syscall:NAME line, or a -s/-x LIST entry) -- matches the
@@ -1242,12 +1242,12 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				for (int j = 0; j < a->nspec; j++)
 					if (j != i && a->specs[j].kind == SPEC_KIND_SYSCALL &&
 					    !strchr(a->specs[j].mod, '!') && !strcmp(a->specs[j].mod, name))
-						argp_error(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
+						ANUBEE_ARGP_FAIL(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
 						           name, a->specs[i].mod);
 				// syscall_list is now a fixed buffer (always non-NULL); sysc_list_contains
 				// already treats "" as no-match, so no separate emptiness guard is needed.
 				if (sysc_list_contains(a->syscall_list, name))
-					argp_error(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
+					ANUBEE_ARGP_FAIL(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
 					           name, a->specs[i].mod);
 			}
 			// Pass 3: build the scope table, fold libpat into the -l/lib: union so
@@ -1261,7 +1261,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				if (r == 0)
 					continue;
 				if (r < 0)
-					argp_error(state, "syscall: malformed library-scoped spec (need LIBPATTERN!NAME): '%s'",
+					ANUBEE_ARGP_FAIL(state, "syscall: malformed library-scoped spec (need LIBPATTERN!NAME): '%s'",
 					           a->specs[i].mod);
 				int si = -1;
 				for (int k = 0; k < a->nscopes; k++)

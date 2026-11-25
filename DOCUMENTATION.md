@@ -805,6 +805,9 @@ records share the same `type` discriminator as `anubee syscalls` / `anubee lib` 
     or it is worse than no signal at all. `dump_check_image` (`src/dump/rebuild.c`)
     returns `unreadable` before ever computing a comparison whenever either
     side cannot be honestly digested.
+  `--check` with `-P` (or without `--now`) is a usage error: the command prints
+  the reason, exits 1 and writes nothing. This holds for every usage error in
+  every engine, since parsers fail `argp_parse` via `ANUBEE_ARGP_FAIL`.
 - **APK-embedded libraries are supported baselines, not `apk`-state
   fallbacks.** `extractNativeLibs=false` is the modern AGP default: the app's
   `.so` files are stored uncompressed inside `base.apk` and mapped straight

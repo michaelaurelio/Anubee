@@ -227,13 +227,13 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
             break;
         }
         if (dump_parse_base(arg, &a->bases[a->nbase]) != 0)
-            argp_error(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
+            ANUBEE_ARGP_FAIL(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
         a->nbase++;
         break;
     case KEY_RAW:    a->raw    = 1; break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
-            argp_error(state, "cannot open spec file '%s'", arg);
+            ANUBEE_ARGP_FAIL(state, "cannot open spec file '%s'", arg);
         break;
     case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
@@ -241,7 +241,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         if      (!a->pkg && a->tgt.n == 0)  a->pkg      = arg;
         else if (!a->pat_pos)               a->pat_pos  = arg;
         else if (!a->activity)              a->activity = arg;
-        else argp_error(state, "unexpected argument '%s'", arg);
+        else ANUBEE_ARGP_FAIL(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "dump");
@@ -259,7 +259,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
             };
             const char *err = dump_args_check(&t);
             if (err)
-                argp_error(state, "%s", err);
+                ANUBEE_ARGP_FAIL(state, "%s", err);
         }
         break;
     default:

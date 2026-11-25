@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "common/engine_args.h"
+#include "common/target_validate.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +62,46 @@ static int bufsize_rejects(const char *val, const char *needle)
     return strstr(buf, needle) != NULL;
 }
 
+// Parser that goes through the shared helpers, with the same end-of-args
+// validation the engines do.
+struct vargs { struct common_args c; struct target_args t; const char *pkg; int nsel; };
+
+static error_t validate_test_parser(int key, char *arg, struct argp_state *state)
+{
+    struct vargs *v = state->input;
+    switch (key) {
+    case 'P': v->pkg = arg; return 0;
+    case ARGP_KEY_END: {
+        error_t e = validate_pid_or_package(state, v->t.n, v->pkg);
+        if (e) return e;
+        return validate_have_selector(state, v->nsel, "-e SPEC");
+    }
+    }
+    error_t r = parse_target_arg(key, arg, state, &v->t);
+    if (r != ARGP_ERR_UNKNOWN) return r;
+    return parse_common_arg(key, arg, state, &v->c);
+}
+
+// argp_parse's own return value under ARGP_NO_EXIT: nonzero iff a parser
+// reported an error.
+static int parse_rc(int nsel, int argc, char **argv)
+{
+    static const struct argp_option opts[] = {
+        COMMON_ARGP_OPTIONS, { "pid", 'p', "PID", 0, "", 0 }, { "pkg", 'P', "PKG", 0, "", 0 }, { 0 } };
+    static const struct argp ap = { .options = opts, .parser = validate_test_parser };
+    struct vargs v = { .c = COMMON_ARGS_INIT, .nsel = nsel };
+    fflush(stderr);
+    int saved = dup(fileno(stderr));
+    FILE *sink = tmpfile();
+    dup2(fileno(sink), fileno(stderr));
+    int rc = argp_parse(&ap, argc, argv, ARGP_NO_EXIT, NULL, &v);
+    fflush(stderr);
+    dup2(saved, fileno(stderr));
+    close(saved);
+    fclose(sink);
+    return rc;
+}
+
 int main(void)
 {
     {
@@ -108,6 +149,24 @@ int main(void)
     {
         CHECK(bufsize_rejects("40000", "must be between 1 and 4096"),
               "bufsize: 40000 MB rejected (over new upper bound)");
+    }
+
+    // argp_error must make argp_parse fail (previously it only printed and
+    // the run carried on with bad arguments).
+    {
+        char *ok[]   = { "test", "-P", "x" };
+        char *bad_b[] = { "test", "-P", "x", "-b", "0" };
+        char *bad_q[] = { "test", "-P", "x", "-Q", "5000" };
+        char *bad_p[] = { "test", "-p", "" };
+        char *both[]  = { "test", "-P", "x", "-p", "1" };
+        char *none[]  = { "test" };
+        CHECK(parse_rc(1, 3, ok) == 0,     "valid -P with selector parses");
+        CHECK(parse_rc(0, 3, ok) != 0,     "no selector fails");
+        CHECK(parse_rc(1, 5, bad_b) != 0,  "-b 0 fails");
+        CHECK(parse_rc(1, 5, bad_q) != 0,  "-Q 5000 fails");
+        CHECK(parse_rc(1, 3, bad_p) != 0,  "-p with no PID fails");
+        CHECK(parse_rc(1, 5, both) != 0,   "-p with -P fails");
+        CHECK(parse_rc(1, 1, none) != 0,   "neither -p nor -P fails");
     }
 
     printf("\n%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);

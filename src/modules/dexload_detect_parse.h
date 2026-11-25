@@ -43,11 +43,12 @@ void dl_path_join(const char *comps, int n, size_t stride, int truncated,
 int dl_maps_find_ino(const char *maps, unsigned long ino,
                      unsigned long *start, unsigned long *end);
 
-// Readable, unnamed anonymous regions (inode 0, no name: not [anon:...],
-// [stack], a file or memfd) in a /proc/<pid>/maps text, in order, up to max.
-// ART unpacks a jar's compressed classes.dex into one of these on some
-// releases, so it is where a loaded-then-deleted jar's code survives.
-int dl_maps_unnamed_anon(const char *maps, unsigned long *start, unsigned long *end, int max);
+// The name of a memload region: maps_name (from /proc/<pid>/maps, without
+// the "[anon:" wrapper) when it has one, else ev_name -- the name ART passed
+// to prctl. The kernel rejects anon names over 80 bytes, which "dalvik-
+// classes.dex extracted in memory from <path>" is for typical app paths, so
+// the region stays unnamed and only the event knows what it holds.
+const char *dl_memload_name(const char *maps_name, const char *ev_name);
 
 // In-memory DEX (memload): a standard DEX header ("dex\n0NN\0", header_size
 // 0x70, little-endian tag) whose file_size fits in a region of region_len

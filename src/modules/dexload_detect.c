@@ -189,8 +189,11 @@ static int dl_mem_try(dl_mem_t *m, int final)
     char name[512];
     if (!dl_mem_region_name(e->h.pid, e->addr, name, sizeof name))
         return 1;                                 // unmapped already, or process gone
+    char evname[sizeof e->comp];
+    memcpy(evname, &e->comp[0][0], sizeof evname);
+    evname[sizeof evname - 1] = '\0';
     const char *source = NULL;
-    if (!dl_memload_wanted(name, &source))
+    if (!dl_memload_wanted(dl_memload_name(name, evname), &source))
         return 1;                                 // the platform's own code
 
     unsigned char h[0x70];
@@ -228,141 +231,13 @@ static void dl_mem_pass(int final)
     }
 }
 
-// ---- recovery: a loaded jar deleted before it could be copied -------------------
-// The loader keeps no fd on the jar, so once it is unlinked the only copy left
-// is the DEX ART unpacked from it. Some releases leave that in an unnamed
-// anonymous region (named ones are memload's), so scan the loader's unnamed
-// regions for a DEX header at the start and save each one not yet saved.
-// ART names the region "dalvik-classes.dex extracted in memory from <path>",
-// but the kernel caps anon names at 80 bytes, so for a typical app path the
-// naming fails and memload never sees it. Attribution is by process: any
-// such DEX is credited to the pending jar.
-
-#define DL_REC_MAX     32
-#define DL_REC_REGIONS 512
-#define DL_SEEN_MAX    256
-
-typedef struct {
-    int                         fi;          // index into dl_files
-    struct dexload_detect_event e;           // the load/delete event that queued it
-    unsigned long long          seen_ns;
-} dl_rec_t;
-
-static dl_rec_t dl_rec[DL_REC_MAX];
-static int      dl_rec_count = 0;
-static struct { __u32 pid; unsigned long addr; } dl_seen[DL_SEEN_MAX];
-static int      dl_seen_count = 0;
-
-static int dl_seen_has(__u32 pid, unsigned long addr)
-{
-    for (int i = 0; i < dl_seen_count; i++)
-        if (dl_seen[i].pid == pid && dl_seen[i].addr == addr) return 1;
-    return 0;
-}
-
-static void dl_rec_queue(dl_file_t *f, const struct dexload_detect_event *e)
-{
-    int fi = (int)(f - dl_files);
-    for (int i = 0; i < dl_rec_count; i++)
-        if (dl_rec[i].fi == fi) return;
-    if (dl_rec_count >= DL_REC_MAX) return;
-    dl_rec[dl_rec_count].fi = fi;
-    dl_rec[dl_rec_count].e = *e;
-    dl_rec[dl_rec_count].e.h.pid = f->loader_pid ? f->loader_pid : e->h.pid;
-    dl_rec[dl_rec_count].seen_ns = dl_now_ns();
-    dl_rec_count++;
-}
-
-// 1 = finished with this entry, 0 = retry later.
-static int dl_rec_try(dl_rec_t *r, int final)
-{
-    dl_file_t *f = &dl_files[r->fi];
-    if (f->saved[0]) return 1;
-    __u32 pid = r->e.h.pid;
-    static char maps[1 << 20];
-    static unsigned long rs[DL_REC_REGIONS], re[DL_REC_REGIONS];
-    char p[64];
-    snprintf(p, sizeof p, "/proc/%u/maps", pid);
-    FILE *mf = fopen(p, "r");
-    if (!mf) return 1;                            // process gone
-    size_t n = fread(maps, 1, sizeof maps - 1, mf);
-    fclose(mf);
-    maps[n] = '\0';
-    int nr = dl_maps_unnamed_anon(maps, rs, re, DL_REC_REGIONS);
-    int mem = proc_mem_open((int)pid);
-    int found = 0;
-    for (int i = 0; mem >= 0 && i < nr; i++) {
-        if (dl_seen_has(pid, rs[i])) continue;
-        unsigned char h[0x70];
-        unsigned fs = 0;
-        size_t got = proc_mem_read(mem, rs[i], h, sizeof h);
-        if (!dl_dex_header_ok(h, got, re[i] - rs[i], &fs)) continue;
-        if (dl_seen_count < DL_SEEN_MAX) {
-            dl_seen[dl_seen_count].pid = pid;
-            dl_seen[dl_seen_count].addr = rs[i];
-            dl_seen_count++;
-        }
-        char dst[512] = "", sha[65] = "";
-        long long len = -1;
-        if (payload_dir_ready()) {
-            snprintf(dst, sizeof dst, "%s/%u-%llu-mem-%lx.dex", payload_dir(), pid,
-                     (unsigned long long)f->ino, rs[i]);
-            len = payload_save_region(pid, rs[i], fs, dst, sha, NULL, 0, NULL);
-            if (len != (long long)fs) { unlink(dst); len = -1; }
-        }
-        found++;
-        if (len > 0 && !f->saved[0]) {
-            snprintf(f->saved, sizeof f->saved, "%s", dst);
-            snprintf(f->sha256, sizeof f->sha256, "%s", sha);
-            f->size = len;
-        }
-        if (!g_mc->quiet) {
-            printf("[dexload-detect] PID:%-6u (%s) memload dex  unpacked from %s %#lx (%u bytes)\n",
-                   pid, r->e.comm, f->path[0] ? f->path : "?", rs[i], fs);
-            if (len > 0)
-                printf("[dexload-detect]   saved %s (%lld bytes, sha256 %s)\n", dst, len, sha);
-        }
-        if (g_mc->sink) {
-            struct dexload_detect_event ev = r->e;
-            ev.stage = DEXLOAD_STAGE_MEMLOAD;
-            ev.addr = rs[i];
-            ev.len = re[i] - rs[i];
-            mod_emit_dexload_detect(&g_mc->sink->jb, &ev, "dex", f->path[0] ? f->path : NULL, -1,
-                                    len > 0 ? dst : NULL, sha, len);
-            anubee_sink_emit(g_mc->sink);
-        }
-    }
-    if (mem >= 0) close(mem);
-    if (found) return 1;
-    for (int i = 0; i < dl_file_count; i++)       // named region: memload saved it
-        if (dl_files[i].memload && dl_files[i].saved[0] && strcmp(dl_files[i].path, f->path) == 0)
-            return 1;
-    if (!final && dl_now_ns() - r->seen_ns < DL_MEM_RETRY_NS) return 0;
-    if (!g_mc->quiet)
-        printf("[dexload-detect]   %s: deleted before it could be copied, and no unpacked DEX found in memory\n",
-               f->path[0] ? f->path : "?");
-    return 1;
-}
-
-static void dl_rec_pass(int final)
-{
-    for (int i = 0; i < dl_rec_count; ) {
-        if (dl_rec_try(&dl_rec[i], final)) {
-            dl_rec[i] = dl_rec[--dl_rec_count];
-            continue;
-        }
-        i++;
-    }
-}
-
 static void dl_tick(void)
 {
     static unsigned long long last;
     unsigned long long now = dl_now_ns();
-    if ((!dl_mem_count && !dl_rec_count) || now - last < DL_MEM_POLL_NS) return;
+    if (!dl_mem_count || now - last < DL_MEM_POLL_NS) return;
     last = now;
     dl_mem_pass(0);
-    dl_rec_pass(0);
 }
 
 // ---- ring-buffer callback ------------------------------------------------------
@@ -425,8 +300,6 @@ static int dl_handle_event(void *ctx, void *data, size_t sz)
         int had_copy = f->saved[0] != 0;
         dl_save(f, e->h.pid);
         just_saved = !had_copy && f->saved[0];
-        if (!f->saved[0] && f->kind == DL_ZIP && f->loaded)
-            dl_rec_queue(f, e);                 // gone already: look for its DEX in memory
     }
 
     if (alert && !mc->quiet) {
@@ -519,7 +392,7 @@ static void dl_teardown(void)
     if (g_rb)   { ring_buffer__free(g_rb); g_rb = NULL; }
     if (g_skel) { dexload_detect_bpf__destroy(g_skel); g_skel = NULL; }
     // In-memory DEX still waiting for its header: one last try.
-    if (g_mc) { dl_mem_pass(1); dl_rec_pass(1); }
+    if (g_mc) dl_mem_pass(1);
     // Payloads never loaded or deleted while we watched: the file is complete
     // by now, keep a copy for the summary (a deleted one only through its pin).
     for (int i = 0; i < dl_file_count; i++) {

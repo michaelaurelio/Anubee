@@ -1491,22 +1491,19 @@ sequenceDiagram
     `/apex`) are the platform's own code and dropped -- on the test phone
     every app gets two for an OEM framework jar. The kernel caps an anon
     region name at 80 bytes, so for a typical app path (`/data/data/<pkg>/
-    cache/<n>.jar`) ART's naming `prctl` fails and the unpacked DEX sits in
-    an **unnamed** region; the recovery below covers that.
+    cache/<n>.jar`) ART's naming `prctl` fails with `EINVAL` and the region
+    stays **unnamed** in maps. The kprobe runs on entry, before that check,
+    so the event carries the whole name (up to 768 bytes across `comp[]`),
+    and userspace uses it when maps shows no name (`dl_memload_name`). That
+    is how a jar loaded and deleted within a few ms still gets its DEX saved:
+    as a `memload` record whose `path` is the jar.
   - **Saving against a fast delete.** A dropper can load and delete its
     payload within a few ms (seen live: 2 ms), before userspace handles the
-    load. Two fallbacks, in order:
-    1. *Pin*: when the drop is handled, the file is opened and the fd kept;
-       an fd outlives the unlink, so `load`/`delete`/teardown copy from it
-       (the copy is taken then, so the file is complete). Closed once saved.
-    2. *Recovery from memory*: a loaded ZIP still uncopied after its load or
-       delete is queued; for up to 2 s the tick scans the loader's readable
-       unnamed anonymous regions (`dl_maps_unnamed_anon`) for a valid DEX
-       header at the region start and saves each one not seen before as
-       `<pid>-<ino>-mem-<addr>.dex`, emitted as a `memload` record whose
-       `path` is the jar. Attribution is by process: any such DEX in the
-       loader is credited to the pending jar (unnamed DEX regions are rare
-       otherwise). Not needed when the named region was already saved.
+    load. When the drop is handled the file is opened and the fd kept (*pinned*);
+    an fd outlives the unlink, so `load`/`delete`/teardown copy from it (the
+    copy is taken then, so the file is complete). Closed once saved. A jar
+    deleted before even its drop is handled is covered by the memload record
+    of its unpacked DEX (above); a plain DEX file that fast is lost.
 
   The path is rebuilt in the kernel from the file's dentry chain, crossing
   mount points to the root of the writer's mount namespace (`bpf_loop`, up to

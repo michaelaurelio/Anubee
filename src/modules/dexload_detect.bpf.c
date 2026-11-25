@@ -282,7 +282,9 @@ int BPF_KPROBE(on_prctl, const struct pt_regs *regs)
 	e->addr  = BPF_CORE_READ(regs, regs[2]);
 	e->len   = BPF_CORE_READ(regs, regs[3]);
 	e->ncomp = 1;
-	bpf_probe_read_user_str(e->comp[0], DEXLOAD_COMP_LEN, (void *)np);
+	// whole name across comp[]: the kernel may reject it (over 80 bytes), and
+	// then this is the only record of which file the region was unpacked from
+	bpf_probe_read_user_str(&e->comp[0][0], sizeof(e->comp), (void *)np);
 	dl_send(e);
 	return 0;
 }

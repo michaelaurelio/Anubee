@@ -642,13 +642,13 @@ is in DOCUMENTATION.md and the referenced specs.
 
 - **`dexload-detect` keeps a copy of fast-deleted payloads.** A live
   SharkBot run lost an ad-SDK jar written, loaded and deleted within 2 ms
-  (`saved: null`). Dropped files are now held open from the drop, and a
-  loaded jar that is gone anyway has its unpacked DEX recovered from the
-  loader's unnamed anonymous memory (ART's region name for it exceeds the
-  kernel's 80-byte cap on real app paths, so memload never saw it). Known
-  drawbacks: recovery credits *any* unnamed-region DEX in that process to
-  the jar; a plain DEX loaded and deleted before even the drop is handled,
-  by a process that has exited, is still lost.
+  (`saved: null`). Dropped files are now held open from the drop. The jar's
+  unpacked DEX was being missed too: ART names its region "dalvik-classes.dex
+  extracted in memory from <path>", which exceeds the kernel's 80-byte cap
+  on real app paths, so the naming failed and memload dropped the unnamed
+  region; memload now takes the name from the prctl event instead. Known
+  drawback: a plain DEX file (no unpacked copy) loaded and deleted before
+  even its drop is handled, by a process that has exited, is still lost.
 - **Syscall outcomes for `execve` and `file-access`.** Live malware runs
   showed both analyzers logged attempts only: a SpyNote build's keylog
   writes all failed (no storage permission) yet read like successes, and one

@@ -131,22 +131,18 @@ int main(void)
     CHECK(dl_memload_wanted("dalvik-jit-code-cache", &msrc) == 0, "other dalvik region ignored");
     CHECK(dl_memload_wanted(NULL, &msrc) == 0, "NULL ignored");
 
-    // unnamed anonymous regions: where ART unpacks a jar's compressed classes.dex
-    const char *amaps =
-        "12c00000-12c40000 rw-p 00000000 00:00 0                          [anon:dalvik-main space]\n"
-        "7b06dd7000-7b06dd8000 r--p 00000000 00:00 0 \n"
-        "7b06dd8000-7b06dda000 rw-p 00000000 00:00 0\n"
-        "7b06dda000-7b06ddb000 ---p 00000000 00:00 0\n"
-        "7b06ddb000-7b06ddc000 r--s 00000000 00:01 12829                  /memfd:jit-cache (deleted)\n"
-        "7c00000000-7c00001000 r--p 00000000 fe:53 99887                  /data/local/tmp/x.jar\n"
-        "7ffc000000-7ffc021000 rw-p 00000000 00:00 0                      [stack]\n";
-    unsigned long as[4], ae[4];
-    int na = dl_maps_unnamed_anon(amaps, as, ae, 4);
-    CHECK(na == 2, "two readable unnamed anon regions found");
-    CHECK(na >= 1 && as[0] == 0x7b06dd7000UL && ae[0] == 0x7b06dd8000UL, "first region bounds (trailing space)");
-    CHECK(na >= 2 && as[1] == 0x7b06dd8000UL, "region with no name column at all");
-    CHECK(dl_maps_unnamed_anon(amaps, as, ae, 1) == 1, "stops at max");
-    CHECK(dl_maps_unnamed_anon(NULL, as, ae, 4) == 0, "NULL maps -> 0");
+    // memload region name: the kernel caps anon names at 80 bytes, so a long
+    // "extracted in memory from <path>" is rejected and the region stays
+    // unnamed in maps -- the name ART passed (from the event) is used then.
+    const char *ev = "dalvik-classes.dex extracted in memory from /data/data/com.example.app/cache/1787936389793.jar";
+    CHECK(strcmp(dl_memload_name("dalvik-DEX data", ev), "dalvik-DEX data") == 0, "maps name used when present");
+    CHECK(dl_memload_name("", ev) == ev, "unnamed region: name from the event");
+    CHECK(dl_memload_name(NULL, ev) == ev, "no maps name: name from the event");
+    CHECK(dl_memload_wanted(dl_memload_name("", ev), &msrc) == 1
+          && strcmp(msrc, "/data/data/com.example.app/cache/1787936389793.jar") == 0,
+          "long extraction name from the event keeps its full source path");
+    CHECK(dl_memload_wanted(dl_memload_name("", "dalvik-classes.dex extracted in memory from /system_ext/framework/a-rather-long-oem-name.jar"), &msrc) == 0,
+          "long extraction from a system partition still ignored");
 
     printf("test_dexload_detect_parse: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

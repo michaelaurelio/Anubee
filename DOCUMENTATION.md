@@ -1385,7 +1385,7 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   inherit the documented precision/hit-rate limits (see BACKLOG). Both interpreter terminals are named
   inline, matching the `.stacks` sidecar: nterp (`nterp_chain`) and the switch interpreter
   (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the latter is what carries app Kotlin, so it must not be
-  omitted from the inline chain. The fragment is bounded by `ANUBEE_JCACHE_FRAG` (512 B); a chain that
+  omitted from the inline chain. The fragment is bounded by `ANUBEE_JCACHE_FRAG` (1 KiB); a chain that
   overflows is truncated innermost-first with a trailing `"..."` marker (never dropped whole). The
   authoritative full, untruncated native+managed walk stays in the `.stacks` sidecar `cfi_stack` record,
   joinable by `stack_id`. Stack snapshot schema:

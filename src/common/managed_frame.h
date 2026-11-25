@@ -9,7 +9,7 @@
  * size every caller's fragment buffer must use. Sized to hold typical Kotlin/Compose
  * chains whole (long dotted names); deeper chains truncate with a "..." marker in
  * anubee_managed_chain_build rather than being dropped. */
-#define ANUBEE_JCACHE_FRAG 512
+#define ANUBEE_JCACHE_FRAG 1024
 
 struct anubee_stack_snapshot;   /* full def in common/stack_snapshot.h */
 struct jbuf;                  /* full def in common/emit.h */

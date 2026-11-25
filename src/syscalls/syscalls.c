@@ -689,7 +689,7 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	anubee_emit_cfi_stack_json(j, epid, s, pcs, sps, n, syms, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
-	char frag[208];
+	char frag[ANUBEE_JCACHE_FRAG];
 	if (anubee_managed_chain(epid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
 		anubee_jcache_put(s->stack_id, frag);
 }
@@ -768,7 +768,7 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	if (e->stack_id) {
 		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
-		char js[208];
+		char js[ANUBEE_JCACHE_FRAG];
 		if (anubee_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
 	}
 

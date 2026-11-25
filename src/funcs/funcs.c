@@ -563,7 +563,7 @@ static void process_call_return(const void *data, size_t data_sz)
                 }
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
-                char js[208];
+                char js[ANUBEE_JCACHE_FRAG];
                 const char *jsp = anubee_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp, syms);
                 anubee_sink_emit(&g_sink);
@@ -781,7 +781,7 @@ static void process_call_return(const void *data, size_t data_sz)
             anubee_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, syms, NULL);
             if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
             free(cj.b);
-            char frag[208];
+            char frag[ANUBEE_JCACHE_FRAG];
             if (anubee_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
                 anubee_jcache_put(s->stack_id, frag);
         }

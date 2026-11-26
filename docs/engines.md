@@ -72,7 +72,6 @@ anubee syscalls -P com.example.app -s openat --snapshot -o trace.jsonl
 | `-s LIST` / `-x LIST` | Allowlist / denylist, comma-separated syscall names (mutually exclusive) |
 | `-e SPEC` / `-F FILE` | Probe spec: `syscall:[!]NAME` or `lib:[!]PATTERN`, see [`probe-specs.md`](probe-specs.md) |
 | `--snapshot` / `--no-snapshot` | Capture stack snapshots for off-device unwinding (default: off) |
-| `--proc-track` | Track fork/exec/exit to version the maps model (evaluation) |
 | `-A ACTIVITY` | Override launch activity component |
 
 `--snapshot` writes a `<file>.stacks` sidecar (raw snapshot + CFI backtrace

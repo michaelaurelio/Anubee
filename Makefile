@@ -144,7 +144,6 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                sym_resolve sym_effective_pid sym_snapshot_pid sym_resolve_fb sym_flush_pid cfi_unwind_snapshot \
                sym_engine_new sym_parent_pid sym_maps_map sym_maps_unmap sym_resolve_at \
                cfi_unwind_snapshot_at sym_maps_dirty sym_maps_compact sym_maps_report \
-               sym_proc_track_enable sym_proc_fork sym_proc_exec sym_proc_exit sym_proc_track_report \
                fdhold_note fdhold_close_all fdhold_count \
                anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
                anubee_stack_snapshot_emit_json \

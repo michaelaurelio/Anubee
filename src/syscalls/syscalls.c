@@ -286,10 +286,6 @@ static struct syscalls *g_skel;
 static struct ring_buffer *g_rb;
 static struct bpf_link *g_ff;
 static struct bpf_link *g_compat;    // do_el0_svc_compat, NULL if not attached (optional)
-static struct bpf_link *g_pt_fork;   // --proc-track sched_process_fork
-static struct bpf_link *g_pt_exec;   // --proc-track sched_process_exec
-static struct bpf_link *g_pt_exit;   // --proc-track sched_process_exit
-static int g_proc_track;             // --proc-track (evaluation)
 static pthread_t g_worker;
 static int g_worker_started;
 static struct anubee_drain_progress g_dp;	// post-Ctrl-C drain progress (teardown only)
@@ -1078,23 +1074,6 @@ static void process_event(const void *data, size_t sz)
 			return;
 		json_emit_stack(data);
 		break;
-	case SYSC_EV_PROC: {
-		if (sz < sizeof(struct syscalls_proc_event))
-			return;
-		const struct syscalls_proc_event *p = data;
-		switch (p->kind) {
-		case 1:
-			sym_proc_fork(g_eng, (int)p->h.pid, (int)p->other, g_seq);
-			break;
-		case 2:
-			sym_proc_exec(g_eng, (int)p->h.pid, g_seq);
-			break;
-		case 3:
-			sym_proc_exit(g_eng, (int)p->h.pid, g_seq);
-			break;
-		}
-		break;
-	}
 	}
 }
 
@@ -1246,7 +1225,6 @@ struct sysc_args {
 	char activity[256];          // -A: optional launch activity override
 	int  capture_all;            // set when no -l/lib: filter given (capture all)
 	int  want_snap;              // --snapshot
-	int  proc_track;             // --proc-track
 	char syscall_list[1024];     // accumulated, comma-separated values of every -s or -x
 	int  syscall_mode;           // 0=off 1=allowlist 2=denylist
 	struct target_args tgt;      // -p / --siblings / --no-follow-fork
@@ -1274,7 +1252,6 @@ static const struct argp_option sysc_options[] = {
 	COMMON_ARGP_OPTIONS,
 	{ "snapshot",     1,  NULL,       0, "Capture stack snapshots for off-device unwinding",   0 },
 	{ "no-snapshot",  2,  NULL,       0, "Disable snapshots (default)",                        0 },
-	{ "proc-track",   3,  NULL,       0, "Track fork/exec/exit to version the maps model (evaluation)", 0 },
 	{ "syscall",     's', "LIST",     0, "Allowlist: comma-separated syscall names",           0 },
 	{ "exclude",     'x', "LIST",     0, "Denylist: comma-separated syscall names",            0 },
 	{ "spec",        'e', "SPEC",     0, "Probe spec: syscall:[!]NAME or lib:[!]PATTERN (repeatable)", 0 },
@@ -1295,7 +1272,6 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case 'A': copy_str(a->activity,     arg, sizeof(a->activity));     break;
 	case  1 : a->want_snap = 1;   break;
 	case  2 : a->want_snap = 0;   break;
-	case  3 : a->proc_track = 1;  break;
 	case 's':
 		if (a->syscall_mode == 2) ANUBEE_ARGP_FAIL(state, "use either -s or -x, not both");
 		// Repeatable: accumulate into one comma-separated list rather than the
@@ -1509,9 +1485,6 @@ int syscalls_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 	g_verbose  = sa.c.verbose;
 	g_quiet    = sa.c.quiet; // SYM1 Phase 1: -o no longer forces quiet; file and stdout are independent channels
 	g_jsonl    = 1; // SYM1 Phase 5a: JSONL always, matches lib/mod/correlate
-	g_proc_track = sa.proc_track;
-	if (g_proc_track)
-		sym_proc_track_enable(g_eng);
 	int capture_all      = sa.capture_all;
 	int want_snap        = sa.want_snap;
 	int bufmb            = sa.c.bufmb;
@@ -1570,13 +1543,6 @@ int syscalls_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 	skel->rodata->syscall_filter_mode = syscall_mode;
 	skel->rodata->snapshot_enabled = want_snapshots;
 	bpf_map__set_max_entries(skel->maps.events, bufbytes);
-	// The process-event programs are loaded only with --proc-track, so a run
-	// without the flag loads exactly the programs it did before.
-	if (!g_proc_track) {
-		bpf_program__set_autoload(skel->progs.on_sc_fork, false);
-		bpf_program__set_autoload(skel->progs.on_sc_exec, false);
-		bpf_program__set_autoload(skel->progs.on_sc_exit, false);
-	}
 	if (syscalls__load(skel)) {
 		fprintf(stderr, "load failed (run as root? SELinux permissive?)\n");
 		syscalls__destroy(skel);
@@ -1670,9 +1636,6 @@ int syscalls_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 	bpf_program__set_autoattach(skel->progs.on_sys_exit, false);
 	bpf_program__set_autoattach(skel->progs.anubee_follow_fork, 0);
 	bpf_program__set_autoattach(skel->progs.on_svc_enter_compat, false);
-	bpf_program__set_autoattach(skel->progs.on_sc_fork, false);
-	bpf_program__set_autoattach(skel->progs.on_sc_exec, false);
-	bpf_program__set_autoattach(skel->progs.on_sc_exit, false);
 
 	if (syscalls__attach(skel)) {
 		fprintf(stderr, "attach failed (do_el0_svc / uprobe_mmap present in kallsyms?)\n");
@@ -1687,24 +1650,6 @@ int syscalls_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 	if (sa.tgt.n > 0 && !sa.tgt.no_follow) {
 		g_ff = bpf_program__attach(skel->progs.anubee_follow_fork);
 		if (!g_ff) fprintf(stderr, "syscalls: follow-fork attach failed (non-fatal)\n");
-	}
-
-	if (g_proc_track) {
-		g_pt_fork = bpf_program__attach(skel->progs.on_sc_fork);
-		if (!g_pt_fork || libbpf_get_error(g_pt_fork)) {
-			g_pt_fork = NULL;
-			fprintf(stderr, "syscalls: proc-track on_sc_fork attach failed (non-fatal)\n");
-		}
-		g_pt_exec = bpf_program__attach(skel->progs.on_sc_exec);
-		if (!g_pt_exec || libbpf_get_error(g_pt_exec)) {
-			g_pt_exec = NULL;
-			fprintf(stderr, "syscalls: proc-track on_sc_exec attach failed (non-fatal)\n");
-		}
-		g_pt_exit = bpf_program__attach(skel->progs.on_sc_exit);
-		if (!g_pt_exit || libbpf_get_error(g_pt_exit)) {
-			g_pt_exit = NULL;
-			fprintf(stderr, "syscalls: proc-track on_sc_exit attach failed (non-fatal)\n");
-		}
 	}
 
 	int nret = attach_return_probes(skel);
@@ -1759,18 +1704,6 @@ out:
 	if (g_compat) {
 		bpf_link__destroy(g_compat);
 		g_compat = NULL;
-	}
-	if (g_pt_fork) {
-		bpf_link__destroy(g_pt_fork);
-		g_pt_fork = NULL;
-	}
-	if (g_pt_exec) {
-		bpf_link__destroy(g_pt_exec);
-		g_pt_exec = NULL;
-	}
-	if (g_pt_exit) {
-		bpf_link__destroy(g_pt_exit);
-		g_pt_exit = NULL;
 	}
 	pend_flush_all();
 	anubee_sink_close(&g_sink);
@@ -1835,9 +1768,6 @@ void syscalls_teardown(void)
 		anubee_drain_progress_join(&g_dp, g_worker);
 		g_worker_started = 0;
 
-		if (g_proc_track)
-			sym_proc_track_report(stderr);
-
 		// Always report the final tally, so "no message" never means "didn't check".
 		// Subsumes the old anubee_drops_report: ring/queue drops are coverage fields.
 		int covfd = bpf_map__fd(g_skel->maps.coverage_stats);
@@ -1888,18 +1818,6 @@ void syscalls_teardown(void)
 	if (g_compat) {
 		bpf_link__destroy(g_compat);
 		g_compat = NULL;
-	}
-	if (g_pt_fork) {
-		bpf_link__destroy(g_pt_fork);
-		g_pt_fork = NULL;
-	}
-	if (g_pt_exec) {
-		bpf_link__destroy(g_pt_exec);
-		g_pt_exec = NULL;
-	}
-	if (g_pt_exit) {
-		bpf_link__destroy(g_pt_exit);
-		g_pt_exit = NULL;
 	}
 	if (g_skel) {
 		syscalls__destroy(g_skel);

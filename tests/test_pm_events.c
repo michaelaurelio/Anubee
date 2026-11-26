@@ -238,43 +238,6 @@ static void test_seed_from_parent_at_seq(void)
           "parent seed: second call leaves the seeded child alone");
 }
 
-static void test_exec_retires_old_image(void)
-{
-    int ppid = 0x7f080000;
-    int child = 0x7f080001;
-
-    pm_apply_map(1, ppid, 5, 0x1000, 0x2000, 0, 1, 1, "/old.so");
-    pm_seed_from_parent(1, child, ppid, 10);
-    pm_apply_unmap(1, child, 40, 0x9000, 0xa000);
-    pm_apply_map(1, child, 45, 0x5000, 0x6000, 0, 3, 1, "/new.so");
-    pm_exec_reset(1, child, 50);
-    CHECK(is_path(path_at(1, child, 0x1800, 49), "/old.so"),
-          "exec: old image visible just before");
-    CHECK(path_at(1, child, 0x1800, 51) == NULL,
-          "exec: old image gone after");
-    CHECK(is_path(path_at(1, child, 0x5800, 51), "/new.so"),
-          "exec: new image kept after");
-}
-
-static void test_drop_e(void)
-{
-    int pid1 = 0x7f090000;
-    int pid2 = 0x7f090001;
-    struct procmaps *pm;
-
-    pm_apply_map(1, pid1, 10, 0x1000, 0x2000, 0, 1, 1, "/drop1.so");
-    pm_apply_map(1, pid2, 10, 0x3000, 0x4000, 0, 2, 1, "/drop2.so");
-    pm_drop_e(1, pid1);
-    CHECK(pm_find_e(1, pid1) == NULL, "drop: first model gone");
-    pm = pm_find_e(1, pid2);
-    CHECK(pm != NULL && pm->n > 0, "drop: second model still present");
-    CHECK(is_path(path_at(1, pid2, 0x3800, SYM_SEQ_LIVE), "/drop2.so"),
-          "drop: second model keeps its lines");
-    pm_apply_map(1, 0x7f090002, 10, 0x5000, 0x6000, 0, 3, 1, "/drop3.so");
-    CHECK(is_path(path_at(1, pid2, 0x3800, SYM_SEQ_LIVE), "/drop2.so"),
-          "drop: slot reuse leaves the moved model intact");
-}
-
 static void test_engines_isolated(void)
 {
     int pid = 0x7f060000;
@@ -405,8 +368,6 @@ int main(void)
     test_partial_unmap_keeps_rest();
     test_map_over_live_line();
     test_seed_from_parent_at_seq();
-    test_exec_retires_old_image();
-    test_drop_e();
     test_engines_isolated();
     test_compact();
     test_dirty_merge_never_retires();

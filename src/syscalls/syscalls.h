@@ -56,16 +56,6 @@ enum syscalls_event_type {
 	SYSC_EV_UNMAP   = 3,
 	SYSC_EV_RETURN  = 4,
 	SYSC_EV_STACK   = 5,        /* one stack snapshot (first sight of a stack) */
-	SYSC_EV_PROC    = 6,        /* fork/exec/exit (--proc-track) */
-};
-
-/* --proc-track: a process forked (kind 1, other = child tgid), exec'd (2) or
- * exited (3, leader only). */
-struct syscalls_proc_event {
-	struct trace_event_header h;
-	__u32 kind;
-	__u32 other;
-	__u64 ktime;
 };
 
 /* Entry-only syscall record: number + raw args + resolved string args + stack. */

@@ -39,11 +39,7 @@ struct procmaps {
 	int engine;          // 0 = legacy live-only cache; >0 = event-sourced model of that engine
 	int seeded;          // model holds a seed (from /proc or a parent copy)
 	int dirty;           // events may have been lost; next miss on a live pid rereads
-	int forked;          // model came from a fork event (--proc-track)
-	int exited;          // leader exit seen (--proc-track)
-	uint64_t exit_seq;   // seq of that exit event (--proc-track)
 	uint64_t gen;        // bumped when the pid is known to have exited (pid reuse guard)
-	uint64_t last_unmap_seq; // seq of the last unmap applied (--proc-track exec reset)
 	long long exit_ms;   // when the pid was seen to exit, 0 = not known to have exited
 	struct anubee_map_line *r;   // retired lines (del_seq != SYM_SEQ_LIVE), unsorted
 	size_t rn, rcap;
@@ -71,9 +67,6 @@ void pm_apply_map(int engine, int pid, uint64_t seq, uint64_t start, uint64_t en
                   uint64_t pgoff, uint64_t inode, uint32_t dev, const char *path);
 void pm_apply_unmap(int engine, int pid, uint64_t seq, uint64_t start, uint64_t end);
 void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq);
-void pm_seed_copy(int dst_engine, int pid, int src_engine, int ppid, uint64_t seq);
-void pm_drop_e(int engine, int pid);
-void pm_exec_reset(int engine, int pid, uint64_t seq);
 void pm_mark_dirty_all(int engine);                  // events may have been lost
 void pm_compact(int engine, uint64_t oldest_open_seq); // drop retired lines no event needs
 void pm_note_exit(int engine, int pid);              // remember when the pid exited

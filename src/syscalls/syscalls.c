@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 // syscalls.c
 //
 // Userspace loader for syscalls.bpf.c. Traces the syscalls of a single Android
@@ -44,6 +48,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/resource.h>           // RUSAGE_THREAD for the worker CPU line
 #include <sys/syscall.h>            // __NR_* for the generated table
 #include <linux/types.h>
 #include <stdint.h>
@@ -56,6 +61,7 @@
 #include "syscalls.h"
 #include "syscalls.skel.h"
 #include "common/symbolize.h"
+#include "common/sym_fdhold.h"
 #include "common/stack_snapshot.h"
 #include "common/art_nterp.h"
 #include "syscalls/snapshot_gate.h"
@@ -194,6 +200,11 @@ static struct anubee_sink g_sink;                 // output file sink (inactive 
 static FILE *g_stacks;                          // stack-snapshot sidecar, or NULL
 static unsigned long long g_stack_count;        // snapshots written so far
 
+// Event-sourced maps model: engine id allocated in setup, and the worker's
+// record sequence (incremented for every popped record).
+static int g_eng;
+static uint64_t g_seq;
+
 // SYM1 Phase 5c: per-syscall-name tally, mirrors mod execve.c's exec_stats[]
 // (same bound, same linear scan) -- tallied unconditionally so the summary
 // survives -q, matching execve's own convention.
@@ -288,7 +299,7 @@ static const char *g_activity;                  // optional launcher activity
 
 // Symbolization (every frame: target lib + libc + others) is delegated to
 // symbolize.c, which reads /proc/<pid>/maps for module ranges/paths and parses
-// each ELF's .dynsym. We use sym_resolve() wherever we render a backtrace. The
+// each ELF's .dynsym. We use sym_resolve_at() wherever we render a backtrace. The
 // in-kernel filter below remains purely event-driven.
 
 // ---- target library -> BPF filter ----------------------------------------
@@ -668,7 +679,7 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	// memset left the terminal slot as uninitialized stack garbage that
 	// could alias a valid enum value and silently corrupt g_cov.cfi_stop[].
 	// Zero-init means an unwritten terminal reads as CFI_OK (0).
-	int n = cfi_unwind_snapshot(epid, s, pcs, 64, sps, diags);
+	int n = cfi_unwind_snapshot_at(g_eng, (int)s->h.pid, g_seq, s, pcs, 64, sps, diags);
 	if (n <= 0) return;
 
 	g_cov.snaps_total++;
@@ -683,11 +694,15 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	const char *syms[64];
 	int nsym = n < 64 ? n : 64;
 	for (int i = 0; i < nsym; i++) {
-		sym_resolve_fb(epid, fb, pcs[i], sym_store[i], sizeof(sym_store[i]));
+		sym_resolve_at(g_eng, (int)s->h.pid,
+			       sym_parent_pid((int)s->h.pid, s->h._pad),
+			       g_seq, pcs[i], sym_store[i], sizeof(sym_store[i]));
 		syms[i] = sym_store[i];
 	}
 
 	struct jbuf *j = &g_sink.jb; j->len = 0;
+	// epid is only for these two calls: they read live target memory to name
+	// interpreted Java frames.
 	anubee_emit_cfi_stack_json(j, epid, s, pcs, sps, n, syms, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
@@ -697,7 +712,7 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 }
 
 static void json_emit(const struct syscalls_syscall_event *e, unsigned long long id,
-		      int has_ret, long long ret)
+		      int has_ret, long long ret, uint64_t seq)
 {
 	struct jbuf *j = &g_sink.jb;
 	j->len = 0;
@@ -795,12 +810,11 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
-	int fb;
-	int epid = sym_effective_pid((int)e->h.pid, e->h._pad, &fb);
+	int pp = sym_parent_pid((int)e->h.pid, e->h._pad);
 	char sym[320];
 	for (int i = 0, first = 1; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 		if (e->stack[i] == 0) break;
-		sym_resolve_fb(epid, fb, e->stack[i], sym, sizeof(sym));
+		sym_resolve_at(g_eng, (int)e->h.pid, pp, seq, e->stack[i], sym, sizeof(sym));
 		if (!first)
 			jb_c(j, ',');
 		first = 0;
@@ -837,6 +851,7 @@ struct pend_entry {
 	int used;
 	__u32 tid;
 	unsigned long long id;
+	uint64_t seq;
 	struct syscalls_syscall_event ev;
 };
 
@@ -851,12 +866,13 @@ static struct pend_entry *pend_find(__u32 tid)
 	return NULL;
 }
 
-static void pend_store(const struct syscalls_syscall_event *e, unsigned long long id)
+static void pend_store(const struct syscalls_syscall_event *e, unsigned long long id,
+		       uint64_t seq)
 {
 	struct pend_entry *p = pend_find(e->h.tid);
 	if (p) {
 		if (g_sink.f)                   // previous syscall on this tid never returned
-			json_emit(&p->ev, p->id, 0, 0);
+			json_emit(&p->ev, p->id, 0, 0, p->seq);
 	} else {
 		for (size_t i = 0; i < g_pend_n; i++)
 			if (!g_pend[i].used) { p = &g_pend[i]; break; }
@@ -875,6 +891,7 @@ static void pend_store(const struct syscalls_syscall_event *e, unsigned long lon
 	p->used = 1;
 	p->tid = e->h.tid;
 	p->id = id;
+	p->seq = seq;
 	p->ev = *e;
 }
 
@@ -883,7 +900,7 @@ static void pend_flush_all(void)
 	for (size_t i = 0; i < g_pend_n; i++)
 		if (g_pend[i].used) {
 			if (g_sink.f)
-				json_emit(&g_pend[i].ev, g_pend[i].id, 0, 0);
+				json_emit(&g_pend[i].ev, g_pend[i].id, 0, 0, g_pend[i].seq);
 			g_pend[i].used = 0;
 		}
 }
@@ -957,19 +974,18 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 		}
 
 		int n = e->stack_sz / (int)sizeof(__u64);
-		int fb;
-		int epid = sym_effective_pid((int)e->h.pid, e->h._pad, &fb);
+		int pp = sym_parent_pid((int)e->h.pid, e->h._pad);
 		char sym[320];
 		for (int i = 0; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 			if (e->stack[i] == 0)
 				break;
-			sym_resolve_fb(epid, fb, e->stack[i], sym, sizeof(sym));
+			sym_resolve_at(g_eng, (int)e->h.pid, pp, g_seq, e->stack[i], sym, sizeof(sym));
 			human_detail("syscall", "#%d %s\n", i, sym);
 		}
 		fflush(stdout);
 	}
 
-	pend_store(e, id);          // JSON emitted once the return value arrives
+	pend_store(e, id, g_seq);          // JSON emitted once the return value arrives
 }
 
 static void handle_return(const struct syscalls_return_event *r)
@@ -986,7 +1002,7 @@ static void handle_return(const struct syscalls_return_event *r)
 		fflush(stdout);
 	}
 	if (g_sink.f)
-		json_emit(&p->ev, p->id, 1, r->retval);
+		json_emit(&p->ev, p->id, 1, r->retval, p->seq);
 #ifdef __NR_close
 	if (p->ev.nr == __NR_close && r->retval == 0)
 		fdc_drop((int)p->ev.h.pid, (int)p->ev.args[0]);   // fd may be reused
@@ -1019,19 +1035,24 @@ static void process_event(const void *data, size_t sz)
 		// keeps the shared emitter's own [lib] console line off — the verbose
 		// [MAP] line above is our console channel — while still writing the
 		// jsonl record whenever -o is set. Single-writer (worker thread), no lock.
+		char path[256];
+		const char *mpath = m->name;
 		if (g_sink.f) {
-			char path[256];
 			if (anubee_libtrace_resolve_path(m->h.pid, m->start, m->name,
-			                               path, sizeof(path)) == 0)
+			                               path, sizeof(path)) == 0) {
 				anubee_libtrace_emit_lib(&g_sink, 1, m, path, NULL);
+				mpath = path;
+			}
 		}
+		sym_maps_map(g_eng, (int)m->h.pid, m->ppid, g_seq, m->start, m->end,
+			     m->pgoff, m->inode, m->dev, mpath);
 		break;
 	}
 	case SYSC_EV_UNMAP: {
 		if (sz < sizeof(struct lib_unmap_event))
 			return;
 		const struct lib_unmap_event *u = data;
-		sym_flush_pid(u->h.pid);          // force a /proc maps reread on next resolve
+		sym_maps_unmap(g_eng, (int)u->h.pid, g_seq, u->start, u->end);
 		if (g_sink.f)                     // {"type":"unlib"} sink record (symmetric with funcs)
 			anubee_libtrace_emit_unlib(&g_sink, 1, u);
 		break;
@@ -1089,6 +1110,7 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 			for (int i = 0; i < g_nscopes; i++)
 				if (lib_selector_matches_any(m->name, g_scopes[i].lib_pats, g_scopes[i].npat))
 					push_scope_range(&g_scopes[i].ranges, m->start, m->end);
+			fdhold_note((int)m->h.pid, m->start, m->end, m->inode, m->dev);
 		}
 		if (h->type == SYSC_EV_SYSCALL && sz >= sizeof(struct syscalls_syscall_event)) {
 			unsigned char pk[sizeof(struct syscalls_syscall_event)];
@@ -1105,6 +1127,19 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 	return 0;
 }
 
+static long g_worker_cpu_ms;
+
+// Use the whole worker thread's CPU time (utime+stime) in milliseconds.
+static void worker_cpu_record(void)
+{
+	struct rusage ru;
+
+	if (getrusage(RUSAGE_THREAD, &ru) != 0)
+		return;
+	g_worker_cpu_ms = (long)((ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000 +
+				 (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000);
+}
+
 static void *worker_main(void *arg)
 {
 	(void)arg;
@@ -1113,11 +1148,22 @@ static void *worker_main(void *arg)
 	unsigned long flushed = 0;
 	size_t sz;
 	while (anubee_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
+		g_seq++;
+		if ((g_seq & 4095) == 0) {
+			// Keep the model's retired lines only as long as an open
+			// entry may still name a frame at its entry seq.
+			uint64_t oldest = g_seq;
+			for (size_t i = 0; i < g_pend_n; i++)
+				if (g_pend[i].used && g_pend[i].seq < oldest)
+					oldest = g_pend[i].seq;
+			sym_maps_compact(g_eng, oldest);
+		}
 		process_event(rec, sz);
 		// Periodic flush so a hard-kill loses little (JSONL stays valid).
 		if (g_sink.f && (++flushed & ANUBEE_FLUSH_MASK) == 0)
 			anubee_sink_flush(&g_sink);
 	}
+	worker_cpu_record();
 	return NULL;
 }
 
@@ -1393,6 +1439,7 @@ static const struct argp sysc_argp = {
 // from a single app launch. Cross-phase state lives in the file-static g_* above.
 int syscalls_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
+	g_eng = sym_engine_new();   // maps model for this engine, before the worker starts
 	anubee_sysindex_build(&g_sysidx, anubee_syscall_table, anubee_syscall_table_count);
 	build_arg_tables();
 	// ponytail: g_pkg/g_libs/g_activity alias into sa; static so they stay valid
@@ -1687,6 +1734,7 @@ static void syscalls_drops_tick(void *ctx)
 	if (d > g_last_drops) {
 		fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
 		g_last_drops = d;
+		sym_maps_dirty(g_eng);
 	}
 }
 
@@ -1749,6 +1797,10 @@ void syscalls_teardown(void)
 	}
 
 	pend_flush_all();                       // emit any entries whose return we never saw
+	sym_maps_report(stderr, "syscalls");
+	fprintf(stderr, "[worker] syscalls cpu_ms=%ld\n", g_worker_cpu_ms);
+	fprintf(stderr, "[fdhold] held=%zu\n", fdhold_count());
+	fdhold_close_all();
 	anubee_sink_close(&g_sink);
 	anubee_sink_report(&g_sink);
 	if (g_stacks) {

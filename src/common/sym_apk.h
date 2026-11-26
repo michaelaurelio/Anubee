@@ -38,4 +38,9 @@ int apk_so_get(const char *apk_path, int idx, struct apk_so_ref *out);
 // valid for the life of the process (it points into the per-APK cache).
 const char *apk_so_at(const char *apk_path, uint64_t file_off);
 
+// ELF start (data_start) of the stored member whose byte range contains
+// file_off. Returns 1 and *data_start on a hit, 0 otherwise (not an APK, no
+// member).
+int apk_so_member_at(const char *apk_path, uint64_t file_off, uint64_t *data_start);
+
 #endif /* __ANUBEE_SYM_APK_H */

@@ -76,6 +76,66 @@ int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
 	return fd;
 }
 
+// Load base of an ELF from one of its mapped segments: the ELF starts at
+// elf_off in the file (0, or the member offset inside an APK), the segment is
+// mapped at seg_start from file offset seg_file_off. Finds the PT_LOAD whose
+// page-aligned file offset (elf_off + p_offset) equals seg_file_off and returns
+// seg_start - page_down(p_vaddr). 0 on success, -1 otherwise.
+int elf_exec_load_base(int fd, uint64_t elf_off, uint64_t seg_file_off,
+		       uint64_t seg_start, uint64_t *load_base)
+{
+	Elf64_Ehdr eh;
+	Elf64_Phdr ph[64];
+	uint64_t page, page_mask;
+	int match = -1;
+
+	if (!load_base)
+		return -1;
+	if (pread_all(fd, &eh, sizeof(eh), (off_t)elf_off) != 0)
+		return -1;
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 ||
+	    eh.e_ident[EI_CLASS] != ELFCLASS64)
+		return -1;
+	if (eh.e_phentsize != sizeof(Elf64_Phdr) ||
+	    eh.e_phnum == 0 || eh.e_phnum > 64)
+		return -1;
+
+	page = (uint64_t)sysconf(_SC_PAGESIZE);
+	if (page == 0 || (page & (page - 1)) != 0)
+		return -1;
+	page_mask = ~(page - 1);
+
+	if (eh.e_phoff > UINT64_MAX - elf_off)
+		return -1;
+	if (pread_all(fd, ph, (size_t)eh.e_phnum * sizeof(ph[0]),
+		      (off_t)(elf_off + eh.e_phoff)) != 0)
+		return -1;
+
+	for (int i = 0; i < eh.e_phnum; i++) {
+		uint64_t seg_off;
+
+		if (ph[i].p_type != PT_LOAD)
+			continue;
+		if (ph[i].p_offset > UINT64_MAX - elf_off)
+			continue;
+		seg_off = elf_off + ph[i].p_offset;
+		if ((seg_off & page_mask) != seg_file_off)
+			continue;
+		if (match < 0 || (ph[i].p_flags & PF_X))
+			match = i;
+		if (ph[i].p_flags & PF_X)
+			break;
+	}
+	if (match < 0)
+		return -1;
+
+	uint64_t vbase = (uint64_t)ph[match].p_vaddr & page_mask;
+	if (vbase > seg_start)
+		return -1;
+	*load_base = seg_start - vbase;
+	return 0;
+}
+
 // Copy a symbol name into the per-module arena, returning its offset. The arena
 // starts with a NUL byte so a real name is always at offset >= 1, letting 0
 // double as "allocation failed" without colliding with a valid name.

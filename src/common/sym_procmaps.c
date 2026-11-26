@@ -327,6 +327,7 @@ static void retire_range(struct procmaps *pm, uint64_t seq, uint64_t s, uint64_t
 		left.id = ++g_line_id;
 		left.add_seq = seq;
 		left.del_seq = SYM_SEQ_LIVE;
+		left.xstate = 0;
 	}
 	if (has_right) {
 		right = pm->m[i1 - 1];
@@ -335,6 +336,7 @@ static void retire_range(struct procmaps *pm, uint64_t seq, uint64_t s, uint64_t
 		right.id = ++g_line_id;
 		right.add_seq = seq;
 		right.del_seq = SYM_SEQ_LIVE;
+		right.xstate = 0;
 	}
 
 	for (i = i0; i < i1; i++) {
@@ -463,6 +465,7 @@ void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq)
 		child->m[child->n].id = ++g_line_id;
 		child->m[child->n].add_seq = 0;
 		child->m[child->n].del_seq = SYM_SEQ_LIVE;
+		child->m[child->n].xstate = 0;
 		child->n++;
 	}
 	for (i = 0; i < parent->rn; i++) {
@@ -472,6 +475,7 @@ void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq)
 		child->m[child->n].id = ++g_line_id;
 		child->m[child->n].add_seq = 0;
 		child->m[child->n].del_seq = SYM_SEQ_LIVE;
+		child->m[child->n].xstate = 0;
 		child->n++;
 	}
 	if (child->n > 1)
@@ -722,26 +726,124 @@ void pm_stats_get(struct pm_stats *out)
 	}
 }
 
+// Largest line valid at seq with a start below cur, or NULL.
+static struct anubee_map_line *pred_line_at(struct procmaps *pm,
+					    struct anubee_map_line *cur,
+					    uint64_t seq)
+{
+	struct anubee_map_line *best = NULL;
+	uint64_t best_start = 0;
+	size_t lo = 0, hi = pm->n;
+
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+
+		if (pm->m[mid].start < cur->start)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	while (lo > 0) {
+		struct anubee_map_line *p = &pm->m[lo - 1];
+
+		if (p->add_seq <= seq) {
+			best = p;
+			best_start = p->start;
+			break;
+		}
+		lo--;
+	}
+	for (size_t i = 0; i < pm->rn; i++) {
+		struct anubee_map_line *p = &pm->r[i];
+
+		if (p->start >= cur->start)
+			continue;
+		if (p->add_seq > seq || seq >= p->del_seq)
+			continue;
+		if (!best || p->start > best_start) {
+			best = p;
+			best_start = p->start;
+		}
+	}
+	return best;
+}
+
+static int is_filler_line(const struct anubee_map_line *l)
+{
+	return l->path[0] == '\0' || l->path[0] == '[';
+}
+
+// Load base, ELF offset and end of the base mapping for hit in the view of the
+// model at sequence seq (SYM_SEQ_LIVE = current lines).
+void module_base_at(struct procmaps *pm, struct anubee_map_line *hit, uint64_t seq,
+		    uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
+{
+	struct anubee_map_line *cur = hit;
+
+	while (cur) {
+		struct anubee_map_line *p = pred_line_at(pm, cur, seq);
+
+		while (p && is_filler_line(p))
+			p = pred_line_at(pm, p, seq);
+		if (!p || strcmp(p->path, cur->path) != 0 || p->off >= cur->off)
+			break;
+		cur = p;
+	}
+
+	*load_base = cur->start;
+	*elf_off   = cur->off;
+	*base_end  = cur->end;
+
+	// Exec-only line: the kernel maps just a library's executable segment, so
+	// the same-path first segment is missing from the model. Recover the ELF
+	// base from the program headers instead.
+	if (cur != hit || !hit->exec || hit->path[0] != '/')
+		return;
+
+	uint64_t start = 0;
+	size_t plen = strlen(hit->path);
+
+	if (plen >= 4 && strcmp(hit->path + plen - 4, ".apk") == 0) {
+		if (!apk_so_member_at(hit->path, hit->off, &start))
+			return;
+	}
+	if (hit->off == start)
+		return;
+
+	if (hit->xstate == 1) {
+		*load_base = hit->xbase;
+		*elf_off   = hit->xelf;
+		*base_end  = hit->end;
+		return;
+	}
+	if (hit->xstate == -1)
+		return;
+
+	int fd = open_module_file(hit->path, pm->pid, hit->start, hit->end);
+	if (fd >= 0) {
+		uint64_t lb;
+
+		int r = elf_exec_load_base(fd, start, hit->off, hit->start, &lb);
+
+		close(fd);
+		if (r == 0) {
+			hit->xstate = 1;
+			hit->xbase = lb;
+			hit->xelf = start;
+			*load_base = lb;
+			*elf_off   = start;
+			*base_end  = hit->end;
+			return;
+		}
+	}
+	hit->xstate = -1;
+}
+
 // Walk back over the contiguous run of same-path mappings to find the ELF base.
 // Also returns the base mapping's [start,end), used to reach the file via
 // /proc/<pid>/map_files when its path is deleted/anonymous.
 void module_base(struct procmaps *pm, struct anubee_map_line *hit,
 			uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end)
 {
-	uintptr_t h = (uintptr_t)hit;
-	uintptr_t base = (uintptr_t)pm->m;
-	size_t bytes = pm->n * sizeof(*pm->m);
-
-	if (pm->n > 0 && h >= base && h < base + bytes) {
-		size_t i = anubee_module_base_idx(pm->m, (size_t)(hit - pm->m));
-
-		*load_base = pm->m[i].start;
-		*elf_off   = pm->m[i].off;
-		*base_end  = pm->m[i].end;
-		return;
-	}
-	// Retired line: no walk against the live array.
-	*load_base = hit->start;
-	*elf_off   = hit->off;
-	*base_end  = hit->end;
+	module_base_at(pm, hit, SYM_SEQ_LIVE, load_base, elf_off, base_end);
 }

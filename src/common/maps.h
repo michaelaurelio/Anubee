@@ -16,6 +16,9 @@ struct anubee_map_line {
 	uint64_t id;        // process-unique line id assigned by the maps model; 0 = none
 	uint64_t add_seq;   // stream sequence from which the line is valid
 	uint64_t del_seq;   // stream sequence at which it was retired (SYM_SEQ_LIVE = still live)
+	uint64_t xbase;     // cached exec-only load base (valid when xstate == 1)
+	uint64_t xelf;      // cached ELF start offset for xbase
+	int xstate;         // 0 not tried, 1 derived, -1 derivation failed
 };
 
 // Parse one /proc/<pid>/maps line into *out.

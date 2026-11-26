@@ -486,19 +486,21 @@ test:
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -llzma -o /dev/null 2>/dev/null; then \
 	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_elf.c src/common/sym_elf.c src/common/maps.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_sym_elf -lelf -llzma && \
 	  $(BUILD)/test_sym_elf; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_elf_exec_base.c src/common/sym_procmaps.c src/common/sym_elf.c src/common/sym_apk.c src/common/maps.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_elf_exec_base -lelf -llzma && \
+	  $(BUILD)/test_elf_exec_base; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c src/common/sym_elf.c src/common/sym_apk.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_pm_retain -lelf -llzma && \
+	  $(BUILD)/test_pm_retain; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_events.c src/common/sym_procmaps.c src/common/maps.c src/common/sym_elf.c src/common/sym_apk.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_pm_events -lelf -llzma && \
+	  $(BUILD)/test_pm_events; \
 	else \
-	  echo "skip: libelf-dev/liblzma-dev not installed, skipping test_sym_elf"; \
+	  echo "skip: libelf-dev/liblzma-dev not installed, skipping test_sym_elf/test_elf_exec_base/test_pm_retain/test_pm_events"; \
 	fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_pid.c -o $(BUILD)/test_sym_pid
 	$(BUILD)/test_sym_pid
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_retain
-	$(BUILD)/test_pm_retain
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps_parse.c src/common/maps.c -o $(BUILD)/test_maps_parse
 	$(BUILD)/test_maps_parse
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_events.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_events
-	$(BUILD)/test_pm_events
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
 	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

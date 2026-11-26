@@ -21,6 +21,8 @@
 long long now_ms(void);                                   // sym_procmaps.c
 int  pread_all(int fd, void *buf, size_t n, off_t off);   // sym_elf.c
 int  open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend); // sym_elf.c
+int  elf_exec_load_base(int fd, uint64_t elf_off, uint64_t seg_file_off,
+                        uint64_t seg_start, uint64_t *load_base); // sym_elf.c
 const char *basename_of(const char *p);                   // sym_elf.c
 void display_name(const char *path, char *buf, size_t n); // sym_elf.c
 
@@ -47,6 +49,8 @@ struct anubee_map_line *find_mapping(struct procmaps *pm, uint64_t addr);
 struct anubee_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr);
 void module_base(struct procmaps *pm, struct anubee_map_line *hit,
                  uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end);
+void module_base_at(struct procmaps *pm, struct anubee_map_line *hit, uint64_t seq,
+                    uint64_t *load_base, uint64_t *elf_off, uint64_t *base_end);
 // Force a reread of pid's cached maps on next resolve. Used by sym_flush_pid.
 void pm_reset_pid(int pid);
 // Eviction hook: defined in symbolize.c, called by pm_get on LRU eviction.

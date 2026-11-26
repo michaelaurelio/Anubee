@@ -228,3 +228,21 @@ const char *apk_so_at(const char *apk_path, uint64_t file_off)
 			return c->entries[i].name;
 	return NULL;
 }
+
+int apk_so_member_at(const char *apk_path, uint64_t file_off, uint64_t *data_start)
+{
+	if (!path_is_apk(apk_path))
+		return 0;
+	struct apk_cache *c = apk_get(apk_path);
+	if (!c)
+		return 0;
+	for (int i = 0; i < c->count; i++) {
+		if (file_off >= c->entries[i].data_start &&
+		    file_off <  c->entries[i].data_start + c->entries[i].size) {
+			if (data_start)
+				*data_start = c->entries[i].data_start;
+			return 1;
+		}
+	}
+	return 0;
+}

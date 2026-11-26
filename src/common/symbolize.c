@@ -311,7 +311,7 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 		snprintf(base, sizeof(base), "%.125s -> %.125s", apk, inner_so);
 	}
 
-	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, load_base, base_end);
+	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, hit->start, hit->end);
 	uint64_t delta = 0;
 	const char *name = sym_lookup(ds, vaddr, &delta);
 	if (name) {

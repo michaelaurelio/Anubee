@@ -19,6 +19,9 @@ int anubee_parse_maps_line(const char *line, struct anubee_map_line *out)
 	out->id = 0;
 	out->add_seq = 0;
 	out->del_seq = 0;
+	out->xbase = 0;
+	out->xelf = 0;
+	out->xstate = 0;
 	int got = sscanf(line,
 	                 "%" SCNx64 "-%" SCNx64 " %7s %" SCNx64 " %x:%x %" SCNu64 " %255[^\n]",
 	                 &out->start, &out->end, perms, &out->off,

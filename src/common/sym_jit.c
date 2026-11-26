@@ -217,9 +217,10 @@ static const char *jit_lookup(struct jit_map *jm, uint64_t addr, uint64_t *delta
 // (any symbol type — used for the data object __jit_debug_descriptor, which the
 // code-only dynsym cache filters out). Returns 0 if not found.
 static uint64_t elf_dynsym_value(const char *path, uint64_t elf_off, int pid,
-				 uint64_t vstart, uint64_t vend, const char *name)
+				 uint64_t vstart, uint64_t vend,
+				 uint64_t inode, uint32_t dev, const char *name)
 {
-	int fd = open_module_file(path, pid, vstart, vend);
+	int fd = open_module_file(path, pid, vstart, vend, inode, dev);
 	if (fd < 0)
 		return 0;
 
@@ -319,7 +320,9 @@ static void art_locate(struct art_ctx *ac, struct procmaps *pm)
 		uint64_t load_base, elf_off, base_end;
 		module_base(pm, &pm->m[i], &load_base, &elf_off, &base_end);
 		uint64_t val = elf_dynsym_value(pm->m[i].path, elf_off, ac->pid,
-						load_base, base_end, "__jit_debug_descriptor");
+						load_base, base_end,
+						pm->m[i].inode, pm->m[i].dev,
+						"__jit_debug_descriptor");
 		ac->located = val ? 1 : -1;
 		ac->desc_va = val ? val + load_base : 0;
 		return;

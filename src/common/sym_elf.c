@@ -4,6 +4,7 @@
 // See symbolize_internal.h.
 #include <sys/types.h>
 #include "symbolize_internal.h"
+#include "common/sym_fdhold.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,8 +56,10 @@ int pread_all(int fd, void *buf, size_t n, off_t off)
 // Open the backing file. For a normal library this is just the path. For a
 // library the target deleted from disk after mapping (a common anti-analysis
 // trick — the path shows as ".../lib.so (deleted)"), the on-disk open fails, so
-// we reach the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
-int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
+// we fall back to the fd held by the map event (kept across process exit) and
+// then to the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
+int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend,
+		     uint64_t inode, uint32_t dev)
 {
 	char real[MAX_PATH_LEN];
 	snprintf(real, sizeof(real), "%s", path);
@@ -67,6 +70,12 @@ int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
 	int fd = open(real, O_RDONLY | O_CLOEXEC);
 	if (fd >= 0)
 		return fd;
+
+	if (inode != 0) {
+		fd = fdhold_dup(inode, dev);
+		if (fd >= 0)
+			return fd;
+	}
 
 	if (pid > 0) {
 		char mf[96];
@@ -310,13 +319,14 @@ void dynsym_finalize(struct dynsym *ds)
 // Build the module's symbol set from every source the ELF at `elf_off` offers:
 // .dynsym, .symtab, and the .gnu_debugdata mini-debug-info. All feed one sorted,
 // value-deduped array used by sym_lookup.
-static void parse_symbols(struct dynsym *ds, int pid, uint64_t vstart, uint64_t vend)
+static void parse_symbols(struct dynsym *ds, int pid, uint64_t vstart, uint64_t vend,
+			  uint64_t inode, uint32_t dev)
 {
 	ds->ok = 0;
 	if (ds->path[0] == '\0' || ds->path[0] == '[')
 		return;
 
-	int fd = open_module_file(ds->path, pid, vstart, vend);
+	int fd = open_module_file(ds->path, pid, vstart, vend, inode, dev);
 	if (fd < 0)
 		return;
 
@@ -452,7 +462,8 @@ static void elfidx_put(struct elfidx_ent **tab, size_t *cap, size_t *used,
 }
 
 struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
-				 int pid, uint64_t vstart, uint64_t vend)
+				 int pid, uint64_t vstart, uint64_t vend,
+				 uint64_t inode, uint32_t dev)
 {
 	ssize_t hit = elfidx_get(g_ds_idx, g_ds_idx_cap, path, elf_off);
 	if (hit >= 0 && !strcmp(g_ds[hit].path, path))
@@ -467,7 +478,7 @@ struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
 	memset(ds, 0, sizeof(*ds));
 	snprintf(ds->path, sizeof(ds->path), "%s", path);
 	ds->elf_off = elf_off;
-	parse_symbols(ds, pid, vstart, vend);
+	parse_symbols(ds, pid, vstart, vend, inode, dev);
 	g_nds++;
 	elfidx_put(&g_ds_idx, &g_ds_idx_cap, &g_ds_idx_used, path, elf_off, idx);
 	return ds;
@@ -594,7 +605,7 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
  * Mirrors dynsym_get: grow/append, ok=0 on failure so future calls short-circuit. */
 struct cfi_section *
 cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
-	int pid, uint64_t vstart, uint64_t vend)
+	int pid, uint64_t vstart, uint64_t vend, uint64_t inode, uint32_t dev)
 {
 	/* 1. Cache hit by (elf_off, path) — O(1)-amortized via the index hash. */
 	ssize_t hit = elfidx_get(g_cfi_idx, g_cfi_idx_cap, path, elf_off);
@@ -620,7 +631,7 @@ cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 	if (path[0] == '\0' || path[0] == '[')
 		return NULL;
 
-	int fd = open_module_file(path, pid, vstart, vend);
+	int fd = open_module_file(path, pid, vstart, vend, inode, dev);
 	if (fd < 0)
 		return NULL;
 

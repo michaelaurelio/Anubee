@@ -20,7 +20,8 @@
 // ---- shared helper spine (defined in sym_procmaps.c / sym_elf.c) ----------
 long long now_ms(void);                                   // sym_procmaps.c
 int  pread_all(int fd, void *buf, size_t n, off_t off);   // sym_elf.c
-int  open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend); // sym_elf.c
+int  open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend,
+                      uint64_t inode, uint32_t dev);       // sym_elf.c
 int  elf_exec_load_base(int fd, uint64_t elf_off, uint64_t seg_file_off,
                         uint64_t seg_start, uint64_t *load_base); // sym_elf.c
 const char *basename_of(const char *p);                   // sym_elf.c
@@ -92,7 +93,8 @@ void ingest_fd_section(struct dynsym *ds, int fd, uint64_t elf_off,
                        const Elf64_Shdr *symsec, const Elf64_Shdr *strsec);
 void dynsym_finalize(struct dynsym *ds);
 struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
-                          int pid, uint64_t vstart, uint64_t vend);
+                          int pid, uint64_t vstart, uint64_t vend,
+                          uint64_t inode, uint32_t dev);
 const char *sym_lookup(struct dynsym *ds, uint64_t vaddr, uint64_t *delta);
 // Bounds-check an ELF section-header table (e_shnum entries of e_shentsize
 // bytes starting at e_shoff) against a buffer of length `len`. Overflow-safe:
@@ -104,7 +106,8 @@ int elf_shtab_in_bounds(uint64_t e_shoff, uint32_t e_shnum, uint32_t e_shentsize
 
 // ---- per-module CFI cache (sym_elf.c) -------------------------------------
 struct cfi_section *cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
-                            int pid, uint64_t vstart, uint64_t vend);
+                            int pid, uint64_t vstart, uint64_t vend,
+                            uint64_t inode, uint32_t dev);
 
 // ---- resolver hooks (each subsystem file) ---------------------------------
 int  jit_resolve(int pid, uint64_t addr, char *out, size_t outsz);   // sym_jit.c

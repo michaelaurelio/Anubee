@@ -427,7 +427,8 @@ static int resolve_line(struct procmaps *pm, struct anubee_map_line *hit, uint64
 		snprintf(base, sizeof(base), "%.125s -> %.125s", apk, inner_so);
 	}
 
-	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, hit->start, hit->end);
+	struct dynsym *ds = dynsym_get(hit->path, elf_off, pid, hit->start, hit->end,
+				       hit->inode, hit->dev);
 	uint64_t delta = 0;
 	const char *name = sym_lookup(ds, vaddr, &delta);
 	if (name) {
@@ -573,7 +574,8 @@ static int unwind_walk(int pid, const struct anubee_stack_snapshot *snap,
 		/* IMPORTANT: cfi_get returns a pointer into a realloc'able cache; use the
 		 * section (cfi_step) before the next iteration's cfi_get. Never hold it
 		 * across calls. */
-		struct cfi_section *sec = cfi_get(hit->path, elf_off, load_base, pid, hit->start, hit->end);
+		struct cfi_section *sec = cfi_get(hit->path, elf_off, load_base, pid,
+						  hit->start, hit->end, hit->inode, hit->dev);
 		if (!sec) {
 			if (out_diags) {
 				struct cfi_step_diag *d = &out_diags[n - 1];

@@ -819,7 +819,8 @@ void module_base_at(struct procmaps *pm, struct anubee_map_line *hit, uint64_t s
 	if (hit->xstate == -1)
 		return;
 
-	int fd = open_module_file(hit->path, pm->pid, hit->start, hit->end);
+	int fd = open_module_file(hit->path, pm->pid, hit->start, hit->end,
+				  hit->inode, hit->dev);
 	if (fd >= 0) {
 		uint64_t lb;
 

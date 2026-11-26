@@ -495,6 +495,8 @@ test:
 	$(BUILD)/test_sym_pid
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_retain
 	$(BUILD)/test_pm_retain
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps_parse.c src/common/maps.c -o $(BUILD)/test_maps_parse
+	$(BUILD)/test_maps_parse
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
 	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

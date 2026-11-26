@@ -15,6 +15,7 @@
 
 #define MAX_PATH_LEN 256
 #define REFRESH_MS   250
+#define SYM_SEQ_LIVE UINT64_MAX   // del_seq: still live; as a lookup argument: current state
 
 // ---- shared helper spine (defined in sym_procmaps.c / sym_elf.c) ----------
 long long now_ms(void);                                   // sym_procmaps.c
@@ -32,6 +33,11 @@ struct procmaps {
 	long long last_used_ms;
 	int gone;
 	int stale;
+	int engine;          // 0 = legacy live-only cache; >0 = event-sourced model of that engine
+	int seeded;          // model holds a seed (from /proc or a parent copy)
+	int dirty;           // events may have been lost; next miss on a live pid rereads
+	uint64_t gen;        // bumped when the pid is known to have exited (pid reuse guard)
+	long long exit_ms;   // when the pid was seen to exit, 0 = not known to have exited
 };
 struct procmaps *pm_get(int pid);
 void read_proc_maps(struct procmaps *pm);

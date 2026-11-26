@@ -38,6 +38,8 @@ struct procmaps {
 	int dirty;           // events may have been lost; next miss on a live pid rereads
 	uint64_t gen;        // bumped when the pid is known to have exited (pid reuse guard)
 	long long exit_ms;   // when the pid was seen to exit, 0 = not known to have exited
+	struct anubee_map_line *r;   // retired lines (del_seq != SYM_SEQ_LIVE), unsorted
+	size_t rn, rcap;
 };
 struct procmaps *pm_get(int pid);
 void read_proc_maps(struct procmaps *pm);
@@ -49,6 +51,27 @@ void module_base(struct procmaps *pm, struct anubee_map_line *hit,
 void pm_reset_pid(int pid);
 // Eviction hook: defined in symbolize.c, called by pm_get on LRU eviction.
 void pm_evict_pid(int pid);
+
+// ---- event-sourced maps models (sym_procmaps.c) ---------------------------
+struct procmaps *pm_find_e(int engine, int pid);     // find (engine, pid), no /proc read
+struct procmaps *pm_alloc_e(int engine, int pid);    // find or allocate a slot, no /proc read
+struct procmaps *pm_get_e(int engine, int pid);      // find, else allocate and seed from /proc
+struct anubee_map_line *find_mapping_at(struct procmaps *pm, uint64_t addr, uint64_t seq);
+struct anubee_map_line *find_mapping_refresh_at(struct procmaps *pm, uint64_t addr, uint64_t seq);
+void pm_apply_map(int engine, int pid, uint64_t seq, uint64_t start, uint64_t end,
+                  uint64_t pgoff, uint64_t inode, uint32_t dev, const char *path);
+void pm_apply_unmap(int engine, int pid, uint64_t seq, uint64_t start, uint64_t end);
+void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq);
+void pm_mark_dirty_all(int engine);                  // events may have been lost
+void pm_compact(int engine, uint64_t oldest_open_seq); // drop retired lines no event needs
+void pm_note_exit(int engine, int pid);              // remember when the pid exited
+
+struct pm_stats {
+	unsigned long long seeds, seed_fail, parent_seeds, merges, revives;
+	unsigned long long evictions, maps, unmaps;
+	size_t models, lines, retired;
+};
+void pm_stats_get(struct pm_stats *out);             // counts are computed over all slots
 
 // ---- ELF symbol tables (sym_elf.c) — reused by sym_vdso.c -----------------
 struct sym { uint64_t value, size; uint32_t name_off; };

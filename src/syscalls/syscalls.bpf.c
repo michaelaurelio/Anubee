@@ -474,3 +474,94 @@ int BPF_KRETPROBE(on_sys_exit, long ret)
 #define LIBTRACE_TYPE_UNMAP SYSC_EV_UNMAP
 #define LIBTRACE_ON_DROP()  bump_dropped()
 #include "common/lib_trace.bpf.h"
+
+// ---- process events (--proc-track, evaluation only) ----------------------
+
+// Only a new process, not a new thread: the BTF tracepoint exposes both tasks.
+SEC("tp_btf/sched_process_fork")
+int BPF_PROG(on_sc_fork, struct task_struct *parent, struct task_struct *child)
+{
+	(void)parent;
+	if (!uid_matches())
+		return 0;
+
+	int cpid = BPF_CORE_READ(child, pid);
+	int ctgid = BPF_CORE_READ(child, tgid);
+	if (cpid != ctgid)
+		return 0;
+
+	__u64 id = bpf_get_current_pid_tgid();
+	struct syscalls_proc_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		bump_dropped();
+		return 0;
+	}
+
+	e->h.type = SYSC_EV_PROC;
+	e->h.pid  = (__u32)(id >> 32);
+	e->h.tid  = (__u32)id;
+	e->h._pad = 0;
+	e->kind   = 1;
+	e->other  = (__u32)ctgid;
+	e->ktime  = bpf_ktime_get_ns();
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tp/sched/sched_process_exec")
+int on_sc_exec(struct trace_event_raw_sched_process_exec *ctx)
+{
+	(void)ctx;
+	if (!uid_matches())
+		return 0;
+
+	__u64 id = bpf_get_current_pid_tgid();
+	struct syscalls_proc_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		bump_dropped();
+		return 0;
+	}
+
+	e->h.type = SYSC_EV_PROC;
+	e->h.pid  = (__u32)(id >> 32);
+	e->h.tid  = (__u32)id;
+	e->h._pad = 0;
+	e->kind   = 2;
+	e->other  = 0;
+	e->ktime  = bpf_ktime_get_ns();
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tp/sched/sched_process_exit")
+int on_sc_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+	(void)ctx;
+	__u64 id = bpf_get_current_pid_tgid();
+	__u32 pid = (__u32)id;
+	__u32 tgid = (__u32)(id >> 32);
+
+	if (pid != tgid)
+		return 0;
+	if (!uid_matches())
+		return 0;
+
+	struct syscalls_proc_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		bump_dropped();
+		return 0;
+	}
+
+	e->h.type = SYSC_EV_PROC;
+	e->h.pid  = tgid;
+	e->h.tid  = pid;
+	e->h._pad = 0;
+	e->kind   = 3;
+	e->other  = 0;
+	e->ktime  = bpf_ktime_get_ns();
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}

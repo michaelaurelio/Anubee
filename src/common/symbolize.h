@@ -80,4 +80,17 @@ void sym_maps_compact(int engine, uint64_t oldest_open_seq);
 /* One teardown line with the maps-model counters. */
 void sym_maps_report(FILE *f, const char *tag);
 
+/* ---- --proc-track (evaluation) ----------------------------------------- */
+
+/* Enable fork/exec/exit tracking for an engine (also enables its shadow model). */
+void sym_proc_track_enable(int engine);
+
+/* Feed a process event into engine's model. */
+void sym_proc_fork(int engine, int parent, int child, uint64_t seq);
+void sym_proc_exec(int engine, int pid, uint64_t seq);
+void sym_proc_exit(int engine, int pid, uint64_t seq);
+
+/* One teardown line with the proc-track counters. */
+void sym_proc_track_report(FILE *f);
+
 #endif /* SYSCALLS_SYMBOLIZE_H */

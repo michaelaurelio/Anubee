@@ -239,6 +239,20 @@ int sym_snapshot_pid(int pid, unsigned int aux, int *fb)
 static unsigned int g_engine_next = 1;
 static unsigned long long g_exec_seeds;
 
+// --proc-track (evaluation): fork/exec/exit stream plus a shadow model per
+// fork-seeded pid to compare first-sight resolution.
+#define PT_ENGINE_MAX 4096
+static unsigned char g_pt_enabled[PT_ENGINE_MAX];
+static struct {
+	unsigned long long forks, execs, exits, pid_reuse;
+	unsigned long long first_sight_diff, diff_frames;
+} g_pt;
+
+static int pt_on(int engine)
+{
+	return engine > 0 && engine < PT_ENGINE_MAX && g_pt_enabled[engine];
+}
+
 int sym_engine_new(void)
 {
 	pthread_mutex_lock(&g_lock);
@@ -283,6 +297,21 @@ static struct procmaps *engine_model(int engine, int pid, int ppid, uint64_t seq
 	int usable = ppid > 1 && ppid != pid;
 	struct procmaps *pm = pm_find_e(engine, pid);
 
+	// A pid that exited and was reused without a fork event we saw: drop the
+	// stale model and continue as if it never existed. Only an event recorded
+	// after the exit counts; an older entry named late still belongs to the
+	// process that exited.
+	if (pm && pt_on(engine) && pm->exited && seq != SYM_SEQ_LIVE &&
+	    seq > pm->exit_seq) {
+		int sh = engine + 1000;
+
+		g_pt.pid_reuse++;
+		pm_drop_e(engine, pid);
+		if (sh < PT_ENGINE_MAX && pm_find_e(sh, pid))
+			pm_drop_e(sh, pid);
+		pm = NULL;
+	}
+
 	if (pm) {
 		if (usable && pm->n == 0 && pm->gone && !pm->seeded) {
 			pm_seed_from_parent(engine, pid, ppid, seq);
@@ -306,6 +335,103 @@ static struct procmaps *engine_model(int engine, int pid, int ppid, uint64_t seq
 		pm = pm_find_e(engine, pid);
 	}
 	return pm;
+}
+
+// Build the fork-seeded pid's shadow model at its first resolve, the way the
+// model would have been built without fork tracking. Parent lines come from
+// the main engine so both starts see the same parent state.
+static void shadow_first_sight(int engine, int pid, int ppid, uint64_t seq, int from_map)
+{
+	int sh = engine + 1000;
+	int usable = ppid > 1 && ppid != pid;
+	struct procmaps *spm;
+
+	if (sh >= PT_ENGINE_MAX || !pt_on(sh) || pm_find_e(sh, pid))
+		return;
+
+	if (usable && !from_map && exe_differs(pid, ppid)) {
+		pm_seed_copy(sh, pid, engine, ppid, seq);
+		spm = pm_find_e(sh, pid);
+		if (spm && spm->seeded)
+			return;
+	}
+
+	spm = pm_get_e(sh, pid);
+	if (spm && !spm->seeded && usable)
+		pm_seed_copy(sh, pid, engine, ppid, seq);
+}
+
+void sym_proc_track_enable(int engine)
+{
+	pthread_mutex_lock(&g_lock);
+	if (engine > 0 && engine < PT_ENGINE_MAX) {
+		g_pt_enabled[engine] = 1;
+		if (engine + 1000 < PT_ENGINE_MAX)
+			g_pt_enabled[engine + 1000] = 1;
+	}
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_proc_fork(int engine, int parent, int child, uint64_t seq)
+{
+	int sh = engine + 1000;
+	struct procmaps *pm;
+
+	pthread_mutex_lock(&g_lock);
+	g_pt.forks++;
+	pm = pm_find_e(engine, child);
+	if (pm) {
+		g_pt.pid_reuse++;
+		pm_drop_e(engine, child);
+	}
+	if (sh < PT_ENGINE_MAX && pm_find_e(sh, child))
+		pm_drop_e(sh, child);
+
+	pm_seed_from_parent(engine, child, parent, seq);
+	pm = pm_find_e(engine, child);
+	if (pm)
+		pm->forked = 1;
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_proc_exec(int engine, int pid, uint64_t seq)
+{
+	int sh = engine + 1000;
+
+	pthread_mutex_lock(&g_lock);
+	g_pt.execs++;
+	pm_exec_reset(engine, pid, seq);
+	if (sh < PT_ENGINE_MAX && pm_find_e(sh, pid))
+		pm_exec_reset(sh, pid, seq);
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_proc_exit(int engine, int pid, uint64_t seq)
+{
+	struct procmaps *pm;
+
+	pthread_mutex_lock(&g_lock);
+	g_pt.exits++;
+	pm_note_exit(engine, pid);
+	pm = pm_find_e(engine, pid);
+	if (pm) {
+		pm->exited = 1;
+		pm->exit_seq = seq;
+		pm->gen++;
+	}
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_proc_track_report(FILE *f)
+{
+	if (!f)
+		return;
+	pthread_mutex_lock(&g_lock);
+	fprintf(f, "[proc-track] forks %llu execs %llu exits %llu pid-reuse %llu "
+		"first-sight-diff %llu frames-compared %llu\n",
+		g_pt.forks, g_pt.execs, g_pt.exits, g_pt.pid_reuse,
+		g_pt.first_sight_diff, g_pt.diff_frames);
+	pthread_mutex_unlock(&g_lock);
 }
 
 // A map event may carry only a basename; recover the full path from a line
@@ -344,7 +470,17 @@ void sym_maps_map(int engine, int pid, int ppid, uint64_t seq, uint64_t start, u
 			path = full_path;
 		}
 	}
+	// --proc-track: a map event is a first sight too; start the comparison
+	// model here, the way the model is started without fork tracking.
+	if (pm && pt_on(engine) && pm->forked)
+		shadow_first_sight(engine, pid, ppid, seq, 1);
 	pm_apply_map(engine, pid, seq, start, end, pgoff, inode, dev, path);
+	if (pt_on(engine)) {
+		int sh = engine + 1000;
+
+		if (sh < PT_ENGINE_MAX && pm_find_e(sh, pid))
+			pm_apply_map(sh, pid, seq, start, end, pgoff, inode, dev, path);
+	}
 	pthread_mutex_unlock(&g_lock);
 }
 
@@ -355,6 +491,12 @@ void sym_maps_unmap(int engine, int pid, uint64_t seq, uint64_t start, uint64_t 
 	// already reflects the unmap.
 	if (pm_find_e(engine, pid))
 		pm_apply_unmap(engine, pid, seq, start, end);
+	if (pt_on(engine)) {
+		int sh = engine + 1000;
+
+		if (sh < PT_ENGINE_MAX && pm_find_e(sh, pid))
+			pm_apply_unmap(sh, pid, seq, start, end);
+	}
 	pthread_mutex_unlock(&g_lock);
 }
 
@@ -469,6 +611,26 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 	return resolve_line(pm, hit, SYM_SEQ_LIVE, pid, addr, out, outsz);
 }
 
+// Resolve one address against one model at seq, using the line-keyed cache.
+static void resolve_model_at(struct procmaps *pm, int pid, uint64_t seq,
+			     unsigned long long addr, char *out, size_t outsz)
+{
+	struct anubee_map_line *hit = find_mapping_refresh_at(pm, (uint64_t)addr, seq);
+
+	if (!hit) {
+		if (pm->gone)
+			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
+		else
+			snprintf(out, outsz, "0x%llx [unmapped]", addr);
+		return;
+	}
+
+	uint64_t key = (1ULL << 63) | hit->id;
+	if (!sc_get(key, (uint64_t)addr, out, outsz) &&
+	    resolve_line(pm, hit, seq, pid, addr, out, outsz))
+		sc_put(key, (uint64_t)addr, out);
+}
+
 void sym_resolve_at(int engine, int pid, int ppid, uint64_t seq, unsigned long long addr,
 		    char *out, size_t outsz)
 {
@@ -490,20 +652,29 @@ void sym_resolve_at(int engine, int pid, int ppid, uint64_t seq, unsigned long l
 	// An event's frames were recorded against the lines valid at its seq, so
 	// the event's own pid is the address space; the parent only seeded it.
 	int rpid = sym_first_pid_m(pid, sym_aux_make(ppid, 0), pm != NULL);
-	struct anubee_map_line *hit = find_mapping_refresh_at(pm, (uint64_t)addr, seq);
-	if (!hit) {
-		if (pm->gone)
-			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
-		else
-			snprintf(out, outsz, "0x%llx [unmapped]", addr);
-		pthread_mutex_unlock(&g_lock);
-		return;
-	}
+	resolve_model_at(pm, rpid, seq, addr, out, outsz);
 
-	uint64_t key = (1ULL << 63) | hit->id;
-	if (!sc_get(key, (uint64_t)addr, out, outsz) &&
-	    resolve_line(pm, hit, seq, rpid, addr, out, outsz))
-		sc_put(key, (uint64_t)addr, out);
+	if (pt_on(engine) && pm->forked) {
+		int sh = engine + 1000;
+		struct procmaps *spm;
+
+		shadow_first_sight(engine, pid, ppid, seq, 0);
+		spm = sh < PT_ENGINE_MAX ? pm_find_e(sh, pid) : NULL;
+		if (spm) {
+			char first[512];
+
+			resolve_model_at(spm, rpid, seq, addr, first, sizeof(first));
+			g_pt.diff_frames++;
+			if (strcmp(out, first) != 0) {
+				g_pt.first_sight_diff++;
+				if (g_pt.first_sight_diff <= 20)
+					fprintf(stderr,
+						"[proc-track] diff pid %d seq %llu addr 0x%llx "
+						"fork=\"%s\" first=\"%s\"\n",
+						pid, (unsigned long long)seq, addr, out, first);
+			}
+		}
+	}
 	pthread_mutex_unlock(&g_lock);
 }
 

@@ -410,7 +410,41 @@ void pm_apply_unmap(int engine, int pid, uint64_t seq, uint64_t start, uint64_t 
 	if (!pm)
 		return;
 	g_stats.unmaps++;
+	pm->last_unmap_seq = seq;
 	retire_range(pm, seq, start, end);
+}
+
+// --proc-track exec: the old image is gone. Unmap events retired the old
+// mappings before this seq; the new image's maps are also before it. Retire
+// every remaining live line except those mapped since the last unmap.
+void pm_exec_reset(int engine, int pid, uint64_t seq)
+{
+	struct procmaps *pm = pm_find_e(engine, pid);
+	size_t i, retired = 0;
+
+	if (!pm)
+		return;
+
+	for (i = 0; i < pm->n; i++) {
+		if (pm->m[i].add_seq >= seq)
+			continue;
+		if (pm->m[i].add_seq <= pm->last_unmap_seq)
+			retired++;
+	}
+	if (retired && ensure_lines(&pm->r, &pm->rcap, pm->rn + retired, 64))
+		return;
+
+	size_t w = 0;
+	for (i = 0; i < pm->n; i++) {
+		if (pm->m[i].add_seq >= seq || pm->m[i].add_seq > pm->last_unmap_seq) {
+			pm->m[w++] = pm->m[i];
+		} else {
+			pm->r[pm->rn] = pm->m[i];
+			pm->r[pm->rn].del_seq = seq;
+			pm->rn++;
+		}
+	}
+	pm->n = w;
 }
 
 static int cmp_line_start(const void *a, const void *b)
@@ -428,19 +462,19 @@ static int cmp_line_start(const void *a, const void *b)
 	return 0;
 }
 
-void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq)
+void pm_seed_copy(int dst_engine, int pid, int src_engine, int ppid, uint64_t seq)
 {
 	struct procmaps *parent, *child;
 	size_t cnt = 0, i;
 
 	if (ppid <= 1 || ppid == pid)
 		return;
-	parent = pm_get_e(engine, ppid);
+	parent = pm_get_e(src_engine, ppid);
 	if (!parent)
 		return;
 
 	g_pin = parent;
-	child = pm_alloc_e(engine, pid);
+	child = pm_alloc_e(dst_engine, pid);
 	g_pin = NULL;
 	if (!child || child == parent)
 		return;
@@ -483,6 +517,47 @@ void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq)
 	child->seeded = 1;
 	child->last_read_ms = now_ms();
 	g_stats.parent_seeds++;
+}
+
+void pm_seed_from_parent(int engine, int pid, int ppid, uint64_t seq)
+{
+	pm_seed_copy(engine, pid, engine, ppid, seq);
+}
+
+// Drop a model and free its slot. The slot pool stays compact: the last used
+// slot moves into the hole, and the mru/pin pointers are fixed up.
+void pm_drop_e(int engine, int pid)
+{
+	struct procmaps *pm = pm_find_e(engine, pid);
+	size_t hole, last;
+	int drop_pin;
+
+	if (!pm)
+		return;
+
+	hole = (size_t)(pm - g_pm);
+	last = g_npm - 1;
+	drop_pin = (g_pin == pm);
+
+	free(pm->m);
+	free(pm->r);
+
+	if (hole != last) {
+		g_pm[hole] = g_pm[last];
+		if (g_mru == last)
+			g_mru = hole;
+		if (g_pin == &g_pm[last])
+			g_pin = &g_pm[hole];
+	}
+	// The vacated slot is outside the pool now; clear it so a later allocation
+	// does not reuse (and free) the moved model's buffers.
+	memset(&g_pm[last], 0, sizeof(g_pm[last]));
+	if (drop_pin)
+		g_pin = NULL;
+	if (g_mru == hole)
+		g_mru = last;
+	g_npm = last;
+	pm_evict_pid(pid);
 }
 
 // ---- live rereads --------------------------------------------------------

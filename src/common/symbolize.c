@@ -53,7 +53,7 @@
 
 struct sc_ent {
 	uint64_t addr;
-	int pid;
+	uint64_t key;   // pid for the legacy path, line id for a maps model
 	int used;
 	char sym[SC_STR];
 };
@@ -61,9 +61,9 @@ struct sc_ent {
 static struct sc_ent *g_sc;
 static size_t g_sc_cap, g_sc_used;
 
-static uint64_t sc_hash(int pid, uint64_t addr)
+static uint64_t sc_hash(uint64_t key, uint64_t addr)
 {
-	uint64_t h = addr ^ ((uint64_t)(uint32_t)pid * 0x9e3779b97f4a7c15ULL);
+	uint64_t h = addr ^ (key * 0x9e3779b97f4a7c15ULL);
 	h *= 0xbf58476d1ce4e5b9ULL;
 	h ^= h >> 31;
 	return h;
@@ -84,16 +84,16 @@ void pm_evict_pid(int pid)
 	sc_clear();                 // ponytail: global clear; per-pid eviction too costly
 }
 
-static int sc_get(int pid, uint64_t addr, char *out, size_t outsz)
+static int sc_get(uint64_t key, uint64_t addr, char *out, size_t outsz)
 {
 	if (!g_sc)
 		return 0;
-	size_t mask = g_sc_cap - 1, i = sc_hash(pid, addr) & mask;
+	size_t mask = g_sc_cap - 1, i = sc_hash(key, addr) & mask;
 	for (size_t probe = 0; probe < g_sc_cap; probe++) {
 		struct sc_ent *e = &g_sc[i];
 		if (!e->used)
 			return 0;
-		if (e->addr == addr && e->pid == pid) {
+		if (e->addr == addr && e->key == key) {
 			snprintf(out, outsz, "%s", e->sym);
 			return 1;
 		}
@@ -102,7 +102,7 @@ static int sc_get(int pid, uint64_t addr, char *out, size_t outsz)
 	return 0;
 }
 
-static void sc_put(int pid, uint64_t addr, const char *sym)
+static void sc_put(uint64_t key, uint64_t addr, const char *sym)
 {
 	if (!g_sc) {
 		g_sc_cap = 1u << 16;
@@ -121,7 +121,7 @@ static void sc_put(int pid, uint64_t addr, const char *sym)
 				for (size_t k = 0; k < g_sc_cap; k++) {
 					if (!g_sc[k].used)
 						continue;
-					size_t j = sc_hash(g_sc[k].pid, g_sc[k].addr) & nmask;
+					size_t j = sc_hash(g_sc[k].key, g_sc[k].addr) & nmask;
 					while (ng[j].used)
 						j = (j + 1) & nmask;
 					ng[j] = g_sc[k];
@@ -132,13 +132,13 @@ static void sc_put(int pid, uint64_t addr, const char *sym)
 			}
 		}
 	}
-	size_t mask = g_sc_cap - 1, i = sc_hash(pid, addr) & mask;
-	while (g_sc[i].used && !(g_sc[i].addr == addr && g_sc[i].pid == pid))
+	size_t mask = g_sc_cap - 1, i = sc_hash(key, addr) & mask;
+	while (g_sc[i].used && !(g_sc[i].addr == addr && g_sc[i].key == key))
 		i = (i + 1) & mask;
 	if (!g_sc[i].used)
 		g_sc_used++;
 	g_sc[i].used = 1;
-	g_sc[i].pid = pid;
+	g_sc[i].key = key;
 	g_sc[i].addr = addr;
 	snprintf(g_sc[i].sym, sizeof(g_sc[i].sym), "%s", sym);
 }
@@ -151,15 +151,21 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz,
 				int *unres);
 
+static uint64_t pid_key(int pid)
+{
+	return (uint64_t)(uint32_t)pid;
+}
+
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 {
 	pthread_mutex_lock(&g_lock);
-	if (sc_get(pid, (uint64_t)addr, out, outsz)) {
+	uint64_t key = pid_key(pid);
+	if (sc_get(key, (uint64_t)addr, out, outsz)) {
 		pthread_mutex_unlock(&g_lock);
 		return;
 	}
 	if (sym_resolve_uncached(pid, addr, out, outsz, NULL))
-		sc_put(pid, (uint64_t)addr, out);
+		sc_put(key, (uint64_t)addr, out);
 	pthread_mutex_unlock(&g_lock);
 }
 
@@ -167,32 +173,38 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 // maps are gone without a retained snapshot, try `fb` (the parent), whose
 // address space the frames of a forked child may belong to. The text of the
 // own pid stays in place when the fallback does not resolve.
-void sym_resolve_fb(int pid, int fb, unsigned long long addr, char *out, size_t outsz)
+static void resolve_fb_locked(int pid, int fb, unsigned long long addr,
+			      char *out, size_t outsz)
 {
-	pthread_mutex_lock(&g_lock);
-	if (sc_get(pid, (uint64_t)addr, out, outsz)) {
-		pthread_mutex_unlock(&g_lock);
+	uint64_t key = pid_key(pid);
+	if (sc_get(key, (uint64_t)addr, out, outsz))
 		return;
-	}
 	int unres = 0;
 	if (sym_resolve_uncached(pid, addr, out, outsz, &unres))
-		sc_put(pid, (uint64_t)addr, out);
+		sc_put(key, (uint64_t)addr, out);
 	if (unres && fb > 1 && fb != pid) {
 		struct procmaps *pm = pm_get(pid);
 		if (pm && sym_fallback_wanted(pm->gone, pm->n)) {
 			char tmp[512];
-			if (sc_get(fb, (uint64_t)addr, tmp, sizeof(tmp))) {
+			uint64_t fbkey = pid_key(fb);
+			if (sc_get(fbkey, (uint64_t)addr, tmp, sizeof(tmp))) {
 				snprintf(out, outsz, "%s", tmp);
 			} else {
 				int u2 = 0;
 				int stable = sym_resolve_uncached(fb, addr, tmp, sizeof(tmp), &u2);
 				if (stable)
-					sc_put(fb, (uint64_t)addr, tmp);
+					sc_put(fbkey, (uint64_t)addr, tmp);
 				if (!u2)
 					snprintf(out, outsz, "%s", tmp);
 			}
 		}
 	}
+}
+
+void sym_resolve_fb(int pid, int fb, unsigned long long addr, char *out, size_t outsz)
+{
+	pthread_mutex_lock(&g_lock);
+	resolve_fb_locked(pid, fb, addr, out, outsz);
 	pthread_mutex_unlock(&g_lock);
 }
 
@@ -222,33 +234,137 @@ int sym_snapshot_pid(int pid, unsigned int aux, int *fb)
 	return sym_snapshot_parent(aux) ? sym_aux_ppid(aux) : pid;
 }
 
-static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz,
-				int *unres)
+// ---- event-sourced maps (engines > 0) ------------------------------------
+
+static unsigned int g_engine_next = 1;
+static unsigned long long g_exec_seeds;
+
+int sym_engine_new(void)
 {
-	if (unres)
-		*unres = 0;
-	struct procmaps *pm = pm_get(pid);
-	if (!pm) {
-		snprintf(out, outsz, "0x%llx", addr);
-		if (unres)
-			*unres = 1;
+	pthread_mutex_lock(&g_lock);
+	int engine = (int)g_engine_next++;
+	pthread_mutex_unlock(&g_lock);
+	return engine;
+}
+
+// The parent tgid remembered for pid, or 0 when unusable.
+int sym_parent_pid(int pid, unsigned int aux)
+{
+	aux = sym_ppidc_resolve(&g_ppidc, pid, aux);
+	int ppid = sym_aux_ppid(aux);
+
+	return ppid > 1 && ppid != pid ? ppid : 0;
+}
+
+// Did pid exec since ppid forked it? Only a new pid with no model asks, so the
+// two /proc reads are not on the per-event path.
+static int exe_differs(int pid, int ppid)
+{
+	char p[64], exe[MAX_PATH_LEN], pexe[MAX_PATH_LEN];
+	ssize_t n, pn;
+
+	snprintf(p, sizeof(p), "/proc/%d/exe", pid);
+	n = readlink(p, exe, sizeof(exe) - 1);
+	snprintf(p, sizeof(p), "/proc/%d/exe", ppid);
+	pn = readlink(p, pexe, sizeof(pexe) - 1);
+	if (n < 0 || pn < 0)
 		return 0;
+	exe[n] = '\0';
+	pexe[pn] = '\0';
+	return strcmp(exe, pexe) != 0;
+}
+
+// Find or seed the maps model of (engine, pid). A pid with no model is seeded
+// from the parent first when the child has exec'd since the fork; otherwise it
+// is seeded from /proc and then copied from the parent when still unseeded.
+static struct procmaps *engine_model(int engine, int pid, int ppid, uint64_t seq,
+				     int from_map)
+{
+	int usable = ppid > 1 && ppid != pid;
+	struct procmaps *pm = pm_find_e(engine, pid);
+
+	if (pm) {
+		if (usable && pm->n == 0 && pm->gone && !pm->seeded) {
+			pm_seed_from_parent(engine, pid, ppid, seq);
+			pm = pm_find_e(engine, pid);
+		}
+		return pm;
 	}
 
-	struct anubee_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
-	if (!hit) {
-		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
-		if (unres)
-			*unres = 1;
-		if (pm->gone)
-			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
-		else
-			snprintf(out, outsz, "0x%llx [unmapped]", addr);
-		return 0;
+	if (usable && !from_map && exe_differs(pid, ppid)) {
+		pm_seed_from_parent(engine, pid, ppid, seq);
+		pm = pm_find_e(engine, pid);
+		if (pm && pm->seeded) {
+			g_exec_seeds++;
+			return pm;
+		}
 	}
 
+	pm = pm_get_e(engine, pid);
+	if (pm && !pm->seeded && usable) {
+		pm_seed_from_parent(engine, pid, ppid, seq);
+		pm = pm_find_e(engine, pid);
+	}
+	return pm;
+}
+
+// A map event may carry only a basename; recover the full path from a line
+// with the same inode and device.
+static const char *inode_path(struct procmaps *pm, uint64_t inode, uint32_t dev)
+{
+	size_t i;
+
+	if (!pm || inode == 0)
+		return NULL;
+	for (i = 0; i < pm->n; i++)
+		if (pm->m[i].inode == inode && pm->m[i].dev == dev &&
+		    pm->m[i].path[0] == '/')
+			return pm->m[i].path;
+	for (i = 0; i < pm->rn; i++)
+		if (pm->r[i].inode == inode && pm->r[i].dev == dev &&
+		    pm->r[i].path[0] == '/')
+			return pm->r[i].path;
+	return NULL;
+}
+
+void sym_maps_map(int engine, int pid, int ppid, uint64_t seq, uint64_t start, uint64_t end,
+		  uint64_t pgoff, uint64_t inode, uint32_t dev, const char *path)
+{
+	char full_path[MAX_PATH_LEN];
+
+	pthread_mutex_lock(&g_lock);
+	sym_ppidc_resolve(&g_ppidc, pid, sym_aux_make(ppid, 0));
+	struct procmaps *pm = engine_model(engine, pid, ppid, seq, 1);
+
+	if (pm && (!path || path[0] != '/')) {
+		const char *full = inode_path(pm, inode, dev);
+		if (full) {
+			// pm_apply_map may realloc the lines; keep a stable copy.
+			snprintf(full_path, sizeof(full_path), "%s", full);
+			path = full_path;
+		}
+	}
+	pm_apply_map(engine, pid, seq, start, end, pgoff, inode, dev, path);
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_maps_unmap(int engine, int pid, uint64_t seq, uint64_t start, uint64_t end)
+{
+	pthread_mutex_lock(&g_lock);
+	// A pid with no model has nothing to retire; a later seed from /proc
+	// already reflects the unmap.
+	if (pm_find_e(engine, pid))
+		pm_apply_unmap(engine, pid, seq, start, end);
+	pthread_mutex_unlock(&g_lock);
+}
+
+// ---- resolution ----------------------------------------------------------
+
+static int resolve_line(struct procmaps *pm, struct anubee_map_line *hit, uint64_t seq,
+			int pid, unsigned long long addr, char *out, size_t outsz)
+{
 	uint64_t load_base, elf_off, base_end;
-	module_base(pm, hit, &load_base, &elf_off, &base_end);
+	module_base_at(pm, hit, seq, &load_base, &elf_off, &base_end);
 
 	// Anonymous memory with no name. If it's executable it's most often ART's JIT
 	// code cache (else a packer/obfuscator or RASP-allocated code region): try to
@@ -325,9 +441,77 @@ static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, siz
 	return 1;
 }
 
-int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
-			uint64_t *out_pcs, int max, uint64_t *out_sps,
-			struct cfi_step_diag *out_diags)
+static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz,
+				int *unres)
+{
+	if (unres)
+		*unres = 0;
+	struct procmaps *pm = pm_get(pid);
+	if (!pm) {
+		snprintf(out, outsz, "0x%llx", addr);
+		if (unres)
+			*unres = 1;
+		return 0;
+	}
+
+	struct anubee_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
+	if (!hit) {
+		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
+		if (unres)
+			*unres = 1;
+		if (pm->gone)
+			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
+		else
+			snprintf(out, outsz, "0x%llx [unmapped]", addr);
+		return 0;
+	}
+	return resolve_line(pm, hit, SYM_SEQ_LIVE, pid, addr, out, outsz);
+}
+
+void sym_resolve_at(int engine, int pid, int ppid, uint64_t seq, unsigned long long addr,
+		    char *out, size_t outsz)
+{
+	pthread_mutex_lock(&g_lock);
+	if (engine <= 0) {
+		resolve_fb_locked(pid, ppid, addr, out, outsz);
+		pthread_mutex_unlock(&g_lock);
+		return;
+	}
+
+	struct procmaps *pm = engine_model(engine, pid, ppid, seq, 0);
+	if (!pm) {
+		// No slot: the legacy text path is still better than nothing.
+		resolve_fb_locked(pid, ppid, addr, out, outsz);
+		pthread_mutex_unlock(&g_lock);
+		return;
+	}
+
+	// An event's frames were recorded against the lines valid at its seq, so
+	// the event's own pid is the address space; the parent only seeded it.
+	int rpid = sym_first_pid_m(pid, sym_aux_make(ppid, 0), pm != NULL);
+	struct anubee_map_line *hit = find_mapping_refresh_at(pm, (uint64_t)addr, seq);
+	if (!hit) {
+		if (pm->gone)
+			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
+		else
+			snprintf(out, outsz, "0x%llx [unmapped]", addr);
+		pthread_mutex_unlock(&g_lock);
+		return;
+	}
+
+	uint64_t key = (1ULL << 63) | hit->id;
+	if (!sc_get(key, (uint64_t)addr, out, outsz) &&
+	    resolve_line(pm, hit, seq, rpid, addr, out, outsz))
+		sc_put(key, (uint64_t)addr, out);
+	pthread_mutex_unlock(&g_lock);
+}
+
+// One CFI walk. model != 0 uses the event-sourced line view at seq; the legacy
+// path keeps the live reread. The caller holds g_lock.
+static int unwind_walk(int pid, const struct anubee_stack_snapshot *snap,
+		       uint64_t *out_pcs, int max, uint64_t *out_sps,
+		       struct cfi_step_diag *out_diags,
+		       struct procmaps *pm, uint64_t seq, int model)
 {
 	struct anubee_unwind_regs r;
 	unwind_regs_from_snapshot(snap, &r);
@@ -343,22 +527,10 @@ int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
 	// time we see a pid is often mid-launch, so its cached maps can predate the
 	// libraries this stack runs through (libc/libandroid_runtime), and the
 	// REFRESH_MS throttle suppresses the corrective re-read during the launch
-	// burst. cfi_unwind_snapshot runs once per *distinct* stack (deduped), so a
-	// single throttle-ignoring re-read here is bounded and unblocks the walk
-	// without touching the throttled FP-backtrace path.
+	// burst. A walk runs once per *distinct* stack (deduped), so a single
+	// throttle-ignoring re-read here is bounded.
 	int forced_reread = 0;
 	int n = 0;
-
-	// AA1 fix (2026-07-07 audit): pm_get/read_proc_maps/cfi_get all realloc or
-	// LRU-evict process-global caches (sym_procmaps.c/sym_elf.c) that sym_resolve
-	// and sym_flush_pid already serialize on g_lock — this function didn't. `trace`
-	// runs syscalls_run + funcs_run concurrently and both call this, so the two
-	// threads raced on those caches (torn read / use-after-realloc / double-evict).
-	// Holding g_lock for the whole walk also lets pm_get(pid) run once instead of
-	// once per frame (AA5): with the lock held, g_pm's backing array can't move
-	// under this pointer for the rest of the call.
-	pthread_mutex_lock(&g_lock);
-	struct procmaps *pm = pm_get(pid);
 
 	for (int iter = 0; iter < max && iter < 256; iter++) {
 		if (out_sps) out_sps[n] = sp;   /* SP of the frame whose PC we record */
@@ -376,18 +548,28 @@ int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
 			break;
 		}
-		struct anubee_map_line *hit = find_mapping_refresh(pm, pc);
+		struct anubee_map_line *hit = model
+			? find_mapping_refresh_at(pm, pc, seq)
+			: find_mapping_refresh(pm, pc);
 		if (!hit && !forced_reread) {
 			forced_reread = 1;
-			read_proc_maps(pm);
-			hit = find_mapping(pm, pc);
+			if (model) {
+				// Merge the live maps once, never replace the model.
+				if (!pm->gone) {
+					pm->stale = 1;
+					hit = find_mapping_refresh_at(pm, pc, seq);
+				}
+			} else {
+				read_proc_maps(pm);
+				hit = find_mapping(pm, pc);
+			}
 		}
 		if (!hit) {
 			if (out_diags) out_diags[n - 1].stop_reason = CFI_SNAP_NO_MAPPING;
 			break;
 		}
 		uint64_t load_base, elf_off, base_end;
-		module_base(pm, hit, &load_base, &elf_off, &base_end);
+		module_base_at(pm, hit, seq, &load_base, &elf_off, &base_end);
 		/* IMPORTANT: cfi_get returns a pointer into a realloc'able cache; use the
 		 * section (cfi_step) before the next iteration's cfi_get. Never hold it
 		 * across calls. */
@@ -417,9 +599,76 @@ int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
 				  dp);
 		if (rc != 1) break;
 	}
+	return n;
+}
 
+int cfi_unwind_snapshot(int pid, const struct anubee_stack_snapshot *snap,
+			uint64_t *out_pcs, int max, uint64_t *out_sps,
+			struct cfi_step_diag *out_diags)
+{
+	// AA1 fix (2026-07-07 audit): pm_get/read_proc_maps/cfi_get all realloc or
+	// LRU-evict process-global caches (sym_procmaps.c/sym_elf.c) that sym_resolve
+	// and sym_flush_pid already serialize on g_lock — this function didn't. `trace`
+	// runs syscalls_run + funcs_run concurrently and both call this, so the two
+	// threads raced on those caches (torn read / use-after-realloc / double-evict).
+	// Holding g_lock for the whole walk also lets pm_get(pid) run once instead of
+	// once per frame (AA5): with the lock held, g_pm's backing array can't move
+	// under this pointer for the rest of the call.
+	pthread_mutex_lock(&g_lock);
+	struct procmaps *pm = pm_get(pid);
+	int n = unwind_walk(pid, snap, out_pcs, max, out_sps, out_diags,
+			    pm, SYM_SEQ_LIVE, 0);
 	pthread_mutex_unlock(&g_lock);
 	return n;
+}
+
+int cfi_unwind_snapshot_at(int engine, int pid, uint64_t seq,
+			   const struct anubee_stack_snapshot *snap,
+			   uint64_t *out_pcs, int max, uint64_t *out_sps,
+			   struct cfi_step_diag *out_diags)
+{
+	if (engine <= 0)
+		return cfi_unwind_snapshot(pid, snap, out_pcs, max, out_sps, out_diags);
+
+	pthread_mutex_lock(&g_lock);
+	int ppid = sym_parent_pid(pid, snap->h._pad);
+	struct procmaps *pm = engine_model(engine, pid, ppid, seq, 0);
+	int rpid = sym_first_pid_m(pid, snap->h._pad, pm != NULL);
+	int n = unwind_walk(rpid, snap, out_pcs, max, out_sps, out_diags,
+			    pm, seq, 1);
+	pthread_mutex_unlock(&g_lock);
+	return n;
+}
+
+void sym_maps_dirty(int engine)
+{
+	pthread_mutex_lock(&g_lock);
+	pm_mark_dirty_all(engine);
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_maps_compact(int engine, uint64_t oldest_open_seq)
+{
+	pthread_mutex_lock(&g_lock);
+	pm_compact(engine, oldest_open_seq);
+	pthread_mutex_unlock(&g_lock);
+}
+
+void sym_maps_report(FILE *f, const char *tag)
+{
+	struct pm_stats st;
+
+	if (!f)
+		return;
+	pthread_mutex_lock(&g_lock);
+	pm_stats_get(&st);
+	fprintf(f, "[maps] %s models=%zu lines=%zu retired=%zu seeds=%llu seed_fail=%llu "
+		"parent_seeds=%llu exec_seeds=%llu merges=%llu revives=%llu "
+		"evictions=%llu maps=%llu unmaps=%llu\n",
+		tag ? tag : "", st.models, st.lines, st.retired, st.seeds, st.seed_fail,
+		st.parent_seeds, g_exec_seeds, st.merges, st.revives, st.evictions,
+		st.maps, st.unmaps);
+	pthread_mutex_unlock(&g_lock);
 }
 
 void sym_flush_pid(int pid)

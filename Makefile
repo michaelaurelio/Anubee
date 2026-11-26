@@ -141,6 +141,8 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_bpf_objects anubee_object_writes_target anubee_quiet_config_ok \
                seg_vaddr_to_off \
                sym_resolve sym_effective_pid sym_snapshot_pid sym_resolve_fb sym_flush_pid cfi_unwind_snapshot \
+               sym_engine_new sym_parent_pid sym_maps_map sym_maps_unmap sym_resolve_at \
+               cfi_unwind_snapshot_at sym_maps_dirty sym_maps_compact sym_maps_report \
                anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
                anubee_stack_snapshot_emit_json \
                anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \

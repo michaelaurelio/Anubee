@@ -559,6 +559,14 @@ static int resolve_line(struct procmaps *pm, struct anubee_map_line *hit, uint64
 		return 1;
 	}
 
+	// ART's JIT code cache is an executable memfd mapping. A map event names it
+	// by the memfd ("memfd:jit-cache"), before ART relabels the region, so try
+	// the JIT descriptor first for any executable memfd line. A miss without an
+	// ELF symbol is not cached, so the frame can upgrade once ART publishes it.
+	int memfd_exec = hit->exec && strstr(hit->path, "memfd:") != NULL;
+	if (memfd_exec && jit_resolve(pid, (uint64_t)addr, out, outsz))
+		return 1;
+
 	// APK-embedded stored .so: show "base.apk -> libfoo.so" as the display name.
 	// dynsym_get still uses hit->path + elf_off to open the ELF inside the APK —
 	// the symbol resolution is already correct; this only improves the label.
@@ -580,6 +588,8 @@ static int resolve_line(struct procmaps *pm, struct anubee_map_line *hit, uint64
 			snprintf(out, outsz, "%s!%s", base, name);
 	} else {
 		snprintf(out, outsz, "%s+0x%llx", base, (unsigned long long)vaddr);
+		if (memfd_exec)
+			return 0;
 	}
 	return 1;
 }

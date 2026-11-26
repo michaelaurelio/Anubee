@@ -3,6 +3,7 @@
 // events. Owns the file_access BPF skeleton lifecycle; the dispatcher in
 // mod.c drives the poll loop and teardown order. Kernel side:
 // src/modules/file_access.bpf.c. Classification: src/modules/file_access_classify.c.
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
 #include "modules/file_access_classify.h"
+#include "modules/sysret_pend.h"
 
 // ── per-path tally (tallied unconditionally so summary survives -o) ─────────
 
@@ -27,23 +29,26 @@
 typedef struct {
     char     path[FILE_PATH_LEN];
     uint32_t count;
+    uint32_t failed;        // opens that returned an error
     unsigned categories;
 } fa_stat_t;
 
 static fa_stat_t fa_stats[FA_STAT_MAX];
 static int       fa_stat_count = 0;
 
-static void fa_stat_add(const char *path, unsigned categories)
+static void fa_stat_add(const char *path, unsigned categories, int failed)
 {
     for (int i = 0; i < fa_stat_count; i++) {
         if (strcmp(fa_stats[i].path, path) == 0) {
             fa_stats[i].count++;
+            fa_stats[i].failed += failed ? 1 : 0;
             return;
         }
     }
     if (fa_stat_count >= FA_STAT_MAX) return;
     snprintf(fa_stats[fa_stat_count].path, sizeof(fa_stats[0].path), "%s", path);
     fa_stats[fa_stat_count].count = 1;
+    fa_stats[fa_stat_count].failed = failed ? 1 : 0;
     fa_stats[fa_stat_count].categories = categories;
     fa_stat_count++;
 }
@@ -59,47 +64,103 @@ static int fa_stat_cmp_desc(const void *a, const void *b)
 static const char *cat_tag(unsigned categories)
 {
     if (categories & FA_FOREIGN_APP_DIR)    return "[foreign]";
+    if (categories & FA_PROC_SELF)          return "[proc]";
+    if (categories & FA_PROC_OTHER)         return "[proc-pid]";
+    if (categories & FA_PROC_SYSTEM)        return "[proc-sys]";
     if (categories & FA_UNKNOWN_SELF)       return "[data?]";
     if (categories & FA_CREDENTIAL_PATTERN) return "[cred]";
     if (categories & FA_MEDIA_SUBDIR)       return "[media]";
     if (categories & FA_EXTERNAL_STORAGE)   return "[ext]";
+    if (categories & FA_OWN_APP_DIR)        return "[own]";
     return "";
 }
+
+// Only the app's own folder: the bulk of opens, hidden unless -v.
+static int own_only(unsigned categories)
+{
+    return categories == FA_OWN_APP_DIR;
+}
+
+// /proc/<n>/ where n is one of pid's threads is the process itself.
+static int is_own_tid(unsigned pid, unsigned n)
+{
+    char p[64];
+    snprintf(p, sizeof p, "/proc/%u/task/%u", pid, n);
+    return access(p, F_OK) == 0;
+}
+
+static int fa_verbose = 0;
 
 static struct file_access_bpf *g_skel       = NULL;
 static struct bpf_link        *fa_ff        = NULL;
 static struct ring_buffer     *g_rb         = NULL;
 static struct bpf_link        *openat_link  = NULL;
 static struct bpf_link        *openat2_link = NULL;
+static struct bpf_link        *openat_ret_link  = NULL;
+static struct bpf_link        *openat2_ret_link = NULL;
+static struct sysret_pend     *fa_pend = NULL;  // entry events awaiting their result
+static struct anubee_mod_ctx  *fa_mc   = NULL;
 
 // ---- ring-buffer callback ---------------------------------------------------
 
-static int fa_handle_event(void *ctx, void *data, size_t sz)
+// One open, with its outcome when the return probes are attached.
+static void fa_finish(void *ctx, const void *data, size_t sz, long long ret, int known)
 {
     struct anubee_mod_ctx *mc = ctx;
-    const struct trace_event_header *hdr = data;
-
-    if (hdr->type != MOD_EV_FILE_ACCESS || sz < sizeof(struct file_access_event))
-        return 0;
-
+    (void)sz;
     const struct file_access_event *e = data;
-    unsigned categories = classify_path(e->path, mc->pkg);
-    fa_stat_add(e->path, categories);
+    struct sys_result res = { ret, known };
+    const struct sys_result *r = (openat_ret_link || openat2_ret_link) ? &res : NULL;
+    int failed = known && ret < 0;
+    unsigned categories;
+    if (!strncmp(e->path, "/proc/", 6)) {
+        int writing = (e->flags & O_ACCMODE) != O_RDONLY;
+        categories = fa_classify_proc(writing, e->path, e->h.pid, is_own_tid);
+        if (!categories)
+            return;     // ordinary /proc read (stat, cmdline, meminfo ...)
+        char key[FILE_PATH_LEN];
+        fa_proc_normalize(e->path, e->h.pid, key, sizeof key);
+        fa_stat_add(key, categories, failed);
+    } else {
+        categories = classify_path(e->path, mc->pkg);
+        fa_stat_add(e->path, categories, failed);
+    }
 
     const char *flag_strs[8];
     int n_flags = file_access_decode_flags(e->flags, flag_strs, 8);
 
-    if (!mc->quiet) {
+    if (!mc->quiet && (mc->verbose || !own_only(categories))) {
         // SYM1 Phase 4c: was printf(...).
-        ts_print("[file] %-9s PID:%-6d (%s) %s\n",
-               cat_tag(categories), e->h.pid, e->comm, e->path);
+        const char *en = failed ? sys_errno_name(ret) : NULL;
+        char out[32] = "";
+        if (failed) snprintf(out, sizeof out, "  [failed %s]", en ? en : "");
+        ts_print("[file] %-9s PID:%-6d (%s) %s%s\n",
+               cat_tag(categories), e->h.pid, e->comm, e->path, out);
     }
 
     if (mc->sink != NULL) {
-        mod_emit_file_access(&mc->sink->jb, e, categories, flag_strs, n_flags);
+        mod_emit_file_access(&mc->sink->jb, e, categories, flag_strs, n_flags, r);
         anubee_sink_emit(mc->sink);
     }
+}
 
+// Entry events wait for their thread's result event (kretprobe); without the
+// return probes they go straight out with no outcome.
+static int fa_handle_event(void *ctx, void *data, size_t sz)
+{
+    const struct trace_event_header *hdr = data;
+
+    if (hdr->type == MOD_EV_SYSRET && sz >= sizeof(struct sysret_event)) {
+        const struct sysret_event *r = data;
+        if (fa_pend) sysret_pend_result(fa_pend, r->h.tid, r->ret, fa_finish, ctx);
+        return 0;
+    }
+    if (hdr->type != MOD_EV_FILE_ACCESS || sz < sizeof(struct file_access_event))
+        return 0;
+    if (fa_pend)
+        sysret_pend_entry(fa_pend, hdr->tid, data, sizeof(struct file_access_event), fa_finish, ctx);
+    else
+        fa_finish(ctx, data, sz, 0, 0);
     return 0;
 }
 
@@ -107,6 +168,7 @@ static int fa_handle_event(void *ctx, void *data, size_t sz)
 
 static struct ring_buffer *fa_setup(int uid, struct anubee_mod_ctx *mc)
 {
+    fa_verbose = mc->verbose;
     g_skel = file_access_bpf__open();
     if (!g_skel) {
         fprintf(stderr, "mod file-access: failed to open BPF skeleton\n");
@@ -137,6 +199,15 @@ static struct ring_buffer *fa_setup(int uid, struct anubee_mod_ctx *mc)
     if (!openat2_link)
         fprintf(stderr, "mod file-access: kprobe/__arm64_sys_openat2 unavailable (non-fatal)\n");
 
+    // Return probes: outcome of each open. Optional -- without them records carry no result.
+    openat_ret_link  = openat_link  ? bpf_program__attach(g_skel->progs.on_openat_ret)  : NULL;
+    openat2_ret_link = openat2_link ? bpf_program__attach(g_skel->progs.on_openat2_ret) : NULL;
+    if (openat_link && !openat_ret_link)
+        fprintf(stderr, "mod file-access: kretprobe/__arm64_sys_openat unavailable (no open outcomes)\n");
+    if (openat_ret_link || openat2_ret_link)
+        fa_pend = sysret_pend_new(256, sizeof(struct file_access_event));
+    fa_mc = mc;
+
     if (!openat_link && !openat2_link) {
         fprintf(stderr, "mod file-access: no openat kprobe attached, aborting\n");
         goto err;
@@ -156,6 +227,9 @@ static struct ring_buffer *fa_setup(int uid, struct anubee_mod_ctx *mc)
     return g_rb;
 
 err:
+    if (openat_ret_link)  { bpf_link__destroy(openat_ret_link);  openat_ret_link  = NULL; }
+    if (openat2_ret_link) { bpf_link__destroy(openat2_ret_link); openat2_ret_link = NULL; }
+    if (fa_pend)       { sysret_pend_free(fa_pend);        fa_pend       = NULL; }
     if (fa_ff)         { bpf_link__destroy(fa_ff);         fa_ff         = NULL; }
     if (openat_link)   { bpf_link__destroy(openat_link);   openat_link   = NULL; }
     if (openat2_link)  { bpf_link__destroy(openat2_link);  openat2_link  = NULL; }
@@ -165,6 +239,16 @@ err:
 
 static void fa_teardown(void)
 {
+    // Read what's still in the ring (late results), then send opens still
+    // waiting for a result out with the outcome unknown.
+    if (g_rb) ring_buffer__consume(g_rb);
+    if (fa_pend) {
+        if (fa_mc) sysret_pend_flush(fa_pend, fa_finish, fa_mc);
+        sysret_pend_free(fa_pend);
+        fa_pend = NULL;
+    }
+    if (openat_ret_link)  { bpf_link__destroy(openat_ret_link);  openat_ret_link  = NULL; }
+    if (openat2_ret_link) { bpf_link__destroy(openat2_ret_link); openat2_ret_link = NULL; }
     if (fa_ff)         { bpf_link__destroy(fa_ff);         fa_ff         = NULL; }
     if (openat_link)   { bpf_link__destroy(openat_link);   openat_link   = NULL; }
     if (openat2_link)  { bpf_link__destroy(openat2_link);  openat2_link  = NULL; }
@@ -184,15 +268,23 @@ static void fa_print_summary(void)
     int flagged = 0;
     for (int i = 0; i < fa_stat_count; i++) {
         total += fa_stats[i].count;
-        if (fa_stats[i].categories) flagged++;
+        if (fa_stats[i].categories & ~FA_OWN_APP_DIR) flagged++;
     }
 
     printf("[file] --- File Access Summary ---------------------------------\n");
     printf("[file]       Count  Tag        Path\n");
+    int own_hidden = 0;
     for (int i = 0; i < fa_stat_count; i++) {
-        printf("[file]  %6u  %-9s  %s\n",
-               fa_stats[i].count, cat_tag(fa_stats[i].categories), fa_stats[i].path);
+        if (!fa_verbose && own_only(fa_stats[i].categories)) { own_hidden++; continue; }
+        char fl[32] = "";
+        if (fa_stats[i].failed)
+            snprintf(fl, sizeof fl, "  (%u failed)", fa_stats[i].failed);
+        printf("[file]  %6u  %-10s %s%s\n",
+               fa_stats[i].count, cat_tag(fa_stats[i].categories), fa_stats[i].path, fl);
     }
+    if (own_hidden)
+        printf("[file]  (%d path%s in the app's own folder hidden; -v shows them, the JSON summary has them)\n",
+               own_hidden, own_hidden == 1 ? "" : "s");
     printf("[file]  %llu access%s across %d unique path%s (%d flagged)\n",
            (unsigned long long)total, total == 1 ? "" : "es",
            fa_stat_count, fa_stat_count == 1 ? "" : "s",
@@ -211,7 +303,7 @@ static void fa_emit_summary(struct anubee_sink *s)
     int flagged = 0;
     for (int i = 0; i < fa_stat_count; i++) {
         total += fa_stats[i].count;
-        if (fa_stats[i].categories) flagged++;
+        if (fa_stats[i].categories & ~FA_OWN_APP_DIR) flagged++;
     }
 
     struct jbuf *j = &s->jb;
@@ -228,11 +320,16 @@ static void fa_emit_summary(struct anubee_sink *s)
         { FA_CREDENTIAL_PATTERN, "credential_pattern" },
         { FA_FOREIGN_APP_DIR,    "foreign_app_dir"    },
         { FA_UNKNOWN_SELF,       "unknown_self"       },
+        { FA_OWN_APP_DIR,        "own_app_dir"        },
+        { FA_PROC_SELF,          "proc_self"          },
+        { FA_PROC_OTHER,         "proc_other_process" },
+        { FA_PROC_SYSTEM,        "proc_system"        },
     };
     for (int i = 0; i < fa_stat_count; i++) {
         if (i) jb_c(j, ',');
         jb_s(j, "{\"path\":\"");  jb_esc(j, fa_stats[i].path); jb_c(j, '"');
         jb_s(j, ",\"count\":");   jb_u64(j, fa_stats[i].count);
+        jb_s(j, ",\"failed\":");  jb_u64(j, fa_stats[i].failed);
         jb_s(j, ",\"categories\":[");
         int first = 1;
         for (size_t t = 0; t < sizeof(tags) / sizeof(tags[0]); t++) {
@@ -258,7 +355,9 @@ static unsigned long long fa_drops(void)
 const anubee_analyzer_t analyzer_file_access = {
     .name          = "file-access",
     .description   = "Trace sensitive file opens: external storage, credential-shaped "
-                      "filenames, foreign app data dirs (stealthy — kprobes, zero uprobes)",
+                      "filenames, foreign app data dirs, /proc anti-analysis probes (maps, "
+                      "TracerPid, Frida port/threads, process scans); own folder hidden "
+                      "unless -v (stealthy — kprobes, zero uprobes)",
     .setup         = fa_setup,
     .teardown      = fa_teardown,
     .print_summary = fa_print_summary,

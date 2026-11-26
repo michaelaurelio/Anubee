@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
-// `anubee mod fileless-detect` — userspace analyzer for the anonymous-
-// executable-mapping signal. Owns the fileless_detect BPF skeleton lifecycle;
-// the dispatcher in mod.c drives the poll loop and teardown order. Kernel
-// side: src/modules/fileless_detect.bpf.c.
-//
-// Revision 1: detection is no longer ringbuf-driven. do_mmap
-// entry/return writes a candidate into pending_map; __arm64_sys_prctl
-// deletes (suppresses) it if ART's own dalvik- naming follows shortly
-// after. This file owns the other half: a background thread that polls
-// pending_map on a short interval and, for any entry that survives
-// FILELESS_DETECT_GRACE_NS unsuppressed, builds a struct fileless_detect_event and
-// emits it through the existing mod_emit_fileless_detect()/console-line path
-// -- unchanged from before this revision. events_rb/the ring buffer
-// anubee_analyzer_t.setup() must return exists only to satisfy that
-// interface; it carries no traffic for this analyzer.
+// `anubee mod fileless-detect` — executable memory with no file behind it.
+// Kernel side: src/modules/fileless_detect.bpf.c. Two paths in:
+//   - anon_exec_mmap candidates sit in pending_map; the dispatcher tick
+//     (the sink's single writer) graduates those older than
+//     FILELESS_DETECT_GRACE_NS, reading each region's name from
+//     /proc/<pid>/maps and dropping ART's own (fileless_detect_parse.c).
+//   - mprotect_exec / memfd_exec arrive on the ring, ART already excluded by
+//     name in the kernel.
+// Each alert classifies the region's first bytes (elf / zero / data) and
+// saves a copy -- the region through /proc/<pid>/mem, a memfd through its
+// fd -- into the payload store, unless it is all zero.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/types.h>
@@ -30,81 +25,114 @@
 #include "common/runtime.h"
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
+#include "modules/fileless_detect_parse.h"
+#include "modules/dexload_detect_parse.h"   // dl_copy_fd
+#include "modules/payload_store.h"
 
-// ── per-pid tally (tallied unconditionally so summary survives -o) ─────────
-
-#define FILELESS_STAT_MAX 64
+#define FILELESS_STAT_MAX     64
+#define FILELESS_SAVE_MAX     (64ULL * 1024 * 1024)   // larger regions aren't copied
+#define FILELESS_SAVES_PER_PID 32                     // bound disk use per process
+#define FILELESS_PRINT_PER_PID 10                     // console lines per process
 
 typedef struct {
     __u32    pid;
     char     comm[TASK_COMM_LEN];
     uint32_t count;
+    uint32_t by_kind[4];      // indexed by enum fl_kind
+    uint32_t saved;
 } fileless_stat_t;
 
 static fileless_stat_t fileless_stats[FILELESS_STAT_MAX];
-static int              fileless_stat_count = 0;
-static pthread_mutex_t  fileless_stat_lock = PTHREAD_MUTEX_INITIALIZER;
+static int             fileless_stat_count = 0;
 
-static void fileless_stat_add(__u32 pid, const char *comm)
+static fileless_stat_t *fileless_stat_get(__u32 pid, const char *comm)
 {
-    pthread_mutex_lock(&fileless_stat_lock);
-    for (int i = 0; i < fileless_stat_count; i++) {
-        if (fileless_stats[i].pid == pid) {
-            fileless_stats[i].count++;
-            pthread_mutex_unlock(&fileless_stat_lock);
-            return;
-        }
-    }
-    if (fileless_stat_count < FILELESS_STAT_MAX) {
-        fileless_stats[fileless_stat_count].pid = pid;
-        snprintf(fileless_stats[fileless_stat_count].comm, TASK_COMM_LEN, "%s", comm);
-        fileless_stats[fileless_stat_count].count = 1;
-        fileless_stat_count++;
-    }
-    pthread_mutex_unlock(&fileless_stat_lock);
+    for (int i = 0; i < fileless_stat_count; i++)
+        if (fileless_stats[i].pid == pid)
+            return &fileless_stats[i];
+    if (fileless_stat_count >= FILELESS_STAT_MAX) return NULL;
+    fileless_stat_t *s = &fileless_stats[fileless_stat_count++];
+    memset(s, 0, sizeof *s);
+    s->pid = pid;
+    snprintf(s->comm, TASK_COMM_LEN, "%s", comm);
+    return s;
 }
 
 static struct fileless_detect_bpf *g_skel = NULL;
-static struct bpf_link          *fileless_ff = NULL;
-static struct ring_buffer       *g_rb = NULL;
-static struct bpf_link          *mmap_entry_link = NULL;
-static struct bpf_link          *mmap_ret_link = NULL;
-static struct bpf_link          *prctl_link = NULL;
-static struct anubee_mod_ctx      *g_mc = NULL;
+static struct ring_buffer        *g_rb = NULL;
+static struct bpf_link           *g_links[5];
+static int                        g_nlinks = 0;
+static struct anubee_mod_ctx     *g_mc = NULL;
 
-// ── grace-window background thread ──────────────────────────────────────
-// Polls pending_map every FILELESS_POLL_MS; any entry older than
-// FILELESS_DETECT_GRACE_NS that's still present (never suppressed by a
-// dalvik-tagged prctl) graduates into an alert.
+// ---- one alert: classify, save, print, emit ---------------------------------
 
-#define FILELESS_POLL_MS 100
-
-static pthread_t g_poll_thread;
-static volatile int g_poll_stop = 0;
-static int g_poll_thread_running = 0;
-
-static void fileless_emit_one(__u32 pid, __u64 addr, __u64 size, __u64 ts_ns, const char *comm)
+static void fileless_report(struct fileless_detect_event *e)
 {
-    struct fileless_detect_event e = {0};
-    e.h.type = MOD_EV_FILELESS_DETECT;
-    e.h.pid  = pid;
-    e.h.tid  = pid;
-    e.ts_ns  = ts_ns;
-    e.start  = addr;
-    e.size   = size;
-    snprintf(e.comm, TASK_COMM_LEN, "%s", comm);
-
-    fileless_stat_add(pid, comm);
-
-    if (!g_mc->quiet) {
-        printf("[fileless-detect] PID:%-6d (%s) anonymous executable mmap, %llu bytes\n",
-               pid, comm, (unsigned long long)size);
+    fileless_stat_t *st = fileless_stat_get(e->h.pid, e->comm);
+    if (st) {
+        st->count++;
+        if (e->kind < 4) st->by_kind[e->kind]++;
     }
-    if (g_mc->sink != NULL) {
-        mod_emit_fileless_detect(&g_mc->sink->jb, &e);
+
+    // Save a copy and look at the first bytes.
+    unsigned char head[16];
+    size_t head_n = 0;
+    char saved[512] = "", sha[65] = "";
+    long long size = -1;
+    int may_save = (!st || st->saved < FILELESS_SAVES_PER_PID) && payload_dir_ready();
+    if (e->kind == FL_KIND_MEMFD_EXEC) {
+        int fd = payload_open_ino(NULL, e->h.pid, e->ino);
+        if (fd >= 0) {
+            ssize_t r = pread(fd, head, sizeof head, 0);
+            head_n = r > 0 ? (size_t)r : 0;
+            if (may_save && e->size && e->size <= FILELESS_SAVE_MAX &&
+                strcmp(fl_content_of(head, head_n) ? fl_content_of(head, head_n) : "zero", "zero")) {
+                snprintf(saved, sizeof saved, "%s/%u-memfd-%llu.bin", payload_dir(), e->h.pid,
+                         (unsigned long long)e->ino);
+                lseek(fd, 0, SEEK_SET);
+                size = dl_copy_fd(fd, saved, sha);
+            }
+            close(fd);
+        }
+    } else if (e->size && e->size <= FILELESS_SAVE_MAX && may_save) {
+        snprintf(saved, sizeof saved, "%s/%u-%llx.bin", payload_dir(), e->h.pid,
+                 (unsigned long long)e->start);
+        int nonzero = 0;
+        size = payload_save_region(e->h.pid, e->start, e->size, saved, sha, head, sizeof head,
+                                   &nonzero);
+        head_n = size > 0 ? (size_t)(size < (long long)sizeof head ? size : (long long)sizeof head) : 0;
+        if (size <= 0 || !nonzero) {   // unreadable, or nothing written into it yet
+            unlink(saved);
+            saved[0] = '\0';
+            size = -1;
+        }
+    }
+    if (saved[0] && size > 0 && st) st->saved++;
+    if (!saved[0]) size = -1;
+    const char *content = fl_content_of(head, head_n);
+
+    if (!g_mc->quiet && (!st || st->count <= FILELESS_PRINT_PER_PID)) {
+        printf("[fileless-detect] PID:%-6d (%s) %-14s %#llx %llu bytes%s%s%s%s",
+               e->h.pid, e->comm, fl_kind_name((int)e->kind),
+               (unsigned long long)e->start, (unsigned long long)e->size,
+               e->anon_name[0] ? " name=" : "", e->anon_name,
+               content ? " content=" : "", content ? content : "");
+        printf("\n");
+        if (saved[0])
+            printf("[fileless-detect]   saved %s (sha256 %s)\n", saved, sha);
+        if (st && st->count == FILELESS_PRINT_PER_PID)
+            printf("[fileless-detect]   (further alerts for PID %u counted, not printed)\n", e->h.pid);
+    }
+    if (g_mc->sink) {
+        mod_emit_fileless_detect(&g_mc->sink->jb, e, fl_kind_name((int)e->kind), content,
+                                 saved[0] ? saved : NULL, sha, size);
         anubee_sink_emit(g_mc->sink);
     }
 }
+
+// ---- anon_exec_mmap: grace-window graduation (dispatcher tick) -----------------
+
+#define FILELESS_POLL_MS 100
 
 static __u64 fileless_now_ns(void)
 {
@@ -113,51 +141,88 @@ static __u64 fileless_now_ns(void)
     return (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
 }
 
-static void *fileless_poll_loop(void *arg)
+// The region's name as the kernel holds it now. Returns 0 if the address is
+// no longer mapped (name left empty).
+static int fileless_region_name(__u32 pid, __u64 addr, char *name, size_t cap)
 {
-    (void)arg;
-    int map_fd = bpf_map__fd(g_skel->maps.pending_map);
-
-    while (!g_poll_stop) {
-        usleep(FILELESS_POLL_MS * 1000);
-
-        struct fileless_pending_key key = {0}, next_key;
-        while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-            struct fileless_pending_val val;
-            if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
-                fileless_now_ns() - val.ts_ns >= FILELESS_DETECT_GRACE_NS) {
-                fileless_emit_one(next_key.pid, next_key.addr, val.size, val.ts_ns, val.comm);
-                bpf_map_delete_elem(map_fd, &next_key);
-                // A delete mutates the map's iteration order; restart the
-                // walk from the beginning rather than continuing from a
-                // now-stale key. Cheap: max_entries is 1024, polled every
-                // FILELESS_POLL_MS.
-                key = (struct fileless_pending_key){0};
-                continue;
-            }
-            key = next_key;
-        }
-    }
-    return NULL;
+    static char maps[1 << 20];
+    char p[64];
+    name[0] = '\0';
+    snprintf(p, sizeof p, "/proc/%u/maps", pid);
+    FILE *f = fopen(p, "r");
+    if (!f) return 0;
+    size_t n = fread(maps, 1, sizeof maps - 1, f);
+    fclose(f);
+    maps[n] = '\0';
+    unsigned long s, e;
+    char perms[8];
+    return fl_maps_region(maps, (unsigned long)addr, &s, &e, perms, name, cap);
 }
 
-// ---- ring-buffer callback ---------------------------------------------------
-// Unused: detection no longer flows through events_rb (see Revision 1 note
-// above). Kept only because ring_buffer__new() requires a non-NULL sample
-// callback and anubee_analyzer_t.setup() must return a non-NULL ring_buffer*
-// for the dispatcher's poll loop.
+static void fileless_tick(void)
+{
+    static __u64 last_scan_ns;
+    if (!g_skel)
+        return;
+    __u64 now = fileless_now_ns();
+    if (now - last_scan_ns < FILELESS_POLL_MS * 1000000ULL)
+        return;
+    last_scan_ns = now;
+
+    int map_fd = bpf_map__fd(g_skel->maps.pending_map);
+    struct fileless_pending_key key = {0}, next_key;
+    while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
+        struct fileless_pending_val val;
+        if (bpf_map_lookup_elem(map_fd, &next_key, &val) == 0 &&
+            fileless_now_ns() - val.ts_ns >= FILELESS_DETECT_GRACE_NS) {
+            char name[128];
+            fileless_region_name(next_key.pid, next_key.addr, name, sizeof name);
+            if (!fl_name_is_art(name)) {
+                struct fileless_detect_event e = {0};
+                e.h.type = MOD_EV_FILELESS_DETECT;
+                e.h.pid  = next_key.pid;
+                e.h.tid  = next_key.pid;
+                e.ts_ns  = val.ts_ns;
+                e.start  = next_key.addr;
+                e.size   = val.size;
+                e.kind   = FL_KIND_ANON_MMAP;
+                snprintf(e.comm, TASK_COMM_LEN, "%s", val.comm);
+                snprintf(e.anon_name, sizeof e.anon_name, "%s", name);
+                fileless_report(&e);
+            }
+            bpf_map_delete_elem(map_fd, &next_key);
+            // A delete changes the iteration order; restart from the top
+            // (max_entries is 1024, scanned every FILELESS_POLL_MS).
+            key = (struct fileless_pending_key){0};
+            continue;
+        }
+        key = next_key;
+    }
+}
+
+// ---- mprotect_exec / memfd_exec: ring callback ---------------------------------
 
 static int fileless_handle_event(void *ctx, void *data, size_t sz)
 {
-    (void)ctx; (void)data; (void)sz;
+    (void)ctx;
+    const struct trace_event_header *hdr = data;
+    if (hdr->type != MOD_EV_FILELESS_DETECT || sz < sizeof(struct fileless_detect_event))
+        return 0;
+    struct fileless_detect_event e;
+    memcpy(&e, data, sizeof e);
+    e.anon_name[FILELESS_DETECT_TAG_LEN - 1] = '\0';
+    fileless_report(&e);
     return 0;
 }
 
 // ---- BPF lifecycle ----------------------------------------------------------
 
+static void fileless_teardown(void);
+
 static struct ring_buffer *fileless_setup(int uid, struct anubee_mod_ctx *mc)
 {
     g_mc = mc;
+    payload_dir_init(mc->sink ? mc->sink->path : NULL);
 
     g_skel = fileless_detect_bpf__open();
     if (!g_skel) {
@@ -181,25 +246,23 @@ static struct ring_buffer *fileless_setup(int uid, struct anubee_mod_ctx *mc)
         }
     }
 
-    mmap_entry_link = bpf_program__attach(g_skel->progs.on_do_mmap_entry);
-    if (!mmap_entry_link) {
-        fprintf(stderr, "mod fileless-detect: kprobe/do_mmap unavailable, aborting\n");
-        goto err;
+    struct bpf_program *progs[] = {
+        g_skel->progs.on_do_mmap_entry, g_skel->progs.on_do_mmap_exit,
+        g_skel->progs.on_mprotect, g_skel->progs.on_mmap_file,
+    };
+    for (unsigned i = 0; i < sizeof progs / sizeof progs[0]; i++) {
+        struct bpf_link *l = bpf_program__attach(progs[i]);
+        if (!l) {
+            fprintf(stderr, "mod fileless-detect: attaching %s failed, aborting\n",
+                    bpf_program__name(progs[i]));
+            goto err;
+        }
+        g_links[g_nlinks++] = l;
     }
-    mmap_ret_link = bpf_program__attach(g_skel->progs.on_do_mmap_exit);
-    if (!mmap_ret_link) {
-        fprintf(stderr, "mod fileless-detect: kretprobe/do_mmap unavailable, aborting\n");
-        goto err;
-    }
-    prctl_link = bpf_program__attach(g_skel->progs.on_prctl);
-    if (!prctl_link) {
-        fprintf(stderr, "mod fileless-detect: kprobe/__arm64_sys_prctl unavailable, aborting\n");
-        goto err;
-    }
-
     if (mc->tgt && mc->tgt->n > 0 && !mc->tgt->no_follow) {
-        fileless_ff = bpf_program__attach(g_skel->progs.anubee_follow_fork);
-        if (!fileless_ff) fprintf(stderr, "mod fileless-detect: follow-fork attach failed (non-fatal)\n");
+        struct bpf_link *l = bpf_program__attach(g_skel->progs.anubee_follow_fork);
+        if (l) g_links[g_nlinks++] = l;
+        else fprintf(stderr, "mod fileless-detect: follow-fork attach failed (non-fatal)\n");
     }
 
     g_rb = ring_buffer__new(bpf_map__fd(g_skel->maps.events_rb),
@@ -208,59 +271,34 @@ static struct ring_buffer *fileless_setup(int uid, struct anubee_mod_ctx *mc)
         fprintf(stderr, "mod fileless-detect: failed to create ring buffer\n");
         goto err;
     }
-
-    g_poll_stop = 0;
-    if (pthread_create(&g_poll_thread, NULL, fileless_poll_loop, NULL) != 0) {
-        fprintf(stderr, "mod fileless-detect: failed to start grace-window poll thread\n");
-        goto err;
-    }
-    g_poll_thread_running = 1;
-
     return g_rb;
 
 err:
-    if (mmap_entry_link) { bpf_link__destroy(mmap_entry_link); mmap_entry_link = NULL; }
-    if (mmap_ret_link)   { bpf_link__destroy(mmap_ret_link);   mmap_ret_link   = NULL; }
-    if (prctl_link)      { bpf_link__destroy(prctl_link);      prctl_link      = NULL; }
-    if (fileless_ff)     { bpf_link__destroy(fileless_ff);     fileless_ff     = NULL; }
-    if (g_rb)            { ring_buffer__free(g_rb);            g_rb            = NULL; }
-    if (g_skel)          { fileless_detect_bpf__destroy(g_skel); g_skel          = NULL; }
+    fileless_teardown();
     return NULL;
 }
 
 static void fileless_teardown(void)
 {
-    if (g_poll_thread_running) {
-        g_poll_stop = 1;
-        pthread_join(g_poll_thread, NULL);
-        g_poll_thread_running = 0;
-    }
-
-    if (mmap_entry_link) { bpf_link__destroy(mmap_entry_link); mmap_entry_link = NULL; }
-    if (mmap_ret_link)   { bpf_link__destroy(mmap_ret_link);   mmap_ret_link   = NULL; }
-    if (prctl_link)      { bpf_link__destroy(prctl_link);      prctl_link      = NULL; }
-    if (fileless_ff)     { bpf_link__destroy(fileless_ff);     fileless_ff     = NULL; }
-    if (g_rb)            { ring_buffer__free(g_rb);            g_rb            = NULL; }
-    if (g_skel)          { fileless_detect_bpf__destroy(g_skel); g_skel          = NULL; }
+    while (g_nlinks > 0) bpf_link__destroy(g_links[--g_nlinks]);
+    if (g_rb)   { ring_buffer__free(g_rb); g_rb = NULL; }
+    if (g_skel) { fileless_detect_bpf__destroy(g_skel); g_skel = NULL; }
 }
 
 // ---- summary ----------------------------------------------------------------
-// Lock-free reads of fileless_stats/fileless_stat_count are safe here
-// only because mod.c always calls teardown() (joining the poll thread)
-// before print_summary() or emit_summary(); changing that call order would
-// require adding lock protection to these functions.
 
 static void fileless_print_summary(void)
 {
     if (fileless_stat_count == 0) return;
 
-    printf("[fileless-detect] --- Fileless Detection Summary ---------------------------\n");
-    printf("[fileless-detect]   PID     Comm             Count\n");
+    printf("[fileless-detect] --- Executable memory without a file ---\n");
     for (int i = 0; i < fileless_stat_count; i++) {
-        printf("[fileless-detect]  %6u  %-16s  %6u\n",
-               fileless_stats[i].pid, fileless_stats[i].comm, fileless_stats[i].count);
+        const fileless_stat_t *s = &fileless_stats[i];
+        printf("[fileless-detect]  %6u  %-16s anon_exec_mmap=%u mprotect_exec=%u memfd_exec=%u saved=%u\n",
+               s->pid, s->comm, s->by_kind[FL_KIND_ANON_MMAP], s->by_kind[FL_KIND_MPROTECT_EXEC],
+               s->by_kind[FL_KIND_MEMFD_EXEC], s->saved);
     }
-    printf("[fileless-detect]  %d process%s triggered an anonymous-exec mapping\n",
+    printf("[fileless-detect]  %d process%s created executable memory without a file\n",
            fileless_stat_count, fileless_stat_count == 1 ? "" : "es");
 }
 
@@ -275,10 +313,16 @@ static void fileless_emit_summary(struct anubee_sink *s)
     jb_s(j, ",\"process_count\":"); jb_u64(j, (unsigned long long)fileless_stat_count);
     jb_s(j, ",\"processes\":[");
     for (int i = 0; i < fileless_stat_count; i++) {
+        const fileless_stat_t *st = &fileless_stats[i];
         if (i) jb_c(j, ',');
-        jb_s(j, "{\"pid\":");    jb_u64(j, fileless_stats[i].pid);
-        jb_s(j, ",\"comm\":\""); jb_esc(j, fileless_stats[i].comm); jb_c(j, '"');
-        jb_s(j, ",\"count\":");  jb_u64(j, fileless_stats[i].count);
+        jb_s(j, "{\"pid\":");    jb_u64(j, st->pid);
+        jb_s(j, ",\"comm\":\""); jb_esc(j, st->comm); jb_c(j, '"');
+        jb_s(j, ",\"count\":");  jb_u64(j, st->count);
+        for (int k = FL_KIND_ANON_MMAP; k <= FL_KIND_MEMFD_EXEC; k++) {
+            jb_s(j, ",\""); jb_s(j, fl_kind_name(k)); jb_s(j, "\":");
+            jb_u64(j, st->by_kind[k]);
+        }
+        jb_s(j, ",\"saved\":");  jb_u64(j, st->saved);
         jb_c(j, '}');
     }
     jb_c(j, ']');
@@ -295,14 +339,14 @@ static unsigned long long fileless_drops(void)
 
 const anubee_analyzer_t analyzer_fileless_detect = {
     .name          = "fileless-detect",
-    .description   = "Detect anonymous executable memory mappings with no ART JIT "
-                      "tag (fileless native code execution -- the mechanism behind "
-                      "native packers/unpackers and multi-stage droppers that avoid "
-                      "writing a payload to disk; stealthy -- kprobe only, zero "
-                      "uprobes)",
+    .description   = "Executable memory with no file behind it: anonymous executable "
+                      "mappings, memory made executable later (unpackers), and code run "
+                      "from a memfd -- ART's own JIT regions excluded by name; first bytes "
+                      "classified and a copy saved (stealthy -- kprobes only, zero uprobes)",
     .setup         = fileless_setup,
     .teardown      = fileless_teardown,
     .print_summary = fileless_print_summary,
     .emit_summary  = fileless_emit_summary,
     .drops         = fileless_drops,
+    .tick          = fileless_tick,
 };

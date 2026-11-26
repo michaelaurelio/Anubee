@@ -29,7 +29,9 @@ int anubee_get_pid_uid(pid_t pid);
 // Best-effort resolve a running pid's package name from /proc/<pid>/cmdline
 // (zygote sets cmdline to the package name for the common case; diverges for
 // android:process-named secondary processes, e.g. ":remote" -- keeps only the
-// part before ':' in that case). Returns 0 and fills buf, or -1 if unresolvable.
+// part before ':' in that case). Returns 0 and fills buf, or -1 if unresolvable
+// -- including when the name isn't a well-formed package name (anubee_pkg_name_ok):
+// cmdline is target-controlled and the result is used in shell commands.
 int anubee_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz);
 
 // Resolve a package's launchable component ("pkg/.Activity") via `cmd package

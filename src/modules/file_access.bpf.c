@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // BPF object for the file-access analyzer: trace openat/openat2 syscalls,
-// gated in-kernel to 4 fixed path prefixes so only sensitive-storage /
-// per-app-data-dir opens reach the ring buffer. Fine-grained classification
+// gated in-kernel to 5 fixed path prefixes so only sensitive-storage /
+// per-app-data-dir / /proc opens reach the ring buffer. Fine-grained classification
 // (media subdir / credential filename / foreign-app dir) happens in
 // userspace (file_access_classify.c), which has the one piece of context BPF
 // doesn't: the traced app's own package name.
@@ -23,17 +23,20 @@ struct {
 #include "common/path_gate.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/sysret.bpf.h"
 
 // In-kernel volume gate (load-bearing): unfiltered openat() on Android is
 // enormous (every .so/.apk/.oat/cache file at startup). Only forward opens
-// under external storage or a per-app data dir; everything else never
-// reaches the ring buffer.
+// under external storage, a per-app data dir, or /proc (anti-analysis
+// probes -- userspace keeps only the telling ones, fa_classify_proc);
+// everything else never reaches the ring buffer.
 static __always_inline int path_is_interesting(const char *path)
 {
     if (path_has_prefix(path, "/storage/emulated/", 18)) return 1;
     if (path_has_prefix(path, "/sdcard/", 8))            return 1;
     if (path_has_prefix(path, "/data/data/", 11))        return 1;
     if (path_has_prefix(path, "/data/user/", 11))        return 1;
+    if (path_has_prefix(path, "/proc/", 6))              return 1;
     return 0;
 }
 
@@ -70,6 +73,7 @@ int BPF_KPROBE(on_openat, const struct pt_regs *regs)
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
 }
 
@@ -112,5 +116,19 @@ int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     bpf_ringbuf_submit(e, 0);
+    sysret_arm();
     return 0;
+}
+
+// Outcomes: the fd, or -errno (a refused or missing path is the telling case).
+SEC("kretprobe/__arm64_sys_openat")
+int BPF_KRETPROBE(on_openat_ret, long ret)
+{
+    return sysret_emit(ret);
+}
+
+SEC("kretprobe/__arm64_sys_openat2")
+int BPF_KRETPROBE(on_openat2_ret, long ret)
+{
+    return sysret_emit(ret);
 }

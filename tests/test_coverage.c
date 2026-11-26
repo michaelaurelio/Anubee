@@ -11,6 +11,8 @@ static int checks = 0;
 #define CHECK(c) do { assert(c); checks++; } while (0)
 
 // Emit one coverage record to a temp -o sink, return the JSON line in out.
+static int blank_lines = 0;   // a JSONL file must have none (one record per line)
+
 static void emit_json(const struct anubee_coverage *cov, char *out, size_t n)
 {
 	char path[] = "/tmp/anubee_cov_XXXXXX";
@@ -22,9 +24,11 @@ static void emit_json(const struct anubee_coverage *cov, char *out, size_t n)
 	FILE *f = fopen(path, "r"); assert(f);
 	out[0] = 0;
 	char line[4096];
-	while (fgets(line, sizeof(line), f))
+	while (fgets(line, sizeof(line), f)) {
+		if (line[0] == '\n') blank_lines++;
 		if (strstr(line, "\"type\":\"coverage\""))
 			snprintf(out, n, "%s", line);
+	}
 	fclose(f); remove(path);
 }
 
@@ -130,6 +134,7 @@ int main(void)
 	CHECK(!strstr(j, "\"clean\""));      // not the clean shape
 	CHECK(!strstr(j, "\"ring\""));       // degraded fields never rendered
 
+	CHECK(blank_lines == 0);   // the sink ends each record; the builder must not
 	printf("test_coverage: %d checks passed\n", checks);
 	return 0;
 }

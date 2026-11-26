@@ -62,6 +62,7 @@ Aggregation-first — the model is told to start broad, then drill down:
 | `get_event(id)` | Full detail of one event incl. backtrace. |
 | `search(text,limit)` | Events whose paths/args/symbols contain `text`. |
 | `diff_traces(baseline,compare,top,via)` | What fired only in `compare` vs `baseline` — new call stacks, probed paths, syscalls, errors, endpoints. Highest-leverage RASP triage (clean vs rooted run). |
+| `mod_findings_view(trace,profile,package)` / `mod_noise_profile(out,baseline_traces,min_apps)` | `anubee mod` run reduced to what benign apps on the same device never did, per section with counts, first-seen time, failed outcomes; the profile is learned from benign baseline runs |
 
 ### Unified ingest (funcs / correlate)
 

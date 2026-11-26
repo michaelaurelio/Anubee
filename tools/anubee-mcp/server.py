@@ -23,6 +23,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 import device
+import mod_findings
 from trace_store import TraceStore
 
 mcp = FastMCP("anubee")
@@ -223,7 +224,8 @@ def mod_events(kind: Optional[str] = None, pid: Optional[int] = None, top: int =
     """Individual per-event mod-analyzer records (requires
     load_trace_structured): spawn, proc_exit, execve, prop, file_access,
     accessibility_detect, screencapture_detect, exfil_detect,
-    massdelete_detect, fileless_detect. Drill-down complement to summaries()
+    massdelete_detect, fileless_detect, binder_api, perm_change,
+    dexload_detect, net. Drill-down complement to summaries()
     -- raw individual events, not aggregated tallies. Filter by kind and/or
     pid; omit both to see everything (capped at top)."""
     return store.mod_events(kind, pid, top)
@@ -307,6 +309,36 @@ def diff_traces(baseline: str, compare: str, top: int = 50,
     failing probes. `via` restricts new_stacks to a library/function substring.
     Both paths are loaded fresh; the active trace is untouched."""
     return store.diff(baseline=baseline, compare=compare, top=top, via=via)
+
+
+@mcp.tool()
+def mod_findings_view(trace: str, profile: Optional[str] = None,
+                      package: Optional[str] = None) -> dict:
+    """The "what's new" view of an `anubee mod` run (-o JSONL): only behaviour
+    that benign apps on the same device never showed, grouped by section
+    (binder, file, exec, net, perm, a11y, dexload, prop, proc, plus any record
+    type the profile doesn't know -- those are always shown), each finding with
+    its count, first-seen seconds into the run and failed outcomes. `profile`
+    is a device noise profile built by `mod_findings.py profile` from baseline
+    runs of ordinary apps; without one nothing is hidden. `hidden` counts what
+    was filtered per section and `coverage` lists degraded analyzers, so an
+    empty section is never silently "nothing there". Records' `example` holds
+    the first full record of each finding."""
+    prof = mod_findings.load_profile(profile) if profile else mod_findings.empty_profile()
+    return mod_findings.findings(trace, prof, pkg=package)
+
+
+@mcp.tool()
+def mod_noise_profile(out: str, baseline_traces: list, min_apps: Optional[int] = None) -> dict:
+    """Build a device noise profile for mod_findings_view from `anubee mod`
+    runs (-o JSONL) of ordinary, benign apps traced the same way as the samples
+    (same analyzers, same permission grants). A behaviour key counts as noise
+    when at least `min_apps` baseline apps showed it (default: half of them,
+    rounded up). Never feed it malware runs: families share tricks, and those
+    would be learned as noise. Writes the profile to `out`."""
+    prof = mod_findings.build_profile([(p, None) for p in baseline_traces], min_apps)
+    mod_findings.save_profile(prof, out)
+    return {"apps": prof["apps"], "keys": len(prof["keys"]), "min_apps": prof["min_apps"], "out": out}
 
 
 # ---- on-device operations (require adb + anubee on the device) ----------

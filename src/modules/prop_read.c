@@ -22,6 +22,7 @@
 #include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
+#include "modules/prop_read_classify.h"
 
 // ── per-property access counters ─────────────────────────────────────────────
 
@@ -57,33 +58,12 @@ static int prop_stat_cmp_desc(const void *a, const void *b)
     return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
 }
 
-// ── RASP-sensitive property list ──────────────────────────────────────────────
-// Properties in this list are highlighted in the summary table.
-// Edit to add or remove entries; NULL terminates the list.
-static const char *const rasp_props[] = {
-    "ro.debuggable",
-    "ro.secure",
-    "ro.build.type",            // "user" vs "userdebug"/"eng"
-    "ro.build.tags",            // "release-keys" vs "test-keys"
-    "ro.build.fingerprint",
-    "ro.build.selinux",
-    "ro.boot.verifiedbootstate",
-    "ro.boot.veritymode",
-    "ro.product.model",
-    "ro.product.brand",
-    "ro.product.device",
-    "persist.sys.usb.config",   // USB debugging state
-    "service.adb.root",         // adbd running as root
-    "ro.build.version.release",
-    "ro.build.version.sdk",
-    NULL,
-};
-
+// ── RASP-sensitive properties (highlighted in the summary table) ─────────────
+// A property counts as RASP-relevant when it is a root/tamper, emulator or
+// device-fingerprint check (prop_read_classify.c).
 static bool is_rasp_prop(const char *name)
 {
-    for (int i = 0; rasp_props[i]; i++)
-        if (strcmp(rasp_props[i], name) == 0) return true;
-    return false;
+    return pr_classify(name) != PR_NONE;
 }
 
 static void pr_print_summary(void)
@@ -118,14 +98,17 @@ static void pr_print_summary(void)
     printf("[prop]       Count  Property\n");
     printf("[prop]" SEP);
 
+    int hidden = 0;
     for (int i = 0; i < prop_stat_count; i++) {
-        bool rasp = is_rasp_prop(prop_stats[i].name);
+        if (pr_is_libc_noise(prop_stats[i].name)) { hidden++; continue; }
+        const char *cat = pr_category_name(pr_classify(prop_stats[i].name));
+        bool rasp = cat != NULL;
         if (rasp && use_color)
-            printf("[prop]  \033[1;33m[!] %6u  %s\033[0m\n",
-                   prop_stats[i].count, prop_stats[i].name);
+            printf("[prop]  \033[1;33m[!] %6u  %s  [%s]\033[0m\n",
+                   prop_stats[i].count, prop_stats[i].name, cat);
         else if (rasp)
-            printf("[prop]  [!] %6u  %s\n",
-                   prop_stats[i].count, prop_stats[i].name);
+            printf("[prop]  [!] %6u  %s  [%s]\n",
+                   prop_stats[i].count, prop_stats[i].name, cat);
         else
             printf("[prop]      %6u  %s\n",
                    prop_stats[i].count, prop_stats[i].name);
@@ -136,6 +119,9 @@ static void pr_print_summary(void)
            (unsigned long long)total, total == 1 ? "" : "es",
            prop_stat_count, prop_stat_count == 1 ? "y" : "ies",
            rasp_count);
+    if (hidden)
+        printf("[prop]  (%d libc-internal propert%s hidden: GWP-ASan, fdsan, MTE, ro.arch -- in the JSON summary)\n",
+               hidden, hidden == 1 ? "y" : "ies");
 #undef SEP
 }
 
@@ -165,6 +151,9 @@ static void pr_emit_summary(struct anubee_sink *s)
         jb_s(j, "{\"name\":\"");  jb_esc(j, prop_stats[i].name); jb_c(j, '"');
         jb_s(j, ",\"count\":");   jb_u64(j, prop_stats[i].count);
         jb_s(j, ",\"rasp\":");    jb_s(j, is_rasp_prop(prop_stats[i].name) ? "true" : "false");
+        const char *cat = pr_category_name(pr_classify(prop_stats[i].name));
+        jb_s(j, ",\"category\":");
+        if (cat) { jb_c(j, '"'); jb_s(j, cat); jb_c(j, '"'); } else jb_s(j, "null");
         jb_c(j, '}');
     }
     jb_c(j, ']');

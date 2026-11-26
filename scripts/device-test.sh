@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -458,7 +458,7 @@ test_mod_file_access() {
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "mod-file-access: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    grep -q 'stealthy: file-access uses kernel-only probes' <<<"$out" \
+    grep -q 'stealthy: file-access writes nothing into the target' <<<"$out" \
         || { tail -5 <<<"$out" >&2; fail "mod-file-access: no stealthy-attach banner"; }
     # SYM1 Phase 4c put file-access's live line on ts_print (adds "HH:MM:SS "
     # ahead of the tag) -- tolerate that optional prefix.
@@ -467,6 +467,55 @@ test_mod_file_access() {
     else
         echo "  SKIP: no [file] events in this window (app's own data-dir opens are timing-dependent)"
     fi
+
+    # A name given both positionally and via -m must run that analyzer once:
+    # one attach banner, plus a warning naming the duplicate.
+    forcestop
+    local dup; dup="$(anubee "mod file-access -m file-access -P $PKG")"
+    grep -q "analyzer 'file-access' given more than once" <<<"$dup" \
+        || { tail -5 <<<"$dup" >&2; fail "mod-file-access: no duplicate-name warning"; }
+    [ "$(grep -c 'stealthy: file-access writes nothing into the target' <<<"$dup")" = "1" ] \
+        || { tail -5 <<<"$dup" >&2; fail "mod-file-access: duplicate name still set up twice"; }
+    info "mod-file-access duplicate-name OK - analyzer set up once, warning shown"
+
+    # /proc probes, deterministic: a shell driver reads what anti-analysis
+    # code reads (own maps/status, another process, /proc/net/tcp) plus
+    # ordinary /proc files that must stay silent.
+    local out_jsonl=/data/local/tmp/anubee_fa.jsonl
+    local drv="$ROOT/build/anubee_fa_drive.sh"
+    cat > "$drv" <<'DRV'
+#!/system/bin/sh
+sleep 3
+cat /proc/self/maps /proc/self/status /proc/1/cmdline /proc/net/tcp /proc/self/stat /proc/meminfo >/dev/null 2>&1
+cat /sdcard/.anubee_fa_missing >/dev/null 2>&1
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_fa_drive.sh >/dev/null || fail "mod-file-access: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_fa_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_fa_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "mod-file-access: could not start the /proc driver"
+    out="$(anubee "mod file-access -p $drv_pid -o $out_jsonl")"
+    local all; all="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    local rec; rec="$(grep file_access_summary <<<"$all")"
+    adb shell "su -c 'rm -f $out_jsonl /data/local/tmp/anubee_fa_drive.sh'" >/dev/null 2>&1 || true
+    local p c
+    for p in /proc/self/maps:proc_self /proc/self/status:proc_self /proc/1/cmdline:proc_other_process /proc/net/tcp:proc_system; do
+        c="${p#*:}"; p="${p%%:*}"
+        grep -q "\"path\":\"$p\",\"count\":[0-9]*,\"failed\":0,\"categories\":\[\"$c\"\]" <<<"$rec" \
+            || { tail -10 <<<"$out" >&2; fail "mod-file-access: $p not reported as $c"; }
+    done
+    ! grep -q '/proc/self/stat"\|/proc/meminfo' <<<"$rec" \
+        || fail "mod-file-access: ordinary /proc reads (stat, meminfo) reported"
+    info "mod-file-access /proc OK - self maps/status, other process, net/tcp; ordinary reads silent"
+    # Outcomes (kretprobe): an open that worked carries its fd, a missing file its errno.
+    grep -q '"path":"/proc/self/maps".*"result":[0-9]' <<<"$all" \
+        || { grep '/proc/self/maps' <<<"$all" | head -2 >&2; fail "mod-file-access: successful open has no fd result"; }
+    grep -q '"path":"/sdcard/.anubee_fa_missing".*"result":-2,"error":"ENOENT"' <<<"$all" \
+        || { grep anubee_fa_missing <<<"$all" | head -2 >&2; fail "mod-file-access: missing file not reported as ENOENT"; }
+    grep -q '"path":"/sdcard/.anubee_fa_missing","count":1,"failed":1' <<<"$rec" \
+        || fail "mod-file-access: summary doesn't count the failed open"
+    info "mod-file-access outcomes OK - fd on success, ENOENT on a missing file, failures counted"
 }
 
 # mod massdelete-detect: deterministic trigger via a compiled single-process
@@ -539,10 +588,10 @@ test_massdelete_detect() {
 # control the trigger. Same single-process rationale as massdelete-detect's
 # generator (a forked write()-per-call pattern would split byte-volume
 # across too many short-lived pids to accumulate a per-pid signal) plus a
-# new constraint: the destination is a deliberately unreachable RFC 5737
-# test address, because exfil_detect.bpf.c's connect() hook discards
-# loopback destinations outright (a real listener on 127.0.0.1 would never
-# arm the socket fd).
+# new constraint: the peer must be a non-loopback IPv4 address (loopback and
+# AF_UNIX never count), and the phone may be offline -- so the generator puts
+# RFC 5737's 192.0.2.1 on lo inside its own network namespace and listens
+# there (see the generator's header).
 test_exfil_detect() {
     echo "=== mod exfil-detect (sensitive-read + network byte-volume burst) ==="
     forcestop
@@ -588,6 +637,32 @@ test_exfil_detect() {
         tail -10 <<<"$out" >&2
         fail "exfil-detect: no [exfil-detect] line from a 576KiB-write generator (threshold/window mistuned, or timing missed the attach window)"
     fi
+
+    # Regression modes (generator argv[2]). preconnect: the socket is connected
+    # BEFORE the sensitive read (pooled keep-alive) -- dest must still name the
+    # peer. unix: the burst goes over a connected AF_UNIX socket (logd/dnsproxyd
+    # shape) -- local IPC, must not alert.
+    adb push "$gen_bin" "$gen" >/dev/null || fail "exfil-detect: push failed"
+    adb shell "chmod 755 $gen"
+    local mode mpid mout
+    for mode in preconnect unix sendmsg sendmmsg sendfile; do
+        mpid="$(adb shell "su -c 'nohup setsid $gen /sdcard/.anubee_exfil_test/DCIM $mode >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+        mout="$(anubee "mod exfil-detect -p $mpid")"
+        if [ "$mode" = preconnect ]; then
+            grep -q '^\[exfil-detect\] .*dest 192\.0\.2\.1:9' <<<"$mout" \
+                || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: preconnect burst not attributed to 192.0.2.1:9 (dest lost for a socket connected before the sensitive read)"; }
+            info "exfil-detect preconnect OK — dest names the pre-existing connection's peer"
+        elif [ "$mode" != unix ]; then
+            grep -q '^\[exfil-detect\] .*dest 192\.0\.2\.1:9' <<<"$mout" \
+                || { tail -5 <<<"$mout" >&2; fail "exfil-detect: a burst sent with $mode() was not counted"; }
+            info "exfil-detect $mode OK — burst sent with $mode() counted"
+        else
+            ! grep -q '^\[exfil-detect\] PID' <<<"$mout" \
+                || { grep '^\[exfil-detect\]' <<<"$mout" >&2; fail "exfil-detect: AF_UNIX burst raised an exfil alert (local IPC counted as outbound)"; }
+            info "exfil-detect unix OK — AF_UNIX burst not counted"
+        fi
+    done
+    adb shell "su -c 'rm -f $gen; rm -rf /sdcard/.anubee_exfil_test'" >/dev/null 2>&1 || true
 }
 
 # mod accessibility-detect: real trigger via TalkBack (com.google.android.marvin.talkback),
@@ -604,68 +679,63 @@ test_exfil_detect() {
 # accessibility configuration than it started in. Hard-fail, not SKIP: we
 # control the trigger, same rationale as massdelete-detect/exfil-detect.
 test_accessibility_detect() {
-    echo "=== mod accessibility-detect (binder-transaction burst to system_server + accessibility grant) ==="
+    echo "=== mod accessibility-detect (Accessibility-service calls by category + grant) ==="
+    # Negative first: an ordinary app with no Accessibility service must not
+    # alert (the old volume-burst signal fired on the stock clock app).
+    local neg; neg="$(anubee "mod accessibility-detect -P $PKG")"
+    if grep -q '^\[accessibility-detect\] PID' <<<"$neg"; then
+        grep '^\[accessibility-detect\] PID' <<<"$neg" | head -3 >&2
+        fail "accessibility-detect: alert on $PKG, which has no Accessibility service"
+    fi
+    info "accessibility-detect negative OK - no alert on $PKG"
+
+    # Positive: TalkBack is a real Accessibility service; its process calls
+    # IAccessibilityServiceConnection (getWindows, findAccessibilityNodeInfo*...).
     local tb_pkg="com.google.android.marvin.talkback"
     local tb_svc="$tb_pkg/com.google.android.marvin.talkback.TalkBackService"
-
-    adb shell "pm path $tb_pkg" >/dev/null 2>&1 \
-        || fail "accessibility-detect: TalkBack ($tb_pkg) not installed on this device"
+    if ! adb shell "pm path $tb_pkg" >/dev/null 2>&1; then
+        info "SKIP positive: TalkBack ($tb_pkg) not installed on this device"
+        return 0
+    fi
 
     local prev_svc prev_enabled
     prev_svc="$(adb shell "su -c 'settings get secure enabled_accessibility_services'" 2>/dev/null | tr -d '\r')"
     prev_enabled="$(adb shell "su -c 'settings get secure accessibility_enabled'" 2>/dev/null | tr -d '\r')"
-    [ -z "$prev_enabled" ] && prev_enabled=0
-
     restore_a11y() {
-        adb shell "su -c 'settings put secure enabled_accessibility_services $prev_svc'" >/dev/null 2>&1
-        adb shell "su -c 'settings put secure accessibility_enabled $prev_enabled'" >/dev/null 2>&1
+        if [ "$prev_svc" = "null" ] || [ -z "$prev_svc" ]; then
+            adb shell "su -c 'settings delete secure enabled_accessibility_services'" >/dev/null 2>&1
+        else
+            adb shell "su -c 'settings put secure enabled_accessibility_services $prev_svc'" >/dev/null 2>&1
+        fi
+        if [ "$prev_enabled" = "null" ] || [ -z "$prev_enabled" ]; then
+            adb shell "su -c 'settings delete secure accessibility_enabled'" >/dev/null 2>&1
+        else
+            adb shell "su -c 'settings put secure accessibility_enabled $prev_enabled'" >/dev/null 2>&1
+        fi
         adb shell "su -c 'am force-stop $tb_pkg'" >/dev/null 2>&1
     }
 
-    adb shell "su -c 'settings put secure enabled_accessibility_services $tb_svc'" >/dev/null 2>&1
-    adb shell "su -c 'settings put secure accessibility_enabled 1'" >/dev/null 2>&1
-    sleep 2
-
-    local tb_pid
-    tb_pid="$(adb shell "su -c 'pidof $tb_pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-    if [ -z "$tb_pid" ] || ! [ "$tb_pid" -gt 0 ] 2>/dev/null; then
-        restore_a11y
-        fail "accessibility-detect: TalkBack did not start after enabling (no pid)"
-    fi
-
-    (
-        for _ in $(seq 1 30); do
-            adb shell "su -c 'input keyevent 20'" >/dev/null 2>&1
-            adb shell "su -c 'input keyevent 19'" >/dev/null 2>&1
-        done
-    ) &
-    local stim_pid=$!
-
-    local out; out="$(anubee "mod accessibility-detect -p $tb_pid")"
-    wait "$stim_pid" 2>/dev/null || true
+    # Attach by UID before enabling, so the service's first calls are seen.
+    adb shell "su -c 'nohup setsid sh -c \"sleep 3; settings put secure enabled_accessibility_services $tb_svc; settings put secure accessibility_enabled 1; sleep 4; input keyevent KEYCODE_HOME\" >/dev/null 2>&1 &'"
+    local out; out="$(anubee "mod accessibility-detect -P $tb_pkg --no-launch")"
     restore_a11y
 
     if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "accessibility-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[accessibility-detect\]' <<<"$out"; then
-        info "accessibility-detect OK — $(grep -c '^\[accessibility-detect\]' <<<"$out") [accessibility-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "accessibility-detect: no [accessibility-detect] line (threshold not crossed, system_server pid resolve failed, or timing missed the attach window)"
-    fi
+    grep -q '^\[accessibility-detect\] PID.* screen_read ' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "accessibility-detect: no screen_read alert from an active Accessibility service"; }
+    info "accessibility-detect OK - $(grep -c '^\[accessibility-detect\] PID' <<<"$out") category alert(s) from TalkBack"
 }
 
-# mod fileless-detect: deterministic trigger via a compiled single-process
-# generator (scripts/anubee_fileless_gen.c) that performs one raw
-# mmap(MAP_ANONYMOUS|PROT_EXEC) -- no real installed app does this as part
-# of normal operation, so (like massdelete-detect/exfil-detect) this needs a
-# purpose-built native binary rather than driving a real app. Hard-fail, not
-# SKIP: we control the trigger. A second, informational-only run against an
-# ordinary app checks the dalvik- carve-out doesn't false-positive on real
-# ART JIT activity -- not a hard assertion, since JIT compilation isn't
-# guaranteed to happen within a short launch window either way, so absence
-# of output there proves nothing on its own.
+# mod fileless-detect: deterministic trigger via a compiled generator
+# (scripts/anubee_fileless_gen.c) that does one of each signal --
+# anon_exec_mmap, mprotect_exec, memfd_exec -- each holding an ELF-headed
+# payload, plus the first two on regions named "dalvik-*" (ART's naming),
+# which must not alert. No real installed app does this, so a purpose-built
+# native binary is needed (like massdelete-detect/exfil-detect). Hard-fail,
+# not SKIP: we control the trigger. A final run against an ordinary app is
+# informational (JIT activity in a short window isn't guaranteed).
 test_fileless_detect() {
     echo "=== mod fileless-detect (anonymous executable mmap, non-ART) ==="
     forcestop
@@ -685,30 +755,50 @@ test_fileless_detect() {
     fi
 
     local out; out="$(anubee "mod fileless-detect -p $loop_pid")"
-    adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
+    adb shell "su -c 'rm -f $gen; rm -rf /data/local/tmp/anubee-payloads'" >/dev/null 2>&1 || true
 
-    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
-        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load failed (root/SELinux/own-su-c?)"
+    if grep -qi 'BPF load failed\|failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "fileless-detect: BPF load/attach failed (root/SELinux/own-su-c?)"
     fi
-    # Match only the per-event alert line ("[fileless-detect] PID:...") -- NOT
-    # fileless_print_summary()'s own [fileless-detect]-prefixed header/column-
-    # header/table-row/footer lines, which share the same tag prefix and would
-    # otherwise inflate any non-zero count by 4 (confirmed via manual -o/JSONL
-    # cross-check: a single real detection always produces exactly one
-    # {"type":"fileless_detect"} record, but the old '^\[fileless-detect\]' pattern
-    # counted 5 console lines for it -- 1 real alert + 4 summary-table lines).
-    if grep -q '^\[fileless-detect\] PID:' <<<"$out"; then
-        info "fileless-detect OK — $(grep -c '^\[fileless-detect\] PID:' <<<"$out") [fileless-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "fileless-detect: no [fileless-detect] line from a single anon-exec mmap (timing missed the attach window, or the kprobe/anon_name field didn't resolve as expected)"
-    fi
+    # Count only per-event alert lines ("[fileless-detect] PID:..."), not the
+    # summary table that shares the prefix.
+    local kind
+    for kind in anon_exec_mmap mprotect_exec memfd_exec; do
+        grep -q "^\[fileless-detect\] PID:.* $kind .*content=elf" <<<"$out" \
+            || { tail -15 <<<"$out" >&2; fail "fileless-detect: no $kind alert with ELF content"; }
+    done
+    [ "$(grep -c '^\[fileless-detect\] PID:' <<<"$out")" -eq 3 ] \
+        || { tail -15 <<<"$out" >&2; fail "fileless-detect: expected exactly 3 alerts -- the dalvik-named regions must be recognised as ART's"; }
+    [ "$(grep -c '^\[fileless-detect\]   saved ' <<<"$out")" -eq 3 ] \
+        || { tail -15 <<<"$out" >&2; fail "fileless-detect: payload copies not saved for all three regions"; }
+    info "fileless-detect OK - anon_exec_mmap, mprotect_exec, memfd_exec caught and saved; ART-named regions excluded"
+
+    # Shared-sink wiring: fileless-detect's alerts are produced off the ring
+    # path (pending_map scan), and must reach the single-writer -o sink via the
+    # dispatcher tick alongside another analyzer's records. Assert the alert
+    # record lands and every line of the combined file is intact JSON.
+    adb push "$gen_bin" "$gen" >/dev/null || fail "fileless-detect: push failed"
+    adb shell "chmod 755 $gen"
+    local mix_pid
+    mix_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    local mix_file="/data/local/tmp/fileless_mix.jsonl"
+    anubee "mod -m fileless-detect -m proc-event -p $mix_pid -o $mix_file -q" >/dev/null
+    local mix_out; mix_out="$(adb shell "su -c 'cat $mix_file'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $mix_file $mix_file.payloads $gen'" >/dev/null 2>&1 || true
+    grep -q '"type":"fileless_detect"' <<<"$mix_out" \
+        || { tail -5 <<<"$mix_out" >&2; fail "fileless-detect: no fileless_detect record in a combined -m fileless-detect -m proc-event -o run"; }
+    python3 -c 'import json,sys
+for n,l in enumerate(sys.stdin,1):
+    if l.strip(): json.loads(l)' <<<"$mix_out" \
+        || fail "fileless-detect: combined -o file has a corrupt JSONL line"
+    info "fileless-detect shared-sink OK — alert record present, combined JSONL intact"
 
     local jit_out; jit_out="$(anubee "mod fileless-detect -P $PKG")"
     forcestop
+    adb shell "su -c 'rm -rf /data/local/tmp/anubee-payloads'" >/dev/null 2>&1 || true
     local jit_lines
     jit_lines="$(grep -c '^\[fileless-detect\] PID:' <<<"$jit_out")"
-    info "fileless-detect dalvik carve-out check (informational): $jit_lines line(s) against $PKG"
+    info "fileless-detect ART-name exclusion check on a real app (informational): $jit_lines line(s) against $PKG"
 }
 
 # mod screencapture-detect: real trigger via com.transsion.screenrecorder
@@ -739,38 +829,48 @@ test_fileless_detect() {
 # Blocking for the device-side `timeout -s INT $TIMEOUT` window lets anubee
 # exit cleanly and flush before the capture completes.
 test_screencapture_detect() {
-    echo "=== mod screencapture-detect (active MediaProjection session via dumpsys poll) ==="
+    echo "=== mod screencapture-detect (capture stages: FGS declared, projection start, virtual display) ==="
+    # Drives the OEM screen recorder through a real ~4s recording: its
+    # foreground service (fgs_declared, dumpsys poll), then IMediaProjection.start
+    # and IDisplayManager.createVirtualDisplay (Binder). The consent prompt is
+    # accepted by tapping its "Start recording" node when it appears (the app
+    # skips it once consent was given). The recording is deleted afterwards.
     local pkg="com.transsion.screenrecorder"
     local svc="$pkg/.service.RecordingService"
-
-    adb shell "pm path $pkg" >/dev/null 2>&1 \
-        || fail "screencapture-detect: $pkg not installed on this device"
-
-    adb shell am start-foreground-service \
-        -a transsion.intent.screenrecorder.RECORDER_SERVICE -n "$svc" >/dev/null 2>&1 \
-        || fail "screencapture-detect: could not start $svc (adb/root/service export changed?)"
-    # Settle delay for cold-start pid resolution race (same as accessibility-detect).
-    sleep 2
-
-    local svc_pid
-    svc_pid="$(adb shell "su -c 'pidof $pkg'" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-    if [ -z "$svc_pid" ] || ! [ "$svc_pid" -gt 0 ] 2>/dev/null; then
-        adb shell am stopservice -n "$svc" >/dev/null 2>&1
-        fail "screencapture-detect: $svc did not start (no pid) after start-foreground-service"
+    if ! adb shell "pm path $pkg" >/dev/null 2>&1; then
+        info "SKIP: screencapture-detect needs the OEM recorder ($pkg), not installed"
+        return 0
     fi
-
-    local out; out="$(anubee "mod screencapture-detect -p $svc_pid")"
-    adb shell am stopservice -n "$svc" >/dev/null 2>&1
+    local dir="/storage/emulated/0/Movies/ScreenRecord" mark="/data/local/tmp/anubee_sc_mark"
+    local drive="/data/local/tmp/anubee_sc_drive.sh"
+    adb shell "cat > $drive" <<SH
+sleep 2
+am start-foreground-service -a transsion.intent.screenrecorder.RECORDER_SERVICE -n $svc >/dev/null 2>&1
+sleep 2
+uiautomator dump /data/local/tmp/anubee_sc_ui.xml >/dev/null 2>&1
+b=\$(grep -o 'text="Start recording"[^>]*bounds="[^"]*"' /data/local/tmp/anubee_sc_ui.xml | grep -o '[0-9][0-9]*' | tail -4 | tr '\n' ' ')
+rm -f /data/local/tmp/anubee_sc_ui.xml
+if [ -n "\$b" ]; then set -- \$b; input tap \$(( (\$1 + \$3) / 2 )) \$(( (\$2 + \$4) / 2 )); fi
+sleep 4
+am force-stop $pkg
+SH
+    adb shell "su -c 'touch $mark; nohup setsid sh $drive >/dev/null 2>&1 &'"
+    local out; out="$(anubee "mod screencapture-detect -P $pkg --no-launch")"
+    adb shell "su -c 'am force-stop $pkg'" >/dev/null 2>&1
+    # Delete only recordings created during this test (find -delete is refused
+    # on the FUSE mount, rm per file works).
+    adb shell "su -c 'for f in \$(find $dir -newer $mark -type f -name \"*.mp4\" 2>/dev/null); do rm -f \"\$f\"; done; rm -f $mark $drive'" >/dev/null 2>&1
 
     if grep -q "BPF load failed\|failed to load BPF" <<<"$out"; then
         tail -5 <<<"$out" >&2; fail "screencapture-detect: BPF load failed (root/SELinux/own-su-c?)"
     fi
-    if grep -q '^\[screencapture-detect\] PID:' <<<"$out"; then
-        info "screencapture-detect OK — $(grep -c '^\[screencapture-detect\] PID:' <<<"$out") [screencapture-detect] line(s)"
-    else
-        tail -10 <<<"$out" >&2
-        fail "screencapture-detect: no [screencapture-detect] line after triggering $svc (poll interval missed the window, or dumpsys types= field format differs on this device build)"
-    fi
+    local st
+    for st in fgs_declared projection_start virtual_display; do
+        grep -q "^\[screencapture-detect\] PID:.* $st " <<<"$out" \
+            || { tail -12 <<<"$out" >&2; fail "screencapture-detect: no $st stage during a real recording"; }
+    done
+    grep -q 'IMediaProjection\.start' <<<"$out" || fail "screencapture-detect: projection stage not named"
+    info "screencapture-detect OK - fgs_declared, projection_start, virtual_display"
 }
 
 # correlate --returns: uretprobe return-value + span timing (LOUD - adds a
@@ -936,6 +1036,418 @@ test_dump_now() {
     adb shell "su -c 'rm -rf $devdir'" >/dev/null 2>&1
 }
 
+# -p follow-fork: a target that creates many threads must still have its
+# child processes followed. Thread creation fires sched_process_fork too; if
+# threads are inserted into the 64-slot target_pids map, a later child can't
+# be. scripts/anubee_forkfollow_gen.c creates 100 threads, then forks a child
+# that execs /system/bin/true with a marker argv; mod execve -p must show it.
+test_mod_no_launch() {
+    echo "=== mod --no-launch (arm the UID, never start/stop the app) ==="
+    local comp; comp="$(adb shell "cmd package resolve-activity --brief $PKG" | tr -d '\r' | tail -1)"
+    [ -n "$comp" ] || fail "no-launch: cannot resolve a launcher activity for $PKG"
+    # 1) an app that is already running must not be force-stopped/relaunched
+    adb shell "am start -n $comp" >/dev/null 2>&1; sleep 2
+    local before after con
+    before="$(adb shell "pidof $PKG" | tr -d '\r')"
+    con="$(anubee "mod proc-event -P $PKG --no-launch -q")"
+    after="$(adb shell "pidof $PKG" | tr -d '\r')"
+    [ -n "$before" ] && [ "$before" = "$after" ] \
+        || fail "no-launch: running app was restarted (pid '$before' -> '$after')"
+    ! grep -q '^launching' <<<"$con" || fail "no-launch: launch banner printed"
+    # 2) an app started later by someone else (here: am start from a detached
+    #    job, standing in for a user tap / receiver / alarm) is traced
+    local out="/data/local/tmp/anubee_no_launch.jsonl"
+    forcestop; sleep 1
+    adb shell "su -c 'rm -f $out; nohup setsid sh -c \"sleep 3; am start -n $comp\" >/dev/null 2>&1 &'"
+    anubee "mod proc-event -P $PKG --no-launch -q -o $out" >/dev/null
+    local n; n="$(adb shell "su -c 'grep -c \"type\\\":\\\"spawn\" $out; rm -f $out'" | tr -d '\r' | head -1)"
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || fail "no-launch: app started after attach produced no spawn records"
+    info "no-launch OK - running app untouched; later start traced ($n spawn record(s))"
+}
+
+test_mod_triage() {
+    echo "=== mod triage preset (every stealthy analyzer, one sink) ==="
+    local out="/data/local/tmp/anubee_triage.jsonl" con recs
+    con="$(anubee "mod triage -P $PKG -q -o $out")"
+    grep -q 'LOUD' <<<"$con" && fail "triage: a LOUD analyzer was included"
+    local want; want="$(adb shell "su -c '$DEVICE_PATH mod --list'" | tr -d '\r' | grep -c '^  [a-z-]* *\[stealth\]')"
+    local got; got="$(grep -c '^\[mod\]   > stealthy:' <<<"$con")"
+    [ "$got" = "$want" ] || { tail -15 <<<"$con" >&2; fail "triage: $got analyzer(s) set up, expected every [stealth] one ($want)"; }
+    recs="$(adb shell "su -c 'cat $out; rm -f $out'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "triage: combined -o output is not valid JSONL"
+    local ncov; ncov="$(grep -c '"type":"coverage"' <<<"$recs")"
+    [ "$ncov" = "$want" ] || fail "triage: $ncov coverage record(s), expected $want (an analyzer didn't tear down?)"
+    info "triage OK - $got stealthy analyzers, valid shared JSONL, $ncov coverage records"
+}
+
+test_mod_binder_api() {
+    echo "=== mod binder-api (interface/method names, content-provider URIs) ==="
+    # A shell target that makes known Binder calls: the `content` CLI does a
+    # ContentProvider QUERY on content://sms/inbox and a settings CALL. -p on the
+    # shell + follow-fork covers the two app_process children.
+    local out="/data/local/tmp/anubee_binder_api.jsonl" script="/data/local/tmp/anubee_binder_api.sh"
+    adb shell "cat > $script" <<'SH'
+sh -c 'sleep 3; content query --uri content://sms/inbox --projection _id >/dev/null 2>&1; content call --uri content://settings/secure --method GET_secure --arg android_id >/dev/null 2>&1; sleep 1' >/dev/null 2>&1 &
+echo $!
+SH
+    local tpid; tpid="$(adb shell "su -c 'sh $script'" | tr -d '\r' | tail -1)"
+    [ "${tpid:-0}" -gt 0 ] 2>/dev/null || fail "binder-api: could not start the shell target"
+    local con; con="$(anubee "mod binder-api -p $tpid -o $out")"
+    grep -q 'AIDL method name(s) from [1-9]' <<<"$con" \
+        || { head -5 <<<"$con" >&2; fail "binder-api: no method names loaded from the framework jars"; }
+    grep -q 'IActivityManager\.getContentProviderExternal' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: named AIDL method not decoded"; }
+    grep -q 'IContentProvider\.QUERY content://sms/inbox' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: content-provider QUERY URI not decoded"; }
+    grep -q 'IContentProvider\.CALL settings GET_secure android_id' <<<"$con" \
+        || { tail -15 <<<"$con" >&2; fail "binder-api: content-provider CALL not decoded"; }
+    local recs; recs="$(adb shell "su -c 'cat $out; rm -f $out $script'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "binder-api: -o output is not valid JSONL"
+    grep -q '"uri":"content://sms/inbox"' <<<"$recs" || fail "binder-api: uri field missing from JSONL"
+    grep -q '"type":"binder_api_summary"' <<<"$recs" || fail "binder-api: no summary record"
+    info "binder-api OK - AIDL names, QUERY content://sms/inbox, CALL settings GET_secure android_id"
+}
+
+test_mod_perm_watch() {
+    echo "=== mod perm-watch (baseline + app-op change timeline) ==="
+    # Flip SYSTEM_ALERT_WINDOW (overlay -- the banking-trojan staple) on the
+    # test app mid-run and back; both changes must appear, in order, as
+    # perm_change records. The original mode is restored whatever happens.
+    local op=SYSTEM_ALERT_WINDOW out="/data/local/tmp/anubee_perm_watch.jsonl"
+    local orig; orig="$(adb shell "appops get $PKG $op" | tr -d '\r' | sed -n "s/^$op: \([a-z]*\).*/\1/p")"
+    [ -n "$orig" ] || orig=default
+    local flip=allow; [ "$orig" = allow ] && flip=ignore
+    # Flips at ~3s and ~6s: inside the run (TIMEOUT, default 10s) with a 2s
+    # poll on each side. nohup+setsid so the job outlives this adb shell.
+    adb shell "su -c 'rm -f $out; nohup setsid sh -c \"sleep 3; appops set $PKG $op $flip; sleep 3; appops set $PKG $op $orig\" >/dev/null 2>&1 &'"
+    local con; con="$(anubee "mod perm-watch -P $PKG -o $out")"
+    adb shell "appops set $PKG $op $orig" >/dev/null 2>&1 || true
+    grep -q "^\[perm-watch\] $PKG baseline:" <<<"$con" \
+        || { tail -10 <<<"$con" >&2; fail "perm-watch: no baseline line"; }
+    local recs; recs="$(adb shell "su -c 'cat $out'" | tr -d '\r')"
+    python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin if l.strip()]' <<<"$recs" \
+        || fail "perm-watch: -o output is not valid JSONL"
+    grep -q '"change":"baseline"' <<<"$recs" || fail "perm-watch: no baseline records in -o output"
+    local seq; seq="$(grep "\"name\":\"$op\",\"change\":\"changed\"" <<<"$recs" \
+        | sed 's/.*"old":"\([a-z]*\)","new":"\([a-z]*\)".*/\1>\2/' | tr '\n' ' ')"
+    [ "$seq" = "$orig>$flip $flip>$orig " ] \
+        || { echo "  got: '$seq'" >&2; fail "perm-watch: expected '$orig>$flip $flip>$orig' for $op"; }
+    adb shell "su -c 'rm -f $out'" >/dev/null 2>&1 || true
+    info "perm-watch OK - baseline + $op $orig>$flip>$orig timeline"
+}
+
+test_mod_pkg_inject() {
+    echo "=== mod -p: target-controlled cmdline never reaches a root shell ==="
+    # In -p mode the package name is read from /proc/<pid>/cmdline, which the
+    # traced process controls; massdelete-detect/screencapture-detect/perm-watch
+    # interpolate it into root dumpsys/appops commands. A target whose argv[0]
+    # carries a shell payload must not get it executed.
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "pkg-inject: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/anubee_forkfollow_gen"
+    aarch64-linux-gnu-gcc -static -O2 -pthread -o "$gen_bin" "$ROOT/scripts/anubee_forkfollow_gen.c" \
+        || fail "pkg-inject: failed to compile generator"
+    local gen="/data/local/tmp/anubee_forkfollow_gen" mark="/data/local/tmp/anubee_pkg_inject_mark"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "pkg-inject: push failed"
+    adb shell "chmod 755 $gen; su -c 'rm -f $mark'"
+    # The generator ignores argv[0]; exec -a sets it to the payload.
+    local script="/data/local/tmp/anubee_pkg_inject.sh"
+    adb shell "cat > $script" <<SH
+(exec -a 'com.x;touch $mark' $gen) >/dev/null 2>&1 &
+echo \$!
+SH
+    local gen_pid
+    gen_pid="$(adb shell "su -c 'sh $script'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$gen_pid" ] || ! [ "$gen_pid" -gt 0 ] 2>/dev/null; then
+        fail "pkg-inject: could not start generator (no pid captured)"
+    fi
+    anubee "mod massdelete-detect -p $gen_pid -q" >/dev/null
+    local hit; hit="$(adb shell "su -c 'ls $mark 2>/dev/null; rm -f $mark $script $gen'" | tr -d '\r')"
+    [ -z "$hit" ] || fail "pkg-inject: a target-controlled cmdline was executed by a root shell"
+    info "pkg-inject OK - hostile cmdline rejected as a package name"
+}
+
+test_mod_proc_event() {
+    echo "=== mod proc-event (process spawns, not thread creations) ==="
+    # sched_process_fork fires for thread creation too; a spawn record must
+    # mean a new process. The generator creates 100 threads, then forks once.
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "proc-event: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/anubee_forkfollow_gen"
+    aarch64-linux-gnu-gcc -static -O2 -pthread -o "$gen_bin" "$ROOT/scripts/anubee_forkfollow_gen.c" \
+        || fail "proc-event: failed to compile generator"
+    local gen="/data/local/tmp/anubee_forkfollow_gen" out="/data/local/tmp/anubee_proc_event.jsonl"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "proc-event: push failed"
+    adb shell "chmod 755 $gen"
+    local gen_pid
+    gen_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ "${gen_pid:-0}" -gt 0 ] 2>/dev/null || fail "proc-event: could not start generator"
+    anubee "mod proc-event -p $gen_pid --no-follow-fork -q -o $out" >/dev/null
+    local n; n="$(adb shell "su -c 'grep -c spawn $out; rm -f $out $gen'" | tr -d '\r' | head -1)"
+    [ "$n" = "1" ] || fail "proc-event: $n spawn record(s) for 100 threads + 1 fork, expected 1"
+    info "proc-event OK - 1 spawn for 100 threads + 1 fork"
+}
+
+test_mod_follow_fork() {
+    echo "=== mod -p follow-fork (children followed past many threads) ==="
+    command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
+        || fail "follow-fork: aarch64-linux-gnu-gcc not found (see README prereqs)"
+    local gen_bin="$ROOT/build/anubee_forkfollow_gen"
+    aarch64-linux-gnu-gcc -static -O2 -pthread -o "$gen_bin" "$ROOT/scripts/anubee_forkfollow_gen.c" \
+        || fail "follow-fork: failed to compile generator"
+    local gen="/data/local/tmp/anubee_forkfollow_gen"
+    adb push "$gen_bin" "$gen" >/dev/null || fail "follow-fork: push failed"
+    adb shell "chmod 755 $gen"
+
+    local gen_pid
+    gen_pid="$(adb shell "su -c 'nohup setsid $gen >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    if [ -z "$gen_pid" ] || ! [ "$gen_pid" -gt 0 ] 2>/dev/null; then
+        fail "follow-fork: could not start generator (no pid captured)"
+    fi
+    local out; out="$(anubee "mod execve -p $gen_pid")"
+    adb shell "su -c 'rm -f $gen'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|-EPERM' <<<"$out"; then
+        tail -5 <<<"$out" >&2; fail "follow-fork: BPF load failed (root/SELinux/own-su-c?)"
+    fi
+    grep -q 'anubee-forkfollow-child' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "follow-fork: child exec not traced after 100 threads (threads exhausted target_pids?)"; }
+    info "follow-fork OK - child of a 100-thread target traced"
+}
+
+test_mod_execve() {
+    echo "=== mod execve (categories, commands inside sh -c, app-dir binary, cut-off argv) ==="
+    local out_jsonl=/data/local/tmp/anubee_ex.jsonl bin=/data/local/tmp/anubee_ex_bin
+    local long; long="$(printf 'x%.0s' $(seq 1 200))"
+    local drv="$ROOT/build/anubee_ex_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+sleep 3
+sh -c 'getprop ro.build.tags >/dev/null; id >/dev/null'
+cp /system/bin/toybox $bin; chmod 755 $bin
+$bin true
+/system/bin/toybox echo 1 2 3 4 5 6 7 8 9 10 >/dev/null
+/system/bin/toybox echo $long >/dev/null
+/system/bin/toybox env /anubee_no_such_dir/nobin 2>/dev/null
+rm -f $bin
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_ex_drive.sh >/dev/null || fail "execve: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_ex_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_ex_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "execve: could not start the driver"
+    local out; out="$(anubee "mod execve -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_jsonl $bin /data/local/tmp/anubee_ex_drive.sh'" >/dev/null 2>&1 || true
+
+    grep -q '"filename":"/system/bin/sh".*"argv_truncated":false,"flags":\["recon","shell"\]' <<<"$rec" \
+        || { grep '"type":"execve"' <<<"$rec" | head -3 >&2; fail "execve: sh -c 'getprop; id' not tagged recon+shell"; }
+    grep -q "\"filename\":\"$bin\".*\"flags\":\[\"app_dir\"\]" <<<"$rec" \
+        || fail "execve: binary run from /data/local/tmp not tagged app_dir"
+    [ "$(grep -c '"filename":"/system/bin/toybox".*"argv_truncated":true' <<<"$rec")" -eq 2 ] \
+        || { grep toybox <<<"$rec" >&2; fail "execve: 10-argument and 200-byte-argument runs not marked argv_truncated"; }
+    grep -q '"type":"execve_summary".*"flags":\["recon","shell"\]' <<<"$rec" \
+        || fail "execve: summary lacks per-binary flags"
+    grep -q '"filename":"/anubee_no_such_dir/nobin".*"result":-2,"error":"ENOENT"' <<<"$rec" \
+        || { grep nobin <<<"$rec" >&2; fail "execve: exec of a missing binary not reported as ENOENT"; }
+    grep -q "\"filename\":\"$bin\".*\"result\":0" <<<"$rec" \
+        || fail "execve: successful exec has no result 0"
+    grep -q '"path":"/anubee_no_such_dir/nobin","count":1,"failed":1' <<<"$rec" \
+        || fail "execve: summary doesn't count the failed exec"
+    info "execve OK - recon+shell from sh -c, app_dir, cut-off argv marked, outcomes (0 / ENOENT) recorded"
+}
+
+test_mod_prop_read() {
+    echo "=== mod prop-read (root / emulator / device categories, libc noise hidden) ==="
+    # Loud analyzer (libc uprobes): only ever on this throwaway shell driver.
+    local out_jsonl=/data/local/tmp/anubee_pr.jsonl
+    local drv="$ROOT/build/anubee_pr_drive.sh"
+    cat > "$drv" <<'DRV'
+#!/system/bin/sh
+sleep 3
+getprop ro.kernel.qemu >/dev/null; getprop ro.debuggable >/dev/null
+getprop ro.product.model >/dev/null; getprop debug.hwui.renderer >/dev/null
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_pr_drive.sh >/dev/null || fail "prop-read: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_pr_drive.sh; rm -f $out_jsonl'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_pr_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "prop-read: could not start the driver"
+    local out; out="$(anubee "mod prop-read -p $drv_pid -q -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'grep prop_read_summary $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -f $out_jsonl /data/local/tmp/anubee_pr_drive.sh'" >/dev/null 2>&1 || true
+
+    local p c
+    for p in ro.kernel.qemu:emulator ro.debuggable:root ro.product.model:device; do
+        c="${p#*:}"; p="${p%%:*}"
+        grep -q "\"name\":\"$p\",\"count\":[0-9]*,\"rasp\":true,\"category\":\"$c\"" <<<"$rec" \
+            || { tail -12 <<<"$out" >&2; fail "prop-read: $p not reported as a $c check"; }
+    done
+    grep -q '"name":"debug.hwui.renderer","count":[0-9]*,"rasp":false,"category":null' <<<"$rec" \
+        || fail "prop-read: an ordinary property was flagged"
+    grep -q 'libc-internal propert.* hidden' <<<"$out" && ! grep -q 'gwp_asan' <<<"$out" \
+        || { tail -12 <<<"$out" >&2; fail "prop-read: libc startup reads not hidden from the table"; }
+    info "prop-read OK - emulator/root/device categories, libc noise hidden"
+}
+
+test_net() {
+    echo "=== mod net (netd DNS lookup, HTTP flow with Host and byte totals) ==="
+    # A shell client stands in for the app: ping resolves example.com through
+    # netd (dnsproxyd), nc sends a plain HTTP request with a Host header and
+    # reads the reply. Needs the device online; SKIP if nc gets no reply.
+    local out_jsonl=/data/local/tmp/anubee_net.jsonl reply=/data/local/tmp/anubee_net.reply
+    local drv="$ROOT/build/anubee_net_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+sleep 3
+ping -c 1 -W 2 example.com >/dev/null 2>&1
+(printf 'GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n'; sleep 3) | nc -w 5 example.com 80 > $reply 2>&1
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_net_drive.sh >/dev/null || fail "net: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_net_drive.sh; rm -f $out_jsonl $reply'" >/dev/null 2>&1
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_net_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "net: could not start the driver"
+    local out; out="$(anubee "mod net -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    local got; got="$(adb shell "su -c 'wc -c < $reply'" 2>/dev/null | tr -d '\r ')"
+    adb shell "su -c 'rm -f $out_jsonl $reply /data/local/tmp/anubee_net_drive.sh'" >/dev/null 2>&1 || true
+
+    if grep -qi 'failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -15 <<<"$out" >&2; fail "net: BPF load/attach failed"
+    fi
+    if [ -z "$got" ] || [ "$got" -eq 0 ] 2>/dev/null; then
+        info "net SKIP - no HTTP reply from example.com (device offline?)"
+        return 0
+    fi
+    grep -q '"event":"dns".*"host":"example.com","host_source":"netd"' <<<"$rec" \
+        || { tail -10 <<<"$out" >&2; fail "net: netd DNS lookup of example.com not reported"; }
+    grep -q '"event":"open","proto":"tcp","dest":"[0-9.]*:80","host":"example.com","host_source":"http"' <<<"$rec" \
+        || { tail -10 <<<"$out" >&2; fail "net: HTTP flow with its Host header not reported"; }
+    grep -q "\"event\":\"close\".*\"host\":\"example.com\".*\"tx\":56,\"rx\":$got," <<<"$rec" \
+        || { grep close <<<"$rec" >&2; fail "net: close totals wrong (want tx 56, rx $got = bytes nc received)"; }
+    grep -q '"type":"net_summary"' <<<"$rec" || fail "net: summary record missing"
+    info "net OK - netd lookup, HTTP Host, exact tx/rx byte totals"
+}
+
+test_dexload_detect() {
+    echo "=== mod dexload-detect (payload drop -> load -> delete, copy saved) ==="
+    # A shell stands in for a dropper: writes a real DEX (from a framework jar)
+    # and an ELF, maps both (dalvikvm loads the DEX, the ELF is executed),
+    # then deletes them -- the "load then delete" pattern.
+    local d=/data/local/tmp/anubee_dltest out_jsonl=/data/local/tmp/anubee_dl.jsonl
+    local drv="$ROOT/build/anubee_dl_drive.sh"
+    cat > "$drv" <<DRV
+#!/system/bin/sh
+mkdir -p $d
+sleep 3
+unzip -p /system/framework/am.jar classes.dex > $d/stage2.dex
+cat /system/bin/toybox > $d/echo
+chmod 755 $d/echo
+chmod 444 $d/stage2.dex
+$d/echo dropped-elf-ran >/dev/null
+dalvikvm64 -cp $d/stage2.dex com.android.commands.am.Am >/dev/null 2>&1
+rm -f $d/stage2.dex $d/echo
+sleep 1
+DRV
+    adb push "$drv" /data/local/tmp/anubee_dl_drive.sh >/dev/null || fail "dexload-detect: push failed"
+    adb shell "su -c 'chmod 755 /data/local/tmp/anubee_dl_drive.sh; rm -rf $out_jsonl $out_jsonl.payloads $d'" >/dev/null 2>&1
+    local want_sha
+    want_sha="$(adb shell "su -c 'unzip -p /system/framework/am.jar classes.dex | sha256sum'" | tr -d '\r' | cut -d' ' -f1)"
+    [ -n "$want_sha" ] || fail "dexload-detect: no classes.dex in /system/framework/am.jar on this device"
+
+    local drv_pid
+    drv_pid="$(adb shell "su -c 'nohup setsid /data/local/tmp/anubee_dl_drive.sh >/dev/null 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$drv_pid" ] && [ "$drv_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the driver"
+    local out; out="$(anubee "mod dexload-detect -p $drv_pid -o $out_jsonl")"
+    local rec; rec="$(adb shell "su -c 'cat $out_jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $out_jsonl $out_jsonl.payloads $d /data/local/tmp/anubee_dl_drive.sh'" >/dev/null 2>&1 || true
+
+    if grep -qi 'BPF load failed\|failed to load BPF\|attaching .* failed' <<<"$out"; then
+        tail -15 <<<"$out" >&2; fail "dexload-detect: BPF load/attach failed"
+    fi
+    grep -q 'dropped dex  .*/anubee_dltest/stage2.dex' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: DEX drop (with full path) not reported"; }
+    grep -q 'dropped elf  .*/anubee_dltest/echo' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: ELF drop not reported"; }
+    grep -q 'loaded  elf  .*\[exec\]' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: executable mapping of the ELF not reported"; }
+    grep -q 'loaded  dex  .*/anubee_dltest/stage2.dex' <<<"$out" \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: DEX load (dalvikvm mapping it) not reported"; }
+    [ "$(grep -c 'deleted ' <<<"$out")" -ge 2 ] \
+        || { tail -15 <<<"$out" >&2; fail "dexload-detect: deletes not reported"; }
+    grep -q "\"stage\":\"load\",\"kind\":\"dex\".*\"sha256\":\"$want_sha\"" <<<"$rec" \
+        || { echo "$rec" | head -5 >&2; fail "dexload-detect: saved DEX copy missing or its sha256 differs from the original"; }
+    grep -q '"type":"dexload_detect_summary","file_count":2' <<<"$rec" \
+        || fail "dexload-detect: summary record missing"
+    info "dexload-detect OK - drop/load/delete of a DEX and an ELF, payload copy sha256 matches"
+
+    # memload: a DEX that only ever exists in memory. AnubeeLoader
+    # (scripts/anubee_inmemdex/) reads payload.dex, deletes it, and loads it
+    # with InMemoryDexClassLoader; ART holds it in "[anon:dalvik-DEX data]".
+    # Needs javac + d8 on the host to build the two tiny DEX files.
+    if ! command -v javac >/dev/null 2>&1 || ! command -v d8 >/dev/null 2>&1; then
+        info "dexload-detect memload SKIP - javac/d8 not on PATH (Android SDK build-tools)"
+        return 0
+    fi
+    local b="$ROOT/build/inmemdex" t=/data/local/tmp/anubee_inmem
+    rm -rf "$b"; mkdir -p "$b/cls" "$b/ldr" "$b/pay"
+    javac --release 8 -nowarn -d "$b/cls" "$ROOT"/scripts/anubee_inmemdex/*.java 2>/dev/null \
+        || fail "dexload-detect: javac failed on scripts/anubee_inmemdex"
+    d8 --min-api 26 --output "$b/ldr" "$b/cls/AnubeeLoader.class" \
+        && d8 --min-api 26 --output "$b/pay" "$b/cls/Payload.class" \
+        || fail "dexload-detect: d8 failed"
+    local pay_sha; pay_sha="$(sha256sum "$b/pay/classes.dex" | cut -d' ' -f1)"
+    adb shell "su -c 'rm -rf $t; mkdir -p $t; chmod 777 $t'" >/dev/null
+    adb push "$b/ldr/classes.dex" "$t/loader.dex" >/dev/null && adb push "$b/pay/classes.dex" "$t/payload.dex" >/dev/null \
+        || fail "dexload-detect: push of the memload fixtures failed"
+    local ld_pid
+    ld_pid="$(adb shell "su -c 'nohup setsid dalvikvm64 -cp $t/loader.dex AnubeeLoader mem $t/payload.dex >$t/out 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$ld_pid" ] && [ "$ld_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the in-memory loader"
+    out="$(anubee "mod dexload-detect -p $ld_pid -o $t/dl.jsonl")"
+    rec="$(adb shell "su -c 'cat $t/dl.jsonl; cat $t/out; ls $t/payload.dex 2>&1'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $t'" >/dev/null 2>&1 || true
+
+    grep -q 'anubee-inmem-payload-ran' <<<"$rec" \
+        || { echo "$rec" | tail -5 >&2; fail "dexload-detect: the in-memory loader didn't run its payload"; }
+    grep -q 'payload.dex: No such file' <<<"$rec" \
+        || fail "dexload-detect: payload.dex still on disk -- the test needs it deleted before the load"
+    grep -q 'memload dex  \[from memory\]' <<<"$out" \
+        || { tail -10 <<<"$out" >&2; fail "dexload-detect: InMemoryDexClassLoader DEX not reported (memload)"; }
+    grep -q "\"stage\":\"memload\".*\"sha256\":\"$pay_sha\"" <<<"$rec" \
+        || { echo "$rec" | head -5 >&2; fail "dexload-detect: in-memory DEX copy missing or its sha256 differs from the payload"; }
+    info "dexload-detect memload OK - DEX loaded from memory (file deleted first) captured, sha256 matches"
+
+    # A jar the process writes, loads and deletes at once (seen in the wild with
+    # a 2 ms window), under a long path: ART's "extracted in memory from <path>"
+    # region name then exceeds the kernel's 80-byte cap and stays unnamed.
+    # Whichever wins the race, a copy must exist: the jar itself, or its DEX
+    # recovered from the unnamed region (sha256 = the payload's classes.dex).
+    command -v zip >/dev/null 2>&1 || { info "dexload-detect jar-delete SKIP - zip not on PATH"; return 0; }
+    (cd "$b/pay" && rm -f ../pay.jar && zip -q -9 ../pay.jar classes.dex) || fail "dexload-detect: zip of the payload failed"
+    local jd=$t/a_rather_long_cache_directory_name_for_the_test
+    adb shell "su -c 'rm -rf $t; mkdir -p $jd; chmod -R 777 $t'" >/dev/null
+    adb push "$b/ldr/classes.dex" "$t/loader.dex" >/dev/null && adb push "$b/pay.jar" "$t/src.jar" >/dev/null \
+        || fail "dexload-detect: push of the jar-delete fixtures failed"
+    ld_pid="$(adb shell "su -c 'nohup setsid dalvikvm64 -cp $t/loader.dex AnubeeLoader jardel $t/src.jar $jd/1787936389793000.jar >$t/out 2>&1 & echo \$!'" 2>/dev/null | tr -d '\r' | tail -1)"
+    [ -n "$ld_pid" ] && [ "$ld_pid" -gt 0 ] 2>/dev/null || fail "dexload-detect: could not start the jar-delete loader"
+    out="$(anubee "mod dexload-detect -p $ld_pid -o $t/dl.jsonl")"
+    rec="$(adb shell "su -c 'cat $t/dl.jsonl'" 2>/dev/null | tr -d '\r')"
+    adb shell "su -c 'rm -rf $t'" >/dev/null 2>&1 || true
+    if grep -q "\"stage\":\"memload\".*1787936389793000.jar.*\"sha256\":\"$pay_sha\"" <<<"$rec"; then
+        info "dexload-detect jar-delete OK - jar gone before it could be copied; its DEX recovered from memory, sha256 matches"
+    elif grep -q '"stage":"load","kind":"zip".*1787936389793000.jar.*"saved":{' <<<"$rec"; then
+        info "dexload-detect jar-delete OK - jar copied before the delete (memory recovery not needed this run)"
+    else
+        echo "$rec" | head -6 >&2; fail "dexload-detect: loaded-then-deleted jar left no copy (neither the jar nor its DEX)"
+    fi
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -948,15 +1460,26 @@ case "$WHAT" in
     trace-syscalls)    test_trace_syscalls ;;
     funcs-structured)  test_funcs_structured ;;
     mod-file-access)   test_mod_file_access ;;
+    mod-follow-fork)   test_mod_follow_fork ;;
+    mod-execve)        test_mod_execve ;;
+    mod-prop-read)     test_mod_prop_read ;;
+    mod-proc-event)    test_mod_proc_event ;;
+    mod-pkg-inject)    test_mod_pkg_inject ;;
+    mod-perm-watch)    test_mod_perm_watch ;;
+    mod-binder-api)    test_mod_binder_api ;;
+    mod-no-launch)     test_mod_no_launch ;;
+    mod-triage)        test_mod_triage ;;
     massdelete-detect)  test_massdelete_detect ;;
     exfil-detect)       test_exfil_detect ;;
     accessibility-detect)        test_accessibility_detect ;;
     fileless-detect)     test_fileless_detect ;;
+    dexload-detect)      test_dexload_detect ;;
+    net)                 test_net ;;
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
 esac
 
 forcestop

@@ -95,6 +95,53 @@ int main(void)
     CHECK(strcmp(out[0], "O_RDWR") == 0,   "O_RDWR decoded");
     CHECK(strcmp(out[1], "O_APPEND") == 0, "O_APPEND decoded");
 
+    // ---- own folder is tagged so it can be hidden ----------------------------
+    c = classify_path("/data/data/com.example.app/databases/app.db", "com.example.app");
+    CHECK(c == FA_OWN_APP_DIR, "own /data/data path tagged own_app_dir only");
+    c = classify_path("/data/user/10/com.example.app/files", "com.example.app");
+    CHECK(c == FA_OWN_APP_DIR, "own /data/user/<n> path tagged own_app_dir");
+    c = classify_path("/data/data/com.example.app/files/id_rsa", "com.example.app");
+    CHECK((c & FA_OWN_APP_DIR) && (c & FA_CREDENTIAL_PATTERN), "credential in own dir keeps both tags");
+    CHECK(!(classify_path("/data/data/com.other.app/x", "com.example.app") & FA_OWN_APP_DIR),
+          "foreign dir is not own");
+
+    // ---- /proc probes (pid 4242 is the opener) -----------------------------------
+    CHECK(fa_classify_proc(0, "/proc/self/maps", 4242, NULL) == FA_PROC_SELF, "self maps: hook/Frida scan");
+    CHECK(fa_classify_proc(0, "/proc/self/status", 4242, NULL) == FA_PROC_SELF, "self status: TracerPid");
+    CHECK(fa_classify_proc(0, "/proc/4242/task/4250/comm", 4242, NULL) == FA_PROC_SELF,
+          "own pid, thread names (gum-js-loop)");
+    CHECK(fa_classify_proc(0, "/proc/thread-self/status", 4242, NULL) == FA_PROC_SELF, "thread-self");
+    CHECK(fa_classify_proc(0, "/proc/self/fd", 4242, NULL) == FA_PROC_SELF, "fd dir listing");
+    CHECK(fa_classify_proc(0, "/proc/self/stat", 4242, NULL) == 0, "self stat: ordinary");
+    CHECK(fa_classify_proc(0, "/proc/self/cmdline", 4242, NULL) == 0, "self cmdline: ordinary");
+    CHECK(fa_classify_proc(0, "/proc/1/cmdline", 4242, NULL) == FA_PROC_OTHER, "another process: process scan");
+    CHECK(fa_classify_proc(0, "/proc/999/status", 4242, NULL) == FA_PROC_OTHER, "another process status");
+    CHECK(fa_classify_proc(0, "/proc/net/tcp", 4242, NULL) == FA_PROC_SYSTEM, "net/tcp: Frida port scan");
+    CHECK(fa_classify_proc(0, "/proc/self/net/unix", 4242, NULL) == FA_PROC_SYSTEM, "self/net is the netns view");
+    CHECK(fa_classify_proc(0, "/proc/cpuinfo", 4242, NULL) == FA_PROC_SYSTEM, "cpuinfo: emulator check");
+    CHECK(fa_classify_proc(0, "/proc/tty/drivers", 4242, NULL) == FA_PROC_SYSTEM, "tty drivers: goldfish");
+    CHECK(fa_classify_proc(0, "/proc/mounts", 4242, NULL) == FA_PROC_SYSTEM, "mounts: magisk");
+    CHECK(fa_classify_proc(0, "/proc/meminfo", 4242, NULL) == 0, "meminfo: ordinary");
+    CHECK(fa_classify_proc(0, "/proc/4242/task/4250/stat", 4242, NULL) == 0,
+          "per-thread CPU stats: ordinary (profilers read these)");
+    CHECK(fa_classify_proc(0, "/proc/self/task/4250/status", 4242, NULL) == FA_PROC_SELF,
+          "per-thread status: TracerPid");
+    CHECK(fa_classify_proc(1, "/proc/self/task/4250/comm", 4242, NULL) == 0,
+          "writing a thread's comm is naming it, not probing");
+    CHECK(fa_classify_proc(0, "/proc/self/pagemap", 4242, NULL) == 0, "pagemap: memory accounting");
+
+    char norm[256];
+    fa_proc_normalize("/proc/4242/task/4250/comm", 4242, norm, sizeof norm);
+    CHECK(strcmp(norm, "/proc/self/task/*/comm") == 0, "own pid + thread id collapsed");
+    fa_proc_normalize("/proc/self/task/77/status", 4242, norm, sizeof norm);
+    CHECK(strcmp(norm, "/proc/self/task/*/status") == 0, "self thread id collapsed");
+    fa_proc_normalize("/proc/1/cmdline", 4242, norm, sizeof norm);
+    CHECK(strcmp(norm, "/proc/1/cmdline") == 0, "another process kept as is");
+    fa_proc_normalize("/data/x", 4242, norm, sizeof norm);
+    CHECK(strcmp(norm, "/data/x") == 0, "non-/proc untouched");
+    CHECK(fa_classify_proc(0, "/data/x", 4242, NULL) == 0 && fa_classify_proc(0, NULL, 1, NULL) == 0,
+          "non-/proc and NULL");
+
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

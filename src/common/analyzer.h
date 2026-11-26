@@ -44,6 +44,18 @@ typedef struct {
     // the fd BEFORE teardown() destroys the skeleton — call this first. May be
     // NULL only for an analyzer that genuinely can't drop events (none today).
     unsigned long long (*drops)(void);
+    // Periodic work on the dispatcher's poll thread (once per poll pass, <=100ms
+    // apart when idle, more often under load -- self-throttle). The only safe
+    // place for work that isn't a ring callback to print or write the sink:
+    // the sink is single-writer, so a background thread must hand its results
+    // here instead of emitting itself. Also called once after the poll loop
+    // exits, before teardown(). May be NULL.
+    void (*tick)(void);
+    // Non-NULL reason string if setup() succeeded but the analyzer is not
+    // actually watching anything (e.g. perm-watch with no resolvable
+    // package). The coverage record then reports it exempt with that reason
+    // instead of "full coverage". May be NULL.
+    const char *(*inactive)(void);
 } anubee_analyzer_t;
 
 // Defined in each analyzer's .c; the dispatcher references them by pointer in
@@ -57,5 +69,9 @@ extern const anubee_analyzer_t analyzer_exfil_detect;
 extern const anubee_analyzer_t analyzer_accessibility_detect;
 extern const anubee_analyzer_t analyzer_fileless_detect;
 extern const anubee_analyzer_t analyzer_screencapture_detect;
+extern const anubee_analyzer_t analyzer_perm_watch;
+extern const anubee_analyzer_t analyzer_binder_api;
+extern const anubee_analyzer_t analyzer_dexload_detect;
+extern const anubee_analyzer_t analyzer_net;
 
 #endif /* __ANUBEE_ANALYZER_H */

@@ -31,6 +31,10 @@ int main(void)
     // TRACE_MODCMP must be APPENDED, never inserted, or every type after the
     // insertion point silently renumbers and the desktop mis-decodes records.
     CHECK(TRACE_MODCMP > TRACE_SCREENCAPTURE_DETECT,                "modcmp appended last");
+    CHECK(strcmp(trace_type_name(TRACE_PERM_CHANGE), "perm_change") == 0, "perm_change");
+    CHECK(TRACE_PERM_CHANGE == TRACE_MODCMP + 1,                    "perm_change appended after modcmp");
+    CHECK(strcmp(trace_type_name(TRACE_BINDER_API), "binder_api") == 0, "binder_api");
+    CHECK(TRACE_BINDER_API == TRACE_PERM_CHANGE + 1,                "binder_api appended after perm_change");
     CHECK(strcmp(trace_type_name(0), "unknown") == 0,              "zero->unknown");
     CHECK(strcmp(trace_type_name(999), "unknown") == 0,           "oob->unknown");
 

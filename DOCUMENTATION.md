@@ -316,9 +316,11 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   arms `target_uids`, so processes sharing the same app UID are included. Implemented in
   userspace (the `||` gate makes it a map-fill choice).
 - **Follow-fork** (`src/common/follow_fork.bpf.h`): in PID mode an `anubee_follow_fork`
-  program on `sched/sched_process_fork` inserts a child's TGID into `target_pids` when its
-  parent is tracked. On by default; `--no-follow-fork` disables it. Zero cost when
-  `target_pids` is empty (launch/UID mode).
+  program on `tp_btf/sched_process_fork` inserts a child's TGID into `target_pids` when its
+  parent is tracked. New *threads* (child `pid != tgid`) are skipped: the tracepoint fires
+  for thread creation too, and inserting thread ids used to fill the 64-slot map so later
+  child processes were silently not followed. On by default; `--no-follow-fork` disables
+  it. Zero cost when `target_pids` is empty (launch/UID mode).
 - **Uniform no-op warnings (2026-07-18).** Four flag combinations that used to
   resolve silently now print a one-line stderr warning and the run continues
   unchanged (warn, don't error - the flag just has no effect in the chosen
@@ -1175,24 +1177,100 @@ you need them.
 ## 6.6 The `mod` analyzers (`anubee mod`)
 
 `anubee mod <name>` runs a lightweight standalone analyzer that owns its own BPF
-object — no shared skeleton with `funcs`. Available analyzers:
+object — no shared skeleton with `funcs`. Several analyzers run together via
+repeated `-m`; a name given more than once (positional + `-m`, or `-m` + a `-F`
+`mod:` line) runs once with a warning, since each analyzer owns static skeleton
+state (`src/modules/mod_names.c`). All analyzers share one `-o` sink written only
+by the dispatcher's poll thread: work that isn't a ring callback (a map scan, a
+`dumpsys` result) goes through the analyzer's optional `tick` hook
+(`anubee_analyzer_t`, run once per poll pass by `anubee_rb_poll_multi_cb`), never
+straight from a background thread. Available analyzers:
 
-- **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Wires
+- **`proc-event`** — fork/exit tracepoints (stealthy: zero uprobes). Process
+  spawns only: the fork hook is `tp_btf` and skips children whose `pid != tgid`
+  (thread creation fires the same tracepoint), as the exit hook skips
+  non-main-thread exits. Wires
   `sym_flush_pid` on `ANUBEE_EVENT_PROC_EXIT` for prompt per-pid symbol-cache eviction.
 - **`execve`** — execve kprobes (stealthy: zero uprobes). Captures exec events for
-  child-process correlation.
+  child-process correlation. Each run is tagged by `src/modules/execve_classify.c`
+  (record field `flags`): `root` (su, magisk, KernelSU/APatch daemons, busybox,
+  resetprop), `recon` (getprop, id, dumpsys, `pm list`, `settings get`,
+  `content query`, which ...), `tamper` (setenforce, mount, setprop, iptables,
+  `pm install/grant/disable`, `settings put` ...), `control` (am, input,
+  screencap, cmd, svc, monkey ...), `shell`, `app_dir` (binary in an
+  app-writable folder -- `/data/data`, `/data/user`, `/data/local/tmp`,
+  external storage -- or a relative path) and `memfd` (run from
+  `/proc/self/fd/N` / `/dev/fd/N`). Multi-call binaries (toybox, toolbox,
+  busybox) are classified by their applet, and the commands inside
+  `sh -c "..."` / `su -c "..."` (split on `;`, `&`, `|`) count too.
+  `argv_truncated` marks a run whose argv didn't fit: more than 8 arguments,
+  an argument over 127 bytes, or a path over 127 bytes (the kernel side
+  checks the byte after the buffer). The summary carries the union of flags
+  per binary. Each run also carries its outcome (see **Syscall outcomes**
+  below): a shell or `Runtime.exec` PATH search shows up as one failed
+  `ENOENT` attempt per directory before the one that runs, and the summary
+  counts `failed` per binary.
 - **`prop-read`** — Android `__system_property_*` libc uprobes (**loud**: writes a
-  `BRK` into the target's libc pages).
+  `BRK` into the target's libc pages). Each property is classified
+  (`src/modules/prop_read_classify.c`) as a `root` check (ro.debuggable,
+  test-keys, verified boot, bootloader lock, adbd, magisk/KernelSU/Xposed
+  props), an `emulator` check (qemu/goldfish/ranchu, genymotion, vbox,
+  hardware/board names, empty baseband) or `device` fingerprinting (model,
+  serial, SIM operator, timezone/locale, SDK); `rasp` is true for any of the
+  three. bionic's own startup reads (GWP-ASan, fdsan, MTE, `ro.arch`,
+  libnetd_client) are hidden from the summary table (kept in the JSON).
+  Blind spot: `android.os.Build.*` fields are filled once in zygote, before
+  any app exists, so an app reading `Build.MODEL` / `Build.FINGERPRINT` /
+  `Build.HARDWARE` touches no property and is invisible here; only explicit
+  `SystemProperties.get` / `__system_property_get` / `getprop` calls show.
+- **Syscall outcomes (`execve`, `file-access`)** — the entry kprobe records the
+  call; a kretprobe on the same syscall (still stealthy: kernel-side only)
+  sends just the return value, and only for threads whose entry was recorded
+  (`src/modules/sysret.bpf.h`'s per-tid `sysret_armed` map), so it adds no
+  volume for calls the gate dropped. Userspace holds each entry until its
+  thread's result arrives (`src/modules/sysret_pend.c`; a thread has one
+  syscall in flight) and emits the two as one record: `"result":N` (fd, or 0
+  for exec) or `"result":-N,"error":"ENOENT"`; `"result":null` when the
+  result never arrived (lost, or the run ended first -- nothing is dropped
+  waiting for it). execve frames are symbolized when the entry is handled,
+  not after, because a successful exec has replaced `/proc/<pid>/maps` by
+  the time it returns. A multithreaded exec that succeeds changes the
+  thread's id to the pid, so its result can't be paired: that record shows
+  `null`.
+
+```mermaid
+sequenceDiagram
+    participant K as entry kprobe
+    participant R as kretprobe
+    participant U as analyzer (userspace)
+    K->>U: entry event (tid, path/argv) + arm tid
+    Note over U: held per tid
+    R->>U: result event (tid, ret) -- armed tids only
+    U->>U: one record with "result"
+```
+
 - **`file-access`** — `openat`/`openat2` kprobes (stealthy: zero uprobes), gated
-  in-kernel to 4 fixed path prefixes (external storage, `/data/data`,
-  `/data/user`) to keep ring-buffer volume sane. Userspace classifies each hit
+  in-kernel to 5 fixed path prefixes (external storage, `/data/data`,
+  `/data/user`, `/proc`) to keep ring-buffer volume sane. Userspace classifies each hit
   into external-storage / known-media-subdir / credential-shaped-filename /
   foreign-app-private-dir categories (`src/modules/file_access_classify.c`),
   using the launched package name (or a best-effort `/proc/<pid>/cmdline`
   resolve in `-p` PID-attach mode) to tell "own sandbox" from "foreign app
-  probe." Known limitation: dirfd-relative opens with a relative pathname
-  aren't resolved to an absolute path and are silently dropped (see
-  BACKLOG.md).
+  probe." Opens in the app's own data folder are tagged `own_app_dir` and
+  hidden from the console and summary table unless `-v` (they are the bulk
+  of every app's opens; the JSON keeps them). `/proc` is gated in too and
+  classified by `fa_classify_proc`; only anti-analysis-shaped reads are kept:
+  `proc_self` (own `maps`/`smaps`, `status` and `task/*/status` for
+  TracerPid, `task/*/comm` *read* for Frida's thread names, `fd`, `mounts`,
+  `mem`, `environ`), `proc_other_process` (another process's
+  `/proc/<pid>/` -- process scanning) and `proc_system` (`net/` for Frida's
+  port, `cpuinfo`, `tty/drivers`, `version`, `mounts`, `modules`). Ordinary
+  reads (`stat`, per-thread `stat`, `cmdline`, `meminfo`, `pagemap`, comm
+  *writes* = a thread naming itself) are dropped. The summary collapses the
+  own pid to `self` and thread ids to `*`. Known limitation: dirfd-relative
+  opens with a relative pathname aren't resolved to an absolute path and are
+  silently dropped; `stat`/`access` probes (RootBeer-style `su` file checks)
+  aren't opens and aren't seen (see BACKLOG.md).
 - **`massdelete-detect`** — `renameat`/`renameat2`/`unlinkat` kprobes (stealthy:
   zero uprobes), gated in-kernel to external storage only. Tracks a per-process
   sliding-window touch counter + bounded path-hash ring; when 20 touches land
@@ -1210,13 +1288,20 @@ object — no shared skeleton with `funcs`. Available analyzers:
   app's (confirmed on-device: Files by Google's "delete" never fires this,
   regardless of `MANAGE_EXTERNAL_STORAGE`, because it soft-deletes via
   MediaStore either way) (see BACKLOG.md).
-- **`exfil-detect`** — `openat`/`openat2`/`connect`/`sendto`/`write`/`writev`/
-  `close` kprobes (stealthy: zero uprobes). Arms a per-process state on a
+- **`exfil-detect`** — `openat`/`openat2`/`sendto`/`write`/`writev`/`sendmsg`/
+  `sendmmsg`/`sendfile64` kprobes
+  (stealthy: zero uprobes). Arms a per-process state on a
   media-subdir- or credential-shaped-filename read (reusing `file_access`'s
   pattern lists, ported into BPF -- see `src/common/path_gate.bpf.h`'s
-  `path_has_component`), then accumulates outbound byte volume via a
-  per-`(tgid,fd)` "is this fd a tracked non-loopback socket" map armed by
-  `connect()`. Crossing 512 KiB within 30 seconds of the arming read emits
+  `path_has_component`), then accumulates outbound byte volume. A send counts
+  only if its fd resolves (fd table → `struct socket` → `struct sock`) to a
+  socket whose connected peer is a non-loopback IPv4/IPv6 address
+  (`src/modules/exfil_detect_addr.h`), or `sendto`/`sendmsg` names such a
+  destination explicitly. `sendmsg` sums the message's iovecs, `sendmmsg` the
+  first 8 messages (destination from the first), `sendfile` its `count` (a
+  file streamed to the socket without passing through user memory). AF_UNIX traffic (logd, dnsproxyd, fwmarkd) never counts, sockets
+  connected before attach are still seen, and the alert's `dest` is the peer
+  of the send that tripped it. Crossing 512 KiB within 30 seconds of the arming read emits
   an alert -- byte volume to *any* destination, not distinct-destination
   count, since realistic exfiltration is usually one C2 endpoint receiving
   a large payload rather than many small sends to many hosts. Known
@@ -1225,57 +1310,295 @@ object — no shared skeleton with `funcs`. Available analyzers:
   byte counts are requested length at syscall entry, not kretprobe-verified
   delivered length (a failed/blocked send still counts); threshold evadable
   by throttling/chunking (see BACKLOG.md).
-- **`accessibility-detect`** — `binder_transaction` tracepoint (stealthy: zero uprobes, first
-  `anubee` code to touch Binder). Gated to outbound calls (not replies) addressed to
-  `system_server`; per-process sliding-window counter flags a burst of 50 calls within
-  5 seconds. Userspace checks `settings get secure enabled_accessibility_services` to
-  see whether the traced app holds a granted Accessibility Service — the dominant
-  technique behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda,
-  RatOn, TrickMo), used for overlay-credential harvesting, automated-transfer-system
-  fraud, screen reading, and security-prompt bypass. v1 is a coarse volume signal only:
-  it does not decode which specific privileged action fired (transaction-code decode is
-  parked — see BACKLOG.md), and only gates on `system_server` as the destination
-  (misses accessibility routing through OEM-specific separate framework processes).
-- **`fileless-detect`** — `kprobe`+`kretprobe` on `do_mmap` (stealthy: zero uprobes;
-  fires for every mmap, file-backed or anonymous, correlated entry/exit via a
-  per-tid scratch map). An anonymous+executable mapping is recorded as a candidate
-  into `pending_map` (keyed by pid+address); a separate `kprobe/__arm64_sys_prctl`
-  hook suppresses (deletes) the candidate if ART's own `dalvik-`tagged JIT-cache
-  naming call — `prctl(PR_SET_VMA_ANON_NAME, ...)`, a distinct, later syscall from
-  the mmap itself — follows shortly after. A userspace background thread polls
-  `pending_map` every 100ms and alerts on any candidate that survives a 250ms grace
-  window unsuppressed. Detects fileless native code execution — the mechanism behind
-  native packers/unpackers and multi-stage droppers that hand off to a second-stage
-  payload without ever writing it to disk (e.g. NexusRoute's obfuscated-native-
-  library-via-JNI handoff stage) — not `DexClassLoader`/DEX loading, which executes
-  through ART's own (carved-out) JIT cache rather than a raw anonymous mapping. v1
-  emits every qualifying mapping as its own event (no burst/threshold — a single
-  occurrence is already the signal). Known limitation: legitimate non-ART JIT
-  engines (WebView/V8, Unity/Mono/IL2CPP, Flutter/Dart) also create untagged
-  anonymous executable mappings and will false-positive (see BACKLOG.md).
-- **`screencapture-detect`** — detects an active Android `MediaProjection`
-  screen-capture session (stealthy: zero uprobes). Detection is a userspace
-  thread polling `dumpsys activity services <pkg>` once a second for a
-  `ServiceRecord` block matching the launched/attached package with
-  `isForeground=true` and a `types=0x..` hex mask that has the
-  `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` bit (`0x20`) set — confirmed
-  against real device output (`src/modules/screencapture_detect_parse.c`). A
-  `tp/binder/binder_transaction` tracepoint gated on outbound calls to
-  `system_server` keeps a passive per-pid counter reported as supporting
-  context on each alert, not as the trigger itself — a burst-threshold
-  design (mirroring `accessibility-detect`) was tried first and rejected: MediaProjection
-  setup is 1-2 discrete Binder calls, not a sustained burst, and ongoing frame
-  delivery goes to `SurfaceFlinger`, not `system_server`. Targets the
-  live-screen-streaming-to-C2 technique behind OverlayPhantom and other
-  current (2026) Android banking trojans — an escalation beyond the overlay/
-  accessibility abuse `accessibility-detect` already covers. Known limitations: the
-  1s poll interval bounds detection latency (a session that starts and stops
-  within one window is missed); no transaction-code decode, so the Binder-call
-  context is coarse, not proof of which `system_server` interface was called;
-  legitimate screen-share/remote-support apps false-positive (same accepted
-  category as `accessibility-detect`'s legitimate-accessibility-tool false positives);
-  proves a capture session was active, not that data left the device (no
-  frame-content or exfil-volume corroboration).
+- **`accessibility-detect`** — what the app's own Accessibility Service *does*
+  (stealthy: kprobe, zero uprobes). Accessibility abuse is the dominant technique
+  behind current Android banking trojans (Mamont, Hook, Anatsa, ToxicPanda, RatOn,
+  TrickMo): overlay-credential harvesting, automated-transfer-system fraud, screen
+  reading, security-prompt bypass. A service does all of that through
+  `android.accessibilityservice.IAccessibilityServiceConnection`, so a call on that
+  interface means the service is live and working, not merely granted.
+  `kprobe/binder_transaction` (as `binder-api`) reads the sender's Parcel head into
+  a per-CPU scratch buffer and FNV-1a-hashes the interface token
+  (`src/modules/binder_token.bpf.h`, source-shared with `binder-api`); only calls
+  whose hash matches the one userspace armed (`binder_descriptor_hash`) count. The
+  first `(process, code)` is sent up, repeats are counted in `a11y_counts`. Userspace
+  names the code from the framework jars (`binder_names_load_device`) and maps the
+  method to a category (`accessibility_detect_classify.c`): `screen_read`
+  (`getWindows`, `findAccessibilityNodeInfo*`, `findFocus`...), `action`
+  (`performAccessibilityAction`: clicks, set text), `gesture` (`dispatchGesture`),
+  `global_action` (`performGlobalAction`: back/home/notifications), `screenshot`
+  (`takeScreenshot*`), `input_method` (keyboard switching); everything else is
+  `other` (counted, never alerted). One alert per (process, category); the
+  summary has per-category call totals. The `settings get secure
+  enabled_accessibility_services` grant check is still made once at attach and
+  carried as `granted`. Replaced the v1 signal (a burst of 50 Binder calls to
+  `system_server` in 5 s), which fired on ordinary apps. Limitations: a
+  legitimate accessibility tool (TalkBack, password managers, automation apps)
+  produces the same calls — the categories say what the service did, not why;
+  the grant is checked only at attach (`perm-watch` tracks changes); an OEM
+  build that renames the interface's descriptor would need the name updated.
+- **`fileless-detect`** — executable memory with no file behind it: native
+  packers/unpackers, in-memory second stages, exec-from-memfd (stealthy:
+  kprobes only, zero uprobes). Three signals, each its own event `kind`:
+
+  ```mermaid
+  flowchart LR
+    A["kprobe+kretprobe do_mmap<br/>anonymous + PROT_EXEC"] --> P[(pending_map)]
+    P -->|"tick, after 250 ms"| N{"region name in<br/>/proc/pid/maps<br/>ART's?"}
+    N -->|no| R[anon_exec_mmap]
+    M["kprobe security_file_mprotect<br/>anon / shared-anon / memfd<br/>gaining PROT_EXEC"] --> K{"vma name<br/>ART's?<br/>(read in kernel)"}
+    K -->|no| R2[mprotect_exec]
+    F["kprobe security_mmap_file<br/>memfd + PROT_EXEC"] --> R3[memfd_exec]
+    R & R2 & R3 --> S["first bytes → content elf/zero/data<br/>copy + SHA-256 saved"]
+  ```
+
+  - `anon_exec_mmap`: `do_mmap` entry/return (the file argument is NULL for
+    `MAP_ANONYMOUS`, private or shared) records the region in `pending_map`;
+    the dispatcher `tick` (every 100 ms, the `-o` sink's single writer)
+    graduates entries older than 250 ms after reading the region's name from
+    `/proc/<pid>/maps` -- the name the kernel actually holds, whichever call
+    set it -- and drops ART's.
+  - `mprotect_exec`: `security_file_mprotect` on a region that wasn't
+    executable, is anonymous, anonymous-shared (`dev/zero`) or a memfd, and
+    gains `PROT_EXEC`. Anonymous memory starts zeroed, so code was written
+    into it first -- the write-then-execute step of an unpacker (the idea of
+    Tracee's `mem_prot_alert`, reimplemented). The region name is read from
+    `vma->anon_name` in the kernel. Real files are skipped (text
+    relocations).
+  - `memfd_exec`: `security_mmap_file` mapping a memfd executable -- also how
+    `execve` of a memfd (`fexecve`) maps its segments.
+
+  ART's own regions are recognised by name: anonymous/shmem regions named
+  `dalvik-*` (on Android 16 the JIT caches are
+  `[anon_shmem:dalvik-jit-code-cache]` / `dalvik-zygote-jit-code-cache`) and
+  the memfd caches `jit-cache` / `jit-zygote-cache`. This replaced v1's
+  matching of a following `prctl(PR_SET_VMA_ANON_NAME)` call by exact address.
+  Each alert reads the region (through `/proc/<pid>/mem`, or the memfd through
+  `/proc/<pid>/fd`), classifies its first bytes (`content`: `elf`, `zero`,
+  `data`) and saves a copy as `<pid>-<start>.bin` / `<pid>-memfd-<ino>.bin`
+  in the payload store shared with `dexload-detect`; regions with no
+  non-zero byte (nothing written yet) and regions over 64 MiB aren't saved,
+  and at most 32 copies are kept per process. The console prints the first 10
+  alerts per process; JSON gets every one. Not `DexClassLoader`/DEX loading,
+  which runs through ART's own regions (`dexload-detect`). Verified on
+  Android 16: no alerts from Settings, Chrome or YouTube launches. Known
+  limitations: a non-ART JIT inside the app's own process (Unity/Mono,
+  Flutter debug builds, an in-process V8) alerts -- Chrome/WebView run V8 in
+  a separate sandboxed process, outside the traced UID; a payload that names
+  its region `dalvik-*` (or its memfd `jit-cache`) is excluded the same as
+  ART; an anonymous mapping copied at graduation may not hold its final
+  contents yet (a later `mprotect_exec` would not fire if it was created
+  executable); code reached by remapping an existing executable file mapping
+  isn't covered.
+- **`screencapture-detect`** — how far a screen-capture attempt got, per
+  process, as stages (stealthy: kprobe + dumpsys poll, zero uprobes). Targets
+  the live-screen-streaming-to-C2 technique behind OverlayPhantom and other
+  current Android banking trojans.
+  - `fgs_declared`: a userspace thread polls `dumpsys activity services <pkg>`
+    once a second for a `ServiceRecord` of the package with
+    `isForeground=true` and the `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`
+    bit (`0x20`) in `types=0x..` (`src/modules/screencapture_detect_parse.c`),
+    handing a new session to the dispatcher `tick` (the `-o` sink is
+    single-writer). Android 14+ requires this service before capture, and it
+    runs while the consent prompt is up -- so it shows the attempt even if the
+    user declines. Needs a package (`-P`/`-A`/launch).
+  - `projection_start`: the app's `IMediaProjection.start` call (consent
+    given, capture live).
+  - `virtual_display`: `IDisplayManager.createVirtualDisplay`, the screen
+    mirrored into the app's surface; reported only after one of the stages
+    above, since apps also create virtual displays for Presentation/casting.
+
+  The Binder stages use the same machinery as `accessibility-detect`:
+  `kprobe/binder_transaction`, token hash (`binder_token.bpf.h`) checked
+  against the two armed interfaces, first `(process, interface, code)` sent
+  up, names from the framework jars. One record per (process, stage);
+  `fgs_declared` again per new session. Observed order on a real recording:
+  `IMediaProjection.start` → `getDisplayId` → `createVirtualDisplay`, then
+  the codec pipeline. Replaced a passive count of Binder calls to
+  `system_server`, which said nothing about capture. Limitations: legitimate
+  screen-share/remote-support/recorder apps produce the same stages; a
+  session shorter than the 1 s poll can miss `fgs_declared` (the Binder
+  stages are still seen); a privileged/OEM app capturing via
+  `SurfaceControl` directly (no `MediaProjection`) shows no Binder stage;
+  proves capture ran, not that frames left the device.
+- **`binder-api`** — the Android-API view of the app: which Binder interfaces
+  and methods it calls (stealthy: kprobe, zero uprobes). `kprobe/binder_transaction`
+  runs in the sender's context with `tr` (the kernel's copy of the caller's
+  `binder_transaction_data`), so `tr->data.ptr.buffer` points into the sender's
+  own Parcel; the BPF side reads its first 1 KiB with `bpf_probe_read_user`
+  (after stripping the arm64 top-byte pointer tag, which the uaccess check
+  rejects) straight into a reserved ring-buffer event. An AIDL Parcel starts
+  with the interface token (`writeInterfaceToken`: int32 policy, int32
+  work-source uid, int32 `SYST`/`VNDR`, String16 descriptor); the kernel
+  FNV-1a-hashes it, and only the first `(tgid, token, code)` is submitted --
+  repeats are counted in `binder_api_counts` and the event discarded. Tokens
+  in `binder_api_always` (userspace puts `android.content.IContentProvider`
+  there) are submitted on every call. Userspace decodes the token
+  (`src/modules/binder_api_parse.c`) and names `code` from the device's own
+  framework jars (`/system/framework/framework.jar` +
+  `/apex/*/javalib/framework-*.jar`, mmapped; ~14.5k names in ~20 ms on
+  Android 16): each AIDL `<Iface>$Stub` class's `TRANSACTION_<method>`
+  constants and each hand-written interface's `<NAME>_TRANSACTION` constants,
+  read from the DEX `static_values`, keyed by the class's
+  `DESCRIPTOR`/`descriptor` string constant when it has one (the wire token
+  can differ from the class name). Jars are walked via the zip central
+  directory, since their entries use data descriptors. For
+  `IContentProvider`, the URI (a UTF-8 `content://` String8 as Android 16
+  marshals `Uri`; UTF-16 fallback) or the `CALL` authority/method/arg
+  (String16s before the extras `BNDL`) is extracted. Approach credit:
+  WOOTdroid / WDBind (interface token + transaction code → API method),
+  reimplemented. Known limitations: native-only interfaces (C++ AIDL in
+  `libgui`, HALs) and app-private AIDL are unnamed (`#code`); a `Uri`
+  marshalled as split parts isn't decoded; Parcel contents beyond 1 KiB
+  aren't seen; replies (return values) aren't decoded.
+- **`dexload-detect`** — payload files the app drops, and what happens to
+  them (stealthy: kprobes only, zero uprobes). Three hooks, all keyed by the
+  file's `(device, inode)` so a rename keeps matching:
+
+  ```mermaid
+  flowchart LR
+    W["kprobe/vfs_write<br/>offset 0, regular file,<br/>DEX/CDEX/ZIP/ELF magic"] -->|insert dexload_files| D[drop]
+    M["kprobe/security_mmap_file<br/>any process maps it"] --> L["load<br/>(again once PROT_EXEC)"]
+    U["kprobe/security_inode_unlink"] --> X[delete]
+    D --> L --> X
+    L --> S["userspace saves a copy<br/>+ SHA-256"]
+    X --> S
+  ```
+
+  - **drop**: the traced app's `write()`/`pwrite64()` at offset 0 of a
+    regular file starts with `dex\n`, `cdex`, `PK\3\4` or `\x7fELF` (the
+    idea of Tracee's `magic_write`, reimplemented). Userspace re-checks the
+    header (a DEX needs its 3-digit version). DEX/CDEX/ELF drops alert; a ZIP
+    (APK/JAR/any zip) is recorded silently and alerts when it is mapped.
+  - **load**: any process -- not only the target, so a helper process
+    loading the payload counts -- maps a dropped file (`security_mmap_file`:
+    ART maps a DEX/APK it loads, the linker maps a `.so`, exec maps a
+    binary). Reported once, and once more if a later mapping is executable.
+  - **delete**: the file is unlinked; `after_drop_ms` gives the drop→load and
+    drop→delete timing.
+  - **memload**: a DEX ART holds only in anonymous memory. `kprobe` on
+    `__arm64_sys_prctl` catches ART's `MemMap` naming the region
+    (`PR_SET_VMA_ANON_NAME`): `dalvik-DEX data` is what
+    `InMemoryDexClassLoader` (and other byte-array loads) produces;
+    `dalvik-classes*.dex extracted in memory from <file>` is a compressed DEX
+    ART unpacked. ART names the region before copying the DEX in, so the
+    dispatcher tick reads the header through `/proc/<pid>/mem` every 100 ms
+    until it is a valid DEX (magic + version, `header_size` 0x70, endian tag,
+    `file_size` within the region), for up to 2 s (once more at teardown),
+    then saves `file_size` bytes as `<pid>-mem-<addr>.dex`. The full region
+    name comes from `/proc/<pid>/maps`; extractions from read-only system
+    partitions (`/system`, `/system_ext`, `/product`, `/vendor`, `/odm`,
+    `/apex`) are the platform's own code and dropped -- on the test phone
+    every app gets two for an OEM framework jar. The kernel caps an anon
+    region name at 80 bytes, so for a typical app path (`/data/data/<pkg>/
+    cache/<n>.jar`) ART's naming `prctl` fails with `EINVAL` and the region
+    stays **unnamed** in maps. The kprobe runs on entry, before that check,
+    so the event carries the whole name (up to 768 bytes across `comp[]`),
+    and userspace uses it when maps shows no name (`dl_memload_name`). That
+    is how a jar loaded and deleted within a few ms still gets its DEX saved:
+    as a `memload` record whose `path` is the jar.
+  - **Saving against a fast delete.** A dropper can load and delete its
+    payload within a few ms (seen live: 2 ms), before userspace handles the
+    load. When the drop is handled the file is opened and the fd kept (*pinned*);
+    an fd outlives the unlink, so `load`/`delete`/teardown copy from it (the
+    copy is taken then, so the file is complete). Closed once saved. A jar
+    deleted before even its drop is handled is covered by the memload record
+    of its unpacked DEX (above); a plain DEX file that fast is lost.
+
+  The path is rebuilt in the kernel from the file's dentry chain, crossing
+  mount points to the root of the writer's mount namespace (`bpf_loop`, up to
+  16 components); inside an app's namespace, `/data/user/0/<pkg>` shows as
+  its real location `/data/data/<pkg>`. A copy of each payload is saved as
+  `<pid>-<inode>.<dex|cdex|zip|so>` in `<-o file>.payloads/` (or
+  `/data/local/tmp/anubee-payloads/` without `-o`), mode 0600, with its
+  SHA-256 in the event and summary. Saving happens on load or delete, trying
+  in turn: the path, `/proc/<pid>/map_files/<range>` (still mapped after
+  unlink -- the usual "load then delete" case), and the process's open fds;
+  each candidate is checked against the inode. Payloads never loaded or
+  deleted are saved at teardown; files over 256 MiB are not saved. Reading the
+  copy is anubee's own file I/O -- nothing touches the target's memory.
+  Tracing a package that shares the system UID (Settings runs as `system`)
+  also traces `system_server` and the package installer, so app installs
+  and updates show up as zip drops/loads. Limitations: a payload deleted
+  before anything maps it, and not held open, can't be saved (opt-in hard-linking is a possible fix); writes via
+  `writev`, `sendfile`/`copy_file_range`, `io_uring` or `mmap` stores, and
+  payloads that start with a non-matching header (encrypted, then decrypted in
+  memory) aren't seen as drops; `InMemoryDexClassLoader` never writes a file
+  (see `memload` above); legitimate apps that extract native
+  libraries (SoLoader/ReLinker), dynamic feature modules or plugin
+  frameworks produce the same events.
+- **`net`** — who the app talks to over the network, and how much (stealthy:
+  kprobes only, zero uprobes). One flow per outbound IPv4/IPv6 socket,
+  keyed by its kernel `struct sock`:
+
+  ```mermaid
+  flowchart LR
+    S["kprobe/tcp_sendmsg<br/>udp_sendmsg / udpv6_sendmsg"] -->|first send: insert flows,<br/>first 2 KiB sent| O["open<br/>+ host: SNI / HTTP Host / DNS qname"]
+    S -->|every send| TX[tx +=]
+    R["kprobe/__tcp_cleanup_rbuf<br/>skb_consume_udp"] --> RX[rx +=]
+    C["kprobe/inet_release"] --> CL["close<br/>tx, rx, duration"]
+    U["kprobe/unix_stream_sendmsg<br/>getaddrinfo / gethostbyname / resnsend"] --> D["dns (netd)"]
+  ```
+
+  - **open**: the first send of a traced process on a socket whose peer is
+    not loopback/unspecified creates the flow and ships the first bytes
+    sent (up to 2 KiB). Userspace (`src/modules/net_parse.c`) names the
+    host: the `server_name` of a TLS ClientHello, the `Host:` header of a
+    plaintext HTTP request, or the question of a DNS query to port 53 (an
+    app's own resolver, e.g. Chrome's). Each new (proto, dest, host) prints
+    one line.
+  - **close**: `close()` of the socket (`inet_release`, IPv4 and IPv6)
+    emits the totals: `tx` is bytes passed to sendmsg, `rx` bytes the app
+    read (TCP, through `__tcp_cleanup_rbuf` -- `tcp_cleanup_rbuf` on
+    kernels without it) or datagrams it received (UDP). An unconnected UDP
+    socket that sends to a new peer closes the previous flow and opens
+    another. Flows still open at the end are folded into the summary.
+  - **dns**: every app resolves names by writing a command to netd's
+    `/dev/socket/dnsproxyd` (`getaddrinfo <host> ...`, `gethostbyname
+    <netid> <host> ...`, `resnsend <netid> <flags> <base64 query>`); the
+    command is captured and the name extracted. One line per new name.
+  - Pointers in user buffers carry Android's heap tag in the top byte and
+    are stripped before reading (otherwise every heap buffer read fails).
+  - Summary: destinations by bytes (proto, dest, host, connections, tx,
+    rx), then names looked up with counts. Verified on the test phone: a
+    shell client's `ping` lookup through netd, an HTTP request's Host and
+    exact byte totals (device test `net`); Chrome and YouTube show their
+    DNS names, TLS SNI and QUIC flows.
+  - Limitations: QUIC (UDP 443) encrypts its handshake, so those flows have
+    no host (the dest IP and byte totals are still there); TLS with
+    Encrypted Client Hello shows the outer (public) name; DNS-over-HTTPS
+    lookups are just HTTPS flows; a flow already open when tracing starts
+    has no first bytes, so no host; the IP behind a looked-up name isn't
+    linked to it (replies aren't decoded).
+- **`perm-watch`** — the package's permission state as a timeline (stealthy:
+  no BPF program at all). A background thread snapshots, every 2s, the
+  package's granted install/runtime permissions (`dumpsys package`, filtered
+  on-device with grep since big packages dump megabytes), app-op modes
+  (`appops get`; the `;time=` suffix is dropped so normal use doesn't churn),
+  Accessibility and notification-listener enablement (`settings get secure`),
+  device-admin status (`dumpsys device_policy`), role holdership
+  (`dumpsys role`) and installed-ness, as key=value facts
+  (`src/modules/perm_watch_parse.c`), diffs it against the previous one, and
+  queues the changes for the dispatcher `tick`. The first snapshot is taken in
+  `setup()` (before any launch) and emitted as `baseline` records. Every shell
+  read carries an end marker, so a failed or truncated read skips that
+  snapshot instead of reading as a mass revoke. The dispatcher still needs a
+  ring to poll, so `setup()` creates an empty BPF ring-buffer *map* (no
+  program; the firewall gate maps the capability to `SKIP`). Without a
+  resolvable package (`-p` on a native process) it stays inert and its
+  coverage record is exempt with the reason, via the analyzer's `inactive`
+  hook. Known limitations: 2s resolution (a grant and revert inside one poll is
+  missed); records the state change, not the dialog or API call that caused it;
+  multi-user/work-profile output is flattened into one set.
+
+**Presets and `--no-launch`.** `triage` is a preset name, not an analyzer:
+`mod_expand_presets` (`src/modules/mod_names.c`) replaces it with every
+analyzer whose `mod:<name>` row in `capabilities.c` is quiet, before
+de-duplication, so a loud analyzer can never enter a triage run. `--no-launch`
+(with `-P`) resolves and arms the UID but skips `anubee_launch_app` -- no
+force-stop, no `am start` -- so the app is traced whenever and however it
+starts. Since the gate is the UID, any process of that UID already running
+is traced too.
 
 **Event timestamps.** Every mod analyzer event JSON record carries a `ts_ns`
 field — nanoseconds since boot (`bpf_ktime_get_ns()`'s clock base), captured
@@ -1283,9 +1606,11 @@ at the moment the underlying kernel hook fired. Two exceptions: `mediaproj-
 abuse`'s event is built entirely in userspace (a `dumpsys`-polling thread,
 not a BPF hook), so its `ts_ns` is a `clock_gettime(CLOCK_MONOTONIC, ...)`
 call at detection time, accurate only to the analyzer's 1s poll interval;
-`fileless-detect`'s alert event reuses the timestamp already captured at the
-original `do_mmap` return (not the later moment the alert graduates past its
-grace window), since that's the more accurate instant. `ts_ns` is
+`fileless-detect`'s `anon_exec_mmap` event reuses the timestamp already
+captured at the original `do_mmap` return (not the later moment the alert
+graduates past its grace window), since that's the more accurate instant; `perm-watch`'s
+`perm_change` records are also userspace `CLOCK_MONOTONIC` stamps, taken when
+the snapshot that saw the change began (2s resolution). `ts_ns` is
 boot-relative only — comparable within one run/device-boot, not across
 separate runs or as wall-clock time.
 
@@ -1300,14 +1625,24 @@ active, the same tally is additionally written as one final `*_summary` record
 (before the `coverage` footer, via the analyzer's `emit_summary` hook in
 `anubee_analyzer_t` — `src/common/analyzer.h`), so the console-only table is no
 longer lost from the file:
-- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool},..]}`
-- `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool},..]}`
-- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"categories":[..]},..]}`
+- `{"type":"execve_summary","total_execs":N,"unique_binaries":N,"flagged":N,"binaries":[{"path":..,"count":N,"suspicious":bool,"flags":["root"|"recon"|"tamper"|"control"|"shell"|"app_dir"|"memfd",..]},..]}` (per-event `execve` records gain `"argv_truncated":bool,"flags":[..]` and `"result":N|null` plus `"error":"ENAME"` on failure; summary binaries gain `"failed":N`)
+- `{"type":"prop_read_summary","total":N,"unique_props":N,"rasp_count":N,"props":[{"name":..,"count":N,"rasp":bool,"category":"root"|"emulator"|"device"|null},..]}`
+- `{"type":"file_access_summary","total":N,"unique_paths":N,"flagged":N,"paths":[{"path":..,"count":N,"failed":N,"categories":[..]},..]}` (per-event `file_access` records end with `"result":fd|-errno|null` and `"error":"ENAME"` on failure) (categories: `external_storage`, `media_subdir`, `credential_pattern`, `foreign_app_dir`, `unknown_self`, `own_app_dir`, `proc_self`, `proc_other_process`, `proc_system`; `/proc` paths use `self` and `task/*`)
 - `{"type":"massdelete_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N,"max_distinct":N},..]}`
 - `{"type":"exfil_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_bytes_sent":N},..]}`
-- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"bursts":N,"max_touch_count":N},..]}`
-- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N},..]}`
-- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"sessions":N,"total_binder_calls":N},..]}`
+- `{"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read|action|gesture|global_action|screenshot|input_method","method":".."|null,"code":N,"granted":true|false|null}` (first call per process and category)
+- `{"type":"accessibility_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"calls":{"other":N,"screen_read":N,"action":N,"gesture":N,"global_action":N,"screenshot":N,"input_method":N}},..]}`
+- `{"type":"fileless_detect","pid":N,"ts_ns":N,"comm":"..","kind":"anon_exec_mmap|mprotect_exec|memfd_exec","start":"0x..","size":N,"anon_name":"..","content":"elf|zero|data"|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (`kind`, `content`, `saved` added in v2; `start` is 0 for `memfd_exec`, whose `size` is the memfd's)
+- `{"type":"fileless_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"count":N,"anon_exec_mmap":N,"mprotect_exec":N,"memfd_exec":N,"saved":N},..]}`
+- `{"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,"method":".."|null,"code":N,"oneway":bool[,"uri":".."|,"call":{"authority":"..","method":"..","arg":".."|null}]}` (first call per process/interface/method; every ContentProvider call; enum value appended after `perm_change`)
+- `{"type":"binder_api_summary","processes":[{"pid":N,"calls":[{"interface":..,"method":..,"code":N,"count":N},..]},..],"content_access":[{"pid":N,"method":"QUERY","detail":"content://..","count":N},..]}`
+- `{"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete|memload","kind":"dex|cdex|zip|elf","path":".."|null,"ino":N[,"start":"0x..","region_size":N],"exec":bool|null,"after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}` (each stage once per file; load again when first mapped executable; memload adds `start`/`region_size`, `ino` 0, `path` = the source file or null; enum value appended after `binder_api`)
+- `{"type":"dexload_detect_summary","file_count":N,"untracked":N,"files":[{"pid":N,"comm":"..","kind":"..","path":"..","ino":N,"loaded":bool,"exec":bool,"deleted":bool,"memload":bool,"saved":{..}|null},..]}`
+- `{"type":"net","pid":N,"ts_ns":N,"comm":"..","event":"open|close|dns","proto":"tcp|udp"|null,"dest":"ip:port"|"[v6]:port"|null,"host":".."|null,"host_source":"sni|http|dns|netd"|null,"tx":N|null,"rx":N|null,"duration_ms":N|null}` (open at a flow's first send, close with totals, dns per netd lookup; enum value appended after `dexload_detect`)
+- `{"type":"net_summary","destination_count":N,"untracked":N,"destinations":[{"proto":"tcp","dest":"..","host":".."|null,"pid":N,"comm":"..","connections":N,"tx":N,"rx":N},..],"lookups":[{"host":"..","count":N,"pid":N,"comm":".."},..]}`
+- `{"type":"perm_change","ts_ns":N,"package":"..","category":"permission|appop|role|accessibility|notification-listener|device-admin|installed","name":"..","change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}` (one per fact at start, then one per change; enum value appended after `modcmp`)
+- `{"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..","stage":"fgs_declared|projection_start|virtual_display","interface":".."|null,"method":".."|null,"code":N|null}` (one per process and stage; `fgs_declared` per session, with nulls)
+- `{"type":"screencapture_detect_summary","process_count":N,"processes":[{"pid":N,"comm":..,"stages":["fgs_declared",..],"fgs_sessions":N},..]}`
 - `{"type":"proc_event_summary","forks":N,"exits":N,"signal_exits":N}`
 
 Omitted entirely when the analyzer saw no relevant events (mirrors
@@ -1609,17 +1944,43 @@ Design points worth knowing:
   hardcoded key list does not include — those records currently fall through
   ingest unrecognized by `_summaries` (same "retained but unhandled" outcome
   as any unknown `type`, not a crash, just not queryable via the `summaries`
-  tool below yet). `load_structured()` also loads all 10 per-event mod-analyzer record
+  tool below yet). `load_structured()` also loads all 12 per-event mod-analyzer record
   types (`accessibility_detect`/`screencapture_detect`/`exfil_detect`/
   `massdelete_detect`/`fileless_detect`/`spawn`/`proc_exit`/`execve`/`prop`/
-  `file_access`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
+  `file_access`, plus `perm_change` -- which has no `pid`, being
+  package-scoped -- and `binder_api`) into a `mod_events` table (`pid`/`type`/`ts_ns`/`comm`/`raw`),
   consumed by the `incidents` and `mod_events` tools below. `_SUMMARY_TYPES`
   now covers all 9 mod-analyzer teardown summary types (the original 5 plus
   `accessibility_detect_summary`/`exfil_detect_summary`/
   `fileless_detect_summary`/`screencapture_detect_summary`).
+- `mod_findings.py` — stdlib-only (the lab harness runs it without the MCP
+  server): the "what's new" view of an `anubee mod` run. Each record reduces
+  to a `(section, key)`: binder `interface.method`, a probed path, the argv,
+  `proto host`, a permission change, an accessibility call, a dexload stage
+  -- with the package, `/data/app/~~…/` install dir, `/proc/<pid>`,
+  `task/<tid>`, hex and 6+-digit numbers normalized out. A *noise profile*
+  counts, per key, how many benign baseline apps showed it; a key seen in at
+  least `min_apps` of them (default half, rounded up) is device noise.
+  Snapshots (`perm_change` baseline), summaries and own-folder opens are not
+  behaviour; record types it doesn't know are always shown. The view groups
+  findings per section in first-appearance order with count, first-seen
+  seconds and failed outcomes, counts what it hid, and carries degraded
+  coverage so an empty section can't read as "checked, nothing there".
+
+```mermaid
+flowchart LR
+    B["benign apps, traced<br/>like the samples"] -->|profile| P[(noise profile<br/>key -> #apps)]
+    S["sample run JSONL"] --> K["record -> (section, key)<br/>normalized"]
+    P --> F{"seen in >= min_apps<br/>benign apps?"}
+    K --> F
+    F -->|yes| H["hidden (counted)"]
+    F -->|no| V["finding: count, first seen, errors"]
+```
+
 - `server.py` — FastMCP tools over the `load()` path: `overview`, `hot_loops`,
   `syscall_histogram`, `files`, `threads`, `sockets`, `errors`,
   `distinct_backtraces`, `query`, `get_event`, `search`, `wx_scan`, `diff_traces`,
+  `mod_findings_view` / `mod_noise_profile` (see `mod_findings.py` below),
   plus on-device `list_libraries` (via `anubee lib`) / `dump_library` (via
   `anubee dump`). Over the `load_structured()` path: `coverage` (per-engine
   coverage-health rows — "was this trace clean"), `call_histogram` (call counts by

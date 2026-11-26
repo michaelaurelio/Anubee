@@ -18,6 +18,8 @@
 #include "common/human_out.h"      // SYM1 Phase 4c: shared stdout formatter
 #include "modules/mod_events.h"
 #include "modules/mod_emit.h"
+#include "modules/execve_classify.h"
+#include "modules/sysret_pend.h"
 
 // ── per-binary exec tally (tallied unconditionally so summary survives -o) ───
 
@@ -26,22 +28,28 @@
 typedef struct {
     char     path[128];   // sized to execve_event.filename
     uint32_t count;
+    uint32_t failed;      // attempts that returned an error (e.g. a PATH-search miss)
+    unsigned flags;       // EXF_* seen on any run of this binary
 } exec_stat_t;
 
 static exec_stat_t exec_stats[EXEC_STAT_MAX];
 static int         exec_stat_count = 0;
 
-static void exec_stat_add(const char *path)
+static void exec_stat_add(const char *path, unsigned flags, int failed)
 {
     for (int i = 0; i < exec_stat_count; i++) {
         if (strcmp(exec_stats[i].path, path) == 0) {
             exec_stats[i].count++;
+            exec_stats[i].failed += failed ? 1 : 0;
+            exec_stats[i].flags |= flags;
             return;
         }
     }
     if (exec_stat_count >= EXEC_STAT_MAX) return;
     snprintf(exec_stats[exec_stat_count].path, sizeof(exec_stats[0].path), "%s", path);
     exec_stats[exec_stat_count].count = 1;
+    exec_stats[exec_stat_count].failed = failed ? 1 : 0;
+    exec_stats[exec_stat_count].flags = flags;
     exec_stat_count++;
 }
 
@@ -52,44 +60,48 @@ static int exec_stat_cmp_desc(const void *a, const void *b)
     return (ca > cb) ? -1 : (ca < cb) ? 1 : 0;
 }
 
-// Basenames that indicate root-access or tamper-detection-relevant execution.
-// Edit freely; NULL-terminated like rasp_props in prop_read.c.
-static const char *const suspicious_bins[] = {
-    "su", "magisk", "busybox", "mount", "sh", "bash",
-    "getprop", "setprop", "setenforce", "getenforce",
-    NULL,
-};
-
-static bool is_suspicious_bin(const char *path)
-{
-    // compare basename only
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    for (int i = 0; suspicious_bins[i]; i++)
-        if (strcmp(suspicious_bins[i], base) == 0) return true;
-    return false;
-}
-
 static struct execve_bpf *g_skel       = NULL;
 static struct bpf_link   *ex_ff        = NULL;
 static struct ring_buffer *g_rb        = NULL;
 static struct bpf_link    *execve_link   = NULL;
 static struct bpf_link    *execveat_link = NULL;
 static struct bpf_link    *exec_link     = NULL;
+static struct bpf_link    *execve_ret_link   = NULL;
+static struct bpf_link    *execveat_ret_link = NULL;
+static struct sysret_pend *ex_pend = NULL;   // exec attempts awaiting their result
+static struct anubee_mod_ctx *ex_mc = NULL;
+
+// An exec attempt held until its result arrives. Frames are symbolized when the
+// entry event is handled (as before), not after: by the time a successful exec
+// returns, /proc/<pid>/maps describes the new program.
+struct ex_rec {
+    struct execve_event e;
+    int  have_syms;
+    char syms[STACK_DEPTH][256];
+};
+static struct ex_rec ex_scratch;
 
 // ---- ring-buffer callback ---------------------------------------------------
 
-static int ex_handle_event(void *ctx, void *data, size_t sz)
+static void ex_finish(void *ctx, const void *data, size_t sz, long long ret, int known)
 {
     struct anubee_mod_ctx *mc = ctx;
-    const struct trace_event_header *hdr = data;
+    (void)sz;
+    const struct ex_rec *x = data;
+    const struct execve_event *e = &x->e;
+    struct sys_result res = { ret, known };
+    // sched_process_exec fallback: the event itself means the exec succeeded
+    if (exec_link) { res.ret = 0; res.known = 1; }
+    const struct sys_result *r = (execve_ret_link || execveat_ret_link || exec_link) ? &res : NULL;
+    int failed = res.known && res.ret < 0;
 
-    if (hdr->type != MOD_EV_EXECVE || sz < sizeof(struct execve_event))
-        return 0;
-
-    const struct execve_event *e = data;
-
-    exec_stat_add(e->filename);
+    const char *av[MAX_ARGV_ENTRIES];
+    for (int i = 0; i < MAX_ARGV_ENTRIES; i++) av[i] = e->argv[i];
+    unsigned fl = ex_classify(e->filename, av,
+                              (int)(e->argc < MAX_ARGV_ENTRIES ? e->argc : MAX_ARGV_ENTRIES));
+    char flags[96];
+    ex_flag_names(fl, flags, sizeof flags);
+    exec_stat_add(e->filename, fl, failed);
 
     if (!mc->quiet) {
         char argv_buf[MAX_ARGV_ENTRIES * (MAX_ARGV_STR + 4) + 4];
@@ -100,47 +112,74 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
             off += snprintf(argv_buf + off, sizeof(argv_buf) - off, "\"%s\"", e->argv[j]);
         }
         snprintf(argv_buf + off, sizeof(argv_buf) - off, "]");
+        char outcome[32] = "";
+        if (failed) {
+            const char *en = sys_errno_name(res.ret);
+            snprintf(outcome, sizeof outcome, " [failed %s]", en ? en : "");
+        }
 
         // SYM1 Phase 4c: was printf(...); the caller/frame lines already
         // hand-rolled human_out's "         [tag]   | " prefix (pre-dating
         // human_out.c) but with a stale "[event]" tag mismatched against this
         // file's own "[exec]" header -- now unified through human_detail with
         // the correct "exec" tag.
-        ts_print("[exec]  > [EXEC]  PID:%d (%s) %s%s%s\n",
+        ts_print("[exec]  > [EXEC]  PID:%d (%s) %s%s%s%s%s%s%s%s\n",
                e->h.pid, e->comm, e->filename,
                e->argc ? " " : "",
-               e->argc ? argv_buf : "");
+               e->argc ? argv_buf : "",
+               e->truncated ? " [cut off]" : "",
+               flags[0] ? " [" : "", flags, flags[0] ? "]" : "", outcome);
 
-        if (e->stack_depth > 0) {
+        if (e->stack_depth > 0 && x->have_syms) {
             __u32 start = 1;
-            if (start < e->stack_depth && e->call_stack[start]) {
-                char caller_sym[320];
-                sym_resolve(hdr->pid, e->call_stack[start], caller_sym, sizeof(caller_sym));
-                human_detail("exec", "caller: %s\n", caller_sym);
-            }
+            if (start < e->stack_depth && e->call_stack[start])
+                human_detail("exec", "caller: %s\n", x->syms[start]);
             if (mc->verbose) {
-                for (__u32 i = start + 1; i < e->stack_depth; i++) {
+                for (__u32 i = start + 1; i < e->stack_depth && i < STACK_DEPTH; i++) {
                     if (!e->call_stack[i]) break;
-                    char frame_sym[320];
-                    sym_resolve(hdr->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
-                    human_detail("exec", "#%u %s\n", i, frame_sym);
+                    human_detail("exec", "#%u %s\n", i, x->syms[i]);
                 }
             }
         }
     }
 
     if (mc->sink != NULL) {
-        char symbuf[STACK_DEPTH][320];
         const char *syms[STACK_DEPTH];
-        for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
-            if (!e->call_stack[i]) { syms[i] = NULL; continue; }
-            sym_resolve(hdr->pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
-            syms[i] = symbuf[i];
-        }
-        mod_emit_execve(&mc->sink->jb, e, syms);
+        for (int i = 0; i < STACK_DEPTH; i++)
+            syms[i] = (x->have_syms && i < (int)e->stack_depth && e->call_stack[i]) ? x->syms[i] : NULL;
+        mod_emit_execve(&mc->sink->jb, e, syms, flags, r);
         anubee_sink_emit(mc->sink);
     }
+}
 
+// Entry events (symbolized now) wait for their thread's result event.
+static int ex_handle_event(void *ctx, void *data, size_t sz)
+{
+    struct anubee_mod_ctx *mc = ctx;
+    const struct trace_event_header *hdr = data;
+
+    if (hdr->type == MOD_EV_SYSRET && sz >= sizeof(struct sysret_event)) {
+        const struct sysret_event *r = data;
+        if (ex_pend) sysret_pend_result(ex_pend, r->h.tid, r->ret, ex_finish, ctx);
+        return 0;
+    }
+    if (hdr->type != MOD_EV_EXECVE || sz < sizeof(struct execve_event))
+        return 0;
+
+    struct ex_rec *x = &ex_scratch;
+    memcpy(&x->e, data, sizeof x->e);
+    x->have_syms = !mc->quiet || mc->sink != NULL;
+    if (x->have_syms) {
+        for (int i = 0; i < (int)x->e.stack_depth && i < STACK_DEPTH; i++) {
+            x->syms[i][0] = '\0';
+            if (x->e.call_stack[i])
+                sym_resolve(hdr->pid, x->e.call_stack[i], x->syms[i], sizeof x->syms[i]);
+        }
+    }
+    if (ex_pend)
+        sysret_pend_entry(ex_pend, hdr->tid, x, sizeof *x, ex_finish, ctx);
+    else
+        ex_finish(ctx, x, sizeof *x, 0, 0);
     return 0;
 }
 
@@ -178,6 +217,15 @@ static struct ring_buffer *ex_setup(int uid, struct anubee_mod_ctx *mc)
     if (!execveat_link)
         fprintf(stderr, "mod execve: kprobe/__arm64_sys_execveat unavailable\n");
 
+    // Return probes: did each exec run? Optional -- without them records carry no result.
+    execve_ret_link   = execve_link   ? bpf_program__attach(g_skel->progs.on_execve_ret)   : NULL;
+    execveat_ret_link = execveat_link ? bpf_program__attach(g_skel->progs.on_execveat_ret) : NULL;
+    if (execve_link && !execve_ret_link)
+        fprintf(stderr, "mod execve: kretprobe/__arm64_sys_execve unavailable (no exec outcomes)\n");
+    if (execve_ret_link || execveat_ret_link)
+        ex_pend = sysret_pend_new(64, sizeof(struct ex_rec));
+    ex_mc = mc;
+
     if (!execve_link && !execveat_link) {
         fprintf(stderr, "mod execve: both kprobes unavailable, falling back to sched_process_exec (filename only)\n");
         exec_link = bpf_program__attach(g_skel->progs.on_proc_exec);
@@ -201,6 +249,9 @@ static struct ring_buffer *ex_setup(int uid, struct anubee_mod_ctx *mc)
     return g_rb;
 
 err:
+    if (execve_ret_link)   { bpf_link__destroy(execve_ret_link);   execve_ret_link   = NULL; }
+    if (execveat_ret_link) { bpf_link__destroy(execveat_ret_link); execveat_ret_link = NULL; }
+    if (ex_pend)       { sysret_pend_free(ex_pend);        ex_pend       = NULL; }
     if (ex_ff)         { bpf_link__destroy(ex_ff);         ex_ff         = NULL; }
     if (execve_link)   { bpf_link__destroy(execve_link);   execve_link   = NULL; }
     if (execveat_link) { bpf_link__destroy(execveat_link); execveat_link = NULL; }
@@ -211,6 +262,15 @@ err:
 
 static void ex_teardown(void)
 {
+    // Late results still in the ring first, then attempts still waiting go out unknown.
+    if (g_rb) ring_buffer__consume(g_rb);
+    if (ex_pend) {
+        if (ex_mc) sysret_pend_flush(ex_pend, ex_finish, ex_mc);
+        sysret_pend_free(ex_pend);
+        ex_pend = NULL;
+    }
+    if (execve_ret_link)   { bpf_link__destroy(execve_ret_link);   execve_ret_link   = NULL; }
+    if (execveat_ret_link) { bpf_link__destroy(execveat_ret_link); execveat_ret_link = NULL; }
     if (ex_ff)         { bpf_link__destroy(ex_ff);         ex_ff         = NULL; }
     if (execve_link)   { bpf_link__destroy(execve_link);   execve_link   = NULL; }
     if (execveat_link) { bpf_link__destroy(execveat_link); execveat_link = NULL; }
@@ -231,7 +291,7 @@ static void ex_print_summary(void)
     int flagged = 0;
     for (int i = 0; i < exec_stat_count; i++) {
         total += exec_stats[i].count;
-        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+        if (exec_stats[i].flags) flagged++;
     }
 
     int use_color = isatty(STDOUT_FILENO);
@@ -254,16 +314,21 @@ static void ex_print_summary(void)
     printf("[exec]" EXEC_SEP);
 
     for (int i = 0; i < exec_stat_count; i++) {
-        bool sus = is_suspicious_bin(exec_stats[i].path);
+        bool sus = exec_stats[i].flags != 0;
+        char fn[96];
+        ex_flag_names(exec_stats[i].flags, fn, sizeof fn);
+        char fl[32] = "";
+        if (exec_stats[i].failed)
+            snprintf(fl, sizeof fl, "  (%u failed)", exec_stats[i].failed);
         if (sus && use_color)
-            printf("[exec]  \033[1;33m[!] %6u  %s\033[0m\n",
-                   exec_stats[i].count, exec_stats[i].path);
+            printf("[exec]  \033[1;33m[!] %6u  %s  [%s]%s\033[0m\n",
+                   exec_stats[i].count, exec_stats[i].path, fn, fl);
         else if (sus)
-            printf("[exec]  [!] %6u  %s\n",
-                   exec_stats[i].count, exec_stats[i].path);
+            printf("[exec]  [!] %6u  %s  [%s]%s\n",
+                   exec_stats[i].count, exec_stats[i].path, fn, fl);
         else
-            printf("[exec]      %6u  %s\n",
-                   exec_stats[i].count, exec_stats[i].path);
+            printf("[exec]      %6u  %s%s\n",
+                   exec_stats[i].count, exec_stats[i].path, fl);
     }
 
     printf("[exec]" EXEC_SEP);
@@ -285,7 +350,7 @@ static void ex_emit_summary(struct anubee_sink *s)
     int flagged = 0;
     for (int i = 0; i < exec_stat_count; i++) {
         total += exec_stats[i].count;
-        if (is_suspicious_bin(exec_stats[i].path)) flagged++;
+        if (exec_stats[i].flags) flagged++;
     }
 
     struct jbuf *j = &s->jb;
@@ -300,7 +365,18 @@ static void ex_emit_summary(struct anubee_sink *s)
         if (i) jb_c(j, ',');
         jb_s(j, "{\"path\":\"");  jb_esc(j, exec_stats[i].path); jb_c(j, '"');
         jb_s(j, ",\"count\":");   jb_u64(j, exec_stats[i].count);
-        jb_s(j, ",\"suspicious\":"); jb_s(j, is_suspicious_bin(exec_stats[i].path) ? "true" : "false");
+        jb_s(j, ",\"failed\":");  jb_u64(j, exec_stats[i].failed);
+        jb_s(j, ",\"suspicious\":"); jb_s(j, exec_stats[i].flags ? "true" : "false");
+        char fn[96];
+        ex_flag_names(exec_stats[i].flags, fn, sizeof fn);
+        jb_s(j, ",\"flags\":[");
+        for (char *p = fn, *t; *p; p = t) {
+            t = strchr(p, ',');
+            if (t) *t++ = '\0'; else t = p + strlen(p);
+            if (p != fn) jb_c(j, ',');
+            jb_c(j, '"'); jb_esc(j, p); jb_c(j, '"');
+        }
+        jb_c(j, ']');
         jb_c(j, '}');
     }
     jb_c(j, ']');
@@ -317,7 +393,8 @@ static unsigned long long ex_drops(void)
 
 const anubee_analyzer_t analyzer_execve = {
     .name          = "execve",
-    .description   = "Trace execve syscalls with full argv and call stack",
+    .description   = "Trace execve syscalls with full argv and call stack; each run tagged "
+                      "root/recon/tamper/control/shell/app_dir/memfd (commands inside sh -c too)",
     .setup         = ex_setup,
     .teardown      = ex_teardown,
     .print_summary = ex_print_summary,

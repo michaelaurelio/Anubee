@@ -16,6 +16,24 @@ static int checks = 0, failures = 0;
     if (!(cond)) { failures++; printf("  FAIL: %s\n", msg); } \
 } while (0)
 
+// Host stand-in for libbpf's ring_buffer__consume so the static-inline poll
+// loops in runtime.h can run without BPF: records which fake rb was drained.
+static int consume_calls[4];
+int ring_buffer__consume(struct ring_buffer *rb)
+{
+    consume_calls[(int)(long)rb]++;
+    return 0;
+}
+
+// anubee_rb_poll_multi_cb tick: counts passes, raises stop on the 3rd.
+struct tick_probe { int calls; volatile sig_atomic_t *stop; };
+static void probe_tick(void *ctx)
+{
+    struct tick_probe *p = ctx;
+    if (++p->calls == 3)
+        *p->stop = 1;
+}
+
 // Capture one anubee_drops_report(k, q) call; returns malloc'd NUL-terminated string.
 static char *capture_drops_report(unsigned long long k, unsigned long long q)
 {
@@ -127,6 +145,30 @@ int main(void)
         CHECK(run_child_sigint(2, 0, err, sizeof err) == 130,
               "stop: 2nd signal exits 130 (no drain)");
         CHECK(err[0] == '\0', "stop: no warning when no drain in flight");
+    }
+
+    // anubee_rb_poll_multi_cb: the tick runs on the polling thread once per
+    // pass, after every rb is drained. mod relies on this to emit
+    // thread-produced alerts from the single sink-writer thread.
+    {
+        static volatile sig_atomic_t stop;
+        stop = 0;
+        struct ring_buffer *rbs[2] = { (struct ring_buffer *)1L, (struct ring_buffer *)2L };
+        struct tick_probe p = { 0, &stop };
+        memset(consume_calls, 0, sizeof consume_calls);
+        anubee_rb_poll_multi_cb(rbs, 2, &stop, probe_tick, &p);
+        CHECK(p.calls == 3, "poll_multi_cb: tick called once per pass until stop");
+        CHECK(consume_calls[1] == 3 && consume_calls[2] == 3,
+              "poll_multi_cb: every rb drained once per pass");
+
+        stop = 0;
+        memset(consume_calls, 0, sizeof consume_calls);
+        struct tick_probe q = { 0, &stop };
+        // NULL tick is allowed (plain anubee_rb_poll_multi wraps it); stop is
+        // pre-set via a 1-pass tick-less run so the loop must still exit.
+        stop = 1;
+        anubee_rb_poll_multi_cb(rbs, 2, &stop, NULL, &q);
+        CHECK(q.calls == 0, "poll_multi_cb: NULL tick never called");
     }
 
     printf("%d checks, %d failures\n", checks, failures);

@@ -32,4 +32,25 @@
 // caller doesn't need it.
 int screencapture_detect_parse_dumpsys(const char *buf, const char *pkg, int *out_pid);
 
+// ---- capture stages ------------------------------------------------------
+// How far a screen-capture attempt got. fgs_declared comes from the dumpsys
+// poll above (a mediaProjection-type foreground service: required before
+// capture on Android 14+, and running even while the consent prompt is up);
+// the others from the app's own decoded Binder calls.
+#define SC_IFACE_PROJECTION "android.media.projection.IMediaProjection"
+#define SC_IFACE_DISPLAY    "android.hardware.display.IDisplayManager"
+
+enum sc_stage {
+    SC_NONE = 0,
+    SC_FGS_DECLARED,      // mediaProjection foreground service running
+    SC_PROJECTION_START,  // IMediaProjection.start: consent given, capture live
+    SC_VIRTUAL_DISPLAY,   // IDisplayManager.createVirtualDisplay: screen mirrored into the app
+    SC_STAGE_N
+};
+
+int sc_stage_of(const char *iface, const char *method);
+const char *sc_stage_name(int stage);
+// seen: bitmask (1u << stage) of stages already observed for the process.
+int sc_stage_alerts(int stage, unsigned seen);
+
 #endif /* __ANUBEE_SCREENCAPTURE_DETECT_PARSE_H */

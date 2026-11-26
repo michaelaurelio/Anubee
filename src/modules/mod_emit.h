@@ -17,6 +17,8 @@ struct exfil_detect_event; // modules/mod_events.h
 struct accessibility_detect_event; // modules/mod_events.h
 struct fileless_detect_event; // modules/mod_events.h
 struct screencapture_detect_event; // modules/mod_events.h
+struct binder_api_event;          // modules/mod_events.h
+struct dexload_detect_event;      // modules/mod_events.h
 
 // {"type":"spawn","pid":N,"tid":N,"child_pid":N,"comm":"..."}
 void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
@@ -27,9 +29,15 @@ void mod_emit_spawn(struct jbuf *j, const struct spawn_event *e);
 void mod_emit_proc_exit(struct jbuf *j, const struct proc_exit_event *e);
 
 // {"type":"execve","pid":N,"tid":N,"comm":"..","filename":"..","argc":N,
-//  "argv":["..",..],"backtrace":[{"frame":N,"addr":"0x..","symbol":".."},..]}
+//  "argv":["..",..],"backtrace":[{"frame":N,"addr":"0x..","symbol":".."},..],
+//  "argv_truncated":bool,"flags":["root","recon",..]}
 // syms: per-frame resolved strings (NULL → addr-only; syms[i]==NULL/"" → omit that frame's symbol).
-void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms);
+// flags: execve_classify.h names, comma-joined ("" or NULL = none).
+// r: the exec's outcome (NULL = no result field). Appends "result":N plus
+// "error":"ENAME" on failure, or "result":null when the outcome never arrived.
+struct sys_result;
+void mod_emit_execve(struct jbuf *j, const struct execve_event *e, const char *const *syms,
+                     const char *flags, const struct sys_result *r);
 
 // {"type":"prop","op":"get|find|read","pid":N,"tid":N,"comm":"..",
 //  "name":"..","value":"..","is_ret":N,"found":N}
@@ -45,7 +53,8 @@ void mod_emit_prop(struct jbuf *j, const struct prop_event *e);
 // pre-decoded via file_access_decode_flags (caller decodes; keeps this builder
 // free of the flags bit-layout).
 void mod_emit_file_access(struct jbuf *j, const struct file_access_event *e,
-                           unsigned categories, const char *const *flag_strs, int n_flags);
+                           unsigned categories, const char *const *flag_strs, int n_flags,
+                           const struct sys_result *r);   // r as for mod_emit_execve
 
 // {"type":"massdelete_detect","pid":N,"comm":"..","touch_count":N,
 //  "distinct_estimate":N,"window_ms":N,"sample_path":"..",
@@ -65,8 +74,9 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 //  "sample_path":"..","dest":".."|null
 //  [,"sensitive_paths":["..",...],"sensitive_path_count":N,"paths_truncated":true|false]}
 // dest_str: caller-decoded via decode_sockaddr (common/decode.h) -- keeps this
-// builder free of that logic. NULL or empty -> JSON null (no connect()
-// observed before the byte threshold tripped). sensitive_paths/
+// builder free of that logic. It is the kernel-side peer of the socket the
+// threshold-tripping send went to; NULL or empty -> JSON null (defensive --
+// only sends to an outbound IPv4/IPv6 peer are counted, so an alert has one). sensitive_paths/
 // sensitive_path_count/paths_truncated: only present when verbose is set.
 // sensitive_paths always has min(sensitive_path_count, EXFIL_DETECT_RING_LEN)
 // entries -- the ring only ever physically holds RING_LEN slots.
@@ -77,32 +87,73 @@ void mod_emit_massdelete_detect(struct jbuf *j, const struct massdelete_detect_e
 void mod_emit_exfil_detect(struct jbuf *j, const struct exfil_detect_event *e,
                            const char *dest_str, int verbose);
 
-// {"type":"accessibility_detect","pid":N,"comm":"..","touch_count":N,"window_ms":N,
-//  "granted":true|false|null}
-// granted mirrors massdelete_detect's manage_ext_storage tri-state: 1 -> true,
-// 0 -> false, negative (unknown/unchecked) -> null. No "severity" field --
-// consumers derive it from touch_count/granted the same way classify_accessibility()
-// does, matching massdelete_detect/exfil_detect's convention of exposing raw
-// fields rather than a baked-in classification string.
-void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e, int granted);
+// {"type":"accessibility_detect","pid":N,"ts_ns":N,"comm":"..","category":"screen_read",
+//  "method":"getWindows"|null,"code":N,"granted":true|false|null}
+// One record per (process, abuse category), on the first
+// IAccessibilityServiceConnection call in that category
+// (accessibility_detect_classify.h). granted mirrors massdelete_detect's
+// manage_ext_storage tri-state: 1 -> true, 0 -> false, negative -> null.
+void mod_emit_accessibility_detect(struct jbuf *j, const struct accessibility_detect_event *e,
+                                   const char *category, const char *method, int granted);
 
-// {"type":"fileless_detect","pid":N,"comm":"..","start":"0x..","size":N,
-//  "anon_name":".."}
-// anon_name is always "" in this version -- the reworked detection path
-// (do_mmap entry/exit correlation + kernel-side dalvik- suppression via
-// __arm64_sys_prctl, not inline tag capture at mmap time) has no way to
-// capture/propagate a non-dalvik tag; the field is reserved in the schema
-// for a possible future version that does. No burst/threshold/severity
-// fields -- v1 has one signal only, emitted as-is, same "raw fields, no
-// baked-in verdict" convention as every prior mod analyzer.
-void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e);
+// {"type":"fileless_detect","pid":N,"ts_ns":N,"comm":"..",
+//  "kind":"anon_exec_mmap|mprotect_exec|memfd_exec","start":"0x..","size":N,
+//  "anon_name":"..","content":"elf|zero|data"|null,
+//  "saved":{"file":"..","sha256":"..","size":N}|null}
+// anon_name is the region's (or memfd's) name as the kernel holds it, "" if
+// unnamed. content classifies the region's first bytes when they could be
+// read; saved is the copy taken through /proc/<pid>/mem (or the memfd).
+void mod_emit_fileless_detect(struct jbuf *j, const struct fileless_detect_event *e,
+                              const char *kind, const char *content,
+                              const char *saved, const char *sha256, long long size);
 
-// {"type":"screencapture_detect","pid":N,"comm":"..","binder_calls_context":N}
-// binder_calls_context is the passive system_server Binder-call count
-// observed since the last alert for this pid (coarse/cumulative, not
-// windowed -- see design doc's Known limitations). No burst/threshold/
-// severity fields, same "raw fields, no baked-in verdict" convention as
-// every prior mod analyzer.
-void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e);
+// {"type":"screencapture_detect","pid":N,"ts_ns":N,"comm":"..",
+//  "stage":"fgs_declared|projection_start|virtual_display",
+//  "interface":".."|null,"method":".."|null,"code":N|null}
+// One per (process, stage) -- fgs_declared again per new session. Binder
+// stages carry the decoded call; fgs_declared (dumpsys poll) has nulls.
+void mod_emit_screencapture_detect(struct jbuf *j, const struct screencapture_detect_event *e,
+                                   const char *stage, const char *iface, const char *method);
+
+// {"type":"dexload_detect","pid":N,"ts_ns":N,"comm":"..","stage":"drop|load|delete",
+//  "kind":"dex|cdex|zip|elf","path":".."|null,"ino":N,"exec":bool|null,
+//  "after_drop_ms":N|null,"saved":{"file":"..","sha256":"..","size":N}|null}
+// exec is set on load only; after_drop_ms < 0 and saved == NULL print null.
+// stage "memload" (a DEX ART holds in anonymous memory) adds
+// "start":"0x..","region_size":N after ino (0); path is the file ART
+// extracted it from, or null for a DEX loaded from memory.
+void mod_emit_dexload_detect(struct jbuf *j, const struct dexload_detect_event *e,
+                             const char *kind, const char *path, long long after_drop_ms,
+                             const char *saved, const char *sha256, long long size);
+
+// {"type":"net","pid":N,"ts_ns":N,"comm":"..","event":"open|close|dns",
+//  "proto":"tcp|udp"|null,"dest":"ip:port"|null,"host":".."|null,
+//  "host_source":"sni|http|dns|netd"|null,"tx":N|null,"rx":N|null,
+//  "duration_ms":N|null} -- open at a flow's first send (host from the first
+// bytes: TLS SNI, HTTP Host, DNS question), close with byte totals, dns for a
+// lookup sent to netd. Totals/duration only on close.
+struct net_event;
+void mod_emit_net(struct jbuf *j, const struct net_event *e, const char *dest,
+                  const char *host, const char *host_source);
+
+// {"type":"binder_api","pid":N,"tid":N,"ts_ns":N,"comm":"..","interface":".."|null,
+//  "method":".."|null,"code":N,"oneway":bool} -- first call of (interface, method)
+// by this process. iface NULL = token not decodable; method NULL = code not in
+// the device's framework stubs (app-private or vendor AIDL, or a non-AIDL call).
+// cp (may be NULL): IContentProvider detail -> adds "uri":".." or
+// "call":{"authority":..,"method":..,"arg":..|null}.
+struct binder_cp_detail;
+void mod_emit_binder_api(struct jbuf *j, const struct binder_api_event *e,
+                         const char *iface, const char *method,
+                         const struct binder_cp_detail *cp);
+
+// {"type":"perm_change","ts_ns":N,"package":"..","category":"..","name":"..",
+//  "change":"baseline|granted|revoked|changed","old":".."|null,"new":".."|null}
+// `key` is a perm_watch_parse.h fact key; category/name are split from it
+// (special-access keys have no prefix, so name == category). Built in
+// userspace (no BPF event), so it takes its fields directly.
+void mod_emit_perm_change(struct jbuf *j, unsigned long long ts_ns, const char *pkg,
+                          const char *key, const char *change,
+                          const char *old_val, const char *new_val);
 
 #endif /* __ANUBEE_MOD_EMIT_H */

@@ -293,6 +293,73 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ## Minor — cleanups, perf nits, cosmetic, verification
 
+### Device-test portability — 2026-11-24
+
+Found running the full `make device-test` suite on a second phone (MediaTek,
+GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
+the tests encode the original phone's environment.
+
+- **DT1 — `lib` asserts `bionic/libc.so` appears.** The app inherits libc
+  already mapped from zygote, so a fresh launch on this phone never maps it
+  and the check fails while the engine is working (`[lib]` lines flow). Assert
+  on a library the app itself maps, or accept the maps-seed record.
+- **DT2 — `syscalls-cfi` fails `managed_naming_off:true`** on this phone's ART
+  build. Same root cause as the Major item "CFI / managed-frame naming —
+  generalize beyond one ART build"; this is a second confirming device.
+- **DT3 — default `ANUBEE_TEST_PKG` (`com.android.deskclock`) doesn't exist on
+  vendor skins** (here it's a vendor-prefixed clock), and `dump-now` needs a
+  test app that isn't installed. Pick a package from `pm list packages` at
+  preflight, or fail with a clear "set ANUBEE_TEST_PKG" message.
+- **DT4 — `proc-event` counted threads as forks — fixed.** A triage run on the
+  clock app reported 105 "forks, 0 exits"; the fork hook now skips thread
+  creation (device test `mod-proc-event`).
+- **BA1 — `binder-api` naming gaps.** Native-only interfaces (C++ AIDL in
+  `libgui`/HALs: `ISurfaceComposer`, `media.c2.*`) and app-private AIDL show as
+  `#code`. App AIDL could be named the same way from the target's own APK
+  DEX; native ones need the `.so`'s generated `BnX::onTransact` tables.
+- **BA2 — `binder-api` sees requests, not replies.** Return values (e.g. what
+  a `QUERY` returned) would need the reply path (`BC_REPLY` to this process)
+  and cursor-window decoding.
+- **FA1 — `file-access` doesn't see `stat`/`access` probes.** RootBeer-style
+  root checks (`/system/xbin/su`, `/sbin/su`, Magisk paths) and many
+  emulator checks (`/dev/qemu_pipe`, `/system/lib/libc_malloc_debug_qemu.so`)
+  test existence with `faccessat`/`newfstatat`, not `open`. Hook those two,
+  gated to a fixed path list, and tag `root_probe` / `emulator_probe`.
+- **NET1 — `net` has no host for QUIC flows.** QUIC (UDP 443, most Google
+  traffic) encrypts the ClientHello with keys derived from the connection
+  ID; decrypting the Initial packet (HKDF + AES-128-GCM, RFC 9001) would
+  give its SNI. Until then those flows show dest IP + bytes only.
+- **NET2 — `net` doesn't link a looked-up name to the IPs it resolved to.**
+  Needs the dnsproxyd reply (or the UDP/53 answer) decoded; a flow with no
+  SNI/Host (raw TCP C2, QUIC) then has no name.
+- **NET3 — `net` misses the first bytes of a flow opened before attach**
+  (no host), and a ClientHello whose SNI lies beyond the first 2 KiB.
+- **DL1 — `dexload-detect` misses a payload deleted before it is mapped.**
+  The copy is taken on load (or from `map_files`/open fds after unlink); a
+  file written, never mapped and unlinked within milliseconds is reported
+  (drop + delete) but not saved. Fix: opt-in hard link of each dropped file
+  at drop time (changes the file's link count -- visible to a check, so not
+  default), or a copy from a periodic tick shortly after the drop.
+- **DL3 — `dexload-detect` memload sees ART's named regions only.** A DEX
+  a packer decrypts into its own heap buffer (malloc/`byte[]`) and hands to
+  ART through `InMemoryDexClassLoader` is caught (ART copies it into
+  `dalvik-DEX data`); a custom loader that parses DEX itself, or ART paths
+  that keep the bytes in an unnamed buffer, isn't. A DEX overwritten in its
+  region within 2 s of the naming may be read mid-copy (header check
+  guards against a zero region, not a partial one).
+- **DL2 — `dexload-detect` drop coverage.** Only `vfs_write` at offset 0 is
+  hooked: `writev`, `sendfile`/`copy_file_range` (`FileChannel.transferTo`),
+  `io_uring` and writes through a shared mapping aren't seen as drops (the
+  load hook still fires, but the file is unknown). Encrypted payloads
+  decrypted in memory never have a magic header on disk.
+- **DT5 — `accessibility-detect` fired on a benign app.** Fixed: the
+  volume signal is replaced by decoded `IAccessibilityServiceConnection`
+  calls; the device test now asserts no alert on an ordinary app and a
+  `screen_read` alert from TalkBack.
+- Fixed in passing: the `exfil-detect` test silently needed a default network
+  route (offline, `connect()` failed and SIGPIPE killed the generator). The
+  generator now uses a private network namespace.
+
 ### anubee-mcp full tool sweep — 2026-07-18
 
 - **MCP1 — audit the remaining 28 `@mcp.tool` handlers.** Triggered by a
@@ -422,36 +489,24 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
   arming (a soft precondition), not the byte-threshold detection itself.
   `writev()` calls with more than 8 iovecs undercount past the 8th entry
   (bounded-loop limit for verifier provability).
-- `mod accessibility-detect` known v1 limitations (shipped 2026-07-12): no transaction-code
-  decode — the analyzer proves "high Binder call volume to `system_server` while
-  Accessibility-granted," not *which* privileged action fired (parked, same version-
-  treadmill risk shape as ART's `k_table`/`ANUBEE_ART_OFFSETS`). Only gates on
-  `system_server` as the destination — misses accessibility routing through any
-  OEM-specific separate framework process. Grant check
-  (`enabled_accessibility_services`) is a package-substring match against a
-  colon-separated settings string, not a structured parse — a package name that
-  happens to be a substring of another entry could false-match. Threshold (50 calls/
-  5s) evadable by throttling. `sys_server_pid_map` is resolved once at startup; a
-  `system_server` restart mid-trace (rare) goes unnoticed and the gate silently stops
-  matching.
-- `mod fileless-detect` known v1 limitations (shipped 2026-07-12): false positives from
-  legitimate non-ART JIT engines — WebView/Chrome (V8), Unity (Mono/IL2CPP), and
-  Flutter (Dart) apps all create anonymous executable mappings untagged `dalvik-` and
-  will be flagged. Only the "dalvik-" prefix is carved out; no allow-list for other
-  known-benign JIT engines yet (parked as a follow-up in the design doc). `mprotect`-
-  based W^X evasion (allocate RW, write payload, flip to RX afterward) is invisible to
-  the `mmap`-only v1 hook. `memfd_create`-backed "fileless" loaders bypass the gate
-  entirely — they have a `vm_file` (tmpfs-backed), so `vm_file == NULL` never matches;
-  this is a real technique the analyzer is named for but does not yet catch. No
-  payload-content signal (e.g. ELF-magic check) — the mapping is zero-filled at hook
-  time, before the caller writes anything into it. Evadable by a loader that tags its
-  own mapping `dalvik-fake` via `prctl` to dodge the carve-out (arms-race concern, not
-  addressed in v1). The suppression mechanism assumes ART's
-  `prctl(PR_SET_VMA_ANON_NAME, addr, ...)` call names the *exact* address `do_mmap`
-  returned; implemented faithfully per design and spot-checked on-device (0 false
-  positives across multiple runs against an ordinary app) but not exhaustively proven,
-  since JIT compilation isn't guaranteed to occur within any given short observation
-  window.
+- `mod accessibility-detect` known limitations (category signal, 2026-11-24):
+  legitimate accessibility tools make the same calls (categories say what, not
+  why). Grant check (`enabled_accessibility_services`) runs once at attach and is
+  a package-substring match against a colon-separated settings string — a
+  package name that is a substring of another entry could false-match.
+  Category table is hand-maintained against the interface's method list; a new
+  Android release's methods land in `other` until added.
+- `mod fileless-detect` known limitations (v2, 2026-11-24): a non-ART JIT
+  running inside the app's own process (Unity/Mono, Flutter debug, an
+  in-process V8) alerts -- Chrome/WebView keep V8 in a separate sandboxed
+  process, outside the traced UID, and launches of Settings/Chrome/YouTube
+  gave no alerts. ART is recognised by region name (`dalvik-*`, memfd
+  `jit-*`), so a payload that names its region the same way is excluded
+  (arms-race gap). An `anon_exec_mmap` region is copied at graduation
+  (250 ms) and may not hold its final contents yet; an all-zero region isn't
+  saved. `pending_map` (1024) doesn't evict: a flood of anonymous executable
+  mappings past that is not seen. Mapping an executable file region, or
+  `mremap` of an existing executable mapping, isn't covered.
 - Screen-lock/overlay extortion detector — separate `mod` analyzer, still open.
   Current Android "ransomware" (DroidLock, HOOK, 2024-2025) trends toward
   full-screen lock overlays + data-destruction threats rather than actual file
@@ -582,6 +637,129 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-11-25
+
+- **"What's new" findings view for `anubee mod` runs** (`mod_findings.py`,
+  MCP `mod_findings_view` / `mod_noise_profile`). Across 13 lab apps, 95 of
+  264 distinct binder calls appeared in every app; the view hides what
+  benign apps traced the same way also did, learned per device instead of a
+  hard-coded list. Known drawbacks: keys are coarse (a binder method is noise
+  regardless of its arguments, so a sample's `getInstalledPackages` hides if
+  a benign app also called it); the profile is only as representative as
+  the benign apps chosen; post-processing only, the live console is unchanged.
+- **`dexload-detect` keeps a copy of fast-deleted payloads.** A live
+  SharkBot run lost an ad-SDK jar written, loaded and deleted within 2 ms
+  (`saved: null`). Dropped files are now held open from the drop. The jar's
+  unpacked DEX was being missed too: ART names its region "dalvik-classes.dex
+  extracted in memory from <path>", which exceeds the kernel's 80-byte cap
+  on real app paths, so the naming failed and memload dropped the unnamed
+  region; memload now takes the name from the prctl event instead. Known
+  drawback: a plain DEX file (no unpacked copy) loaded and deleted before
+  even its drop is handled, by a process that has exited, is still lost.
+- **Syscall outcomes for `execve` and `file-access`.** Live malware runs
+  showed both analyzers logged attempts only: a SpyNote build's keylog
+  writes all failed (no storage permission) yet read like successes, and one
+  `Runtime.exec("getprop")` showed as six EXECs (one per PATH directory).
+  Kretprobes now send each recorded call's return value; records carry
+  `result`/`error`, summaries a `failed` count. Known drawback: a
+  multithreaded exec that succeeds can't be paired (its tid becomes the
+  pid), so that record says `result: null`.
+
+- **Malware-analysis guide (Phase 7, part 1).** User docs gain a
+  step-by-step workflow: lab prep, install without launching, `triage
+  --no-launch`, which analyzer answers which question, focused re-runs, when
+  to accept loud tools, and the indicators to pull from the JSONL.
+
+- **Phase 6 tuning: `execve`, `prop-read`, `file-access`.** execve tags each
+  run (root/recon/tamper/control/shell/app_dir/memfd, including commands
+  inside `sh -c` / `su -c` and toybox applets) and marks cut-off argv;
+  prop-read classifies root/emulator/device checks and hides bionic's own
+  startup reads; file-access hides the app's own folder (unless `-v`) and
+  covers `/proc` anti-analysis probes (maps, TracerPid, Frida threads/port,
+  process scans) while dropping ordinary `/proc` reads. New device tests
+  `mod-execve`, `mod-prop-read`, and `/proc` assertions in
+  `mod-file-access`. Known drawback: FA1.
+
+- **`mod net` (Phase 5).** Outbound IPv4/IPv6 flows: destination, host
+  named in the first bytes (TLS SNI, HTTP Host, DNS question), bytes sent
+  and received, duration; plus every lookup through netd's dnsproxyd.
+  kprobes on tcp/udp sendmsg, `__tcp_cleanup_rbuf`, `skb_consume_udp`,
+  `inet_release`, `unix_stream_sendmsg`; joins `triage`. Device test `net`:
+  netd lookup, HTTP Host, tx/rx equal to what the client sent/received.
+  Known drawbacks: NET1-3.
+- **`exfil-detect` counts `sendmsg`, `sendmmsg`, `sendfile`.** Bursts through
+  those calls were invisible; the device test now drives one burst per call.
+
+- **`dexload-detect` memload (Phase 4c).** DEX held only in memory:
+  `__arm64_sys_prctl` catches ART naming a `dalvik-DEX data` /
+  `dalvik-classes*.dex extracted in memory from <file>` region; the tick
+  reads and validates the header through `/proc/<pid>/mem` (retrying while
+  ART copies it in), drops extractions from system partitions, and saves
+  the DEX + SHA-256. Device test: a loader that reads a DEX, deletes the
+  file and uses `InMemoryDexClassLoader` -- the saved copy hashes identical
+  to the payload. Kept in `mod` rather than `dump` so triage captures it
+  automatically. Known drawback: DL3.
+
+### 2026-11-24
+
+- **`mod fileless-detect` v2 (Phase 4b).** Three signals: `anon_exec_mmap`
+  (as v1), `mprotect_exec` (anonymous / shared-anonymous / memfd memory
+  gaining `PROT_EXEC`, `security_file_mprotect`) and `memfd_exec`
+  (`security_mmap_file` on a memfd, covers fexecve). ART's regions are now
+  recognised by the name the kernel holds (in-kernel `vma->anon_name` for
+  mprotect, `/proc/<pid>/maps` at graduation for mmap) instead of v1's
+  exact-address `prctl` matching. Each alert classifies the first bytes
+  (elf/zero/data) and saves a copy + SHA-256 through `/proc/<pid>/mem` into
+  the payload store now shared with `dexload-detect`. Records gain `kind`,
+  `content`, `saved`; summary gains per-kind counts.
+- **`mod dexload-detect` (Phase 4a).** Payload files dropped by the app
+  (DEX/CDEX/ZIP/ELF header written at offset 0), mapped by any process, and
+  deleted -- keyed by inode, full path rebuilt across mounts in the kernel,
+  and a copy + SHA-256 of each payload saved (path, then
+  `/proc/<pid>/map_files`, then open fds). Device test drives a shell
+  dropper (DEX loaded by `dalvikvm`, ELF executed, both deleted) and checks
+  the saved DEX's hash against the original. Known drawbacks: DL1, DL2.
+- **`mod binder-api` (Phase 3a).** Binder interface/method timeline for the
+  traced app with names from the device's own framework jars (AIDL `$Stub`
+  `TRANSACTION_*` and hand-written `*_TRANSACTION` constants, keyed by the
+  wire descriptor), and every ContentProvider call's URI or `CALL` target.
+  `accessibility-detect` rebased on decoded `IAccessibilityServiceConnection`
+  calls (categories; fixes DT5). `screencapture-detect` reports capture
+  stages: the dumpsys FGS poll plus decoded `IMediaProjection.start` /
+  `createVirtualDisplay`. Its device test now drives a real ~4 s recording
+  (consent prompt tapped when shown; recording deleted after) and SKIPs off
+  devices without that OEM recorder.
+- **`mod` triage workflow (Phase 2).** `perm-watch` analyzer (permission /
+  app-op / special-access / role / installed timeline, `perm_change` record,
+  ingested by anubee-mcp); `triage` preset (every stealthy analyzer, derived
+  from the capability table); `--no-launch` (arm the UID, never start or stop
+  the app); `inactive()` analyzer hook so a non-running analyzer's coverage
+  is exempt, not "full". Security fix shipped alongside: `-p` package names
+  read from a target's `cmdline` were interpolated unvalidated into root
+  shell commands (a traced sample could run commands as root); now
+  rejected unless a well-formed package name.
+  **Known drawback:** `perm-watch` is 2s polling -- a grant+revert inside one
+  poll is missed, and it can't say which dialog/API made the change (the
+  Binder decode would).
+
+- **`mod` hardening for real-malware triage (four fixes).**
+  (1) Shared `-o` sink was written from background threads
+  (`fileless-detect`'s grace-window scan, `screencapture-detect`'s dumpsys
+  poll) concurrently with the poll thread -- corrupt JSONL possible when
+  combining analyzers. New optional `anubee_analyzer_t.tick`, run by
+  `anubee_rb_poll_multi_cb`; fileless-detect's thread removed, screencapture
+  hands sessions to tick. (2) A repeated analyzer name set the analyzer up
+  twice (doubled events); now de-duplicated with a warning
+  (`src/modules/mod_names.c`). (3) Follow-fork inserted every new *thread*
+  into the 64-slot `target_pids` map, so in `-p` mode children of any
+  thread-heavy target were silently not followed; now `tp_btf` and skips
+  `pid != tgid` (affects every engine). (4) `exfil-detect` counted AF_UNIX
+  traffic (logd's `logdw`) as outbound and lost `dest` for sockets connected
+  before the sensitive read; send-path gating now resolves fd → `struct sock`
+  and counts only non-loopback IPv4/IPv6 peers (`exfil_detect_addr.h`), with
+  `dest` taken from the tripping send's socket. The `connect`/`close` hooks
+  are gone.
 
 ### 2026-07-15
 

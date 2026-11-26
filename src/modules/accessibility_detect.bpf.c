@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
-// BPF object for the accessibility-detect analyzer: trace outbound Binder transactions
-// to system_server and flag a per-process burst -- accessibility-service
+// BPF object for the accessibility-detect analyzer: calls the traced app makes
+// on android.accessibilityservice.IAccessibilityServiceConnection -- the
+// channel through which an app's own AccessibilityService reads other apps'
+// screens, clicks, injects gestures and takes screenshots. Accessibility
 // abuse (overlay/ATS fraud, screen reading, security-prompt bypass) is the
-// dominant technique across current Android banking trojans (Mamont, Hook,
-// Anatsa, ToxicPanda, RatOn, TrickMo), and it's implemented over Binder IPC.
-// v1 is a coarse volume signal only -- no transaction-code decode (parked).
+// dominant technique across current Android banking trojans; a call on this
+// interface means the app's service is live and working, not merely granted.
+//
+// kprobe on the kernel's binder_transaction() (sender's context, as
+// binder_api.bpf.c): read the start of the sender's Parcel, hash the AIDL
+// interface token, keep only calls whose hash matches the one userspace armed
+// in a11y_token. The first (process, transaction code) is sent up; repeats
+// are counted in a11y_counts. Read-only: nothing is written to the target.
 // Userspace classification: src/modules/accessibility_detect_classify.c.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -15,7 +22,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 * 1024 * 1024);
+	__uint(max_entries, 256 * 1024);
 } events_rb SEC(".maps");
 
 #include "common/uid_filter.bpf.h"
@@ -23,124 +30,88 @@ struct {
 #include "common/follow_fork.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/binder_token.bpf.h"
 
-#define A11Y_WINDOW_NS (5ULL * 1000000000ULL)
+#define A11Y_SCRATCH 256   // power of two; the 61-char token needs 16 + 122 bytes
 
-// Single-slot config: system_server's pid, resolved once at userspace startup
-// (pidof system_server) and pushed BEFORE attach. Unlike the post-attach
-// accessibility-grant check (userspace, informational only), this one gates
-// in-kernel and must be armed before the first event -- an unresolved (zero)
-// value means the gate never matches anything (fail-closed on the gate, not
-// a crash).
+// Token hash of IAccessibilityServiceConnection, set by userspace before
+// attach (binder_descriptor_hash). 0 = unarmed: nothing matches.
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, __u32);
-	__type(value, __u32);
-} sys_server_pid_map SEC(".maps");
+	__type(value, __u64);
+} a11y_token SEC(".maps");
 
-struct a11y_state {
-    __u64 window_start_ns;
-    __u32 count;
-    __u32 code_ring_head;
-    __u32 code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
-};
-
-// Per-pid burst state. Only uid/pid-filtered processes ever get an entry (the
-// gate runs before any map access), mirrors massdelete_detect's burst_map.
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 128);
-	__type(key, __u32);
-	__type(value, struct a11y_state);
-} a11y_map SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, struct a11y_key);
+	__type(value, __u64);
+} a11y_counts SEC(".maps");
 
-// Zero-template seed, same reasoning as massdelete_detect's burst_zero: struct
-// a11y_state is too large for a safe BPF stack local.
+struct a11y_buf { unsigned char b[A11Y_SCRATCH]; };
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, __u32);
-	__type(value, struct a11y_state);
-} a11y_zero SEC(".maps");
+	__type(value, struct a11y_buf);
+} a11y_scratch SEC(".maps");
 
-// Record one gated outbound Binder call for the current process; emits an
-// accessibility_detect_event and resets the window when the threshold trips. Mirrors
-// massdelete_detect.bpf.c's record_touch().
-static __always_inline void record_call(__u32 code)
+SEC("kprobe/binder_transaction")
+int BPF_KPROBE(on_binder_transaction, void *proc, void *thread,
+	       struct binder_transaction_data *tr, int reply)
 {
-    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
-    __u64 now = bpf_ktime_get_ns();
+	if (reply)
+		return 0;
+	if (!uid_matches() && !pid_matches())
+		return 0;
 
-    struct a11y_state *st = bpf_map_lookup_elem(&a11y_map, &pid);
-    if (!st) {
-        __u32 zk = 0;
-        struct a11y_state *tmpl = bpf_map_lookup_elem(&a11y_zero, &zk);
-        if (!tmpl)
-            return;
-        if (bpf_map_update_elem(&a11y_map, &pid, tmpl, BPF_NOEXIST) != 0)
-            return;
-        st = bpf_map_lookup_elem(&a11y_map, &pid);
-        if (!st)
-            return;
-        st->window_start_ns = now;
-    }
+	__u32 zk = 0;
+	__u64 *want = bpf_map_lookup_elem(&a11y_token, &zk);
+	if (!want || !*want)
+		return 0;
 
-    if (now - st->window_start_ns > A11Y_WINDOW_NS) {
-        st->window_start_ns = now;
-        st->count = 0;
-        st->code_ring_head = 0;
-    }
+	// Strip the arm64 top-byte tag (Scudo/MTE heap pointers): the uaccess
+	// check behind bpf_probe_read_user rejects tagged addresses.
+	__u64 buf = BPF_CORE_READ(tr, data.ptr.buffer) & 0x00FFFFFFFFFFFFFFULL;
+	__u64 dsz = BPF_CORE_READ(tr, data_size);
+	__u32 n = dsz < A11Y_SCRATCH ? (__u32)dsz : A11Y_SCRATCH;
+	if (!buf || n < BINDER_TOKEN_LEN_OFF + 4)
+		return 0;
+	struct a11y_buf *s = bpf_map_lookup_elem(&a11y_scratch, &zk);
+	if (!s)
+		return 0;
+	if (n > A11Y_SCRATCH)
+		n = A11Y_SCRATCH;   // explicit clamp for the verifier
+	if (bpf_probe_read_user(s->b, n, (void *)buf) != 0)
+		return 0;
+	if (binder_token_fnv(s->b, A11Y_SCRATCH - 1, n) != *want)
+		return 0;
 
-    __u32 slot = st->code_ring_head & (ACCESSIBILITY_DETECT_CODE_RING_LEN - 1);
-    st->code_samples[slot] = code;
-    st->code_ring_head++;
-    st->count++;
+	__u64 id = bpf_get_current_pid_tgid();
+	struct a11y_key k = { .tgid = (__u32)(id >> 32), .code = BPF_CORE_READ(tr, code) };
+	__u64 *cnt = bpf_map_lookup_elem(&a11y_counts, &k);
+	if (cnt) {
+		__sync_fetch_and_add(cnt, 1);
+		return 0;
+	}
+	__u64 one = 1;
+	bpf_map_update_elem(&a11y_counts, &k, &one, BPF_NOEXIST);
 
-    if (st->count != ACCESSIBILITY_DETECT_THRESHOLD)
-        return;
-
-    struct accessibility_detect_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
-    if (!e) {
-        bump_dropped();
-        st->window_start_ns = now;
-        st->count = 0;
-        st->code_ring_head = 0;
-        return;
-    }
-
-    __u64 id = bpf_get_current_pid_tgid();
-    e->h.type = MOD_EV_ACCESSIBILITY_DETECT;
-    e->h.pid  = (__u32)(id >> 32);
-    e->h.tid  = (__u32)id;
-    e->h._pad = 0;
-    e->ts_ns  = now;
-    e->touch_count = st->count;
-    e->window_ms   = (__u32)((now - st->window_start_ns) / 1000000ULL);
-    #pragma unroll
-    for (int i = 0; i < ACCESSIBILITY_DETECT_CODE_RING_LEN; i++)
-        e->code_samples[i] = st->code_samples[i];   // unused in v1 -- see design doc's parked transaction-code decode
-    bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    bpf_ringbuf_submit(e, 0);
-
-    st->window_start_ns = now;
-    st->count = 0;
-    st->code_ring_head = 0;
-}
-
-SEC("tp/binder/binder_transaction")
-int on_binder_transaction(struct trace_event_raw_binder_transaction *ctx)
-{
-    if (!uid_matches() && !pid_matches())
-        return 0;
-    if (ctx->reply)
-        return 0;
-
-    __u32 zk = 0;
-    __u32 *sys_server_pid = bpf_map_lookup_elem(&sys_server_pid_map, &zk);
-    if (!sys_server_pid || *sys_server_pid == 0 || ctx->to_proc != (int)*sys_server_pid)
-        return 0;
-
-    record_call(ctx->code);
-    return 0;
+	struct accessibility_detect_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
+	if (!e) {
+		bump_dropped();
+		return 0;
+	}
+	e->h.type = MOD_EV_ACCESSIBILITY_DETECT;
+	e->h.pid  = k.tgid;
+	e->h.tid  = (__u32)id;
+	e->h._pad = 0;
+	e->ts_ns  = bpf_ktime_get_ns();
+	e->code   = k.code;
+	e->_pad   = 0;
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	bpf_ringbuf_submit(e, 0);
+	return 0;
 }

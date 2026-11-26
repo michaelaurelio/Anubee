@@ -39,15 +39,6 @@
 // requirement as that constant (slot index uses `& (RING_LEN-1)`).
 #define EXFIL_DETECT_RING_LEN 32
 
-// Per-pid sliding-window burst counter for mod accessibility-detect (see
-// accessibility_detect.bpf.c). Same load-bearing relationship as
-// MASSDELETE_DETECT_RING_LEN/MASSDELETE_DETECT_THRESHOLD above: the ring must never wrap
-// before a window resets (RING_LEN > THRESHOLD), and the slot index uses a
-// `& (RING_LEN-1)` mask, so RING_LEN must stay a power of two (the BPF
-// verifier can't range-track a non-pow2 modulo).
-#define ACCESSIBILITY_DETECT_CODE_RING_LEN 64
-#define ACCESSIBILITY_DETECT_THRESHOLD     50
-
 // Truncated capture buffer for the fileless-detect analyzer's anon_name field
 // (see fileless_detect.bpf.c). Not a ring/threshold pair like the burst
 // analyzers above -- this is a single fixed-size string buffer, sized to
@@ -56,15 +47,15 @@
 #define FILELESS_DETECT_TAG_LEN 32
 
 // Grace window between an anon+exec mmap candidate landing in pending_map
-// and (absent a suppressing dalvik-tagged prctl) graduating into an alert.
-// See fileless_detect.bpf.c's two-hook mmap+prctl correlate/suppress design.
+// and userspace graduating it: long enough for the creator to name the
+// region (ART names its JIT cache right after mapping it), after which the
+// name is read from /proc/<pid>/maps.
 #define FILELESS_DETECT_GRACE_NS (250ULL * 1000000ULL)
 
-// BPF map key/value for fileless-detect's pending-alert map: mmap-time state
-// that gets suppressed if a matching dalvik-tagged
-// prctl(PR_SET_VMA_ANON_NAME) follows within FILELESS_DETECT_GRACE_NS, or
-// graduates into an alert if not. Shared between fileless_detect.bpf.c
-// (writer, both hooks) and fileless_detect.c (background-thread reader).
+// BPF map key/value for fileless-detect's pending anon_exec_mmap candidates.
+// Shared between fileless_detect.bpf.c (writer, do_mmap entry/return) and
+// fileless_detect.c (dispatcher-tick reader, graduates after
+// FILELESS_DETECT_GRACE_NS unless the region's name is ART's).
 struct fileless_pending_key {
     __u32 pid;
     __u32 _pad;
@@ -92,6 +83,17 @@ enum {
     MOD_EV_ACCESSIBILITY_DETECT = 11,
     MOD_EV_FILELESS_DETECT = 12,
     MOD_EV_SCREENCAPTURE_DETECT = 13,
+    MOD_EV_BINDER_API = 14,
+    MOD_EV_DEXLOAD_DETECT = 15,
+    MOD_EV_NET = 16,
+    MOD_EV_SYSRET = 17,     // a syscall's return value; pairs with the entry event by tid
+};
+
+// Emitted by a kretprobe for a thread whose entry event was sent (sysret.bpf.h).
+struct sysret_event {
+    struct trace_event_header h;
+    __u64 ts_ns;
+    __s64 ret;
 };
 
 struct spawn_event {
@@ -108,11 +110,17 @@ struct proc_exit_event {
     int  exit_code;
 };
 
+// execve_event.truncated bits: what didn't fit.
+#define EXEC_TRUNC_MORE_ARGS  1   // more than MAX_ARGV_ENTRIES arguments
+#define EXEC_TRUNC_LONG_ARG   2   // an argument longer than MAX_ARGV_STR - 1
+#define EXEC_TRUNC_LONG_PATH  4   // filename longer than 127 bytes
 struct execve_event {
     struct trace_event_header h;
     __u64 ts_ns;
     __u32 argc;
     __u32 stack_depth;
+    __u32 truncated;          // EXEC_TRUNC_* bits
+    __u32 _pad2;
     char  comm[TASK_COMM_LEN];
     char  filename[128];
     char  argv[MAX_ARGV_ENTRIES][MAX_ARGV_STR];
@@ -159,18 +167,20 @@ struct exfil_detect_event {
     char   sensitive_paths[EXFIL_DETECT_RING_LEN][FILE_PATH_LEN];
     __u32  sensitive_path_count;
     __u8   paths_truncated;
-    unsigned char dest[28];   // raw sockaddr bytes (sockaddr_in6-sized), or all-zero
-    __u32  dest_len;          // 0 if no connect() was observed before threshold
+    unsigned char dest[28];   // raw sockaddr (in/in6) of the peer the tripping send went to
+    __u32  dest_len;          // sizeof(dest) when set; 0 only if no outbound send was recorded
 };
 
+// First call of each IAccessibilityServiceConnection method by a process (see
+// accessibility_detect.bpf.c); repeats are counted in a11y_counts.
 struct accessibility_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
-    __u32  touch_count;
-    __u32  window_ms;
-    __u32  code_samples[ACCESSIBILITY_DETECT_CODE_RING_LEN];
+    __u32  code;
+    __u32  _pad;
 };
+struct a11y_key { __u32 tgid, code; };
 
 struct fileless_detect_event {
     struct trace_event_header h;
@@ -178,14 +188,120 @@ struct fileless_detect_event {
     char   comm[TASK_COMM_LEN];
     __u64  start;
     __u64  size;
-    char   anon_name[FILELESS_DETECT_TAG_LEN];
+    char   anon_name[FILELESS_DETECT_TAG_LEN];   // region / memfd name ("" if none)
+    __u64  ino;               // memfd_exec: the memfd's inode
+    __u32  kind;              // enum fl_kind (fileless_detect_parse.h)
+    __u32  _pad;
 };
 
+// First call of each watched (interface, method) by a process (see
+// screencapture_detect.bpf.c); also built in userspace for the dumpsys stage.
 struct screencapture_detect_event {
     struct trace_event_header h;
     __u64  ts_ns;
     char   comm[TASK_COMM_LEN];
-    __u64  binder_calls_context;
+    __u64  token_hash;
+    __u32  code;
+    __u32  _pad;
+};
+
+// binder-api: first outbound transaction of a given (process, interface,
+// method) -- or every call, for interfaces userspace put in
+// binder_api_always (IContentProvider: the URI differs per call). The kernel
+// counts every call (binder_api_counts); userspace decodes the interface
+// token and any content:// URI from raw[] (the start of the Parcel) and names
+// the method from code.
+#define BINDER_API_RAW 1024    // power of two (BPF index masking); room for a content:// URI after the token + AttributionSource
+struct binder_api_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  token_hash;        // FNV-1a over the token's UTF-16 bytes; 0 = no token found
+    __u32  code;              // transaction code (FIRST_CALL_TRANSACTION + n for AIDL)
+    __u32  flags;             // TF_ONE_WAY = 0x01
+    __u32  data_size;         // full Parcel size
+    __u32  raw_len;           // bytes valid in raw[]
+    char   comm[TASK_COMM_LEN];
+    unsigned char raw[BINDER_API_RAW];
+};
+
+// binder_api_counts key/value (shared by BPF and userspace).
+struct binder_api_key {
+    __u32 tgid;
+    __u32 code;
+    __u64 token_hash;
+};
+struct binder_api_val {
+    __u64 count;
+    __u64 first_ts_ns;
+};
+
+// dexload-detect: a file whose first bytes written are a DEX/CDEX/ZIP/ELF
+// header (drop), that file being mapped by any process (load), and unlinked
+// (delete); and ART naming a region it holds a DEX in (memload: addr/len,
+// region name in comp[0]) -- see dexload_detect.bpf.c. For file stages comp[]
+// is the file's path, leaf first, one component per slot
+// (dexload_detect_parse.c joins it).
+#define DEXLOAD_COMP_N   16   // power of two (BPF index masking)
+#define DEXLOAD_COMP_LEN 48
+enum { DEXLOAD_STAGE_DROP = 1, DEXLOAD_STAGE_LOAD = 2, DEXLOAD_STAGE_DELETE = 3,
+       DEXLOAD_STAGE_MEMLOAD = 4 };
+struct dexload_detect_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  ino;
+    __u32  dev;
+    __u8   stage;
+    __u8   exec;              // load: mapped with PROT_EXEC
+    __u8   ncomp;             // valid comp[] slots (0 for delete)
+    __u8   truncated;         // path walk stopped before the root
+    unsigned char head[8];    // drop: first bytes written
+    __u64  addr;              // memload: region start
+    __u64  len;               // memload: region length
+    char   comm[TASK_COMM_LEN];
+    char   comp[DEXLOAD_COMP_N][DEXLOAD_COMP_LEN];
+};
+
+// dexload_files map: one entry per dropped payload file.
+struct dexload_key { __u64 ino; __u32 dev; __u32 _pad; };
+struct dexload_val {
+    __u64 drop_ts_ns;
+    __u32 pid;
+    __u8  loaded, deleted, _p[2];
+};
+
+// net: one record per outbound IPv4/IPv6 flow (a socket, keyed by its struct
+// sock) -- OPEN at its first send, with the first bytes sent (TLS
+// ClientHello / HTTP request / DNS query), CLOSE when the socket is released,
+// with byte totals -- and DNS for a lookup the app asks netd's dnsproxyd for
+// (payload = the command text). See net.bpf.c.
+#define NET_PAYLOAD_LEN 2048   // power of two (BPF length masking)
+enum { NET_EV_OPEN = 1, NET_EV_CLOSE = 2, NET_EV_DNS = 3 };
+enum { NET_PROTO_TCP = 6, NET_PROTO_UDP = 17 };
+struct net_event {
+    struct trace_event_header h;
+    __u64  ts_ns;
+    __u64  sk;                 // flow identity (kernel struct sock address)
+    __u64  first_ts_ns;        // close: when the flow's first send was seen
+    __u64  tx, rx;             // close: bytes sent / received while traced
+    __u8   kind;               // NET_EV_*
+    __u8   proto;              // NET_PROTO_* (0 for DNS)
+    __u8   family;             // 2 = AF_INET, 10 = AF_INET6
+    __u8   _pad;
+    __u16  dport;              // host order
+    __u16  payload_len;        // valid payload[] bytes
+    __u8   daddr[16];          // network order (AF_INET: first 4 bytes)
+    char   comm[TASK_COMM_LEN];
+    unsigned char payload[NET_PAYLOAD_LEN];   // CLOSE events stop before this
+};
+
+// net flows map value (key: struct sock address).
+struct net_flow {
+    __u64 first_ts_ns, tx, rx;
+    __u32 pid;
+    __u8  proto, family;
+    __u16 dport;
+    __u8  daddr[16];
+    char  comm[TASK_COMM_LEN];
 };
 
 #endif /* __ANUBEE_MOD_EVENTS_H */

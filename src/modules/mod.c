@@ -20,6 +20,7 @@
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
+#include "modules/mod_names.h"
 
 static volatile sig_atomic_t exiting = 0;
 static struct anubee_sink g_sink;
@@ -36,6 +37,10 @@ static const anubee_analyzer_t *const registry[] = {
     &analyzer_accessibility_detect,
     &analyzer_fileless_detect,
     &analyzer_screencapture_detect,
+    &analyzer_perm_watch,
+    &analyzer_binder_api,
+    &analyzer_dexload_detect,
+    &analyzer_net,
     NULL,
 };
 
@@ -63,6 +68,8 @@ static void list_analyzers(FILE *out)
                 anubee_object_writes_target(mod_key) ? "[LOUD]" : "[stealth]",
                 registry[i]->description);
     }
+    fprintf(out, "preset:\n  %-16s every [stealth] analyzer above, run together -- a first-pass\n"
+                 "    malware triage with zero writes into the target\n\n", MOD_PRESET_TRIAGE);
 }
 
 // ---- argp parser -------------------------------------------------------------
@@ -78,6 +85,7 @@ struct mod_args {
     int nname;
     const char *pkg;
     const char *activity;
+    int no_launch;          // --no-launch: arm the UID gate, never start the app
     struct common_args c;
     struct target_args tgt; // -p / --siblings / --no-follow-fork
     custom_probe_spec_t specs[64];
@@ -87,9 +95,14 @@ struct mod_args {
 // Only advertise flags that are actually wired. -J/-b/-Q are NOT included:
 // mod polls the ring buffer directly (no queue) and the per-analyzer ring
 // size is hardcoded; -J is redundant with -o. Mirrors lib.c:89-96.
+#define MOD_KEY_NO_LAUNCH 0x180  // long-only, clear of engine_args.h's 0x100 range
+
 static const struct argp_option mod_options[] = {
     { "package",  'P', "PACKAGE",  0, "App package to launch and trace", 0 },
     { "activity", 'A', "ACTIVITY", 0, "Override launch activity (default: auto-resolve)", 0 },
+    { "no-launch", MOD_KEY_NO_LAUNCH, NULL, 0, "With -P: trace the package's UID without force-stopping or "
+      "launching it -- catches the app whenever it starts (user tap, boot/SMS receiver, "
+      "alarm, push) and works for apps with no launcher icon", 0 },
     { "output",   'o', "FILE",     0, "Export structured JSONL to FILE (also prints console output; -q silences that)", 0 },
     { "module",   'm', "NAME",     0, "Analyzer to run; repeat to run several concurrently", 0 },
     { "verbose",  'v', NULL,       0, "Verbose output (execve: full backtrace frames; massdelete-detect/exfil-detect: full file list)", 0 },
@@ -106,6 +119,7 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
     switch (key) {
     case 'P': a->pkg      = arg; break;
     case 'A': a->activity = arg; break;
+    case MOD_KEY_NO_LAUNCH: a->no_launch = 1; break;
     case 'm':
         if (a->nname < 16) a->names[a->nname++] = arg;
         else argp_error(state, "analyzer name cap (16) reached, '%s' rejected", arg);
@@ -131,6 +145,10 @@ static error_t mod_parse_opt(int key, char *arg, struct argp_state *state)
             argp_error(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)
             argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+        if (a->no_launch && a->tgt.n > 0)
+            fprintf(stderr, "mod: warning - --no-launch has no effect with -p (nothing is launched); ignored\n");
+        if (a->no_launch && a->activity)
+            fprintf(stderr, "mod: warning - -A/--activity has no effect with --no-launch; ignored\n");
         break;
     default:
         return parse_common_arg(key, arg, state, &a->c);
@@ -164,6 +182,18 @@ static void print_ignored_kind_warning(const custom_probe_spec_t *specs, int nsp
     fprintf(stderr, "\n");
 }
 
+static int mod_is_loud(const char *name)
+{
+    char mod_key[64];
+    snprintf(mod_key, sizeof(mod_key), "mod:%s", name);
+    return anubee_object_writes_target(mod_key);
+}
+
+static void warn_dup_name(const char *name)
+{
+    fprintf(stderr, "mod: warning — analyzer '%s' given more than once; running it once\n", name);
+}
+
 // MT3: -l/--list needs to short-circuit before argp_parse, same reason
 // anubee_wants_help (engine_args.h) is pre-scanned rather than handled purely
 // via argp's own dispatch — ARGP_KEY_END below rejects a run with no analyzer
@@ -174,6 +204,17 @@ static bool mod_wants_list(int argc, char **argv)
         if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--list"))
             return true;
     return false;
+}
+
+// Per-pass tick fan-out: runs each selected analyzer's optional tick() on the
+// poll thread (see anubee_analyzer_t.tick).
+struct mod_tick_ctx { const anubee_analyzer_t *const *ans; int n; };
+
+static void mod_tick(void *ctx)
+{
+    const struct mod_tick_ctx *t = ctx;
+    for (int i = 0; i < t->n; i++)
+        if (t->ans[i]->tick) t->ans[i]->tick();
 }
 
 // ---- entry point -------------------------------------------------------------
@@ -191,6 +232,16 @@ int cmd_mod(int argc, char **argv)
 
     struct mod_args ma = { .c = COMMON_ARGS_INIT };
     argp_parse(&mod_argp, argc, argv, 0, NULL, &ma);
+    const char *all[16];
+    int nall = 0;
+    for (int i = 0; registry[i] && nall < 16; i++)
+        all[nall++] = registry[i]->name;
+    ma.nname = mod_expand_presets(ma.names, ma.nname, 16, all, nall, mod_is_loud);
+    if (ma.nname < 0) {
+        fprintf(stderr, "mod: too many analyzers after expanding '%s' (max 16)\n", MOD_PRESET_TRIAGE);
+        return 1;
+    }
+    ma.nname = mod_dedupe_names(ma.names, ma.nname, warn_dup_name);
     print_ignored_kind_warning(ma.specs, ma.nspec); // "before run"
 
     const anubee_analyzer_t *ans[16];
@@ -216,7 +267,7 @@ int cmd_mod(int argc, char **argv)
         if (!anubee_quiet_config_ok(loaded, 1))
             printf("[mod]   > LOUD: %s uses uprobes (writes target memory)\n", ans[i]->name);
         else
-            printf("[mod]   > stealthy: %s uses kernel-only probes\n", ans[i]->name);
+            printf("[mod]   > stealthy: %s writes nothing into the target\n", ans[i]->name);
     }
 
     int uid;
@@ -272,10 +323,14 @@ int cmd_mod(int argc, char **argv)
     }
 
     anubee_install_stop_handler(&exiting);
-    if (ma.pkg) {
+    if (ma.pkg && ma.no_launch) {
+        printf("[mod] --no-launch: not starting %s -- tracing uid %d whenever it runs "
+               "(start it on the device, or let a receiver/alarm start it)\n", ma.pkg, uid);
+    } else if (ma.pkg) {
         anubee_launch_banner(ma.pkg, uid);
         if (anubee_launch_app(ma.pkg, ma.activity, NULL) != 0) {
-            fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available?)\n", ma.pkg);
+            fprintf(stderr, "mod: launch failed for '%s' (activity resolvable? am available? "
+                            "an app with no launcher icon needs -A or --no-launch)\n", ma.pkg);
             for (int j = nrb - 1; j >= 0; j--)
                 ans[j]->teardown();
             if (ma.c.output_file) {
@@ -288,7 +343,9 @@ int cmd_mod(int argc, char **argv)
 
     printf("tracing uid %d (%d analyzer%s) ... Ctrl-C to stop\n",
            uid, nan, nan == 1 ? "" : "s");
-    anubee_rb_poll_multi(rbs, nrb, &exiting);
+    struct mod_tick_ctx tctx = { ans, nan };
+    anubee_rb_poll_multi_cb(rbs, nrb, &exiting, mod_tick, &tctx);
+    mod_tick(&tctx); // final pass: flush anything handed over since the last poll pass
 
     for (int i = nan - 1; i >= 0; i--) {
         // mod drop-telemetry parity + CR5 coverage: read the drop-map fd BEFORE
@@ -301,6 +358,8 @@ int cmd_mod(int argc, char **argv)
 
         struct anubee_coverage cov = { .engine = ans[i]->name };
         cov.ring_drops = drops;
+        const char *why = ans[i]->inactive ? ans[i]->inactive() : NULL;
+        if (why) { cov.exempt = 1; cov.exempt_reason = why; }
         anubee_coverage_report(&g_sink, &cov);
     }
     print_ignored_kind_warning(ma.specs, ma.nspec); // "after run" repeat, see the "before run" call above

@@ -19,11 +19,16 @@ struct {
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
 
-SEC("tp/sched/sched_process_fork")
-int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
+// tp_btf for the typed child task: this tracepoint also fires on thread
+// creation, and a spawn record must mean a new process (child pid == tgid),
+// matching on_proc_exit's main-thread-only rule below.
+SEC("tp_btf/sched_process_fork")
+int BPF_PROG(on_proc_fork, struct task_struct *parent, struct task_struct *child)
 {
 	if (!uid_matches() && !pid_matches())
 		return 0;
+	if (child->pid != child->tgid)
+		return 0;   // new thread, not a new process
 
 	struct spawn_event *e = bpf_ringbuf_reserve(&events_rb, sizeof(*e), 0);
 	if (!e) {
@@ -37,7 +42,7 @@ int on_proc_fork(struct trace_event_raw_sched_process_fork *ctx)
 	e->h.tid     = (__u32)id;
 	e->h._pad    = 0;
 	e->ts_ns     = bpf_ktime_get_ns();
-	e->child_pid = (__u32)ctx->child_pid;
+	e->child_pid = (__u32)child->tgid;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
 	bpf_ringbuf_submit(e, 0);

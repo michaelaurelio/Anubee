@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include "common/pkg_name.h"
 
 extern char **environ;
 
@@ -101,7 +102,13 @@ int anubee_resolve_pkg_from_pid(pid_t pid, char *buf, size_t bufsz)
 	buf[n] = '\0';
 	char *colon = strchr(buf, ':');
 	if (colon) *colon = '\0';
-	return buf[0] ? 0 : -1;
+	// cmdline is target-controlled and callers pass the result to a root
+	// shell: anything that isn't a well-formed package name is "unresolved".
+	if (!anubee_pkg_name_ok(buf)) {
+		buf[0] = '\0';
+		return -1;
+	}
+	return 0;
 }
 
 int anubee_resolve_component(const char *pkg, char *out, size_t outsz)

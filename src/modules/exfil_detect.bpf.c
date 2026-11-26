@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 // BPF object for the exfil-detect analyzer: trace openat/openat2 (gated to
-// media/credential-classified reads -- arms detection, doesn't count),
-// connect (tracks which (tgid,fd) pairs are non-loopback outbound sockets),
-// sendto/write/writev (byte-volume accumulation once armed+primed), and
-// close (untracks fds). Flags a per-process byte-volume burst to any
+// media/credential-classified reads -- arms detection, doesn't count) and
+// sendto/write/writev/sendmsg/sendmmsg/sendfile (byte-volume accumulation
+// once armed+primed, counted
+// only when the fd is a socket whose kernel-side peer is a non-loopback
+// IPv4/IPv6 address -- see fd_outbound_peer). Flags a per-process byte-volume burst to any
 // destination shortly after a sensitive-file read -- the syscall-level
 // signature for bulk media/credential exfiltration. Unlike
 // massdelete_detect, classification is entirely in-kernel: crossing the byte
@@ -28,6 +29,7 @@ struct {
 #include "common/path_gate.bpf.h"
 #include "common/bpf_drop.bpf.h"
 #include "modules/mod_events.h"
+#include "modules/exfil_detect_addr.h"
 
 #define EXFIL_WINDOW_NS      (30ULL * 1000000000ULL)
 #define EXFIL_BYTE_THRESHOLD (512u * 1024u)
@@ -40,10 +42,9 @@ struct {
 // prove -- it narrows false attribution, it doesn't eliminate it.
 #define EXFIL_RECENT_NS       (3ULL * 1000000000ULL)
 
-// Linux AF_* values -- no <sys/socket.h> in a BPF compile unit, and
-// vmlinux.h (BTF-generated) carries types, not macro constants.
-#define BPF_AF_INET  2
-#define BPF_AF_INET6 10
+// <sys/stat.h> file-type bits -- macro constants, not in vmlinux.h.
+#define EXFIL_S_IFMT   0170000
+#define EXFIL_S_IFSOCK 0140000
 
 // Two-stage gate, same shape as file_access.bpf.c's path_is_interesting:
 // cheap outer prefix check first (unfiltered openat() is enormous), fine
@@ -118,39 +119,68 @@ struct {
 	__type(value, struct exfil_state);
 } exfil_zero SEC(".maps");
 
-// key: (tgid << 32) | fd -> value: 1 ("this fd is a tracked outbound
-// socket, opened via a non-loopback connect() observed while this analyzer
-// was attached"). Consulted by on_write/on_writev (generic fd syscalls);
-// not needed by on_sendto (fd is inherently a socket for that syscall).
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 256);
-	__type(key, __u64);
-	__type(value, __u8);
-} sock_fds SEC(".maps");
-
-// sa is a 28-byte buffer already copied from user memory (sockaddr_in or
-// sockaddr_in6, family-tagged in its first 2 bytes -- same "sa_family is
-// host byte order" fact decode_sockaddr relies on, common/decode.c).
-static __always_inline int sockaddr_is_loopback(const unsigned char *sa)
+// Resolve fd to its kernel socket and, if the connected peer is a non-loopback
+// IPv4/IPv6 address (exfil_addr_is_outbound), fill sa with that peer as a raw
+// sockaddr_in/sockaddr_in6 and return 1. Anything else -- not a socket,
+// AF_UNIX (logd's logdw gets every Log.* line), unconnected, loopback --
+// returns 0 and must not count. Reading the peer from struct sock (the same
+// fd -> file -> socket walk Tracee's get_struct_file_from_fd does) instead of
+// remembering connect() calls means: sockets connected before the analyzer
+// attached (pooled keep-alive connections, -p attach) are still seen, and
+// the reported dest is the socket the bytes actually went to.
+static __always_inline int fd_outbound_peer(__s32 fd, unsigned char *sa)
 {
-    __u16 fam;
-    __builtin_memcpy(&fam, sa, 2);
-    if (fam == BPF_AF_INET)
-        return sa[4] == 127; // 127.0.0.0/8: first octet is at offset 4 (network order)
-    if (fam == BPF_AF_INET6) {
-        #pragma unroll
-        for (int i = 0; i < 15; i++)
-            if (sa[8 + i] != 0)
-                return 0;
-        return sa[8 + 15] == 1; // ::1
+    if (fd < 0)
+        return 0;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct fdtable *fdt = BPF_CORE_READ(task, files, fdt);
+    if (!fdt)
+        return 0;
+    unsigned int max_fds = BPF_CORE_READ(fdt, max_fds);
+    if ((unsigned int)fd >= max_fds)
+        return 0;
+    struct file **fdarr = BPF_CORE_READ(fdt, fd);
+    struct file *f = NULL;
+    if (bpf_probe_read_kernel(&f, sizeof(f), &fdarr[fd]) != 0 || !f)
+        return 0;
+    umode_t mode = BPF_CORE_READ(f, f_inode, i_mode);
+    if ((mode & EXFIL_S_IFMT) != EXFIL_S_IFSOCK)
+        return 0;
+    struct socket *sock = (struct socket *)BPF_CORE_READ(f, private_data);
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    if (!sk)
+        return 0;
+
+    __u16 fam   = BPF_CORE_READ(sk, __sk_common.skc_family);
+    __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);   // network order, as sin_port
+    __builtin_memset(sa, 0, 28);
+    if (fam == EXFIL_AF_INET) {
+        __be32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        if (!exfil_addr_is_outbound(fam, (const unsigned char *)&daddr))
+            return 0;
+        __builtin_memcpy(sa, &fam, 2);
+        __builtin_memcpy(sa + 2, &dport, 2);
+        __builtin_memcpy(sa + 4, &daddr, 4);
+        return 1;
     }
-    return 0; // AF_UNIX and anything else: not loopback, no incentive to exclude
+    if (fam == EXFIL_AF_INET6) {
+        struct in6_addr a6;
+        BPF_CORE_READ_INTO(&a6, sk, __sk_common.skc_v6_daddr);
+        if (!exfil_addr_is_outbound(fam, (const unsigned char *)&a6))
+            return 0;
+        __builtin_memcpy(sa, &fam, 2);
+        __builtin_memcpy(sa + 2, &dport, 2);
+        __builtin_memcpy(sa + 8, &a6, 16);
+        return 1;
+    }
+    return 0;
 }
 
-// Record `n` bytes sent for the current process, once armed+primed. Emits
-// an exfil_detect_event and resets the window when the byte threshold trips.
-static __always_inline void record_bytes(__u64 n)
+// Record `n` bytes sent to outbound peer `sa` (raw sockaddr) for the current
+// process, once armed+primed. Emits an exfil_detect_event and resets the
+// window when the byte threshold trips; dest is the peer of the send that
+// tripped it.
+static __always_inline void record_bytes(__u64 n, const unsigned char *sa)
 {
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
     __u64 now = bpf_ktime_get_ns();
@@ -169,6 +199,8 @@ static __always_inline void record_bytes(__u64 n)
         return;
 
     st->bytes_sent += n;
+    __builtin_memcpy(st->dest, sa, sizeof(st->dest));
+    st->dest_len = sizeof(st->dest);
     if (st->bytes_sent < EXFIL_BYTE_THRESHOLD)
         return;
 
@@ -299,120 +331,66 @@ int BPF_KPROBE(on_openat2, const struct pt_regs *regs)
     return 0;
 }
 
-// connect(sockfd, addr, addrlen): regs[0]=sockfd, regs[1]=addr. Entry-only
-// -- non-blocking sockets return -EINPROGRESS immediately, so gating on a
-// success return would miss most real connects.
-SEC("kprobe/__arm64_sys_connect")
-int BPF_KPROBE(on_connect, const struct pt_regs *regs)
-{
-    if (!uid_matches() && !pid_matches())
-        return 0;
-
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(id >> 32);
-    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
-
-    unsigned long addr_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
-    __u64 addrlen = BPF_CORE_READ(regs, regs[2]);
-    // Bounded read sized to the caller's own addrlen (masked to a
-    // verifier-provable power-of-2 ceiling, then clamped to the buffer),
-    // same pattern as correlate.bpf.c's g_sock_args capture -- avoids the
-    // old fixed 28-byte read silently faulting (and dropping the socket
-    // from sock_fds entirely) when a smaller sockaddr_in sits near a page
-    // boundary.
-    unsigned char sa[28] = {};
-    __u32 cnt = (__u32)addrlen & 31;
-    if (cnt > sizeof(sa))
-        cnt = sizeof(sa);
-    if (cnt == 0)
-        return 0;
-    if (bpf_probe_read_user(sa, cnt, (void *)addr_ptr) != 0)
-        return 0;
-    if (sockaddr_is_loopback(sa))
-        return 0; // exfil has no reason to target itself -- never armed
-
-    __u64 key = ((__u64)tgid << 32) | (__u32)fd;
-    __u8 one = 1;
-    bpf_map_update_elem(&sock_fds, &key, &one, BPF_ANY);
-
-    struct exfil_state *st = bpf_map_lookup_elem(&exfil_map, &tgid);
-    if (st) {
-        __builtin_memcpy(st->dest, sa, sizeof(sa));
-        st->dest_len = sizeof(sa);
-    }
-    return 0;
-}
-
 // sendto(sockfd, buf, len, flags, dest_addr, addrlen): regs[0]=sockfd,
-// regs[2]=len, regs[4]=dest_addr. fd is inherently a socket for this
-// syscall (no sock_fds check needed), but unlike write/writev -- which
-// only ever run on an fd armed by a prior non-loopback connect() --
-// sendto can target an unconnected UDP socket directly via its own
-// dest_addr, so the loopback exclusion has to be re-checked here against
-// ITS OWN destination, not inherited from sock_fds. dest_addr is optional
-// (NULL when reusing an already-connected socket's destination); a NULL
-// or unreadable dest_addr counts rather than being excluded -- silently
-// under-counting a real exfil send is worse than missing the narrow
-// loopback-on-an-already-connected-socket case.
+// regs[2]=len, regs[4]=dest_addr, regs[5]=addrlen. An explicit outbound
+// dest_addr (unconnected UDP) counts toward that destination. Otherwise --
+// NULL dest_addr (send() on a connected socket), or a local one (AF_UNIX /
+// loopback datagram, or one the kernel ignores on a connected stream) -- the
+// socket's own connected peer decides, same as write/writev.
 SEC("kprobe/__arm64_sys_sendto")
 int BPF_KPROBE(on_sendto, const struct pt_regs *regs)
 {
     if (!uid_matches() && !pid_matches())
         return 0;
 
+    __s32 fd  = (__s32)BPF_CORE_READ(regs, regs[0]);
+    __u64 len = BPF_CORE_READ(regs, regs[2]);
+    unsigned char sa[28] = {};
+
     unsigned long addr_ptr = BPF_CORE_READ(regs, regs[4]) & 0x00FFFFFFFFFFFFFFul;
     if (addr_ptr) {
-        unsigned char sa[28] = {};
-        if (bpf_probe_read_user(sa, sizeof(sa), (void *)addr_ptr) == 0 &&
-            sockaddr_is_loopback(sa))
+        // Bounded read sized to the caller's addrlen (masked to a
+        // verifier-provable ceiling, clamped to the buffer) so a short
+        // sockaddr_in near a page boundary doesn't fault the read.
+        __u32 cnt = (__u32)BPF_CORE_READ(regs, regs[5]) & 31;
+        if (cnt > sizeof(sa))
+            cnt = sizeof(sa);
+        if (cnt && bpf_probe_read_user(sa, cnt, (void *)addr_ptr) == 0 &&
+            exfil_sockaddr_is_outbound(sa)) {
+            record_bytes(len, sa);
             return 0;
+        }
     }
 
-    __u64 len = BPF_CORE_READ(regs, regs[2]);
-    record_bytes(len);
+    if (!fd_outbound_peer(fd, sa))
+        return 0;
+    record_bytes(len, sa);
     return 0;
 }
 
 // write(fd, buf, count): regs[0]=fd, regs[2]=count. Generic fd syscall --
-// gate on sock_fds first (files/pipes must not count).
+// only an outbound socket counts (files/pipes/AF_UNIX must not).
 SEC("kprobe/__arm64_sys_write")
 int BPF_KPROBE(on_write, const struct pt_regs *regs)
 {
     if (!uid_matches() && !pid_matches())
         return 0;
 
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(id >> 32);
     __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
-    __u64 key = ((__u64)tgid << 32) | (__u32)fd;
-    if (!bpf_map_lookup_elem(&sock_fds, &key))
+    unsigned char sa[28];
+    if (!fd_outbound_peer(fd, sa))
         return 0;
 
     __u64 count = BPF_CORE_READ(regs, regs[2]);
-    record_bytes(count);
+    record_bytes(count, sa);
     return 0;
 }
 
-// writev(fd, iov, iovcnt): regs[0]=fd, regs[1]=iov, regs[2]=iovcnt. Sums
-// iov_len across up to 8 entries (bounded, unrolled -- typical writev calls
-// use far fewer; extra entries beyond 8 are a documented undercount, not a
-// correctness bug).
-SEC("kprobe/__arm64_sys_writev")
-int BPF_KPROBE(on_writev, const struct pt_regs *regs)
+// Sum of iov_len across up to 8 entries of a user iovec array (bounded,
+// unrolled -- typical calls use far fewer; extra entries beyond 8 are a
+// documented undercount, not a correctness bug).
+static __always_inline __u64 iov_total(unsigned long iov_ptr, __u64 iovcnt)
 {
-    if (!uid_matches() && !pid_matches())
-        return 0;
-
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(id >> 32);
-    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
-    __u64 key = ((__u64)tgid << 32) | (__u32)fd;
-    if (!bpf_map_lookup_elem(&sock_fds, &key))
-        return 0;
-
-    unsigned long iov_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
-    __u64 iovcnt = BPF_CORE_READ(regs, regs[2]);
-
     __u64 total = 0;
     #pragma unroll
     for (int i = 0; i < 8; i++) {
@@ -424,23 +402,108 @@ int BPF_KPROBE(on_writev, const struct pt_regs *regs)
             break;
         total += iov.iov_len;
     }
-    record_bytes(total);
-    return 0;
+    return total;
 }
 
-// close(fd): regs[0]=fd. Untrack -- prevents a stale armed entry from
-// wrongly gating an unrelated future fd after number reuse. No-op (harmless)
-// if the fd was never armed.
-SEC("kprobe/__arm64_sys_close")
-int BPF_KPROBE(on_close, const struct pt_regs *regs)
+// writev(fd, iov, iovcnt): regs[0]=fd, regs[1]=iov, regs[2]=iovcnt.
+SEC("kprobe/__arm64_sys_writev")
+int BPF_KPROBE(on_writev, const struct pt_regs *regs)
 {
     if (!uid_matches() && !pid_matches())
         return 0;
 
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(id >> 32);
     __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
-    __u64 key = ((__u64)tgid << 32) | (__u32)fd;
-    bpf_map_delete_elem(&sock_fds, &key);
+    unsigned char sa[28];
+    if (!fd_outbound_peer(fd, sa))
+        return 0;
+
+    unsigned long iov_ptr = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    __u64 iovcnt = BPF_CORE_READ(regs, regs[2]);
+    record_bytes(iov_total(iov_ptr, iovcnt), sa);
+    return 0;
+}
+
+// Destination of a user msghdr: its msg_name if that is an outbound
+// IPv4/IPv6 address (unconnected UDP), else the socket's connected peer.
+static __always_inline int msghdr_dest(__s32 fd, const struct user_msghdr *m, unsigned char *sa)
+{
+    unsigned long name = (unsigned long)m->msg_name & 0x00FFFFFFFFFFFFFFul;
+    if (name) {
+        __u32 cnt = (__u32)m->msg_namelen & 31;
+        if (cnt > 28)
+            cnt = 28;
+        __builtin_memset(sa, 0, 28);
+        if (cnt && bpf_probe_read_user(sa, cnt, (void *)name) == 0 &&
+            exfil_sockaddr_is_outbound(sa))
+            return 1;
+    }
+    return fd_outbound_peer(fd, sa);
+}
+
+// sendmsg(fd, msg, flags): regs[0]=fd, regs[1]=struct user_msghdr *.
+SEC("kprobe/__arm64_sys_sendmsg")
+int BPF_KPROBE(on_sendmsg, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned long mp = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    struct user_msghdr m;
+    if (bpf_probe_read_user(&m, sizeof(m), (void *)mp) != 0)
+        return 0;
+    unsigned char sa[28];
+    if (!msghdr_dest(fd, &m, sa))
+        return 0;
+    record_bytes(iov_total((unsigned long)m.msg_iov & 0x00FFFFFFFFFFFFFFul, m.msg_iovlen), sa);
+    return 0;
+}
+
+// sendmmsg(fd, msgvec, vlen, flags): regs[0]=fd, regs[1]=struct mmsghdr *,
+// regs[2]=vlen. Sums up to 8 messages (same undercount bound as writev's
+// iovecs); the destination is the first message's.
+SEC("kprobe/__arm64_sys_sendmmsg")
+int BPF_KPROBE(on_sendmmsg, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned long vp = BPF_CORE_READ(regs, regs[1]) & 0x00FFFFFFFFFFFFFFul;
+    __u32 vlen = (__u32)BPF_CORE_READ(regs, regs[2]);
+    struct mmsghdr mm;
+    if (!vlen || bpf_probe_read_user(&mm, sizeof(mm), (void *)vp) != 0)
+        return 0;
+    unsigned char sa[28];
+    if (!msghdr_dest(fd, &mm.msg_hdr, sa))
+        return 0;
+
+    __u64 total = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        if (i >= vlen)
+            break;
+        if (i && bpf_probe_read_user(&mm, sizeof(mm), (void *)(vp + i * sizeof(struct mmsghdr))) != 0)
+            break;
+        total += iov_total((unsigned long)mm.msg_hdr.msg_iov & 0x00FFFFFFFFFFFFFFul,
+                           mm.msg_hdr.msg_iovlen);
+    }
+    record_bytes(total, sa);
+    return 0;
+}
+
+// sendfile(out_fd, in_fd, offset, count): regs[0]=out_fd, regs[3]=count --
+// a file streamed to a socket without passing through user memory.
+SEC("kprobe/__arm64_sys_sendfile64")
+int BPF_KPROBE(on_sendfile, const struct pt_regs *regs)
+{
+    if (!uid_matches() && !pid_matches())
+        return 0;
+
+    __s32 fd = (__s32)BPF_CORE_READ(regs, regs[0]);
+    unsigned char sa[28];
+    if (!fd_outbound_peer(fd, sa))
+        return 0;
+    record_bytes(BPF_CORE_READ(regs, regs[3]), sa);
     return 0;
 }

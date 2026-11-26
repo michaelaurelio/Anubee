@@ -57,7 +57,7 @@ static void cov_build_json(struct jbuf *j, const struct anubee_coverage *c, int 
 			jb_s(j, ",\"returns\":{\"spans\":"); jb_u64(j, c->spans_opened);
 			jb_s(j, ",\"captured\":"); jb_u64(j, c->returns_captured); jb_c(j, '}');
 		}
-		jb_s(j, "}\n");
+		jb_c(j, '}');
 		return;
 	}
 	if (c->snaps_total || c->snaps_truncated) {
@@ -89,7 +89,7 @@ static void cov_build_json(struct jbuf *j, const struct anubee_coverage *c, int 
 		jb_s(j, ",\"returns\":{\"spans\":"); jb_u64(j, c->spans_opened);
 		jb_s(j, ",\"captured\":"); jb_u64(j, c->returns_captured); jb_c(j, '}');
 	}
-	jb_s(j, "}\n");
+	jb_c(j, '}');
 }
 
 // ---- stderr banner ----
@@ -149,7 +149,7 @@ void anubee_coverage_report(struct anubee_sink *sink, const struct anubee_covera
 			jb_esc(j, cov->engine ? cov->engine : "?");
 			jb_s(j, "\",\"exempt\":true,\"reason\":\"");
 			jb_esc(j, reason);
-			jb_s(j, "\"}\n");
+			jb_s(j, "\"}");
 			anubee_sink_emit(sink);
 		}
 		return;

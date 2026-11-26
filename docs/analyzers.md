@@ -8,14 +8,24 @@ you'd have to hand-build with `funcs`/`correlate` specs.
 anubee mod --list                                        # list available analyzers
 anubee mod massdelete-detect -P com.example.app -o out.jsonl
 anubee mod execve -p 12345                                # attach to a running PID
-anubee mod file-access -m file-access -m execve -P com.example.app   # run several at once
+anubee mod -m file-access -m execve -P com.example.app   # run several at once
+anubee mod triage -P com.example.app -o out.jsonl         # every stealthy analyzer at once
+anubee mod triage -P com.example.app --no-launch          # wait for the app to start by itself
 ```
+
+**Start with `triage` on an unknown sample** (full walkthrough:
+[`malware-analysis.md`](malware-analysis.md)). It runs every stealthy analyzer
+into one JSONL (zero writes into the target), so the first run shows which
+behaviors are present; then rerun the relevant analyzers alone with `-v`.
+Use `--no-launch` when the sample has no launcher icon, starts from a
+receiver (boot, SMS, alarm, push), or you want to start it by hand.
 
 | Flag | Meaning |
 |---|---|
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
 | `-A ACTIVITY` | Override launch activity component |
-| `-m NAME` | Analyzer to run; repeat `-m` to run several concurrently (or pass `NAME` positionally) |
+| `--no-launch` | With `-P`: trace the package's UID without force-stopping or launching it; the app is caught whenever it starts |
+| `-m NAME` | Analyzer to run; repeat `-m` to run several concurrently (or pass `NAME` positionally). `triage` = every stealthy analyzer. A name given twice runs once |
 | `-o FILE` | Export structured JSONL to `FILE` |
 | `-v` | Verbose output (e.g. `execve`: full backtrace frames) |
 | `-q` | Suppress per-event console output |
@@ -27,17 +37,22 @@ anubee mod file-access -m file-access -m execve -P com.example.app   # run sever
 | Name | Detects | Loud? |
 |---|---|---|
 | `proc-event` | Process fork/exit | Stealthy |
-| `execve` | `execve`/`execveat` calls, with full argv + call stack | Stealthy |
-| `prop-read` | Android `__system_property_*` reads (anti-emulator/root checks) | **Loud** (libc uprobe) |
-| `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs | Stealthy |
+| `execve` | `execve`/`execveat` calls, with full argv + call stack; each tagged root / recon / tamper / control / shell / run-from-app-folder / run-from-memory (commands inside `sh -c` too), and marked when argv was cut off; each run's outcome (ran / failed with `ENOENT` etc.) | Stealthy |
+| `prop-read` | Android `__system_property_*` reads, each tagged as a root, emulator or device-fingerprint check (bionic's own startup reads hidden). Can't see `Build.*` fields, which zygote fills before the app starts | **Loud** (libc uprobe) |
+| `file-access` | Sensitive file opens: external storage, credential-shaped filenames, foreign app private dirs, and `/proc` anti-analysis probes (own maps/TracerPid, Frida threads/port, other processes). The app's own folder is hidden unless `-v`. Each open carries its outcome (fd, or the error), so a refused or missing path reads differently from one that opened | Stealthy |
 | `massdelete-detect` | Rapid rename+delete bursts on external storage (20 touches / 10s, mostly-distinct files) | Stealthy |
 | `exfil-detect` | A sensitive file read followed by a network byte-volume burst (512 KiB / 30s) | Stealthy |
-| `accessibility-detect` | A burst of outbound Binder calls to `system_server` (50 / 5s) from an app with a granted Accessibility Service | Stealthy |
-| `fileless-detect` | An anonymous executable memory mapping that isn't ART's own JIT cache: fileless native code execution | Stealthy |
-| `screencapture-detect` | An active `MediaProjection` screen-capture session (polls `dumpsys`, 1s interval) | Stealthy |
+| `accessibility-detect` | What the app's own Accessibility Service does, by category: reading other apps' screens (`screen_read`), clicking / entering text (`action`), injecting gestures, global back/home actions, screenshots, keyboard switching. One alert per category | Stealthy |
+| `fileless-detect` | Executable memory without a file: an anonymous executable mapping, memory made executable after being written (unpackers), or code run from a memfd -- ART's own JIT regions excluded by name; a copy of each region saved | Stealthy |
+| `dexload-detect` | A DEX/APK/JAR/ELF payload written to a file, mapped (loaded) and deleted, or a DEX loaded straight from memory (`InMemoryDexClassLoader`), with a saved copy + SHA-256 of each: droppers, `DexClassLoader`, native second stages | Stealthy |
+| `net` | Who the app talks to: every outbound flow with its destination, the host it named (TLS SNI, HTTP Host, DNS question), bytes sent/received, plus every name looked up through netd | Stealthy |
+| `screencapture-detect` | How far a screen-capture attempt got: capture service declared (`fgs_declared`, even if the user declines the prompt), capture started (`projection_start`), screen mirrored into the app (`virtual_display`) | Stealthy |
+| `binder-api` | Which Binder interfaces/methods the app calls (`IActivityManager.getRunningAppProcesses`, `IPackageManager.getInstalledPackages`...), named from the device's own framework jars; every ContentProvider call with its URI (`QUERY content://sms/inbox`) or `CALL` target (`settings GET_secure android_id`) | Stealthy |
+| `perm-watch` | Baseline + every change of the package's granted permissions, app-op modes, Accessibility / notification-listener / device-admin enablement, roles (default SMS, dialer, home...), and installed-ness (polls shell tools, 2s) | Stealthy |
 
 `prop-read` is the only analyzer that writes a `BRK` into the target; every
-other analyzer is a kprobe/tracepoint. Each run also prints (and, with `-o`,
+other analyzer is a kprobe/tracepoint (or, for `perm-watch`, shell polling
+from anubee's own process). Each run also prints (and, with `-o`,
 writes) an end-of-run summary record, see [`reading-traces.md`](reading-traces.md).
 
 ## Testing massdelete-detect/exfil-detect against a real app (manual)
@@ -65,8 +80,28 @@ appear from that one run. Rebuild from source with
 - **Deletes via MediaStore's trash API are invisible** to `massdelete-detect`.
   The real `renameat` runs under MediaProvider's UID, not the app's.
 - **`accessibility-detect`/`screencapture-detect` false-positive on legitimate tools.**
-  Screen-share/remote-support apps and legitimate accessibility services trip
-  the same signal as abuse.
+  Screen-share/remote-support apps and legitimate accessibility services
+  (TalkBack, password managers, automation apps) make the same calls as abuse.
+  `accessibility-detect` says what the service did (read the screen, clicked,
+  took a screenshot), not why. Its grant check (`granted`) is made once at
+  attach; enable-after-start shows up in `perm-watch`.
+- **`exfil-detect` counts only sends to a non-loopback IPv4/IPv6 peer.** The
+  fd is resolved to its kernel socket at send time, so AF_UNIX (logd, netd)
+  never counts, connections opened before the analyzer attached are seen,
+  and `dest` is the socket the bytes went to.
+- **`binder-api` logs the first call of each method, then counts.** Every
+  call is counted; only the first per (process, interface, method) is printed
+  and written, except ContentProvider calls (each URI/`CALL` printed once,
+  all written). Native-only interfaces (`ISurfaceComposer`, `media.c2.*`) and
+  app-private AIDL show as `#<code>`, unnamed. A URI marshalled as separate
+  scheme/authority/path parts isn't decoded (not seen on Android 16). It is
+  per-process and synchronous: it shows what the app *asked for*, not the
+  reply.
+- **`perm-watch` sees state, not the request.** It records that a permission
+  or app-op *changed* (2s resolution), not which dialog or `appops`/Settings
+  call changed it. A grant that is made and reverted within one poll is
+  missed. With `-p` on a process that isn't an app (no package name), it is
+  inactive and its coverage record says so.
 - **`exfil-detect`'s `sample_path`/`sensitive_paths` are correlational, not
   proof of transfer.** They list sensitive-classified files the process
   opened within a few seconds of the network burst (`EXFIL_RECENT_NS`) —

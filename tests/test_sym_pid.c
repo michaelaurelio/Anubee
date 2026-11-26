@@ -83,6 +83,52 @@ int main(void)
     CHECK(sym_pidc_get(&zeroed, 100, 1000, &gone) == 0,
           "zeroed cache has no entries");
 
+    // Parent tgid memory: a leader or exec event records the parent tgid, so a
+    // later event of the same pid without aux still resolves against it.
+    static struct sym_ppidc pc;
+    __u32 got;
+
+    CHECK(sym_ppidc_resolve(&pc, 100, 0) == 0,
+          "empty parent table -> unknown stays unknown");
+    CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(50, 0)) == sym_aux_make(50, 0),
+          "leader event passes through and is remembered");
+    got = sym_ppidc_resolve(&pc, 100, 0);
+    CHECK(got == sym_aux_make(50, 0),
+          "later aux-less event of the same pid gets the parent");
+    CHECK(sym_pick_pid(100, got, 1) == 50,
+          "remembered parent is used when the child's maps are gone");
+    CHECK(sym_pick_pid(100, got, 0) == 100,
+          "alive child stays on its own pid");
+    CHECK(sym_aux_is_exec(got) == 0,
+          "remembered parent does not invent the exec flag");
+    CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(50, 1)) == sym_aux_make(50, 1),
+          "exec event keeps its flag");
+    CHECK(sym_ppidc_resolve(&pc, 101, 0) == 0,
+          "other pid is unaffected");
+
+    // Direct-mapped slots: pids separated by the slot count collide.
+    CHECK(sym_ppidc_resolve(&pc, 100 + SYM_PPIDC_SLOTS, sym_aux_make(70, 0)) ==
+          sym_aux_make(70, 0),
+          "colliding pid records its parent");
+    CHECK(sym_ppidc_resolve(&pc, 100, 0) == 0,
+          "collision replaces the old parent entry");
+
+    // A new leader event of a reused pid replaces the remembered parent.
+    CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(60, 0)) == sym_aux_make(60, 0),
+          "reused pid records its new parent");
+    CHECK(sym_ppidc_resolve(&pc, 100, 0) == sym_aux_make(60, 0),
+          "reused pid resolves to the new parent");
+
+    // Pid 0 and negative pids are not table keys.
+    CHECK(sym_ppidc_resolve(&pc, 0, 0) == 0,
+          "pid 0 resolves to unknown");
+    CHECK(sym_ppidc_resolve(&pc, -1, sym_aux_make(5, 0)) == sym_aux_make(5, 0),
+          "negative pid passes the aux through");
+    CHECK(sym_ppidc_resolve(&pc, 0, 0) == 0,
+          "pid 0 stored nothing");
+    CHECK(sym_ppidc_resolve(&pc, -1, 0) == 0,
+          "negative pid stored nothing");
+
     if (fails) { printf("FAILED: %d check(s)\n", fails); return 1; }
     printf("test_sym_pid: all checks passed\n");
     return 0;

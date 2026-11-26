@@ -94,6 +94,43 @@ static inline int sym_aux_is_exec(__u32 aux)
 	return (aux & SYM_AUX_EXEC) != 0;
 }
 
+/* Remember the parent tgid per process. The parent of a live tgid does not
+ * change, and a tgid's first event is a leader event that carries it, so
+ * recording it here lets later events of the same tgid (non-leader threads,
+ * whose probe skips the parent read) still fall back to the parent. Direct
+ * mapped, one 64-bit word per slot; lock-free, a relaxed 8-byte load per event.
+ * An entry is (pid << 32) | ppid; 0 means empty, so a torn pair is impossible. */
+#define SYM_PPIDC_SLOTS 1024
+
+struct sym_ppidc {
+	unsigned long long s[SYM_PPIDC_SLOTS];
+};
+
+static inline __u32 sym_ppidc_resolve(struct sym_ppidc *c, int pid, __u32 aux)
+{
+	if (pid <= 0)
+		return aux;
+
+	unsigned int slot = (unsigned int)pid & (SYM_PPIDC_SLOTS - 1);
+
+	if (sym_aux_ppid(aux) > 0) {
+		unsigned long long entry =
+			((unsigned long long)(unsigned int)pid << 32) |
+			(unsigned int)sym_aux_ppid(aux);
+
+		if (__atomic_load_n(&c->s[slot], __ATOMIC_RELAXED) != entry)
+			__atomic_store_n(&c->s[slot], entry, __ATOMIC_RELAXED);
+		return aux;
+	}
+
+	unsigned long long entry = __atomic_load_n(&c->s[slot], __ATOMIC_RELAXED);
+	__u32 ppid = (__u32)entry;
+
+	if (ppid > 0 && (__u32)(entry >> 32) == (unsigned int)pid)
+		return sym_aux_make((int)ppid, 0);
+	return aux;
+}
+
 /* The parent explains the frames only when it is a real process other than the
  * event pid, and either the stack predates an execve or the child's own maps
  * are gone. Otherwise the event's pid is the right address space. */

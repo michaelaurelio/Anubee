@@ -163,8 +163,16 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 	pthread_mutex_unlock(&g_lock);
 }
 
+// The parent tgid recorded by a leader or exec event is remembered per process:
+// later events of the same tgid, including other threads whose probe skipped the
+// parent read, still resolve against the parent.
+static struct sym_ppidc g_ppidc;
+
 int sym_effective_pid(int pid, unsigned int aux)
 {
+	// Fill in the parent remembered from an earlier event of this tgid.
+	aux = sym_ppidc_resolve(&g_ppidc, pid, aux);
+
 	// Common case: no usable parent recorded, or the event pid is the parent.
 	if (sym_aux_ppid(aux) <= 1 || sym_aux_ppid(aux) == pid)
 		return pid;

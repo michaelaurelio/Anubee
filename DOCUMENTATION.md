@@ -481,9 +481,11 @@ address space when the child's own maps are already gone (it exited) or the stac
 an `execve` that replaced its image. The parent tgid is recorded only for a
 process's main thread (where thread id equals thread group id) and for `execve`,
 which covers a forked child while it is still single-threaded (events of other
-threads resolve against their own pid); userspace caches
-the per-pid decision briefly. This is best effort: if the parent has also exited,
-the frames stay unresolved.
+threads resolve against their own pid); userspace caches the per-pid decision
+briefly. The parent tgid seen on a leader or exec event is remembered per
+process in userspace, so later events from other threads of a process whose
+maps are gone also resolve against the parent. This is best effort: if the
+parent has also exited, the frames stay unresolved.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers

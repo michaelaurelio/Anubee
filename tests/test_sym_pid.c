@@ -2,7 +2,6 @@
 // Host unit test for the pure aux/pid selection helpers in common/sym_pid.h.
 #include <linux/types.h>
 #include <stdio.h>
-#include <string.h>
 #include "common/sym_pid.h"
 
 static int fails;
@@ -21,67 +20,87 @@ int main(void)
     CHECK(sym_aux_make(0, 1) == 0, "ppid 0 encodes unknown (flag dropped)");
     CHECK(sym_aux_make(-5, 1) == 0, "negative ppid encodes unknown");
 
-    // Pick the parent only when it is usable and the child's own maps cannot
-    // describe the recorded frames.
-    CHECK(sym_pick_pid(100, sym_aux_make(50, 0), 1) == 50,
-          "child maps gone -> parent");
-    CHECK(sym_pick_pid(100, sym_aux_make(50, 0), 0) == 100,
-          "live child, non-exec -> own pid");
-    CHECK(sym_pick_pid(100, sym_aux_make(50, 1), 0) == 50,
-          "exec event -> parent even while child lives");
-    CHECK(sym_pick_pid(100, 0, 1) == 100,
-          "unknown aux -> own pid");
-    CHECK(sym_pick_pid(100, sym_aux_make(100, 1), 1) == 100,
-          "ppid == pid -> own pid");
-    CHECK(sym_pick_pid(100, sym_aux_make(1, 1), 1) == 100,
-          "reparented to init -> own pid");
-    CHECK(sym_pick_pid(100, sym_aux_make(0, 1), 1) == 100,
+    // The pid whose address space a recorded stack belongs to. An exec event's
+    // stack predates the exec, so it belongs to the parent; every other event
+    // belongs to the event's own pid.
+
+    // Fixture: exec predating the stack.
+    CHECK(sym_first_pid(100, sym_aux_make(50, 1)) == 50,
+          "exec event resolves its stack against the parent");
+    // Fixture: zygote-forked never-exec'd child.
+    CHECK(sym_first_pid(100, sym_aux_make(50, 0)) == 100,
+          "never-exec'd child keeps its own pid");
+    CHECK(sym_first_pid(100, sym_aux_make(0, 0)) == 100,
           "ppid 0 -> own pid");
+    CHECK(sym_first_pid(100, sym_aux_make(1, 0)) == 100,
+          "reparented to init -> own pid");
+    CHECK(sym_first_pid(100, sym_aux_make(100, 0)) == 100,
+          "ppid == pid -> own pid");
+    CHECK(sym_first_pid(100, sym_aux_make(1, 1)) == 100,
+          "exec reparented to init -> own pid");
+    CHECK(sym_first_pid(100, sym_aux_make(100, 1)) == 100,
+          "exec with ppid == pid -> own pid");
+    CHECK(sym_first_pid(100, 0) == 100,
+          "unknown aux -> own pid");
+
+    // The parent is consulted lazily, only when the child's own resolution
+    // fails; an exec event already went to the parent first.
+    CHECK(sym_fallback_pid(100, sym_aux_make(50, 0)) == 50,
+          "non-exec with a usable parent -> fallback pid");
+    CHECK(sym_fallback_pid(100, sym_aux_make(50, 1)) == 0,
+          "exec resolves against the parent first -> no fallback");
+    CHECK(sym_fallback_pid(100, sym_aux_make(0, 0)) == 0,
+          "ppid 0 -> no fallback");
+    CHECK(sym_fallback_pid(100, sym_aux_make(1, 0)) == 0,
+          "reparented to init -> no fallback");
+    CHECK(sym_fallback_pid(100, sym_aux_make(100, 0)) == 0,
+          "ppid == pid -> no fallback");
+    CHECK(sym_fallback_pid(100, 0) == 0,
+          "unknown aux -> no fallback");
+
+    // Fixture: cache miss (the child's maps are gone and it never held a
+    // snapshot, so nothing of its own can name the frame).
+    CHECK(sym_fallback_wanted(1, 0) == 1,
+          "gone without a snapshot -> fallback wanted");
+    CHECK(sym_fallback_wanted(0, 0) == 0,
+          "alive -> fallback not wanted");
+    CHECK(sym_fallback_wanted(1, 5) == 0,
+          "gone with a retained snapshot -> fallback not wanted");
+    CHECK(sym_fallback_wanted(0, 5) == 0,
+          "alive with a snapshot -> fallback not wanted");
+
+    // A stack snapshot is unwound through the parent only when the stack
+    // predates an exec.
+    CHECK(sym_snapshot_parent(sym_aux_make(50, 1)) == 1,
+          "exec stack -> unwind against the parent");
+    CHECK(sym_snapshot_parent(sym_aux_make(50, 0)) == 0,
+          "non-exec stack -> unwind against the child");
+    CHECK(sym_snapshot_parent(sym_aux_make(0, 1)) == 0,
+          "exec without a usable parent -> own pid");
+    CHECK(sym_snapshot_parent(sym_aux_make(1, 1)) == 0,
+          "exec reparented to init -> own pid");
+    CHECK(sym_snapshot_parent(0) == 0,
+          "unknown aux -> own pid");
+
+    // An empty read keeps the last known snapshot only when there was one.
+    CHECK(sym_maps_discard_read(5, 0) == 1,
+          "empty read over a snapshot -> discard the read");
+    CHECK(sym_maps_discard_read(5, 3) == 0,
+          "non-empty read over a snapshot -> install it");
+    CHECK(sym_maps_discard_read(0, 0) == 0,
+          "empty read without a snapshot -> nothing to keep");
+    CHECK(sym_maps_discard_read(0, 3) == 0,
+          "first non-empty read -> install it");
 
     // The parent lookup matters only for exec events and for a process's
     // single-threaded pre-exec phase, where tid == tgid.
+    // Fixture: single-threaded fork child.
     CHECK(sym_aux_wanted(0, 100, 100) == 1,
           "leader thread -> parent read wanted");
     CHECK(sym_aux_wanted(0, 100, 101) == 0,
           "non-leader thread -> parent read skipped");
     CHECK(sym_aux_wanted(1, 100, 101) == 1,
           "exec from any thread -> parent read wanted");
-
-    // Per-pid decision cache: direct mapped, alive and gone TTLs differ.
-    struct sym_pidc cache = {0};
-    int gone = -1;
-    CHECK(sym_pidc_get(&cache, 100, 1100, &gone) == 0,
-          "empty cache -> miss");
-
-    sym_pidc_put(&cache, 100, 0, 1000);
-    CHECK(sym_pidc_get(&cache, 100, 1100, &gone) == 1 && gone == 0,
-          "alive entry hits before TTL");
-    CHECK(sym_pidc_get(&cache, 100, 1251, &gone) == 0,
-          "alive entry expires after 250 ms");
-
-    sym_pidc_put(&cache, 100, 1, 1000);
-    CHECK(sym_pidc_get(&cache, 100, 5999, &gone) == 1 && gone == 1,
-          "gone entry hits before TTL");
-    CHECK(sym_pidc_get(&cache, 100, 6001, &gone) == 0,
-          "gone entry expires after 5000 ms");
-
-    // Pids separated by the slot count share a direct-mapped slot.
-    struct sym_pidc collisions = {0};
-    sym_pidc_put(&collisions, 100, 0, 1000);
-    sym_pidc_put(&collisions, 100 + SYM_PIDC_SLOTS, 0, 1000);
-    CHECK(sym_pidc_get(&collisions, 100, 1100, &gone) == 0,
-          "colliding pid replaces the old entry");
-    CHECK(sym_pidc_get(&collisions, 100 + SYM_PIDC_SLOTS, 1100, &gone) == 1 &&
-          gone == 0,
-          "new colliding pid hits");
-
-    // A zeroed cache must look empty even for pid 0.
-    struct sym_pidc zeroed;
-    memset(&zeroed, 0, sizeof(zeroed));
-    CHECK(sym_pidc_get(&zeroed, 0, 1000, &gone) == 0,
-          "pid 0 never hits a zeroed cache");
-    CHECK(sym_pidc_get(&zeroed, 100, 1000, &gone) == 0,
-          "zeroed cache has no entries");
 
     // Parent tgid memory: a leader or exec event records the parent tgid, so a
     // later event of the same pid without aux still resolves against it.
@@ -92,13 +111,16 @@ int main(void)
           "empty parent table -> unknown stays unknown");
     CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(50, 0)) == sym_aux_make(50, 0),
           "leader event passes through and is remembered");
+    // Fixture: non-leader thread (aux 0 filled from the table).
     got = sym_ppidc_resolve(&pc, 100, 0);
     CHECK(got == sym_aux_make(50, 0),
           "later aux-less event of the same pid gets the parent");
-    CHECK(sym_pick_pid(100, got, 1) == 50,
-          "remembered parent is used when the child's maps are gone");
-    CHECK(sym_pick_pid(100, got, 0) == 100,
+    CHECK(sym_first_pid(100, got) == 100,
           "alive child stays on its own pid");
+    CHECK(sym_fallback_pid(100, got) == 50,
+          "remembered parent is available as fallback");
+    CHECK(sym_fallback_wanted(1, 0) == 1,
+          "gone child without a snapshot uses the remembered parent");
     CHECK(sym_aux_is_exec(got) == 0,
           "remembered parent does not invent the exec flag");
     CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(50, 1)) == sym_aux_make(50, 1),
@@ -113,7 +135,7 @@ int main(void)
     CHECK(sym_ppidc_resolve(&pc, 100, 0) == 0,
           "collision replaces the old parent entry");
 
-    // A new leader event of a reused pid replaces the remembered parent.
+    // Fixture: pid reuse (ppid changes -> table updated).
     CHECK(sym_ppidc_resolve(&pc, 100, sym_aux_make(60, 0)) == sym_aux_make(60, 0),
           "reused pid records its new parent");
     CHECK(sym_ppidc_resolve(&pc, 100, 0) == sym_aux_make(60, 0),

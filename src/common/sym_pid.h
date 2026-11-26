@@ -2,12 +2,14 @@
  *
  * Pure selection of the pid whose address space a recorded frame belongs to.
  *
- * A forked child's frames are valid in its parent's address space: the child is
- * a copy of it until execve replaces it. The child's own /proc/<pid>/maps are
- * gone after it exits and describe the new image after execve, so symbolizing
- * against the parent recovers the frame names. `aux` carries the parent tgid
- * (low 31 bits) and a bit for "this event is execve/execveat" (bit 31); 0 means
- * unknown, i.e. stay with the event's own pid.
+ * A forked child's frames are valid in its parent's address space until execve
+ * replaces its image: the stack of an exec event predates the exec, so it is
+ * resolved against the parent. Every other event is resolved against the
+ * event's own pid, whose maps may still be alive or retained after exit; the
+ * parent is a lazy fallback only for a pid that never held a snapshot. `aux`
+ * carries the parent tgid (low 31 bits) and a bit for "this event is
+ * execve/execveat" (bit 31); 0 means unknown, i.e. stay with the event's own
+ * pid.
  *
  * Header-only and libc-free so BPF objects and host tests can share it: BPF
  * gets __u32 from vmlinux.h, host code includes <linux/types.h> first.
@@ -22,57 +24,6 @@
 static inline int sym_aux_wanted(int is_exec, __u32 tgid, __u32 tid)
 {
 	return is_exec || tgid == tid;
-}
-
-/* Per-pid cache for "the child's maps are gone". Direct mapped, so a slot
- * collision replaces the previous entry. */
-#define SYM_PIDC_SLOTS 64
-#define SYM_PIDC_ALIVE_MS 250
-#define SYM_PIDC_GONE_MS 5000
-
-struct sym_pidc_slot {
-	int pid;
-	int gone;
-	long long stamp_ms;
-};
-
-struct sym_pidc {
-	struct sym_pidc_slot s[SYM_PIDC_SLOTS];
-};
-
-/* Return 1 and fill *gone on a live cache hit, 0 on a miss or expired entry.
- * Alive and gone entries use separate lifetimes. */
-static inline int sym_pidc_get(struct sym_pidc *c, int pid, long long now_ms,
-			       int *gone)
-{
-	if (pid <= 0)
-		return 0;
-
-	struct sym_pidc_slot *slot = &c->s[(unsigned int)pid & (SYM_PIDC_SLOTS - 1)];
-	long long age;
-
-	if (slot->pid != pid)
-		return 0;
-	age = now_ms - slot->stamp_ms;
-	if (age < 0)
-		return 0;
-	if (age >= (slot->gone ? SYM_PIDC_GONE_MS : SYM_PIDC_ALIVE_MS))
-		return 0;
-
-	if (gone)
-		*gone = slot->gone;
-	return 1;
-}
-
-/* Store a pid decision with the current timestamp. */
-static inline void sym_pidc_put(struct sym_pidc *c, int pid, int gone,
-				long long now_ms)
-{
-	struct sym_pidc_slot *slot = &c->s[(unsigned int)pid & (SYM_PIDC_SLOTS - 1)];
-
-	slot->pid = pid;
-	slot->gone = gone ? 1 : 0;
-	slot->stamp_ms = now_ms;
 }
 
 /* Pack a parent tgid and the exec flag. An unusable ppid means "unknown", so
@@ -92,6 +43,55 @@ static inline int sym_aux_ppid(__u32 aux)
 static inline int sym_aux_is_exec(__u32 aux)
 {
 	return (aux & SYM_AUX_EXEC) != 0;
+}
+
+/* The pid whose own address space explains an event's frames first. An exec
+ * event's stack predates the exec, so it belongs to the parent; every other
+ * event belongs to the event's own pid. */
+static inline int sym_first_pid(int pid, __u32 aux)
+{
+	int ppid = sym_aux_ppid(aux);
+
+	if (sym_aux_is_exec(aux) && ppid > 1 && ppid != pid)
+		return ppid;
+	return pid;
+}
+
+/* The parent pid to fall back to when the event pid has no mapping for a
+ * frame. 0 when there is none: an exec event already resolves against the
+ * parent, and an unusable parent cannot describe the frames. */
+static inline int sym_fallback_pid(int pid, __u32 aux)
+{
+	int ppid = sym_aux_ppid(aux);
+
+	if (sym_aux_is_exec(aux))
+		return 0;
+	if (ppid > 1 && ppid != pid)
+		return ppid;
+	return 0;
+}
+
+/* The parent fallback is useful only when the event pid's maps are gone and it
+ * never held a snapshot of its own. */
+static inline int sym_fallback_wanted(int gone, unsigned long long n)
+{
+	return gone == 1 && n == 0;
+}
+
+/* A stack snapshot is unwound through the parent only when the stack predates
+ * an exec. */
+static inline int sym_snapshot_parent(__u32 aux)
+{
+	return sym_aux_is_exec(aux) && sym_aux_ppid(aux) > 1;
+}
+
+/* An empty maps read must be discarded when an earlier read produced a
+ * snapshot: the process exited, but its last mappings still name the frames
+ * recorded before it did. */
+static inline int sym_maps_discard_read(unsigned long long old_n,
+					unsigned long long new_n)
+{
+	return old_n > 0 && new_n == 0;
 }
 
 /* Remember the parent tgid per process. The parent of a live tgid does not
@@ -129,18 +129,6 @@ static inline __u32 sym_ppidc_resolve(struct sym_ppidc *c, int pid, __u32 aux)
 	if (ppid > 0 && (__u32)(entry >> 32) == (unsigned int)pid)
 		return sym_aux_make((int)ppid, 0);
 	return aux;
-}
-
-/* The parent explains the frames only when it is a real process other than the
- * event pid, and either the stack predates an execve or the child's own maps
- * are gone. Otherwise the event's pid is the right address space. */
-static inline int sym_pick_pid(int pid, __u32 aux, int child_maps_gone)
-{
-	int ppid = sym_aux_ppid(aux);
-
-	if (ppid > 1 && ppid != pid && (sym_aux_is_exec(aux) || child_maps_gone))
-		return ppid;
-	return pid;
 }
 
 #endif /* ANUBEE_SYM_PID_H */

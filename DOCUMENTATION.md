@@ -476,16 +476,17 @@ garbage — precisely the RASP/anti-tamper `.so` case this tool is meant for.
 Attribution then falls back to `stack[0]` (the trap PC itself, which needs no
 frame pointer) rather than reporting a false miss.
 
-**Forked-child attribution.** A forked child's frames are resolved against the parent's
-address space when the child's own maps are already gone (it exited) or the stack predates
-an `execve` that replaced its image. The parent tgid is recorded only for a
-process's main thread (where thread id equals thread group id) and for `execve`,
-which covers a forked child while it is still single-threaded (events of other
-threads resolve against their own pid); userspace caches the per-pid decision
-briefly. The parent tgid seen on a leader or exec event is remembered per
-process in userspace, so later events from other threads of a process whose
-maps are gone also resolve against the parent. This is best effort: if the
-parent has also exited, the frames stay unresolved.
+**Forked-child attribution.** A forked child's frames are resolved against its own
+address space first, and its last known maps are kept after it exits, so frames
+recorded before death still resolve; only an `execve` stack that predates the exec,
+or a child that never had its maps read, falls back to the parent's address space.
+The parent tgid is recorded only for a process's main thread (where thread id equals
+thread group id) and for `execve`, which covers a forked child while it is still
+single-threaded (events of other threads resolve against their own pid). The parent
+tgid seen on a leader or exec event is remembered per process in userspace, so later
+events from other threads of a process that never had maps also fall back to the
+parent. This is best effort: if the parent has also exited, the frames stay
+unresolved.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers

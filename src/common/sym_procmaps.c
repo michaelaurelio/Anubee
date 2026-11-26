@@ -2,7 +2,9 @@
 // Per-pid /proc/<pid>/maps snapshot cache (module ranges + on-disk paths), with
 // LRU eviction and the module-base walk. See symbolize_internal.h.
 #include <sys/types.h>
+#include <linux/types.h>
 #include "symbolize_internal.h"
+#include "common/sym_pid.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,31 +33,48 @@ void read_proc_maps(struct procmaps *pm)
 	snprintf(path, sizeof(path), "/proc/%d/maps", pm->pid);
 	FILE *f = fopen(path, "r");
 	int oerr = errno;            // capture before now_ms() (clock_gettime) can clobber it
-	pm->n    = 0;
-	pm->gone = 0;
+	pm->gone  = 0;
+	pm->stale = 0;
 	pm->last_read_ms = now_ms();
 	if (!f) {
 		pm->gone = (oerr == ENOENT);
+		// A vanished process keeps its last known mappings: they still name
+		// the frames recorded before it exited.
+		if (!pm->gone)
+			pm->n = 0;
 		return;
 	}
 
+	// Parse into a fresh buffer so an empty read (an exited process whose
+	// maps file still opens) does not destroy the last good snapshot.
+	struct anubee_map_line *nm = NULL;
+	size_t nn = 0, ncap = 0;
 	char line[512];
 	while (fgets(line, sizeof(line), f)) {
 		struct anubee_map_line ml;
 		if (!anubee_parse_maps_line(line, &ml))
 			continue;
 
-		if (pm->n == pm->cap) {
-			size_t nc = pm->cap ? pm->cap * 2 : 256;
-			struct anubee_map_line *nm = realloc(pm->m, nc * sizeof(*nm));
-			if (!nm)
+		if (nn == ncap) {
+			size_t nc = ncap ? ncap * 2 : 256;
+			struct anubee_map_line *t = realloc(nm, nc * sizeof(*nm));
+			if (!t)
 				break;
-			pm->m = nm;
-			pm->cap = nc;
+			nm = t;
+			ncap = nc;
 		}
-		pm->m[pm->n++] = ml;
+		nm[nn++] = ml;
 	}
 	fclose(f);
+	if (sym_maps_discard_read(pm->n, nn)) {
+		free(nm);
+		pm->gone = 1;
+		return;
+	}
+	free(pm->m);
+	pm->m = nm;
+	pm->n = nn;
+	pm->cap = ncap;
 }
 
 // pm_get lives above the ART-JIT / vDSO / symbol-cache definitions but reaches
@@ -123,6 +142,8 @@ struct anubee_map_line *find_mapping(struct procmaps *pm, uint64_t addr)
 // (cfi_unwind_snapshot) so a stale cache can't dead-end the unwind at frame 0.
 struct anubee_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
 {
+	if (pm->stale)
+		read_proc_maps(pm);
 	struct anubee_map_line *hit = find_mapping(pm, addr);
 	if (!hit && now_ms() - pm->last_read_ms > REFRESH_MS) {
 		read_proc_maps(pm);
@@ -137,10 +158,8 @@ struct anubee_map_line *find_mapping_refresh(struct procmaps *pm, uint64_t addr)
 void pm_reset_pid(int pid)
 {
 	for (size_t i = 0; i < g_npm; i++)
-		if (g_pm[i].pid == pid) {
-			g_pm[i].n    = 0;
-			g_pm[i].gone = 0;
-		}
+		if (g_pm[i].pid == pid)
+			g_pm[i].stale = 1;   // reread on the next lookup; keep the old snapshot if that fails
 }
 
 // Walk back over the contiguous run of same-path mappings to find the ELF base.

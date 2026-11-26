@@ -24,7 +24,7 @@
 #include "common/art_nterp.h" // nterp_name
 #include "common/art_shadow.h"   // shadow_frame_chain — switch-interp ShadowFrame naming
 #include <linux/types.h>      // __u64 / __u32 / __u8 required by stack_snapshot.h
-#include "common/sym_pid.h"   // sym_pick_pid (pure aux/pid selection)
+#include "common/sym_pid.h"   // pure aux/pid selection helpers
 #include "common/stack_snapshot.h"
 #include "symbolize_internal.h"
 
@@ -36,7 +36,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <time.h>
 #include <elf.h>
 #include <lzma.h>
 #include <pthread.h>
@@ -149,7 +148,8 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Returns 1 if the result is stable enough to cache (a real mapping), 0 for an
 // unmapped/transient address (which a later mmap could turn into a real symbol).
-static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz);
+static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz,
+				int *unres);
 
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 {
@@ -158,8 +158,41 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 		pthread_mutex_unlock(&g_lock);
 		return;
 	}
-	if (sym_resolve_uncached(pid, addr, out, outsz))
+	if (sym_resolve_uncached(pid, addr, out, outsz, NULL))
 		sc_put(pid, (uint64_t)addr, out);
+	pthread_mutex_unlock(&g_lock);
+}
+
+// Resolve against `pid` first; only when that finds no mapping and the pid's
+// maps are gone without a retained snapshot, try `fb` (the parent), whose
+// address space the frames of a forked child may belong to. The text of the
+// own pid stays in place when the fallback does not resolve.
+void sym_resolve_fb(int pid, int fb, unsigned long long addr, char *out, size_t outsz)
+{
+	pthread_mutex_lock(&g_lock);
+	if (sc_get(pid, (uint64_t)addr, out, outsz)) {
+		pthread_mutex_unlock(&g_lock);
+		return;
+	}
+	int unres = 0;
+	if (sym_resolve_uncached(pid, addr, out, outsz, &unres))
+		sc_put(pid, (uint64_t)addr, out);
+	if (unres && fb > 1 && fb != pid) {
+		struct procmaps *pm = pm_get(pid);
+		if (pm && sym_fallback_wanted(pm->gone, pm->n)) {
+			char tmp[512];
+			if (sc_get(fb, (uint64_t)addr, tmp, sizeof(tmp))) {
+				snprintf(out, outsz, "%s", tmp);
+			} else {
+				int u2 = 0;
+				int stable = sym_resolve_uncached(fb, addr, tmp, sizeof(tmp), &u2);
+				if (stable)
+					sc_put(fb, (uint64_t)addr, tmp);
+				if (!u2)
+					snprintf(out, outsz, "%s", tmp);
+			}
+		}
+	}
 	pthread_mutex_unlock(&g_lock);
 }
 
@@ -168,50 +201,45 @@ void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz)
 // parent read, still resolve against the parent.
 static struct sym_ppidc g_ppidc;
 
-int sym_effective_pid(int pid, unsigned int aux)
+int sym_effective_pid(int pid, unsigned int aux, int *fb)
 {
 	// Fill in the parent remembered from an earlier event of this tgid.
 	aux = sym_ppidc_resolve(&g_ppidc, pid, aux);
 
-	// Common case: no usable parent recorded, or the event pid is the parent.
-	if (sym_aux_ppid(aux) <= 1 || sym_aux_ppid(aux) == pid)
-		return pid;
-
-	// The maps cache is under g_lock; an exec event always wants the parent, so
-	// only a non-exec one needs to know whether the child's maps are gone.
-	if (sym_aux_is_exec(aux))
-		return sym_pick_pid(pid, aux, 0);
-
-	// Cache the per-pid decision per worker thread. A hit avoids the global lock
-	// and the maps lookup; a miss rechecks the maps and refreshes the entry.
-	static _Thread_local struct sym_pidc cache;
-	struct timespec ts;
-	// Coarse clock: no syscall, and millisecond accuracy is plenty for a TTL.
-	clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
-	long long now_ms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-	int gone = 0;
-
-	if (!sym_pidc_get(&cache, pid, now_ms, &gone)) {
-		pthread_mutex_lock(&g_lock);
-		struct procmaps *pm = pm_get(pid);
-		gone = pm && pm->gone;
-		pthread_mutex_unlock(&g_lock);
-		sym_pidc_put(&cache, pid, gone, now_ms);
-	}
-	return sym_pick_pid(pid, aux, gone);
+	if (fb)
+		*fb = sym_fallback_pid(pid, aux);
+	return sym_first_pid(pid, aux);
 }
 
-static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz)
+// A stack snapshot walk uses the process' own maps; only a stack recorded
+// before an exec is unwound through the parent.
+int sym_snapshot_pid(int pid, unsigned int aux, int *fb)
 {
+	aux = sym_ppidc_resolve(&g_ppidc, pid, aux);
+
+	if (fb)
+		*fb = 0;
+	return sym_snapshot_parent(aux) ? sym_aux_ppid(aux) : pid;
+}
+
+static int sym_resolve_uncached(int pid, unsigned long long addr, char *out, size_t outsz,
+				int *unres)
+{
+	if (unres)
+		*unres = 0;
 	struct procmaps *pm = pm_get(pid);
 	if (!pm) {
 		snprintf(out, outsz, "0x%llx", addr);
+		if (unres)
+			*unres = 1;
 		return 0;
 	}
 
 	struct anubee_map_line *hit = find_mapping_refresh(pm, (uint64_t)addr);
 	if (!hit) {
 		// Not in any mapping: pid exited before maps were read, stale frame, or bad unwind.
+		if (unres)
+			*unres = 1;
 		if (pm->gone)
 			snprintf(out, outsz, "0x%llx [pid %d gone]", addr, pid);
 		else

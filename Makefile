@@ -140,7 +140,7 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                anubee_bpf_objects anubee_object_writes_target anubee_quiet_config_ok \
                seg_vaddr_to_off \
-               sym_resolve sym_effective_pid sym_flush_pid cfi_unwind_snapshot \
+               sym_resolve sym_effective_pid sym_snapshot_pid sym_resolve_fb sym_flush_pid cfi_unwind_snapshot \
                anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
                anubee_stack_snapshot_emit_json \
                anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \
@@ -493,6 +493,8 @@ test:
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_pid.c -o $(BUILD)/test_sym_pid
 	$(BUILD)/test_sym_pid
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_retain
+	$(BUILD)/test_pm_retain
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
 	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

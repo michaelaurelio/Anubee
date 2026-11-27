@@ -37,6 +37,7 @@
 #include "common/probe_spec_loader.h"
 #include "common/human_out.h"      // err_print: surface -F parse errors (was silently NULL)
 #include "common/emit.h"           // SYM1 Phase 3: struct anubee_sink, anubee_sink_open/close/report
+#include "common/sym_apk.h"        // apk_so_at: APK-embedded member names for -l
 #include "common/coverage.h"       // SYM1 Phase 5b: explicit "exempt" coverage record
 #include "dump/dump_args.h"
 #include "rebuild.h"
@@ -141,7 +142,19 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	const char *full = path;
 	if (anubee_libtrace_resolve_path(h->pid, e->start, e->name, path, sizeof(path)) != 0)
 		full = e->name;
-	if (!dump_name_matches_any_track(g_patterns, g_npat, full, g_pat_hit))
+	int match = dump_name_matches_any_track(g_patterns, g_npat, full, g_pat_hit);
+	if (!match) {
+		// APK-embedded library: match the stored member's name too. pgoff is in
+		// kernel pages; multiply by the runtime page size for the byte offset.
+		size_t fl = strlen(full);
+		if (fl >= 4 && !strcmp(full + fl - 4, ".apk")) {
+			uint64_t off = (uint64_t)e->pgoff * (uint64_t)sysconf(_SC_PAGESIZE);
+			const char *inner = apk_so_at(full, off);
+			if (inner)
+				match = dump_name_matches_any_track(g_patterns, g_npat, inner, g_pat_hit);
+		}
+	}
+	if (!match)
 		return 0;
 	if (!seen_add(h->pid, e->start))
 		return 0;
@@ -227,13 +240,13 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
             break;
         }
         if (dump_parse_base(arg, &a->bases[a->nbase]) != 0)
-            argp_error(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
+            ANUBEE_ARGP_FAIL(state, "invalid --base address '%s' (expected hex, e.g. 0x7281a0000)", arg);
         a->nbase++;
         break;
     case KEY_RAW:    a->raw    = 1; break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
-            argp_error(state, "cannot open spec file '%s'", arg);
+            ANUBEE_ARGP_FAIL(state, "cannot open spec file '%s'", arg);
         break;
     case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
         return parse_target_arg(key, arg, state, &a->tgt);
@@ -241,7 +254,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
         if      (!a->pkg && a->tgt.n == 0)  a->pkg      = arg;
         else if (!a->pat_pos)               a->pat_pos  = arg;
         else if (!a->activity)              a->activity = arg;
-        else argp_error(state, "unexpected argument '%s'", arg);
+        else ANUBEE_ARGP_FAIL(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "dump");
@@ -259,7 +272,7 @@ static error_t dump_parse_opt(int key, char *arg, struct argp_state *state)
             };
             const char *err = dump_args_check(&t);
             if (err)
-                argp_error(state, "%s", err);
+                ANUBEE_ARGP_FAIL(state, "%s", err);
         }
         break;
     default:

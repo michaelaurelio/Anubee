@@ -142,11 +142,15 @@ static error_t parse_opts(int key, char *arg, struct argp_state *state)
                 fprintf(stderr, "funcs: warning - -A/--activity has no effect in -p mode; ignored\n");
             if (args->want_snap && !args->c.output_file)
                 fprintf(stderr, "funcs: warning - --snapshot needs -o FILE for the .stacks sidecar; disabled\n");
-            validate_pid_or_package(state, args->tgt.n,
-                args->package_name[0] ? args->package_name : NULL);
-            validate_have_selector(state,
-                args->custom_spec_count + args->spec_file_count,
-                "-e SPEC or -F FILE");
+            {
+                error_t ve = validate_pid_or_package(state, args->tgt.n,
+                    args->package_name[0] ? args->package_name : NULL);
+                if (ve) return ve;
+                ve = validate_have_selector(state,
+                    args->custom_spec_count + args->spec_file_count,
+                    "-e SPEC or -F FILE");
+                if (ve) return ve;
+            }
             break;
         
         case 'p':
@@ -405,6 +409,30 @@ static void attach_one_custom_target(const struct probe_resolve_ctx *ctx, const 
 // end-of-run summary.
 static bool g_custom_spec_resolved[64];
 
+// extractNativeLibs=false: the mapped path is the APK, so a spec's MODULE
+// (a library name) never matches its basename. Resolve it against the APK's
+// stored members and attach each resulting target (offsets are APK file offsets).
+static void apply_apk_member_spec(const struct probe_resolve_ctx *ctx, int s, pid_t pid,
+                                  const char *path, pid_t uprobe_pid,
+                                  unsigned long map_start, unsigned long map_end)
+{
+    const custom_probe_spec_t *spec = &ctx->custom_specs[s];
+    if (!custom_spec_matches_apk(spec, path)) return;
+    probe_target_t found[256];
+    int cap = ctx->targets_cap - *ctx->target_count;
+    if (cap > 256) cap = 256;
+    if (cap <= 0) return;
+    int n = resolve_custom_spec_in_apk(pid, path, spec, found, cap);
+    if (n == cap)
+        err_print("   [err] > custom spec: match cap (%d) reached for %s!%s in %s; "
+                  "additional matches may exist and were ignored\n",
+                  cap, spec->mod, spec->func, path);
+    if (n > 0 && s < 64)
+        g_custom_spec_resolved[s] = true;
+    for (int m = 0; m < n && *ctx->target_count < ctx->targets_cap; m++)
+        attach_one_custom_target(ctx, path, uprobe_pid, map_start, map_end, found[m]);
+}
+
 static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
                                          pid_t pid, const char *path, pid_t uprobe_pid,
                                          unsigned long map_start, unsigned long map_end)
@@ -415,7 +443,10 @@ static void apply_custom_specs_for_file(const struct probe_resolve_ctx *ctx,
         // Multi-kind files (EPIC H11) may carry syscall:/lib:/mod: lines meant
         // for other engines -- only funcs-kind specs describe a uprobe target.
         if (spec->kind != SPEC_KIND_FUNCS) continue;
-        if (!custom_spec_matches_path(spec, path)) continue;
+        if (!custom_spec_matches_path(spec, path)) {
+            apply_apk_member_spec(ctx, s, pid, path, uprobe_pid, map_start, map_end);
+            continue;
+        }
 
         if (pm_is_regex(spec->func)) {
             // Bulk match: one spec, potentially many symbols (EPIC H12,
@@ -532,7 +563,7 @@ static void process_call_return(const void *data, size_t data_sz)
                 }
                 pthread_mutex_lock(&g_sink_lock);
                 g_sink.jb.len = 0;
-                char js[208];
+                char js[ANUBEE_JCACHE_FRAG];
                 const char *jsp = anubee_jcache_get(e->stack_id, js, sizeof(js)) ? js : NULL;
                 funcs_emit_call(&g_sink.jb, e, bname, target->func_name, target, jsp, syms);
                 anubee_sink_emit(&g_sink);
@@ -750,7 +781,7 @@ static void process_call_return(const void *data, size_t data_sz)
             anubee_emit_cfi_stack_json(&cj, (int)s->h.pid, s, pcs, sps, n, syms, NULL);
             if (cj.b && cj.len) fwrite(cj.b, 1, cj.len, g_stacks);
             free(cj.b);
-            char frag[208];
+            char frag[ANUBEE_JCACHE_FRAG];
             if (anubee_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
                 anubee_jcache_put(s->stack_id, frag);
         }

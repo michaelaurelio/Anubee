@@ -118,12 +118,13 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
                $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
-               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c
+               $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c \
+               $(SRC)/common/binder_decode.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
 COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_libtrace_emit_lib anubee_libtrace_emit_unlib \
-               anubee_libtrace_emit_packed apk_list_sos \
+               anubee_libtrace_emit_packed apk_list_sos apk_so_count apk_so_get apk_so_at \
                proc_mem_open proc_mem_read nterp_name \
                anubee_sh_exec anubee_resolve_uid anubee_get_pid_uid anubee_resolve_component \
                anubee_resolve_pkg_from_pid \
@@ -133,6 +134,7 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                spec_describe \
                resolve_custom_spec_for_path \
                resolve_custom_spec_matches_for_path custom_spec_matches_path \
+               custom_spec_matches_apk resolve_custom_spec_in_apk \
                trace_type_name \
                jb_s jb_c jb_u64 jb_i64 jb_hex jb_esc jb_b64 \
                anubee_sink_open anubee_sink_emit anubee_sink_flush \
@@ -144,13 +146,13 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                flags_decode_arg decode_sockaddr render_fd fdc_drop \
                anubee_bpf_objects anubee_object_writes_target anubee_quiet_config_ok \
                seg_vaddr_to_off \
-               sym_resolve sym_flush_pid cfi_unwind_snapshot \
+               sym_resolve sym_effective_pid sym_snapshot_pid sym_resolve_fb sym_flush_pid cfi_unwind_snapshot \
                anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
                anubee_stack_snapshot_emit_json \
                anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \
                anubee_jcache_reset anubee_managed_chain anubee_emit_cfi_stack_json \
                anubee_is_interp_frame \
-               anubee_coverage_report anubee_cfi_stop_name \
+               anubee_coverage_report anubee_drop_summary anubee_cfi_stop_name \
                anubee_art_naming_disabled \
                anubee_syscall_table anubee_syscall_table_count \
                validate_pid_or_package validate_have_selector \
@@ -160,7 +162,9 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                g_arg_counts g_arg_counts_count \
                jsonl_merge \
                out_print err_print ts_print human_detail \
-               target_registry target_registry_count target_registry_add find_target_by_entry_addr
+               target_registry target_registry_count target_registry_add find_target_by_entry_addr \
+               binder_parse_parcel binder_cmd_name binder_flags_str binder_method_name \
+               binder_emit_json
 
 SYSC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SYSC_CSRC))
 FUNC_OBJ := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(FUNC_CSRC))
@@ -487,10 +491,12 @@ $(BUILD)/capdump: tools/capdump.c src/common/capabilities.c src/common/capabilit
 test:
 	@mkdir -p $(BUILD)
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -o /dev/null 2>/dev/null; then \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/probe_spec_loader.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_probe_spec -lelf && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_probe_spec.c src/common/probe_resolve.c src/common/probe_spec_loader.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_probe_spec -lelf && \
 	  $(BUILD)/test_probe_spec; \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c -o $(BUILD)/test_regex_resolve -lelf && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_regex_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_regex_resolve -lelf && \
 	  $(BUILD)/test_regex_resolve; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_apk_resolve.c src/common/probe_resolve.c src/common/pattern_match.c src/common/maps.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_apk_resolve -lelf && \
+	  $(BUILD)/test_apk_resolve; \
 	 else \
 	  echo "skip: libelf-dev not installed, skipping test_probe_spec/test_regex_resolve (apt install libelf-dev)"; \
 	 fi
@@ -500,7 +506,7 @@ test:
 	$(BUILD)/test_dump_pattern
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_dump_walk.c src/dump/rebuild.c src/common/proc_mem.c src/common/maps.c src/common/pattern_match.c src/common/emit.c src/dump/dump_emit.c src/common/trace_schema.c src/common/sha256.c src/common/sym_apk.c tests/pread_all_shim.c -o $(BUILD)/test_dump_walk
 	$(BUILD)/test_dump_walk
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c -o $(BUILD)/test_engine_args
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_engine_args.c src/common/target_validate.c -o $(BUILD)/test_engine_args
 	$(BUILD)/test_engine_args
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_apk.c src/common/sym_apk.c -o $(BUILD)/test_sym_apk
 	$(BUILD)/test_sym_apk
@@ -512,12 +518,20 @@ test:
 	fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_pid.c -o $(BUILD)/test_sym_pid
+	$(BUILD)/test_sym_pid
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_retain
+	$(BUILD)/test_pm_retain
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
 	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit
 	$(BUILD)/test_emit
 	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_decode.c src/common/decode.c -o $(BUILD)/test_decode
 	$(BUILD)/test_decode
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_binder_decode.c src/common/binder_decode.c src/common/emit.c -o $(BUILD)/test_binder_decode
+	$(BUILD)/test_binder_decode
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_binder_capture.c -o $(BUILD)/test_binder_capture
+	$(BUILD)/test_binder_capture
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_funcs_emit.c src/funcs/funcs_emit.c src/common/emit.c src/common/trace_schema.c src/common/decode.c -o $(BUILD)/test_funcs_emit
 	$(BUILD)/test_funcs_emit
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_corr_emit.c src/correlate/corr_emit.c src/common/emit.c src/common/decode.c src/common/trace_schema.c -o $(BUILD)/test_corr_emit
@@ -534,6 +548,8 @@ test:
 	$(BUILD)/test_runtime
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_evqueue.c src/common/evqueue.c -o $(BUILD)/test_evqueue -lpthread
 	$(BUILD)/test_evqueue
+	$(HOST_CC) -Wall -Wextra -fsanitize=address,undefined -g -Isrc tests/test_sysc_evpack.c src/common/evqueue.c -o $(BUILD)/test_sysc_evpack -lpthread
+	$(BUILD)/test_sysc_evpack
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_unwind_regs.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_unwind_regs
 	$(BUILD)/test_unwind_regs
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_stack_snapshot.c src/common/stack_snapshot.c src/common/emit.c src/common/trace_schema.c -o $(BUILD)/test_stack_snapshot
@@ -622,11 +638,14 @@ test:
 	$(BUILD)/test_human_out
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_argtypes.c -o $(BUILD)/test_syscall_argtypes
 	$(BUILD)/test_syscall_argtypes
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_strargs.c -o $(BUILD)/test_syscall_strargs
+	$(BUILD)/test_syscall_strargs
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_target_registry.c src/common/target_registry.c src/common/maps.c -o $(BUILD)/test_target_registry -lpthread
 	$(BUILD)/test_target_registry
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1; then python3 tools/anubee-mcp/test_mod_findings.py; \
 	 else echo "skip: python3 not available for the mod findings test"; fi
+	sh tests/check_argp_errors.sh
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/anubee-mcp/test_unified_ingest.py; \
 	  python3 tools/anubee-mcp/test_mcp_structured_tools.py; \

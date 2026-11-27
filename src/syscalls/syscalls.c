@@ -59,7 +59,9 @@
 #include "common/stack_snapshot.h"
 #include "common/art_nterp.h"
 #include "syscalls/snapshot_gate.h"
+#include "syscalls/evpack.h"
 #include "common/decode.h"
+#include "common/binder_decode.h"
 #include "common/lib_trace.h"
 #include "common/launch.h"
 #include "common/engine_args.h"
@@ -261,6 +263,10 @@ static void sysc_emit_summary(struct anubee_sink *s)
 // on process_event); read at teardown only after pthread_join(g_worker, ...)
 // has returned, so the worker is no longer running - no lock needed.
 static struct anubee_coverage g_cov = { .engine = "syscalls" };
+
+// Final capture-loss tally saved before the queue is destroyed, printed as the
+// last teardown line.
+static unsigned long long g_fin_ring, g_fin_queue, g_fin_offered;
 
 // ---- engine state shared across setup / run / teardown -------------------
 // Promoted from cmd_syscalls locals so the engine can be driven in three phases
@@ -646,6 +652,8 @@ static void json_emit_stack(const struct anubee_stack_snapshot *s)
 static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 {
 	if (!g_stacks) return;
+	int fb;
+	int epid = sym_snapshot_pid((int)s->h.pid, s->h._pad, &fb);
 	uint64_t pcs[64];
 	uint64_t sps[64];
 	static int dbg = -1;
@@ -660,7 +668,7 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	// memset left the terminal slot as uninitialized stack garbage that
 	// could alias a valid enum value and silently corrupt g_cov.cfi_stop[].
 	// Zero-init means an unwritten terminal reads as CFI_OK (0).
-	int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
+	int n = cfi_unwind_snapshot(epid, s, pcs, 64, sps, diags);
 	if (n <= 0) return;
 
 	g_cov.snaps_total++;
@@ -675,16 +683,16 @@ static void emit_cfi_backtrace(const struct anubee_stack_snapshot *s)
 	const char *syms[64];
 	int nsym = n < 64 ? n : 64;
 	for (int i = 0; i < nsym; i++) {
-		sym_resolve((int)s->h.pid, pcs[i], sym_store[i], sizeof(sym_store[i]));
+		sym_resolve_fb(epid, fb, pcs[i], sym_store[i], sizeof(sym_store[i]));
 		syms[i] = sym_store[i];
 	}
 
 	struct jbuf *j = &g_sink.jb; j->len = 0;
-	anubee_emit_cfi_stack_json(j, (int)s->h.pid, s, pcs, sps, n, syms, dbg ? diags : NULL);
+	anubee_emit_cfi_stack_json(j, epid, s, pcs, sps, n, syms, dbg ? diags : NULL);
 	if (j->b && j->len) fwrite(j->b, 1, j->len, g_stacks);
 
-	char frag[208];
-	if (anubee_managed_chain((int)s->h.pid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
+	char frag[ANUBEE_JCACHE_FRAG];
+	if (anubee_managed_chain(epid, s, pcs, sps, n, syms, frag, sizeof(frag)) > 0)
 		anubee_jcache_put(s->stack_id, frag);
 }
 
@@ -753,6 +761,25 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 	}
 	jb_c(j, '}');
 
+	// Binder transaction decode (optional): emitted only for an ioctl whose
+	// BINDER_WRITE_READ write buffer carried a transaction. The capture overlays
+	// str[3] (see syscalls.h); existing keys above are untouched.
+	if (e->binder) {
+		const struct syscalls_binder_info *bi =
+			(const struct syscalls_binder_info *)e->str[3];
+		struct binder_txn_view bv = {
+			.cmd = bi->cmd,
+			.handle = bi->handle,
+			.code = bi->code,
+			.flags = bi->flags,
+			.data_size = bi->data_size,
+			.data = bi->data,
+			.copied = bi->copied,
+		};
+		jb_c(j, ',');
+		binder_emit_json(j, &bv);
+	}
+
 	if (e->sock_len > 0) {
 		char sockbuf[128];
 		if (decode_sockaddr((const unsigned char *)e->sock, (unsigned)e->sock_len, sockbuf, sizeof(sockbuf))) {
@@ -762,16 +789,18 @@ static void json_emit(const struct syscalls_syscall_event *e, unsigned long long
 
 	if (e->stack_id) {
 		jb_s(j, ",\"stack_id\":"); jb_u64(j, e->stack_id);
-		char js[208];
+		char js[ANUBEE_JCACHE_FRAG];
 		if (anubee_jcache_get(e->stack_id, js, sizeof(js))) { jb_s(j, ",\"java_stack\":"); jb_s(j, js); }
 	}
 
 	jb_s(j, ",\"backtrace\":[");
 	int n = e->stack_sz / (int)sizeof(__u64);
+	int fb;
+	int epid = sym_effective_pid((int)e->h.pid, e->h._pad, &fb);
 	char sym[320];
 	for (int i = 0, first = 1; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 		if (e->stack[i] == 0) break;
-		sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+		sym_resolve_fb(epid, fb, e->stack[i], sym, sizeof(sym));
 		if (!first)
 			jb_c(j, ',');
 		first = 0;
@@ -898,12 +927,43 @@ static void handle_syscall(const struct syscalls_syscall_event *e)
 			human_detail("syscall", "args[%d] %s\n", i, arg);
 		}
 
+		// Binder transaction decode: one line with the command, transaction
+		// metadata and the parsed interface/argument strings.
+		if (e->binder) {
+			const struct syscalls_binder_info *bi =
+				(const struct syscalls_binder_info *)e->str[3];
+			struct binder_txn_text bt;
+			char bbuf[1024], bflags[96];
+			binder_parse_parcel(bi->data, bi->copied, &bt);
+			binder_flags_str(bi->flags, bflags, sizeof bflags);
+			const char *bc = binder_cmd_name(bi->cmd);
+			const char *bm = binder_method_name(bt.iface, bi->code);
+			snprintf(bbuf, sizeof bbuf, "binder %s handle=%u code=%u flags=%s",
+				 bc ? bc : "?", bi->handle, bi->code, bflags);
+			size_t bl = strlen(bbuf);
+			if (bm && bl < sizeof bbuf)
+				bl += (size_t)snprintf(bbuf + bl, sizeof bbuf - bl,
+						       " method=%s", bm);
+			if (bt.iface[0] && bl < sizeof bbuf)
+				bl += (size_t)snprintf(bbuf + bl, sizeof bbuf - bl,
+						       " iface=%s", bt.iface);
+			for (int k = 0; k < bt.nstrs && bl < sizeof bbuf; k++) {
+				int w = snprintf(bbuf + bl, sizeof bbuf - bl,
+						 k ? ",%s" : " strings=%s", bt.strs[k]);
+				if (w > 0)
+					bl += (size_t)w;
+			}
+			human_detail("syscall", "%s\n", bbuf);
+		}
+
 		int n = e->stack_sz / (int)sizeof(__u64);
+		int fb;
+		int epid = sym_effective_pid((int)e->h.pid, e->h._pad, &fb);
 		char sym[320];
 		for (int i = 0; i < n && i < SYSC_MAX_STACK_DEPTH; i++) {
 			if (e->stack[i] == 0)
 				break;
-			sym_resolve(e->h.pid, e->stack[i], sym, sizeof(sym));
+			sym_resolve_fb(epid, fb, e->stack[i], sym, sizeof(sym));
 			human_detail("syscall", "#%d %s\n", i, sym);
 		}
 		fflush(stdout);
@@ -936,6 +996,7 @@ static void handle_return(const struct syscalls_return_event *r)
 
 // Process one event — the heavy path (symbolization + JSON). Runs ONLY on the
 // worker thread, so all the caches/pending state it touches stay single-threaded.
+// Records arrive in the compact queue format (see syscalls/evpack.h).
 static void process_event(const void *data, size_t sz)
 {
 	if (sz < sizeof(struct trace_event_header))
@@ -975,18 +1036,20 @@ static void process_event(const void *data, size_t sz)
 			anubee_libtrace_emit_unlib(&g_sink, 1, u);
 		break;
 	}
-	case SYSC_EV_SYSCALL:
-		if (sz < sizeof(struct syscalls_syscall_event))
+	case SYSC_EV_SYSCALL: {
+		static struct syscalls_syscall_event full;
+		if (sysc_unpack_syscall(data, sz, &full) != 0)
 			return;
-		handle_syscall(data);
+		handle_syscall(&full);
 		break;
+	}
 	case SYSC_EV_RETURN:
 		if (sz < sizeof(struct syscalls_return_event))
 			return;
 		handle_return(data);
 		break;
 	case SYSC_EV_STACK:
-		if (sz < sizeof(struct anubee_stack_snapshot))
+		if (!sysc_stack_rec_ok(data, sz))
 			return;
 		json_emit_stack(data);
 		break;
@@ -1003,8 +1066,9 @@ static void process_event(const void *data, size_t sz)
 
 static struct anubee_evq g_q;
 
-// ring_buffer callback (drain thread): copy the raw event into the queue. Also
-// arms the target-library range here, synchronously, for SYSC_EV_MAP events —
+// ring_buffer callback (drain thread): copy the raw event into the queue. Syscall
+// records and stack snapshots are queued in compact form (see syscalls/evpack.h).
+// Also arms the target-library range here, synchronously, for SYSC_EV_MAP events —
 // rather than waiting for the worker thread to reach it off the queue — to
 // shrink the pre-arm window (CR2): any syscall the library issues before its
 // range is armed is dropped in-kernel (see COV_PREARM), and the queue hop was
@@ -1025,6 +1089,16 @@ static int enqueue_event(void *ctx, void *data, size_t sz)
 			for (int i = 0; i < g_nscopes; i++)
 				if (lib_selector_matches_any(m->name, g_scopes[i].lib_pats, g_scopes[i].npat))
 					push_scope_range(&g_scopes[i].ranges, m->start, m->end);
+		}
+		if (h->type == SYSC_EV_SYSCALL && sz >= sizeof(struct syscalls_syscall_event)) {
+			unsigned char pk[sizeof(struct syscalls_syscall_event)];
+			size_t pn = sysc_pack_syscall(data, pk);
+			anubee_evq_push(&g_q, pk, pn);
+			return 0;
+		}
+		if (h->type == SYSC_EV_STACK && sz >= sizeof(struct anubee_stack_snapshot)) {
+			anubee_evq_push(&g_q, data, sysc_stack_pack_len(data));
+			return 0;
 		}
 	}
 	anubee_evq_push(&g_q, data, sz);
@@ -1153,7 +1227,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 	case  1 : a->want_snap = 1;   break;
 	case  2 : a->want_snap = 0;   break;
 	case 's':
-		if (a->syscall_mode == 2) argp_error(state, "use either -s or -x, not both");
+		if (a->syscall_mode == 2) ANUBEE_ARGP_FAIL(state, "use either -s or -x, not both");
 		// Repeatable: accumulate into one comma-separated list rather than the
 		// last -s silently overwriting every prior one.
 		if (a->syscall_list[0])
@@ -1162,7 +1236,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		a->syscall_mode = 1;
 		break;
 	case 'x':
-		if (a->syscall_mode == 1) argp_error(state, "use either -s or -x, not both");
+		if (a->syscall_mode == 1) ANUBEE_ARGP_FAIL(state, "use either -s or -x, not both");
 		if (a->syscall_list[0])
 			strncat(a->syscall_list, ",", sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
 		strncat(a->syscall_list, arg, sizeof(a->syscall_list) - strlen(a->syscall_list) - 1);
@@ -1175,14 +1249,14 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 			bool used_default = false;
 			if (parse_custom_probe_spec_ex(arg, &a->specs[a->nspec], SPEC_KIND_SYSCALL,
 			                                &used_default, err_print) != 0)
-				argp_error(state, "invalid spec '%s'", arg);
+				ANUBEE_ARGP_FAIL(state, "invalid spec '%s'", arg);
 			a->spec_defaulted[a->nspec] = used_default;
 			a->nspec++;
 		}
 		break;
 	case 'F':
 		if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, err_print) != 0)
-			argp_error(state, "cannot open spec file '%s'", arg);
+			ANUBEE_ARGP_FAIL(state, "cannot open spec file '%s'", arg);
 		break;
 	case 'p': case ANUBEE_KEY_SIBLINGS: case ANUBEE_KEY_NO_FOLLOW:
 		return parse_target_arg(key, arg, state, &a->tgt);
@@ -1193,9 +1267,9 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 		if (a->want_snap && !a->c.output_file)
 			fprintf(stderr, "syscalls: warning - --snapshot needs -o FILE for the .stacks sidecar; disabled\n");
 		if (a->tgt.n > 0 && a->package_name[0])
-			argp_error(state, "specify exactly one of -p or -P");
+			ANUBEE_ARGP_FAIL(state, "specify exactly one of -p or -P");
 		if (!a->tgt.n && !a->package_name[0])
-			argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+			ANUBEE_ARGP_FAIL(state, "specify -P PACKAGE or -p PID[,PID...]");
 		{
 			int spec_deny = 0, spec_allow = 0;
 			for (int i = 0; i < a->nspec; i++)
@@ -1203,11 +1277,11 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 					if (a->specs[i].deny) spec_deny = 1; else spec_allow = 1;
 				}
 			if (spec_deny && spec_allow)
-				argp_error(state, "spec file mixes syscall: allow and syscall:! deny lines; use one or the other");
+				ANUBEE_ARGP_FAIL(state, "spec file mixes syscall: allow and syscall:! deny lines; use one or the other");
 			if (a->syscall_mode == 1 && spec_deny)
-				argp_error(state, "-s (allowlist) conflicts with syscall:! deny lines in spec");
+				ANUBEE_ARGP_FAIL(state, "-s (allowlist) conflicts with syscall:! deny lines in spec");
 			if (a->syscall_mode == 2 && spec_allow)
-				argp_error(state, "-x (denylist) conflicts with syscall: allow lines in spec");
+				ANUBEE_ARGP_FAIL(state, "-x (denylist) conflicts with syscall: allow lines in spec");
 			if (a->syscall_mode == 0) {
 				if (spec_deny) a->syscall_mode = 2;
 				else if (spec_allow) a->syscall_mode = 1;
@@ -1227,7 +1301,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 			for (int i = 0; i < a->nspec; i++)
 				if (a->specs[i].kind == SPEC_KIND_SYSCALL && a->specs[i].deny &&
 				    strchr(a->specs[i].mod, '!'))
-					argp_error(state, "syscall: library-scoped spec ('%s') can't combine with deny (!)",
+					ANUBEE_ARGP_FAIL(state, "syscall: library-scoped spec ('%s') can't combine with deny (!)",
 					           a->specs[i].mod);
 			// Pass 2: a syscall NAME can't be both scoped and unscoped in the same
 			// run (bare syscall:NAME line, or a -s/-x LIST entry) -- matches the
@@ -1242,12 +1316,12 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				for (int j = 0; j < a->nspec; j++)
 					if (j != i && a->specs[j].kind == SPEC_KIND_SYSCALL &&
 					    !strchr(a->specs[j].mod, '!') && !strcmp(a->specs[j].mod, name))
-						argp_error(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
+						ANUBEE_ARGP_FAIL(state, "syscall: '%s' is both library-scoped ('%s') and unscoped; use one or the other",
 						           name, a->specs[i].mod);
 				// syscall_list is now a fixed buffer (always non-NULL); sysc_list_contains
 				// already treats "" as no-match, so no separate emptiness guard is needed.
 				if (sysc_list_contains(a->syscall_list, name))
-					argp_error(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
+					ANUBEE_ARGP_FAIL(state, "syscall: '%s' is both library-scoped ('%s') and listed via -s/-x; use one or the other",
 					           name, a->specs[i].mod);
 			}
 			// Pass 3: build the scope table, fold libpat into the -l/lib: union so
@@ -1261,7 +1335,7 @@ static error_t parse_sysc_opts(int key, char *arg, struct argp_state *state)
 				if (r == 0)
 					continue;
 				if (r < 0)
-					argp_error(state, "syscall: malformed library-scoped spec (need LIBPATTERN!NAME): '%s'",
+					ANUBEE_ARGP_FAIL(state, "syscall: malformed library-scoped spec (need LIBPATTERN!NAME): '%s'",
 					           a->specs[i].mod);
 				int si = -1;
 				for (int k = 0; k < a->nscopes; k++)
@@ -1654,6 +1728,9 @@ void syscalls_teardown(void)
 		g_cov.prearm_drops    = anubee_coverage_read(covfd, COV_PREARM);
 		g_cov.ring_drops      = anubee_drops_read(g_dropfd);
 		g_cov.queue_drops     = g_q.dropped;
+		g_fin_ring    = g_cov.ring_drops;
+		g_fin_queue   = g_cov.queue_drops;
+		g_fin_offered = g_q.pushed + g_q.dropped + g_cov.ring_drops;
 		g_cov.managed_naming_off = anubee_art_naming_disabled();
 		anubee_coverage_report(&g_sink, &g_cov);
 		// SYM1 Phase 5c: end-of-run content summary, same slot as coverage
@@ -1694,6 +1771,11 @@ void syscalls_teardown(void)
 		syscalls__destroy(g_skel);
 		g_skel = NULL;
 	}
+
+	char dl[256];
+	if (anubee_drop_summary(dl, sizeof dl, g_fin_ring, g_fin_queue, g_fin_offered))
+		fprintf(stderr, "[drops] %s\n", dl);
+	g_fin_ring = g_fin_queue = g_fin_offered = 0;
 }
 
 int cmd_syscalls(int argc, char **argv)

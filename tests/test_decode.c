@@ -44,6 +44,44 @@ int main(void)
     CHECK(strstr(out, "127.0.0.1") != NULL, "ip rendered");
     CHECK(strstr(out, "80") != NULL, "port rendered");
 
+    // ioctl(): arg 1 is the _IOC-encoded command. Build the expected values with
+    // the generic formula (dir << 30 | size << 16 | type << 8 | nr) rather than
+    // relying on a kernel header, and check the decoded names on those numbers.
+    {
+        #define T_IOC(dir, type, nr, size) \
+            (((unsigned long long)(dir) << 30) | \
+             ((unsigned long long)(size) << 16) | \
+             ((unsigned long long)(type) << 8) | (unsigned long long)(nr))
+        unsigned long long wr = T_IOC(3, 'b', 1, 48);       // BINDER_WRITE_READ
+        CHECK(wr == 0xc0306201ULL, "_IOWR('b',1,48) formula gives 0xc0306201");
+        rc = flags_decode_arg((long)__NR_ioctl, /*arg=*/1, wr, out, sizeof(out));
+        CHECK(rc == 1, "ioctl BINDER_WRITE_READ decode applies");
+        CHECK(strcmp(out, "BINDER_WRITE_READ") == 0, "BINDER_WRITE_READ rendered");
+
+        struct { unsigned long long v; const char *name; } binder_cmds[] = {
+            { T_IOC(3, 'b', 9, 4), "BINDER_VERSION" },
+            { T_IOC(1, 'b', 5, 4), "BINDER_SET_MAX_THREADS" },
+            { T_IOC(1, 'b', 7, 4), "BINDER_SET_CONTEXT_MGR" },
+            { T_IOC(1, 'b', 8, 4), "BINDER_THREAD_EXIT" },
+        };
+        for (size_t k = 0; k < sizeof(binder_cmds) / sizeof(binder_cmds[0]); k++) {
+            rc = flags_decode_arg((long)__NR_ioctl, 1, binder_cmds[k].v,
+                                  out, sizeof(out));
+            CHECK(rc == 1, "ioctl binder command decode applies");
+            CHECK(strcmp(out, binder_cmds[k].name) == 0,
+                  "binder ioctl command name rendered");
+        }
+
+        // Unknown ioctls must keep today's behaviour: no decode, raw hex.
+        rc = flags_decode_arg((long)__NR_ioctl, 1, 0x5401ULL, out, sizeof(out));
+        CHECK(rc == 0, "unknown ioctl command is not decoded");
+        for (int a = 0; a <= 2; a += 2) {
+            rc = flags_decode_arg((long)__NR_ioctl, a, wr, out, sizeof(out));
+            CHECK(rc == 0, "ioctl args other than the command are not decoded");
+        }
+        #undef T_IOC
+    }
+
     // clone() flag decode (arg 0). A modest, fitting flag set renders each piece.
     rc = flags_decode_arg((long)__NR_clone, /*arg=*/0,
                           (unsigned long long)(CLONE_VM | CLONE_FS | SIGCHLD),
@@ -72,6 +110,31 @@ int main(void)
     CHECK(strstr(out, "SOCK_STREAM") != NULL, "SOCK_STREAM rendered");
     CHECK(strstr(out, "SOCK_NONBLOCK") != NULL, "SOCK_NONBLOCK rendered");
     CHECK(strstr(out, "SOCK_CLOEXEC") != NULL, "SOCK_CLOEXEC rendered");
+
+    // ptrace(): arg 0 is the request and decodes to its PTRACE_* name; the
+    // remaining args (pid, addr, data) stay raw.
+    rc = flags_decode_arg((long)__NR_ptrace, /*arg=*/0, 0x4206ULL, out, sizeof(out));
+    CHECK(rc == 1, "ptrace request decode applies");
+    CHECK(strcmp(out, "PTRACE_SEIZE") == 0, "0x4206 -> PTRACE_SEIZE");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4204ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_GETREGSET") == 0, "0x4204 -> PTRACE_GETREGSET");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_TRACEME") == 0, "0 -> PTRACE_TRACEME");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 16ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_ATTACH") == 0, "16 -> PTRACE_ATTACH");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4200ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "PTRACE_SETOPTIONS") == 0, "0x4200 -> PTRACE_SETOPTIONS");
+    rc = flags_decode_arg((long)__NR_ptrace, 0, 0x9999ULL, out, sizeof(out));
+    CHECK(rc == 1 && strcmp(out, "0x9999") == 0, "unknown ptrace request falls back to hex");
+    for (int a = 1; a <= 3; a++) {
+        rc = flags_decode_arg((long)__NR_ptrace, a, 0x4206ULL, out, sizeof(out));
+        CHECK(rc == 0, "ptrace args after the request are not decoded");
+    }
+    {
+        char tiny[8];
+        rc = flags_decode_arg((long)__NR_ptrace, 0, 0x4206ULL, tiny, sizeof(tiny));
+        CHECK(rc == 1 && strlen(tiny) < sizeof(tiny), "ptrace tiny-buffer decode stays in bounds");
+    }
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

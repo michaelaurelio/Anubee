@@ -92,6 +92,39 @@ int main(void)
     n = anubee_managed_chain_build(big, 3, NULL, 0, just, sizeof(just));
     CHECK(n == 3 && strstr(just, "\"...\"") == NULL, "no marker when the whole chain fits");
 
+    // Shared fragment capacity must hold a realistic Kotlin-style chain whole.
+    // A caller-sized buffer would hide a too-small ANUBEE_JCACHE_FRAG, so the
+    // buffer is the constant itself and the constant is pinned explicitly.
+    char names12[12][96];
+    const char *twelve[12];
+    for (int i = 0; i < 12; i++) {
+        snprintf(names12[i], sizeof(names12[i]),
+                 "boot.oat!pkg.Class%02d.methodNameThatIsRatherLongForTesting", i);
+        twelve[i] = names12[i];
+    }
+    char bigchain[ANUBEE_JCACHE_FRAG];
+    CHECK(ANUBEE_JCACHE_FRAG >= 1024, "shared fragment capacity is at least 1024");
+    n = anubee_managed_chain_build(twelve, 12, NULL, 0, bigchain, sizeof(bigchain));
+    CHECK(n == 12, "12 long frames fit whole");
+    CHECK(strstr(bigchain, "\"...\"") == NULL, "no marker when 12 long frames fit");
+    CHECK(strlen(bigchain) > 0 && bigchain[strlen(bigchain) - 1] == ']',
+          "12-frame fragment is a closed JSON array");
+
+    // Far more frames than fit still truncate innermost-first, ending with the
+    // marker, rather than dropping the chain whole.
+    char names40[40][96];
+    const char *forty[40];
+    for (int i = 0; i < 40; i++) {
+        snprintf(names40[i], sizeof(names40[i]),
+                 "boot.oat!pkg.Class%02d.methodNameThatIsRatherLongForTesting", i);
+        forty[i] = names40[i];
+    }
+    n = anubee_managed_chain_build(forty, 40, NULL, 0, bigchain, sizeof(bigchain));
+    CHECK(n > 0 && n < 40, "overlong chain truncates below 40 frames");
+    CHECK(strlen(bigchain) >= 7 && strcmp(bigchain + strlen(bigchain) - 7, ",\"...\"]") == 0,
+          "truncated fragment ends with the marker and a closed array");
+    CHECK(strncmp(bigchain, "[\"pkg.Class00.", 14) == 0, "truncation keeps the innermost frame");
+
     // is_interp_frame classification.
     CHECK(anubee_is_interp_frame("libart.so!nterp_helper"), "nterp_helper is interp");
     CHECK(anubee_is_interp_frame("libart.so!art_quick_to_interpreter_bridge_ToInterpreterBridge"),
@@ -100,7 +133,7 @@ int main(void)
     CHECK(!anubee_is_interp_frame(NULL), "NULL is not interp");
 
     // Cache: put/get round-trip, miss, overwrite, reset.
-    char buf[208];
+    char buf[ANUBEE_JCACHE_FRAG];
     anubee_jcache_reset();
     CHECK(anubee_jcache_get(42, buf, sizeof(buf)) == 0, "cache miss before put");
     anubee_jcache_put(42, "[\"pkg.A.b\"]");

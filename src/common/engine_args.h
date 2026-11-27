@@ -11,9 +11,17 @@
 #define __ANUBEE_ENGINE_ARGS_H
 
 #include <argp.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+
+// Every engine parses with ARGP_NO_EXIT, under which argp_error() only prints
+// and returns. Use this in a parser callback instead of a bare argp_error():
+// it prints, then returns EINVAL from the callback so argp_parse() fails and
+// the engine's setup bails out instead of running with bad arguments.
+#define ANUBEE_ARGP_FAIL(state, ...) \
+    do { argp_error((state), __VA_ARGS__); return EINVAL; } while (0)
 
 struct common_args {
     const char *output_file;  // -o: JSONL output path (NULL = none)
@@ -47,12 +55,12 @@ static inline error_t parse_common_arg(int key, char *arg,
         case 'b':
             c->bufmb = atoi(arg);
             if (c->bufmb < 1 || c->bufmb > 4096)
-                argp_error(state, "bufsize must be between 1 and 4096 MB");  // AUDIT.md #4
+                ANUBEE_ARGP_FAIL(state, "bufsize must be between 1 and 4096 MB");  // AUDIT.md #4
             return 0;
         case 'Q':
             c->queue_mb = atoi(arg);
             if (c->queue_mb < 1 || c->queue_mb > 4096)
-                argp_error(state, "queue must be between 1 and 4096 MB");  // AUDIT.md #4
+                ANUBEE_ARGP_FAIL(state, "queue must be between 1 and 4096 MB");  // AUDIT.md #4
             return 0;
     }
     return ARGP_ERR_UNKNOWN;
@@ -110,12 +118,11 @@ static inline error_t parse_target_arg(int key, char *arg,
                                        struct argp_state *state,
                                        struct target_args *t)
 {
-    (void)state;
     switch (key) {
         case 'p': {
             int got = anubee_parse_pid_list(arg, t->pids, 64);
             if (got < 1)
-                argp_error(state, "-p: no valid PID in '%s'", arg);
+                ANUBEE_ARGP_FAIL(state, "-p: no valid PID in '%s'", arg);
             if (got == 64) {
                 // check if there were more tokens
                 const char *p = arg;

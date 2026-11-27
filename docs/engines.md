@@ -173,8 +173,8 @@ anubee dump -p 12345 -d /data/local/tmp --now 'libpacked.so'
 anubee dump -p 12345 -d /data/local/tmp --now --base 0x7281a0000
 
 # Compare a module's live executable memory against its on-disk baseline
-# instead of dumping (writes modcmp records, no .so files); --base also
-# reaches an APK-embedded library, which -l cannot select at all:
+# instead of dumping (writes modcmp records, no .so files); --base and -l
+# both reach an APK-embedded library:
 anubee dump -p 12345 --now --check --base 0x7281a0000 -o check.jsonl
 ```
 
@@ -183,7 +183,7 @@ anubee dump -p 12345 --now --check --base 0x7281a0000 -o check.jsonl
 | `-P PACKAGE` / `-p PID[,...]` | Attach target |
 | `-A ACTIVITY` | Override launch activity component |
 | `-d DIR` | Output directory (default: current dir) |
-| `-l PATTERN` | Library basename pattern to dump (glob/substring); repeatable, OR'd |
+| `-l PATTERN` | Library basename pattern to dump (glob/substring); repeatable, OR'd; also matches the name of a library stored inside an APK |
 | `--base ADDR` | Select a module by its exact load base (hex) instead of by name; repeatable, cap 64. OR'd with `-l` |
 | `-F FILE` | Spec file; a `lib:` line supplies `PATTERN` when none given positionally |
 | `--on-map` | Dump the instant a matching library maps (default: dump on exit, post-decryption) |
@@ -213,12 +213,12 @@ wrong and a false "modified" verdict on a clean library would destroy the
 signal's only value).
 
 **APK-embedded libraries:** for an `extractNativeLibs=false` app (the modern
-AGP default), every embedded `.so` maps straight out of `base.apk`. `-l`'s
-selector only ever sees the raw `/proc/<pid>/maps` path, which for such an app
-is `base.apk` for every embedded library - it has no knowledge of the
-library's resolved name, so it cannot select one. `--base` is the only
-selector that reaches such a module, and the emitted `modcmp` record's
-`"module"` field then reads `"base.apk"`, not the library's name.
+AGP default), every embedded `.so` maps straight out of `base.apk`. `-l`
+matches the name of the stored member that backs a mapped segment (glob or
+substring, the same rule as a normal module), so `-l libfoo.so` selects such
+a library. `--base` still works as an exact selector. The emitted `modcmp`
+record's `"module"` field and the dumped file names still use the APK name
+(`base.apk.<pid>.<base>.so`), not the library's name.
 
 ## `trace`: combined runner (loud if `funcs` is enabled)
 

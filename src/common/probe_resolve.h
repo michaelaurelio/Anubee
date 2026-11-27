@@ -89,6 +89,23 @@ int  resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
                                           probe_target_t *out, int max_out);
 bool custom_spec_matches_path(const custom_probe_spec_t *spec, const char *path);
 
+// In-APK libraries (extractNativeLibs=false): the mapped path is the APK, so
+// MODULE can't match its basename. True when apk_path is an .apk with a stored
+// arm64-v8a member whose name matches spec->mod (same exact/glob//regex/ rules
+// as custom_spec_matches_path; a MODULE containing '/' never matches a member).
+bool custom_spec_matches_apk(const custom_probe_spec_t *spec, const char *apk_path);
+
+// Resolve spec against every matching member of apk_path. Writes up to max
+// targets; each target's mod_path is apk_path and its offset is the member's
+// data_start plus the offset inside the member, i.e. a file offset into the
+// APK (what a uprobe on the APK needs). func /regex/ collects all matching
+// symbols; otherwise a nonzero spec->offset is used raw (relative to the
+// member's ELF start); otherwise an exact symbol lookup. Returns the number
+// written (0 = nothing matched/resolved).
+int resolve_custom_spec_in_apk(pid_t pid, const char *apk_path,
+                               const custom_probe_spec_t *spec,
+                               probe_target_t *out, int max);
+
 // Render a parsed spec back to its display form, e.g. "syscall:!ptrace",
 // "mod:execve", "libc.so!open", "libc.so@0x10" -- for warning/report messages
 // that need to name a spec (before-run "ignoring this spec", after-run

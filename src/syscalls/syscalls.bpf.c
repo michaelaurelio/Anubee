@@ -41,8 +41,18 @@
 #include "common/lib_trace.h"
 #include "common/bpf_drop.bpf.h"
 #include "common/coverage.bpf.h"
+#include "common/hdr_aux.bpf.h"
+
+#define SYSC_BINDER_READ(d, n, s) \
+	bpf_probe_read_user((d), (__u32)(n), (const void *)(s))
+#include "syscalls/binder_capture.h"
 
 #define MAX_STACK_DEPTH SYSC_MAX_STACK_DEPTH
+
+// arm64 asm-generic syscall number. vmlinux.h carries no __NR_* table and the
+// BPF compile does not pull <asm/unistd.h>, so the one number this program needs
+// is written out locally.
+#define SYSC_NR_IOCTL 29
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -196,6 +206,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 			return 0;
 	}
 
+	__u32 aux = anubee_hdr_aux(nr, tgid, (__u32)id);
+
 	// Stack snapshot (option A dedup): the first time we see a given stack for
 	// this process, ship its registers + stack bytes for off-device unwinding;
 	// thereafter the syscall event just carries the stack_id. Filtered mode only
@@ -206,7 +218,8 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
+						   aux);
 		}
 	}
 
@@ -224,7 +237,7 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
+	e->h._pad = aux;
 
 	e->nr      = nr;
 	e->ktime   = ktime;
@@ -292,6 +305,18 @@ int BPF_KPROBE(on_svc_enter, struct pt_regs *user_regs)
 		}
 	}
 
+	// Binder transaction capture: ioctl(fd, BINDER_WRITE_READ, &bwr). arg_types
+	// never marks a string slot for ioctl, so str[3] is free to carry the
+	// overlay (see syscalls.h). The flag byte is written on every record because
+	// the ring reservation is not zeroed; every other syscall pays one compare.
+	e->binder = 0;
+	if (nr == SYSC_NR_IOCTL && e->args[1] == SYSC_BINDER_WRITE_READ) {
+		struct syscalls_binder_info *bi =
+			(struct syscalls_binder_info *)e->str[3];
+		if (sysc_binder_capture(e->args[2], bi))
+			e->binder = 1;
+	}
+
 	bpf_ringbuf_submit(e, 0);
 
 	// Mark this thread so the return probe knows to emit this syscall's result.
@@ -344,13 +369,16 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 			return 0;
 	}
 
+	__u32 aux = anubee_hdr_aux(0, tgid, (__u32)id);
+
 	__u64 stack_id = 0;
 	if (snapshot_enabled && sz > 0) {
 		stack_id = anubee_hash_stack(stack, n, tgid, MAX_STACK_DEPTH);
 		if (!bpf_map_lookup_elem(&stack_seen, &stack_id)) {
 			__u8 one = 1;
 			bpf_map_update_elem(&stack_seen, &stack_id, &one, BPF_ANY);
-			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK);
+			anubee_emit_stack_snapshot(user_regs, tgid, (__u32)id, stack_id, SYSC_EV_STACK,
+						   aux);
 		}
 	}
 
@@ -366,7 +394,7 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 	e->h.type = SYSC_EV_SYSCALL;
 	e->h.pid  = tgid;
 	e->h.tid  = (__u32)id;
-	e->h._pad = 0;
+	e->h._pad = aux;
 
 	e->nr      = nr;
 	e->ktime   = ktime;
@@ -386,9 +414,11 @@ int BPF_KPROBE(on_svc_enter_compat, struct pt_regs *user_regs)
 		__builtin_memset(e->stack, 0, sizeof(e->stack));
 	}
 	// EABI nr namespace: arg_types/sock_args are arm64-keyed, so string and
-	// sockaddr capture are intentionally skipped here (see comment above).
+	// sockaddr capture are intentionally skipped here (see comment above). The
+	// binder capture is arm64-numbered too, so the flag byte is simply cleared.
 	e->str_present = 0;
 	e->sock_len = 0;
+	e->binder = 0;
 
 	bpf_ringbuf_submit(e, 0);
 

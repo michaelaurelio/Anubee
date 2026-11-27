@@ -104,8 +104,11 @@ flowchart TD
   sources: `.dynsym` / `.symtab` / `.gnu_debugdata` (LZMA mini-debug-info, covers
   most Android system libraries and `dex2oat`-compiled app code); ART/JIT method
   names via `__jit_debug_descriptor` over `/proc/<pid>/mem`; vDSO `.dynsym`; and
-  APK-embedded stored `.so` display names (ZIP central-dir parse). Per-pid
-  Per-pid `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
+  APK-embedded stored `.so` display names (ZIP central-dir parse). The
+  central-directory cache exposes member accessors (`apk_so_count`,
+  `apk_so_get`, `apk_so_at`) and holds up to 512 members per APK across 16
+  cached APKs. Per-pid
+  `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
   refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
   (prevents unbounded growth on fork-heavy traces); the LRU bound is the always-on
   eviction backstop. For prompt per-exit flushing via `sym_flush_pid`, run
@@ -367,6 +370,12 @@ Every standalone engine supports two mutually exclusive attach modes, unified vi
   is dropped, not mis-filtered, counted by the `prearm_drops` coverage field.
   The window is minimized (armed on the drain thread, ahead of the processing
   queue) but not eliminated.
+- **Compact drain queue storage.** Syscall records and stack snapshots are
+  stored in the `-Q` queue in compact form (`src/syscalls/evpack.h`: only the
+  valid stack, string, sockaddr and snapshot bytes), so the same queue holds
+  several times more events than the fixed ring record size suggests. A final
+  `[drops] N of M events dropped (P%)` line is printed last at teardown whenever
+  ring or queue drops occurred; the `[coverage]` record and its JSON are unchanged.
 - Output: structured per-event JSONL (see §7) **and** stdout simultaneously —
   `-o` no longer implies `-q` (SYM1 dual-channel-always); `-q` is the sole,
   independent stdout silencer. Live events print via the shared
@@ -468,6 +477,18 @@ applies to the in-kernel attribution filter (§2): a target library built
 garbage — precisely the RASP/anti-tamper `.so` case this tool is meant for.
 Attribution then falls back to `stack[0]` (the trap PC itself, which needs no
 frame pointer) rather than reporting a false miss.
+
+**Forked-child attribution.** A forked child's frames are resolved against its own
+address space first, and its last known maps are kept after it exits, so frames
+recorded before death still resolve; only an `execve` stack that predates the exec,
+or a child that never had its maps read, falls back to the parent's address space.
+The parent tgid is recorded only for a process's main thread (where thread id equals
+thread group id) and for `execve`, which covers a forked child while it is still
+single-threaded (events of other threads resolve against their own pid). The parent
+tgid seen on a leader or exec event is remembered per process in userspace, so later
+events from other threads of a process that never had maps also fall back to the
+parent. This is best effort: if the parent has also exited, the frames stay
+unresolved.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers
@@ -807,6 +828,9 @@ records share the same `type` discriminator as `anubee syscalls` / `anubee lib` 
     or it is worse than no signal at all. `dump_check_image` (`src/dump/rebuild.c`)
     returns `unreadable` before ever computing a comparison whenever either
     side cannot be honestly digested.
+  `--check` with `-P` (or without `--now`) is a usage error: the command prints
+  the reason, exits 1 and writes nothing. This holds for every usage error in
+  every engine, since parsers fail `argp_parse` via `ANUBEE_ARGP_FAIL`.
 - **APK-embedded libraries are supported baselines, not `apk`-state
   fallbacks.** `extractNativeLibs=false` is the modern AGP default: the app's
   `.so` files are stored uncompressed inside `base.apk` and mapped straight
@@ -817,14 +841,13 @@ records share the same `type` discriminator as `anubee syscalls` / `anubee lib` 
   `data_start` (`dump_read_apk_member`, `src/dump/rebuild.c`). The `apk` state
   above is reported only when that lookup fails, not merely because the
   backing file is an APK.
-- **`-l` cannot select an APK-embedded library at all.** The selector
-  (`dump_sel_matches`) only ever sees the raw `/proc/<pid>/maps` path, which
-  for an `extractNativeLibs=false` app is just `.../base.apk` for every
-  embedded library - it has no knowledge of the library's resolved SONAME.
-  `--base` is the only selector that reaches such a module, and the emitted
-  `modcmp` record's `"module"` field is correspondingly `"base.apk"`, not the
-  library's name: the record identifies the module by base address, not by
-  name.
+- **`-l` can select an APK-embedded library.** The walker
+  (`dump_walk_pid_modules` plus `dump_sel_matches_member`) matches the `-l`
+  patterns against the stored member containing the segment's file offset
+  (`apk_so_at`, a range match), so `-l libfoo.so` works for an
+  `extractNativeLibs=false` app. `--base` remains an exact selector by load
+  address, and the emitted `modcmp` record's `"module"` field and the dumped
+  file names still say `base.apk`.
 - **`DT_TEXTREL` libraries and JIT regions legitimately report `differ`.** A
   library with text relocations is rewritten in its own executable segments
   by the dynamic linker at load time (an increasingly rare case on modern
@@ -881,7 +904,7 @@ The symbolizer is split across cohesive files behind the private
 cache + `cfi_unwind_snapshot`), `sym_procmaps.c` (`/proc/<pid>/maps` cache),
 `sym_elf.c` (`.dynsym`/`.symtab`/`.gnu_debugdata` + per-module CFI cache + ELF
 file I/O), `sym_jit.c` (ART GDB-JIT walk), `sym_vdso.c` (`[vdso]`), and
-`sym_apk.c` (APK-embedded `.so` names). Only the 5 `COMMON_API` symbols are
+`sym_apk.c` (APK-embedded `.so` names). Only the `COMMON_API` symbols are
 exported; everything else is localized at link.
 
 Both `syscalls` and `funcs` resolve backtrace addresses using the shared
@@ -1690,9 +1713,44 @@ don't assume "what printed" equals "what's in the file." (See BACKLOG.md U1/U2 f
 the separate, explicitly-not-recommended idea of also unifying console *styling*
 across engines — a cosmetic concern, distinct from this content-parity question.)
 
+- `ptrace` records carry the request decoded in `decoded_args`: argument 0 renders as its
+  `PTRACE_*` name (for example `{"0":"PTRACE_SEIZE"}`), or as hex when the request is not in
+  the table. The pid, addr and data arguments stay raw. The decoding is shared, so `syscalls`
+  (JSONL and console) and `correlate` syscall records show the same names.
+- `ioctl` records carry the command name in `decoded_args["1"]` for the binder device commands
+  that are stable kernel ABI: `BINDER_WRITE_READ`, `BINDER_SET_IDLE_TIMEOUT`,
+  `BINDER_SET_MAX_THREADS`, `BINDER_SET_IDLE_PRIORITY`, `BINDER_SET_CONTEXT_MGR`,
+  `BINDER_THREAD_EXIT`, `BINDER_VERSION`. Any other ioctl command number (including
+  driver-private ones) stays raw hex, and the other ioctl arguments are not decoded.
+- `anubee syscalls` records for `ioctl(fd, BINDER_WRITE_READ, &bwr)` may additionally carry a
+  `binder` object when the not-yet-consumed write buffer holds a transaction:
+  `"binder":{"cmd":"BC_TRANSACTION","handle":N,"code":N,"flags":"TF_ACCEPT_FDS",
+  "data_size":N,"interface":"android.content.IContentProvider","method":"query",
+  "strings":["settings","GET_secure"]}`. The console prints one `binder ...` detail line
+  instead. Details:
+  - Only the first `BC_TRANSACTION` / `BC_TRANSACTION_SG` among the first four commands of the
+    write buffer is captured; earlier `BC_*` commands are skipped by their `_IOC` size.
+    `BC_REPLY`, the read buffer and reply payloads are not decoded (a reply is a result, not
+    the request), and a transaction beyond the fourth command of one write is not seen.
+  - `data_size` is the full Parcel data length; at most the first 192 bytes are copied.
+    `interface` is the Parcel interface token and `strings` holds up to six further String16
+    values (each truncated to 95 characters), which typically are the call arguments (package,
+    setting or service names). `interface` and `strings` are omitted when empty, and `method`
+    only appears for the two interfaces whose transaction codes are stable ABI:
+    `android.os.IServiceManager` and `android.content.IContentProvider`.
+  - The Parcel is parsed heuristically: 4-byte aligned fields are probed and a String16 is
+    accepted when its length is 1..200, it fits the captured bytes, every code unit is
+    printable ASCII and it is NUL-terminated. Arguments packed as other types, beyond the
+    192-byte window or with non-ASCII text are not shown; `interface` then may be empty and
+    the metadata (handle, code, flags, data_size) is still present.
+  - `flags` is the `TF_*` flag string (`0` when none, unnamed bits appended as hex). For other
+    interfaces the transaction code is reported as a number: AIDL codes are method order and
+    change between Android versions, so only the two tables above are named.
+  - The object is absent for every other syscall and for ioctls whose write buffer carries no
+    transaction; the existing keys and the raw `args` are unchanged.
 - `anubee syscalls` emits **structured** records:
   `{"type":"syscall","id":..,"pid":..,"tid":..,"syscall":..,"args":[..],
-  "string_args":{..},"fd_args":{..},"decoded_args":{..},"sock_addr":..,
+  "string_args":{..},"fd_args":{..},"decoded_args":{..},"binder":{..},"sock_addr":..,
   "backtrace":[{frame,addr,symbol}..], "java_stack":[...]}`, plus `{"type":"stack",...}` sidecar
   snapshots emitted by `--snapshot`. `java_stack` (optional, `--snapshot` + `-o`): the managed/Java call chain
   (innermost-first, native frames elided) that issued the event, e.g. `["pkg.Inner.method","pkg.Outer.method"]`.
@@ -1700,7 +1758,7 @@ across engines — a cosmetic concern, distinct from this content-parity questio
   inherit the documented precision/hit-rate limits (see BACKLOG). Both interpreter terminals are named
   inline, matching the `.stacks` sidecar: nterp (`nterp_chain`) and the switch interpreter
   (`ExecuteSwitchImpl` -> `shadow_frame_chain`); the latter is what carries app Kotlin, so it must not be
-  omitted from the inline chain. The fragment is bounded by `ANUBEE_JCACHE_FRAG` (512 B); a chain that
+  omitted from the inline chain. The fragment is bounded by `ANUBEE_JCACHE_FRAG` (1 KiB); a chain that
   overflows is truncated innermost-first with a trailing `"..."` marker (never dropped whole). The
   authoritative full, untruncated native+managed walk stays in the `.stacks` sidecar `cfi_stack` record,
   joinable by `stack_id`. Stack snapshot schema:

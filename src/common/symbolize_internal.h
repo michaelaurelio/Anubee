@@ -31,6 +31,7 @@ struct procmaps {
 	long long last_read_ms;
 	long long last_used_ms;
 	int gone;
+	int stale;
 };
 struct procmaps *pm_get(int pid);
 void read_proc_maps(struct procmaps *pm);

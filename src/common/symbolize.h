@@ -18,6 +18,19 @@
  * "libc.so+0x7e0b4", or "0x7..." if no module is found). */
 void sym_resolve(int pid, unsigned long long addr, char *out, size_t outsz);
 
+/* Pick the pid whose /proc maps and memory should be used for an event's
+ * frames. An exec event's stack predates the exec, so it resolves against the
+ * parent; every other event resolves against its own pid, alive or dead, and
+ * *fb receives the parent to try when that pid never had a snapshot. For a
+ * stack snapshot walk, sym_snapshot_pid picks the parent only for exec events.
+ * The pid printed in JSON output is always the real one. */
+int sym_effective_pid(int pid, unsigned int aux, int *fb);
+int sym_snapshot_pid(int pid, unsigned int aux, int *fb);
+
+/* Resolve `addr` against `pid`; when no mapping is found and `pid`'s maps are
+ * gone without a retained snapshot, retry against `fb` (the parent). */
+void sym_resolve_fb(int pid, int fb, unsigned long long addr, char *out, size_t outsz);
+
 /* Drop cached /proc maps for a pid (e.g. after a large unmap), forcing a reread
  * on the next resolve. Safe to call for unknown pids. */
 void sym_flush_pid(int pid);

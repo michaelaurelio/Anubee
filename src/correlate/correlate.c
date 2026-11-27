@@ -300,6 +300,23 @@ static void attach_custom_spec_target(struct anubee_correlate *skel, pid_t pid,
 // g_custom_spec_resolved).
 static bool g_corr_spec_resolved[64];
 
+// In-APK libraries: see funcs.c. Resolve the spec against the APK's stored
+// members and attach each target through the shared (deduping) helper.
+static void attach_apk_member_spec(struct anubee_correlate *skel, pid_t pid, const char *path,
+                                   const custom_probe_spec_t *specs, int s, int returns,
+                                   struct corr_dedup_entry *done, int *ndone,
+                                   int *attached, int *warned)
+{
+    if (!custom_spec_matches_apk(&specs[s], path)) return;
+    probe_target_t found[256];
+    int n = resolve_custom_spec_in_apk(pid, path, &specs[s], found, 256);
+    if (n > 0 && s < 64)
+        g_corr_spec_resolved[s] = true;
+    for (int m = 0; m < n; m++)
+        attach_custom_spec_target(skel, pid, path, found[m], returns,
+                                  done, ndone, attached, warned);
+}
+
 static int attach_uprobes_for_pid(struct anubee_correlate *skel, pid_t pid,
                                   const custom_probe_spec_t *specs, int nspec,
                                   int returns)
@@ -328,7 +345,11 @@ static int attach_uprobes_for_pid(struct anubee_correlate *skel, pid_t pid,
             // meant for other engines -- only funcs-kind specs describe a
             // uprobe target.
             if (specs[s].kind != SPEC_KIND_FUNCS) continue;
-            if (!custom_spec_matches_path(&specs[s], path)) continue;
+            if (!custom_spec_matches_path(&specs[s], path)) {
+                attach_apk_member_spec(skel, pid, path, specs, s, returns,
+                                       done, &ndone, &attached, &warned);
+                continue;
+            }
 
             if (pm_is_regex(specs[s].func)) {
                 // Bulk match: one spec, potentially many symbols (EPIC H12,
@@ -385,7 +406,8 @@ static void wait_for_target_mapped(pid_t pid, const custom_probe_spec_t *specs, 
                 if (!anubee_parse_maps_line(line, &ml)) continue;
                 if (ml.path[0] != '/' || !ml.exec) continue;
                 for (int s = 0; s < nspec; s++)
-                    if (custom_spec_matches_path(&specs[s], ml.path)) { fclose(f); return; }
+                    if (custom_spec_matches_path(&specs[s], ml.path) ||
+                        custom_spec_matches_apk(&specs[s], ml.path)) { fclose(f); return; }
             }
             fclose(f);
         }
@@ -442,18 +464,22 @@ static error_t corr_parse_opt(int key, char *arg, struct argp_state *state)
             fprintf(stderr, "correlate: warning — spec cap (64) reached; '%s' ignored\n", arg);
         else {
             if (parse_custom_probe_spec(arg, &a->specs[a->nspec], log_stderr) != 0)
-                argp_error(state, "invalid spec '%s'", arg);
+                ANUBEE_ARGP_FAIL(state, "invalid spec '%s'", arg);
             a->nspec++;
         }
         break;
     case 'F':
         if (load_probe_spec_file(arg, a->specs, 64, &a->nspec, log_stderr) != 0)
-            argp_error(state, "cannot open spec file '%s'", arg);
+            ANUBEE_ARGP_FAIL(state, "cannot open spec file '%s'", arg);
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "correlate");
-        validate_pid_or_package(state, a->tgt.n, a->pkg);
-        validate_have_selector(state, a->nspec, "-e SPEC or -F FILE");
+        {
+            error_t ve = validate_pid_or_package(state, a->tgt.n, a->pkg);
+            if (ve) return ve;
+            ve = validate_have_selector(state, a->nspec, "-e SPEC or -F FILE");
+            if (ve) return ve;
+        }
         break;
     default:
         return ARGP_ERR_UNKNOWN;

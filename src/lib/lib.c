@@ -98,17 +98,22 @@ static int handle_event(void *ctx, void *data, size_t sz)
 			// directory records as data_start. NOT `pgoff << 12`.
 			unsigned long long off = (unsigned long long)e->pgoff *
 			                         (unsigned long long)sysconf(_SC_PAGESIZE);
-			struct apk_so_ref refs[32];
-			int n = apk_list_sos(full, refs, 32);
+			int n = apk_so_count(full);
 			if (mark_apk_seen(full))
-				for (int i = 0; i < n; i++)
-					anubee_libtrace_emit_packed(&g_sink, g_quiet, full, &refs[i]);
+				for (int i = 0; i < n; i++) {
+					struct apk_so_ref r;
+					if (apk_so_get(full, i, &r))
+						anubee_libtrace_emit_packed(&g_sink, g_quiet, full, &r);
+				}
 			// This mmap event covers one ELF segment, whose file offset is
 			// generally not the .so's own data_start (e.g. the exec segment
 			// starts partway in) — range-match instead of exact-match.
 			for (int i = 0; i < n; i++) {
-				if (off >= refs[i].data_start && off < refs[i].data_start + refs[i].size) {
-					soname = refs[i].name;
+				struct apk_so_ref r;
+				if (!apk_so_get(full, i, &r))
+					continue;
+				if (off >= r.data_start && off < r.data_start + r.size) {
+					soname = apk_so_at(full, r.data_start);  // stable pointer into the cache
 					break;
 				}
 			}
@@ -162,16 +167,16 @@ static error_t lib_parse_opt(int key, char *arg, struct argp_state *state)
     case ARGP_KEY_ARG:
         if      (!a->pkg && a->tgt.n == 0) a->pkg      = arg;
         else if (!a->activity)             a->activity = arg;
-        else argp_error(state, "unexpected argument '%s'", arg);
+        else ANUBEE_ARGP_FAIL(state, "unexpected argument '%s'", arg);
         break;
     case ARGP_KEY_END:
         anubee_target_warn_noop(&a->tgt, "lib");
         if (a->tgt.n > 0 && a->activity)
             fprintf(stderr, "lib: warning - -A/--activity has no effect in -p mode; ignored\n");
         if (a->tgt.n > 0 && a->pkg)
-            argp_error(state, "specify exactly one of -p or -P");
+            ANUBEE_ARGP_FAIL(state, "specify exactly one of -p or -P");
         if (!a->tgt.n && !a->pkg)
-            argp_error(state, "specify -P PACKAGE or -p PID[,PID...]");
+            ANUBEE_ARGP_FAIL(state, "specify -P PACKAGE or -p PID[,PID...]");
         break;
     default:
         return parse_common_arg(key, arg, state, &a->c);

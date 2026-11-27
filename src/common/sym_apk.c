@@ -24,8 +24,8 @@
 // The ZIP central directory is parsed once per APK path and cached in a small
 // fixed array (APKs typically contain a handful of .so files under lib/).
 
-#define APK_SO_MAX    32
-#define APK_CACHE_MAX  8
+#define APK_SO_MAX    512
+#define APK_CACHE_MAX  16
 
 struct apk_so_entry {
 	char     name[256];    // inner .so basename, e.g. "libnative.so"
@@ -33,6 +33,7 @@ struct apk_so_entry {
 	                       // from — a >127-byte basename in a structurally
 	                       // valid APK truncated silently and could
 	                       // misattribute a symbolized stack frame.
+	char     abi[24];      // directory under lib/, e.g. "arm64-v8a"
 	uint64_t data_start;   // ELF start byte offset within the APK
 	uint64_t size;
 };
@@ -118,6 +119,17 @@ static struct apk_cache *apk_parse(const char *path)
 
 		struct apk_so_entry *e = &c->entries[c->count++];
 		snprintf(e->name, sizeof(e->name), "%s", base);
+		// lib/<abi>/<name>.so: remember <abi> (directory right after "lib/").
+		e->abi[0] = '\0';
+		{
+			const char *a = fname + 4;
+			const char *slash = strchr(a, '/');
+			size_t al = slash ? (size_t)(slash - a) : 0;
+			if (al > 0 && al < sizeof(e->abi)) {
+				memcpy(e->abi, a, al);
+				e->abi[al] = '\0';
+			}
+		}
 		e->data_start = data_start;
 		e->size       = (uint64_t)comp_size;
 	}
@@ -169,9 +181,50 @@ int apk_list_sos(const char *apk_path, struct apk_so_ref *out, int max)
 	int n = 0;
 	for (int i = 0; i < c->count && n < max; i++) {
 		snprintf(out[n].name, sizeof(out[n].name), "%s", c->entries[i].name);
+		snprintf(out[n].abi, sizeof(out[n].abi), "%s", c->entries[i].abi);
 		out[n].data_start = c->entries[i].data_start;
 		out[n].size       = c->entries[i].size;
 		n++;
 	}
 	return n;
+}
+
+static int path_is_apk(const char *p)
+{
+	size_t n = strlen(p);
+	return n >= 4 && strcmp(p + n - 4, ".apk") == 0;
+}
+
+int apk_so_count(const char *apk_path)
+{
+	struct apk_cache *c = apk_get(apk_path);
+	return c ? c->count : 0;
+}
+
+int apk_so_get(const char *apk_path, int idx, struct apk_so_ref *out)
+{
+	if (idx < 0)
+		return 0;
+	struct apk_cache *c = apk_get(apk_path);
+	if (!c || idx >= c->count)
+		return 0;
+	snprintf(out->name, sizeof(out->name), "%s", c->entries[idx].name);
+	snprintf(out->abi, sizeof(out->abi), "%s", c->entries[idx].abi);
+	out->data_start = c->entries[idx].data_start;
+	out->size       = c->entries[idx].size;
+	return 1;
+}
+
+const char *apk_so_at(const char *apk_path, uint64_t file_off)
+{
+	if (!path_is_apk(apk_path))
+		return NULL;
+	struct apk_cache *c = apk_get(apk_path);
+	if (!c)
+		return NULL;
+	for (int i = 0; i < c->count; i++)
+		if (file_off >= c->entries[i].data_start &&
+		    file_off <  c->entries[i].data_start + c->entries[i].size)
+			return c->entries[i].name;
+	return NULL;
 }

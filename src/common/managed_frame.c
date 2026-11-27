@@ -85,7 +85,7 @@ int anubee_managed_chain_build(const char *const *syms, int n,
 // collision simply overwrites the older distinct stack (LRU-ish). Bounded static
 // footprint; guarded by a mutex because the snapshot-drain thread writes while
 // the record-emit thread reads.
-#define JC_SLOTS 8192u          // power of two
+#define JC_SLOTS 4096u          // power of two; 4 MiB of fragment storage (as before)
 #define JC_FRAG  ANUBEE_JCACHE_FRAG   // max fragment bytes incl. NUL (see managed_frame.h)
 struct jc_ent { uint64_t id; int used; char frag[JC_FRAG]; };
 static struct jc_ent g_jc[JC_SLOTS];

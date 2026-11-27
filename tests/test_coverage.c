@@ -135,6 +135,24 @@ int main(void)
 	CHECK(!strstr(j, "\"ring\""));       // degraded fields never rendered
 
 	CHECK(blank_lines == 0);   // the sink ends each record; the builder must not
+	// 10. Drop summary: last-line text for ring + queue loss.
+	char dl[256];
+	strcpy(dl, "untouched");
+	CHECK(anubee_drop_summary(dl, sizeof dl, 0, 0, 1000) == 0);
+	CHECK(strcmp(dl, "untouched") == 0);
+	CHECK(anubee_drop_summary(dl, sizeof dl, 0, 286959, 789519) == 1);
+	CHECK(strstr(dl, "286959 of 789519 events dropped (36.3%)"));
+	CHECK(strstr(dl, "ring 0, queue 286959"));
+	CHECK(strstr(dl, "-Q"));
+	CHECK(anubee_drop_summary(dl, sizeof dl, 3, 4, 10000) == 1);
+	CHECK(strstr(dl, "7 of 10000 events dropped (0.0%)"));
+	CHECK(!strstr(dl, "-Q"));
+	CHECK(anubee_drop_summary(dl, sizeof dl, 0, 50, 0) == 1);
+	CHECK(strstr(dl, "50 events dropped") && !strstr(dl, " of ") && !strstr(dl, "%"));
+	char tiny[12];
+	CHECK(anubee_drop_summary(tiny, sizeof tiny, 0, 286959, 789519) == 1);
+	CHECK(strlen(tiny) == sizeof tiny - 1);
+
 	printf("test_coverage: %d checks passed\n", checks);
 	return 0;
 }

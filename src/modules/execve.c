@@ -170,10 +170,13 @@ static int ex_handle_event(void *ctx, void *data, size_t sz)
     memcpy(&x->e, data, sizeof x->e);
     x->have_syms = !mc->quiet || mc->sink != NULL;
     if (x->have_syms) {
+        // An exec's stack predates the exec: sym_effective_pid picks the parent.
+        int fb;
+        int epid = sym_effective_pid((int)hdr->pid, hdr->_pad, &fb);
         for (int i = 0; i < (int)x->e.stack_depth && i < STACK_DEPTH; i++) {
             x->syms[i][0] = '\0';
             if (x->e.call_stack[i])
-                sym_resolve(hdr->pid, x->e.call_stack[i], x->syms[i], sizeof x->syms[i]);
+                sym_resolve_fb(epid, fb, x->e.call_stack[i], x->syms[i], sizeof x->syms[i]);
         }
     }
     if (ex_pend)

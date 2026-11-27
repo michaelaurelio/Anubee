@@ -1,8 +1,8 @@
 /* decode.h — shared syscall-argument decoders (src/common).
  *
  * Human-readable decoding of flag / enum syscall arguments (open flags, mmap
- * prot/flags, prctl option, signal numbers, socket domain/type, ...) plus
- * sockaddr parsing and fd-path rendering.
+ * prot/flags, prctl option, ptrace request, signal numbers, socket
+ * domain/type, ...) plus sockaddr parsing and fd-path rendering.
  */
 #ifndef __ANUBEE_DECODE_H
 #define __ANUBEE_DECODE_H

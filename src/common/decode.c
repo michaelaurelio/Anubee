@@ -346,6 +346,30 @@ static const struct flagdef t_prctl[] = {
 };
 #endif
 
+#ifdef __NR_ptrace
+// ptrace request numbers are stable kernel ABI (include/uapi/linux/ptrace.h),
+// written out literally so the table is identical on host and target builds.
+// Requests that are 32-bit/x86-only (12-15) or whose meaning differs between
+// architectures (31-34) are left out and render as hex.
+#define PT(name, v) { (unsigned long long)(v), "PTRACE_" #name }
+static const struct flagdef t_ptrace[] = {
+	PT(TRACEME, 0), PT(PEEKTEXT, 1), PT(PEEKDATA, 2), PT(PEEKUSR, 3),
+	PT(POKETEXT, 4), PT(POKEDATA, 5), PT(POKEUSR, 6), PT(CONT, 7),
+	PT(KILL, 8), PT(SINGLESTEP, 9), PT(ATTACH, 16), PT(DETACH, 17),
+	PT(SYSCALL, 24),
+	PT(SETOPTIONS, 0x4200), PT(GETEVENTMSG, 0x4201), PT(GETSIGINFO, 0x4202),
+	PT(SETSIGINFO, 0x4203), PT(GETREGSET, 0x4204), PT(SETREGSET, 0x4205),
+	PT(SEIZE, 0x4206), PT(INTERRUPT, 0x4207), PT(LISTEN, 0x4208),
+	PT(PEEKSIGINFO, 0x4209), PT(GETSIGMASK, 0x420a), PT(SETSIGMASK, 0x420b),
+	PT(SECCOMP_GET_FILTER, 0x420c), PT(SECCOMP_GET_METADATA, 0x420d),
+	PT(GET_SYSCALL_INFO, 0x420e), PT(GET_RSEQ_CONFIGURATION, 0x420f),
+	PT(SET_SYSCALL_USER_DISPATCH_CONFIG, 0x4210),
+	PT(GET_SYSCALL_USER_DISPATCH_CONFIG, 0x4211),
+	PT(SET_SYSCALL_INFO, 0x4212),
+};
+#undef PT
+#endif
+
 #ifdef MFD_CLOEXEC
 static const struct flagdef t_mfd[] = {
 	F(MFD_CLOEXEC),
@@ -355,6 +379,22 @@ static const struct flagdef t_mfd[] = {
 #ifdef MFD_HUGETLB
 	F(MFD_HUGETLB),
 #endif
+};
+#endif
+
+#ifdef __NR_ioctl
+// ioctl commands are _IOC-encoded (dir << 30 | size << 16 | type << 8 | nr) and
+// are stable kernel ABI, written out literally so the table is identical on host
+// and target builds. Only the binder device commands are listed; anything else
+// (including driver-private numbers) stays raw hex.
+static const struct flagdef t_ioctl[] = {
+	{ 0xc0306201ULL, "BINDER_WRITE_READ" },
+	{ 0x40086203ULL, "BINDER_SET_IDLE_TIMEOUT" },
+	{ 0x40046205ULL, "BINDER_SET_MAX_THREADS" },
+	{ 0x40046206ULL, "BINDER_SET_IDLE_PRIORITY" },
+	{ 0x40046207ULL, "BINDER_SET_CONTEXT_MGR" },
+	{ 0x40046208ULL, "BINDER_THREAD_EXIT" },
+	{ 0xc0046209ULL, "BINDER_VERSION" },
 };
 #endif
 
@@ -675,6 +715,26 @@ int flags_decode_arg(long nr, int arg, unsigned long long v, char *out, size_t o
 #if defined(__NR_prctl) && defined(PR_SET_NAME)
 	case __NR_prctl:
 		if (arg == 0) { dec_enum(v, t_prctl, NELEMS(t_prctl), out, outsz); return 1; }
+		break;
+#endif
+#ifdef __NR_ptrace
+	case __NR_ptrace:
+		if (arg == 0) { dec_enum(v, t_ptrace, NELEMS(t_ptrace), out, outsz); return 1; }
+		break;
+#endif
+#ifdef __NR_ioctl
+	case __NR_ioctl:
+		if (arg == 1) {
+			// Unknown commands must not change today's output: report "no
+			// decoder" (caller falls back to hex) instead of dec_enum's hex.
+			for (size_t i = 0; i < NELEMS(t_ioctl); i++) {
+				if (t_ioctl[i].val != v)
+					continue;
+				snprintf(out, outsz, "%s", t_ioctl[i].name);
+				return 1;
+			}
+			return 0;
+		}
 		break;
 #endif
 	default:

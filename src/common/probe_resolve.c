@@ -2,6 +2,7 @@
 #include "common/probe_resolve.h"
 #include "common/maps.h"
 #include "common/pattern_match.h"
+#include "common/sym_apk.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 unsigned long seg_vaddr_to_off(const struct load_seg *segs, int n,
@@ -326,6 +329,34 @@ void spec_describe(const custom_probe_spec_t *s, char *buf, size_t len)
     }
 }
 
+// Exact function-symbol lookup in an open ELF; on success *off is the file
+// offset within that ELF. Shared by the on-disk and in-APK resolvers.
+static int elf_find_func(Elf *elf, const char *name, unsigned long *off)
+{
+    Elf_Scn *scn = NULL;
+    while ((scn = elf_nextscn(elf, scn)) != NULL) {
+        GElf_Shdr shdr;
+        if (!gelf_getshdr(scn, &shdr)) continue;
+        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
+        if (shdr.sh_entsize == 0) continue;
+        Elf_Data *data = elf_getdata(scn, NULL);
+        if (!data) continue;
+        int num = shdr.sh_size / shdr.sh_entsize;
+        for (int i = 0; i < num; i++) {
+            GElf_Sym sym;
+            gelf_getsym(data, i, &sym);
+            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue;
+            if (sym.st_value == 0) continue;
+            const char *nm = elf_strptr(elf, shdr.sh_link, sym.st_name);
+            if (nm && strcmp(nm, name) == 0) {
+                unsigned long o = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
+                if (o != SEG_VADDR_BAD) { *off = o; return 0; }
+            }
+        }
+    }
+    return -1;
+}
+
 int resolve_custom_spec_for_path(pid_t pid, const char *path,
                                   const custom_probe_spec_t *spec,
                                   probe_target_t *out)
@@ -351,43 +382,23 @@ int resolve_custom_spec_for_path(pid_t pid, const char *path,
     Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
     if (!elf) { close(fd); return -1; }
 
-    int found = -1;
-    Elf_Scn *scn = NULL;
-    while ((scn = elf_nextscn(elf, scn)) != NULL && found < 0) {
-        GElf_Shdr shdr;
-        if (!gelf_getshdr(scn, &shdr)) continue;
-        if (shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM) continue;
-        if (shdr.sh_entsize == 0) continue;
-        Elf_Data *data = elf_getdata(scn, NULL);
-        if (!data) continue;
-        int num = shdr.sh_size / shdr.sh_entsize;
-        for (int i = 0; i < num && found < 0; i++) {
-            GElf_Sym sym;
-            gelf_getsym(data, i, &sym);
-            if (GELF_ST_TYPE(sym.st_info) != STT_FUNC) continue;
-            if (sym.st_value == 0) continue;
-            const char *name = elf_strptr(elf, shdr.sh_link, sym.st_name);
-            if (name && strcmp(name, spec->func) == 0) {
-                unsigned long off = vaddr_to_file_off(elf, (unsigned long)sym.st_value);
-                if (off != SEG_VADDR_BAD) { out->offset = off; found = 0; }
-            }
-        }
-    }
+    unsigned long o;
+    int found = elf_find_func(elf, spec->func, &o);
+    if (found == 0)
+        out->offset = o;
+
     elf_end(elf);
     close(fd);
     return found;
 }
 
-int resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
-                                          const custom_probe_spec_t *spec,
-                                          probe_target_t *out, int max_out)
+// Collect every function symbol whose name matches spec->func's /regex/ into
+// out[0..], with each offset shifted by `add`. Shared by the on-disk resolver
+// (add = 0) and the in-APK resolver (add = the member's data_start).
+static int elf_collect_regex(Elf *elf, pid_t pid, const char *path, unsigned long add,
+                             const custom_probe_spec_t *spec,
+                             probe_target_t *out, int max_out)
 {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
-
-    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
-    if (!elf) { close(fd); return -1; }
-
     int count = 0;
     Elf_Scn *scn = NULL;
     while ((scn = elf_nextscn(elf, scn)) != NULL && count < max_out) {
@@ -411,7 +422,7 @@ int resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
             out[count].pid = pid;
             copy_str(out[count].mod_path, path, sizeof(out[count].mod_path));
             copy_str(out[count].func_name, name, sizeof(out[count].func_name));
-            out[count].offset = off;
+            out[count].offset = off + add;
             out[count].runtime_entry_addr = 0;
             out[count].arg_count = spec->arg_count;
             memcpy(out[count].arg_types, spec->arg_types, sizeof(spec->arg_types));
@@ -420,7 +431,118 @@ int resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
             count++;
         }
     }
+    return count;
+}
+
+int resolve_custom_spec_matches_for_path(pid_t pid, const char *path,
+                                          const custom_probe_spec_t *spec,
+                                          probe_target_t *out, int max_out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf) { close(fd); return -1; }
+
+    int count = elf_collect_regex(elf, pid, path, 0, spec, out, max_out);
+
     elf_end(elf);
     close(fd);
     return count;
+}
+
+static bool is_apk_path(const char *p)
+{
+    size_t n = strlen(p);
+    return n >= 4 && strcmp(p + n - 4, ".apk") == 0;
+}
+
+// Does spec->mod name this arm64 member? Mirrors custom_spec_matches_path's
+// basename rules; a MODULE with a '/' is a path pattern and never names a member.
+static bool member_matches_mod(const custom_probe_spec_t *spec, const struct apk_so_ref *m)
+{
+    if (strcmp(m->abi, "arm64-v8a") != 0) return false;
+    if (spec->mod[0] == '\0') return false;
+    if (pm_is_regex(spec->mod)) return pm_regex(spec->mod, m->name);
+    if (strchr(spec->mod, '/')) return false;
+    return pm_match(spec->mod, m->name, /*exact=*/true);
+}
+
+static void fill_apk_target(probe_target_t *t, pid_t pid, const char *apk_path,
+                            const custom_probe_spec_t *spec, unsigned long off)
+{
+    t->pid = pid;
+    copy_str(t->mod_path, apk_path, sizeof(t->mod_path));
+    copy_str(t->func_name, spec->func, sizeof(t->func_name));
+    t->offset = off;
+    t->runtime_entry_addr = 0;
+    t->arg_count = spec->arg_count;
+    memcpy(t->arg_types, spec->arg_types, sizeof(t->arg_types));
+    t->ret_type = spec->ret_type;
+    t->ret_only = spec->ret_only;
+}
+
+bool custom_spec_matches_apk(const custom_probe_spec_t *spec, const char *apk_path)
+{
+    if (!is_apk_path(apk_path)) return false;
+    int n = apk_so_count(apk_path);
+    for (int i = 0; i < n; i++) {
+        struct apk_so_ref m;
+        if (apk_so_get(apk_path, i, &m) && member_matches_mod(spec, &m))
+            return true;
+    }
+    return false;
+}
+
+int resolve_custom_spec_in_apk(pid_t pid, const char *apk_path,
+                               const custom_probe_spec_t *spec,
+                               probe_target_t *out, int max)
+{
+    if (!is_apk_path(apk_path) || max <= 0) return 0;
+    int cnt = apk_so_count(apk_path);
+    if (cnt <= 0) return 0;
+
+    unsigned char *map = NULL;   // whole-APK read-only mapping, made lazily
+    size_t maplen = 0;
+    int n = 0;
+    for (int i = 0; i < cnt && n < max; i++) {
+        struct apk_so_ref m;
+        if (!apk_so_get(apk_path, i, &m) || !member_matches_mod(spec, &m)) continue;
+
+        bool by_regex = spec->func[0] && pm_is_regex(spec->func);
+        if (!by_regex && spec->offset > 0) {
+            // @offset is raw, relative to the member's ELF start.
+            fill_apk_target(&out[n++], pid, apk_path, spec,
+                            (unsigned long)m.data_start + spec->offset);
+            continue;
+        }
+        if (!spec->func[0]) continue;
+
+        if (!map) {
+            int fd = open(apk_path, O_RDONLY);
+            if (fd < 0) break;
+            struct stat st;
+            if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); break; }
+            void *p = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            close(fd);
+            if (p == MAP_FAILED) break;
+            map = p;
+            maplen = (size_t)st.st_size;
+        }
+        if (m.size == 0 || m.data_start + m.size > maplen) continue;
+        Elf *elf = elf_memory((char *)map + m.data_start, (size_t)m.size);
+        if (!elf) continue;
+        if (by_regex) {
+            n += elf_collect_regex(elf, pid, apk_path, (unsigned long)m.data_start,
+                                   spec, out + n, max - n);
+        } else {
+            unsigned long o;
+            if (elf_find_func(elf, spec->func, &o) == 0)
+                fill_apk_target(&out[n++], pid, apk_path, spec,
+                                (unsigned long)m.data_start + o);
+        }
+        elf_end(elf);
+    }
+    if (map) munmap(map, maplen);
+    return n;
 }

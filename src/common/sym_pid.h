@@ -57,6 +57,14 @@ static inline int sym_first_pid(int pid, __u32 aux)
 	return pid;
 }
 
+/* With an event-sourced model the event's own pid is always the address
+ * space: an exec event is named against the lines valid at its sequence
+ * number. Without a model, the legacy choice applies. */
+static inline int sym_first_pid_m(int pid, __u32 aux, int modelled)
+{
+	return modelled ? pid : sym_first_pid(pid, aux);
+}
+
 /* The parent pid to fall back to when the event pid has no mapping for a
  * frame. 0 when there is none: an exec event already resolves against the
  * parent, and an unusable parent cannot describe the frames. */

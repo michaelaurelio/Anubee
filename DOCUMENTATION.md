@@ -107,12 +107,14 @@ flowchart TD
   APK-embedded stored `.so` display names (ZIP central-dir parse). The
   central-directory cache exposes member accessors (`apk_so_count`,
   `apk_so_get`, `apk_so_at`) and holds up to 512 members per APK across 16
-  cached APKs. Per-pid
-  `/proc/<pid>/maps` snapshots are cached with binary search and a throttled
-  refresh; the cache is **bounded** at `PM_MAX_PIDS=128` entries with LRU eviction
-  (prevents unbounded growth on fork-heavy traces); the LRU bound is the always-on
-  eviction backstop. For prompt per-exit flushing via `sym_flush_pid`, run
-  `anubee mod proc-event` alongside. The symbol result hash
+  cached APKs. The `syscalls` and `funcs` engines keep an event-sourced maps
+  model per (engine, pid): it is seeded once from `/proc/<pid>/maps` and then
+  changed by the library map/unmap events in stream order, with retired lines
+  kept so every event resolves against the mappings valid when it happened (see
+  "Event-sourced maps" below). Other callers use the live per-pid snapshot cache
+  (binary search, throttled refresh). Models and snapshots share one pool
+  **bounded** at `PM_MAX_PIDS=1024` slots; exited pids are evicted first, then
+  the least recently used. The symbol result hash
   is bounded at `SC_MAX_CAP=256k` entries (clears and rebuilds at the ceiling).
   The line parser is shared: `src/common/maps.{c,h}` exposes `anubee_parse_maps_line`
   and is used by all six `/proc/<pid>/maps` consumers across the codebase.
@@ -478,17 +480,28 @@ garbage — precisely the RASP/anti-tamper `.so` case this tool is meant for.
 Attribution then falls back to `stack[0]` (the trap PC itself, which needs no
 frame pointer) rather than reporting a false miss.
 
-**Forked-child attribution.** A forked child's frames are resolved against its own
-address space first, and its last known maps are kept after it exits, so frames
-recorded before death still resolve; only an `execve` stack that predates the exec,
-or a child that never had its maps read, falls back to the parent's address space.
-The parent tgid is recorded only for a process's main thread (where thread id equals
-thread group id) and for `execve`, which covers a forked child while it is still
-single-threaded (events of other threads resolve against their own pid). The parent
-tgid seen on a leader or exec event is remembered per process in userspace, so later
-events from other threads of a process that never had maps also fall back to the
-parent. This is best effort: if the parent has also exited, the frames stay
-unresolved.
+**Forked-child attribution.** Every frame is resolved against the event's own pid,
+in the maps model of that pid as it was at the event (see "Event-sourced maps"
+below). A child that is already gone when it is first seen, or that has exec'd
+since the event, starts as a copy of its parent's model at that point in the
+stream, so an `execve` stack that predates the exec still names the parent's
+libraries. The parent tgid is recorded only for a process's main thread (where
+thread id equals thread group id), for `execve`, and on every library map event;
+userspace remembers it per process, so later events from other threads find it
+too. This is best effort: a child whose parent was never seen keeps its own
+`/proc` seed, or stays unresolved when it has none.
+
+**Event-sourced maps.** The `syscalls` and `funcs` workers number every record they
+pop. A syscall keeps the number of its entry record until it is named at return.
+Library map events add lines to the pid's model and unmap events retire them with
+that number instead of deleting them, so the unmap burst of an exiting or exec'ing
+process does not change the frames of events recorded before it. A lookup miss on
+a live pid merges a fresh `/proc/<pid>/maps` read into the model (it adds lines,
+never retires them), and ring drops mark the models for such a reread. A map event
+carries only the executable segment of a library, so its load base comes from the
+ELF program headers when the first segment is not in the model. Each mapped file
+is also held open once per (dev, inode) when its map event arrives, so memfd-backed
+and deleted libraries keep their symbols after the process exits.
 
 **Current status & remaining walls.** Native unwinding works on-device and the real
 `boot.oat` trampoline FDE is verified to recover the managed caller. All major blockers
@@ -901,22 +914,27 @@ flowchart TD
 
 The symbolizer is split across cohesive files behind the private
 `common/symbolize_internal.h` contract: `symbolize.c` (orchestrator + addr→sym
-cache + `cfi_unwind_snapshot`), `sym_procmaps.c` (`/proc/<pid>/maps` cache),
-`sym_elf.c` (`.dynsym`/`.symtab`/`.gnu_debugdata` + per-module CFI cache + ELF
-file I/O), `sym_jit.c` (ART GDB-JIT walk), `sym_vdso.c` (`[vdso]`), and
+cache + `cfi_unwind_snapshot`), `sym_procmaps.c` (`/proc/<pid>/maps` cache and
+the event-sourced maps model), `sym_elf.c` (`.dynsym`/`.symtab`/`.gnu_debugdata` +
+per-module CFI cache + ELF file I/O), `sym_fdhold.c` (held file handles of mapped
+libraries), `sym_jit.c` (ART GDB-JIT walk), `sym_vdso.c` (`[vdso]`), and
 `sym_apk.c` (APK-embedded `.so` names). Only the `COMMON_API` symbols are
 exported; everything else is localized at link.
 
-Both `syscalls` and `funcs` resolve backtrace addresses using the shared
-`sym_resolve` call. For each frame address the symbolizer:
+Both `syscalls` and `funcs` resolve backtrace addresses with `sym_resolve_at`,
+which takes the engine and the event's sequence number (the legacy `sym_resolve`
+uses the live snapshot). For each frame address the symbolizer:
 
-1. Looks up the mapping in the tracked library table (`/proc/<pid>/maps` snapshot).
+1. Looks up the mapping valid at the event's sequence number in the pid's maps
+   model (or in the live `/proc/<pid>/maps` snapshot for the legacy call).
 2. If the mapping has a file path and the file opens as a valid ELF, resolves via
    the ELF symbol table (`.dynsym` / `.symtab`, with `.gnu_debugdata` mini-debug-info
    if present).
 3. **JIT fallback — fires for *any* executable mapping with no openable ELF**, whether
    the mapping is anonymous (empty name) or carries a kernel-assigned bracket name
-   such as `[anon_shmem:dalvik-jit-code-cache]`. In both cases the symbolizer calls
+   such as `[anon_shmem:dalvik-jit-code-cache]`, and first for an executable memfd
+   mapping (a map event names the JIT cache `memfd:jit-cache` before ART relabels
+   it). In each case the symbolizer calls
    `jit_resolve`, which walks ART's in-process `__jit_debug_descriptor` linked list
    via `/proc/<pid>/mem` to find a JIT-compiled method covering the frame address.
    A successful lookup emits the frame as `[JIT]!<method>+0x<offset>`.

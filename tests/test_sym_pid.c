@@ -9,6 +9,16 @@ static int fails;
     if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } \
     else printf("ok: %s\n", msg); } while (0)
 
+static void test_exec_uses_own_pid_when_modelled(void)
+{
+    CHECK(sym_first_pid_m(100, sym_aux_make(50, 1), 1) == 100,
+          "modelled exec event uses its own pid");
+    CHECK(sym_first_pid_m(100, sym_aux_make(50, 1), 0) == 50,
+          "unmodelled exec event falls back to the parent");
+    CHECK(sym_first_pid_m(100, sym_aux_make(50, 0), 1) == 100,
+          "modelled non-exec event uses its own pid");
+}
+
 int main(void)
 {
     // aux pack/unpack: ppid in the low 31 bits, exec flag in bit 31.
@@ -42,6 +52,8 @@ int main(void)
           "exec with ppid == pid -> own pid");
     CHECK(sym_first_pid(100, 0) == 100,
           "unknown aux -> own pid");
+
+    test_exec_uses_own_pid_when_modelled();
 
     // The parent is consulted lazily, only when the child's own resolution
     // fails; an exec event already went to the parent first.

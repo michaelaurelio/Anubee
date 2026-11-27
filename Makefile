@@ -114,6 +114,7 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/art_shadow.c \
                $(SRC)/common/sym_apk.c $(SRC)/common/sym_vdso.c $(SRC)/common/sym_jit.c \
                $(SRC)/common/sym_elf.c $(SRC)/common/sym_procmaps.c \
+               $(SRC)/common/sym_fdhold.c \
                $(SRC)/common/coverage.c $(SRC)/common/syscall_table.c \
                $(SRC)/common/target_validate.c $(SRC)/common/pattern_match.c \
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
@@ -147,6 +148,9 @@ COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_bpf_objects anubee_object_writes_target anubee_quiet_config_ok \
                seg_vaddr_to_off \
                sym_resolve sym_effective_pid sym_snapshot_pid sym_resolve_fb sym_flush_pid cfi_unwind_snapshot \
+               sym_engine_new sym_parent_pid sym_maps_map sym_maps_unmap sym_resolve_at \
+               cfi_unwind_snapshot_at sym_maps_dirty sym_maps_compact sym_maps_report \
+               fdhold_note fdhold_close_all fdhold_count \
                anubee_parse_maps_line anubee_module_base_idx anubee_map_files_path \
                anubee_stack_snapshot_emit_json \
                anubee_managed_chain_build anubee_jcache_put anubee_jcache_get \
@@ -511,17 +515,25 @@ test:
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_apk.c src/common/sym_apk.c -o $(BUILD)/test_sym_apk
 	$(BUILD)/test_sym_apk
 	@if echo 'int main(void){return 0;}' | $(HOST_CC) -x c - -lelf -llzma -o /dev/null 2>/dev/null; then \
-	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_elf.c src/common/sym_elf.c src/common/maps.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_sym_elf -lelf -llzma && \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_elf.c src/common/sym_elf.c src/common/sym_fdhold.c src/common/maps.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_sym_elf -lelf -llzma -lpthread && \
 	  $(BUILD)/test_sym_elf; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_elf_exec_base.c src/common/sym_procmaps.c src/common/sym_elf.c src/common/sym_fdhold.c src/common/sym_apk.c src/common/maps.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_elf_exec_base -lelf -llzma -lpthread && \
+	  $(BUILD)/test_elf_exec_base; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c src/common/sym_elf.c src/common/sym_fdhold.c src/common/sym_apk.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_pm_retain -lelf -llzma -lpthread && \
+	  $(BUILD)/test_pm_retain; \
+	  $(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_events.c src/common/sym_procmaps.c src/common/maps.c src/common/sym_elf.c src/common/sym_fdhold.c src/common/sym_apk.c src/common/cfi_unwind.c src/common/dwarf.c -o $(BUILD)/test_pm_events -lelf -llzma -lpthread && \
+	  $(BUILD)/test_pm_events; \
 	else \
-	  echo "skip: libelf-dev/liblzma-dev not installed, skipping test_sym_elf"; \
+	  echo "skip: libelf-dev/liblzma-dev not installed, skipping test_sym_elf/test_elf_exec_base/test_pm_retain/test_pm_events"; \
 	fi
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_trace_schema.c src/common/trace_schema.c -o $(BUILD)/test_trace_schema
 	$(BUILD)/test_trace_schema
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sym_pid.c -o $(BUILD)/test_sym_pid
 	$(BUILD)/test_sym_pid
-	$(HOST_CC) -Wall -Wextra -Isrc tests/test_pm_retain.c src/common/sym_procmaps.c src/common/maps.c -o $(BUILD)/test_pm_retain
-	$(BUILD)/test_pm_retain
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_maps_parse.c src/common/maps.c -o $(BUILD)/test_maps_parse
+	$(BUILD)/test_maps_parse
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_fdhold.c src/common/sym_fdhold.c src/common/maps.c -o $(BUILD)/test_fdhold -lpthread
+	$(BUILD)/test_fdhold
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_sha256.c src/common/sha256.c -o $(BUILD)/test_sha256
 	$(BUILD)/test_sha256
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_emit.c src/common/emit.c -o $(BUILD)/test_emit

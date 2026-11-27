@@ -11,6 +11,14 @@ struct anubee_map_line {
 	uint64_t start, end, off;
 	int exec;           // 1 if 'x' in perms, 0 otherwise
 	char path[256];     // empty string for anonymous/special mappings
+	uint64_t inode;     // inode number from the maps line, 0 for anonymous
+	uint32_t dev;       // device, kernel internal encoding (major << 20) | minor
+	uint64_t id;        // process-unique line id assigned by the maps model; 0 = none
+	uint64_t add_seq;   // stream sequence from which the line is valid
+	uint64_t del_seq;   // stream sequence at which it was retired (SYM_SEQ_LIVE = still live)
+	uint64_t xbase;     // cached exec-only load base (valid when xstate == 1)
+	uint64_t xelf;      // cached ELF start offset for xbase
+	int xstate;         // 0 not tried, 1 derived, -1 derivation failed
 };
 
 // Parse one /proc/<pid>/maps line into *out.

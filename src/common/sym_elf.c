@@ -4,6 +4,7 @@
 // See symbolize_internal.h.
 #include <sys/types.h>
 #include "symbolize_internal.h"
+#include "common/sym_fdhold.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,8 +56,10 @@ int pread_all(int fd, void *buf, size_t n, off_t off)
 // Open the backing file. For a normal library this is just the path. For a
 // library the target deleted from disk after mapping (a common anti-analysis
 // trick — the path shows as ".../lib.so (deleted)"), the on-disk open fails, so
-// we reach the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
-int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
+// we fall back to the fd held by the map event (kept across process exit) and
+// then to the still-mapped inode through /proc/<pid>/map_files/<start>-<end>.
+int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend,
+		     uint64_t inode, uint32_t dev)
 {
 	char real[MAX_PATH_LEN];
 	snprintf(real, sizeof(real), "%s", path);
@@ -68,12 +71,78 @@ int open_module_file(const char *path, int pid, uint64_t vstart, uint64_t vend)
 	if (fd >= 0)
 		return fd;
 
+	if (inode != 0) {
+		fd = fdhold_dup(inode, dev);
+		if (fd >= 0)
+			return fd;
+	}
+
 	if (pid > 0) {
 		char mf[96];
 		anubee_map_files_path(mf, sizeof(mf), pid, vstart, vend);
 		fd = open(mf, O_RDONLY | O_CLOEXEC);
 	}
 	return fd;
+}
+
+// Load base of an ELF from one of its mapped segments: the ELF starts at
+// elf_off in the file (0, or the member offset inside an APK), the segment is
+// mapped at seg_start from file offset seg_file_off. Finds the PT_LOAD whose
+// page-aligned file offset (elf_off + p_offset) equals seg_file_off and returns
+// seg_start - page_down(p_vaddr). 0 on success, -1 otherwise.
+int elf_exec_load_base(int fd, uint64_t elf_off, uint64_t seg_file_off,
+		       uint64_t seg_start, uint64_t *load_base)
+{
+	Elf64_Ehdr eh;
+	Elf64_Phdr ph[64];
+	uint64_t page, page_mask;
+	int match = -1;
+
+	if (!load_base)
+		return -1;
+	if (pread_all(fd, &eh, sizeof(eh), (off_t)elf_off) != 0)
+		return -1;
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 ||
+	    eh.e_ident[EI_CLASS] != ELFCLASS64)
+		return -1;
+	if (eh.e_phentsize != sizeof(Elf64_Phdr) ||
+	    eh.e_phnum == 0 || eh.e_phnum > 64)
+		return -1;
+
+	page = (uint64_t)sysconf(_SC_PAGESIZE);
+	if (page == 0 || (page & (page - 1)) != 0)
+		return -1;
+	page_mask = ~(page - 1);
+
+	if (eh.e_phoff > UINT64_MAX - elf_off)
+		return -1;
+	if (pread_all(fd, ph, (size_t)eh.e_phnum * sizeof(ph[0]),
+		      (off_t)(elf_off + eh.e_phoff)) != 0)
+		return -1;
+
+	for (int i = 0; i < eh.e_phnum; i++) {
+		uint64_t seg_off;
+
+		if (ph[i].p_type != PT_LOAD)
+			continue;
+		if (ph[i].p_offset > UINT64_MAX - elf_off)
+			continue;
+		seg_off = elf_off + ph[i].p_offset;
+		if ((seg_off & page_mask) != seg_file_off)
+			continue;
+		if (match < 0 || (ph[i].p_flags & PF_X))
+			match = i;
+		if (ph[i].p_flags & PF_X)
+			break;
+	}
+	if (match < 0)
+		return -1;
+
+	uint64_t vbase = (uint64_t)ph[match].p_vaddr & page_mask;
+	if (vbase > seg_start)
+		return -1;
+	*load_base = seg_start - vbase;
+	return 0;
 }
 
 // Copy a symbol name into the per-module arena, returning its offset. The arena
@@ -250,13 +319,14 @@ void dynsym_finalize(struct dynsym *ds)
 // Build the module's symbol set from every source the ELF at `elf_off` offers:
 // .dynsym, .symtab, and the .gnu_debugdata mini-debug-info. All feed one sorted,
 // value-deduped array used by sym_lookup.
-static void parse_symbols(struct dynsym *ds, int pid, uint64_t vstart, uint64_t vend)
+static void parse_symbols(struct dynsym *ds, int pid, uint64_t vstart, uint64_t vend,
+			  uint64_t inode, uint32_t dev)
 {
 	ds->ok = 0;
 	if (ds->path[0] == '\0' || ds->path[0] == '[')
 		return;
 
-	int fd = open_module_file(ds->path, pid, vstart, vend);
+	int fd = open_module_file(ds->path, pid, vstart, vend, inode, dev);
 	if (fd < 0)
 		return;
 
@@ -392,7 +462,8 @@ static void elfidx_put(struct elfidx_ent **tab, size_t *cap, size_t *used,
 }
 
 struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
-				 int pid, uint64_t vstart, uint64_t vend)
+				 int pid, uint64_t vstart, uint64_t vend,
+				 uint64_t inode, uint32_t dev)
 {
 	ssize_t hit = elfidx_get(g_ds_idx, g_ds_idx_cap, path, elf_off);
 	if (hit >= 0 && !strcmp(g_ds[hit].path, path))
@@ -407,7 +478,7 @@ struct dynsym *dynsym_get(const char *path, uint64_t elf_off,
 	memset(ds, 0, sizeof(*ds));
 	snprintf(ds->path, sizeof(ds->path), "%s", path);
 	ds->elf_off = elf_off;
-	parse_symbols(ds, pid, vstart, vend);
+	parse_symbols(ds, pid, vstart, vend, inode, dev);
 	g_nds++;
 	elfidx_put(&g_ds_idx, &g_ds_idx_cap, &g_ds_idx_used, path, elf_off, idx);
 	return ds;
@@ -534,7 +605,7 @@ find_gnu_debugdata(const uint8_t *buf, size_t len, size_t *off, size_t *size)
  * Mirrors dynsym_get: grow/append, ok=0 on failure so future calls short-circuit. */
 struct cfi_section *
 cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
-	int pid, uint64_t vstart, uint64_t vend)
+	int pid, uint64_t vstart, uint64_t vend, uint64_t inode, uint32_t dev)
 {
 	/* 1. Cache hit by (elf_off, path) — O(1)-amortized via the index hash. */
 	ssize_t hit = elfidx_get(g_cfi_idx, g_cfi_idx_cap, path, elf_off);
@@ -560,7 +631,7 @@ cfi_get(const char *path, uint64_t elf_off, uint64_t load_base,
 	if (path[0] == '\0' || path[0] == '[')
 		return NULL;
 
-	int fd = open_module_file(path, pid, vstart, vend);
+	int fd = open_module_file(path, pid, vstart, vend, inode, dev);
 	if (fd < 0)
 		return NULL;
 

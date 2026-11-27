@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 // SPDX-License-Identifier: GPL-2.0
 #include <argp.h>
 #include <errno.h>
@@ -24,6 +28,7 @@
 #include "funcs.skel.h"
 #include "funcs-priv.h"
 #include "common/lib_trace.h"
+#include "common/sym_fdhold.h"
 #include "common/launch.h"
 #include "common/probe_resolve.h"
 #include "common/probe_spec_loader.h"
@@ -273,6 +278,19 @@ static struct anubee_evq g_q;
 static pthread_t       g_worker;
 static int             g_worker_started;
 static struct anubee_drain_progress g_dp;   // post-Ctrl-C drain progress (teardown only)
+static long            g_worker_cpu_ms;
+
+// Event-sourced maps model: engine id allocated in setup, and the worker's
+// record sequence (incremented for every popped record).
+static int      g_eng;
+static uint64_t g_seq;
+
+// Private queue record carrying a map event plus its resolved path.
+#define FUNCS_QREC_MAP 0xf1
+struct funcs_qmap {
+    struct lib_map_event e;
+    char path[256];
+};
 
 static bool g_quiet = false;
 
@@ -292,6 +310,7 @@ static void funcs_drops_tick(void *ctx)
     if (d > g_funcs_last_drops) {
         fprintf(stderr, "[drops] %llu event(s) dropped so far\n", d);
         g_funcs_last_drops = d;
+        sym_maps_dirty(g_eng);
     }
 }
 
@@ -535,6 +554,21 @@ static void process_call_return(const void *data, size_t data_sz)
     const struct trace_event_header *header = data;
     if (data_sz < sizeof(*header)) return;
 
+    if (header->type == FUNCS_QREC_MAP) {
+        if (data_sz < sizeof(struct funcs_qmap)) return;
+        const struct funcs_qmap *q = data;
+        sym_maps_map(g_eng, (int)q->e.h.pid, q->e.ppid, g_seq, q->e.start, q->e.end,
+                     q->e.pgoff, q->e.inode, q->e.dev, q->path);
+        return;
+    }
+
+    if (header->type == ANUBEE_EVENT_UNMAP) {
+        if (data_sz < sizeof(struct lib_unmap_event)) return;
+        const struct lib_unmap_event *u = data;
+        sym_maps_unmap(g_eng, (int)u->h.pid, g_seq, u->start, u->end);
+        return;
+    }
+
     if (header->type == ANUBEE_EVENT_CALL) {
         if (data_sz < sizeof(struct event)) return;
         const struct event *e = data;
@@ -553,12 +587,13 @@ static void process_call_return(const void *data, size_t data_sz)
             if (g_sink.f) {
                 // Resolve backtrace symbols the same way the console does (below) so
                 // the file record carries them too (parity with syscalls). Done
-                // before taking g_sink_lock — sym_resolve only reads e, not the sink.
+                // before taking g_sink_lock — sym_resolve_at only reads e, not the sink.
                 char symbuf[STACK_DEPTH][320];
                 const char *syms[STACK_DEPTH];
                 for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
                     if (!e->call_stack[i]) { syms[i] = NULL; continue; }
-                    sym_resolve((int)e->h.pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+                    sym_resolve_at(g_eng, (int)e->h.pid, e->ppid, g_seq,
+                                   e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
                     syms[i] = symbuf[i];
                 }
                 pthread_mutex_lock(&g_sink_lock);
@@ -637,7 +672,8 @@ static void process_call_return(const void *data, size_t data_sz)
 
         if (!g_quiet && e->caller_addr) {
             char caller_sym[320];
-            sym_resolve(header->pid, e->caller_addr, caller_sym, sizeof(caller_sym));
+            sym_resolve_at(g_eng, header->pid, e->ppid, g_seq,
+                           e->caller_addr, caller_sym, sizeof(caller_sym));
             human_detail("event", "caller: %s\n", caller_sym);
         }
 
@@ -645,7 +681,8 @@ static void process_call_return(const void *data, size_t data_sz)
             for (__u32 i = 2; i < e->stack_depth; i++) {
                 if (!e->call_stack[i]) break;
                 char frame_sym[320];
-                sym_resolve(header->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
+                sym_resolve_at(g_eng, header->pid, e->ppid, g_seq,
+                               e->call_stack[i], frame_sym, sizeof(frame_sym));
                 human_detail("event", "#%u %s\n", i, frame_sym);
             }
         }
@@ -707,7 +744,8 @@ static void process_call_return(const void *data, size_t data_sz)
             const char *syms[STACK_DEPTH];
             for (int i = 0; i < (int)e->stack_depth && i < STACK_DEPTH; i++) {
                 if (!e->call_stack[i]) { syms[i] = NULL; continue; }
-                sym_resolve((int)e->h.pid, e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
+                sym_resolve_at(g_eng, (int)e->h.pid, e->ppid, g_seq,
+                               e->call_stack[i], symbuf[i], sizeof(symbuf[i]));
                 syms[i] = symbuf[i];
             }
             pthread_mutex_lock(&g_sink_lock);
@@ -729,7 +767,8 @@ static void process_call_return(const void *data, size_t data_sz)
         for (__u32 i = 1; i < stack_limit; i++) {
             if (!e->call_stack[i]) break;
             char frame_sym[320];
-            sym_resolve(header->pid, e->call_stack[i], frame_sym, sizeof(frame_sym));
+            sym_resolve_at(g_eng, header->pid, e->ppid, g_seq,
+                           e->call_stack[i], frame_sym, sizeof(frame_sym));
             if (i == 1)
                 human_detail("event", "caller: %s\n", frame_sym);
             else
@@ -759,7 +798,7 @@ static void process_call_return(const void *data, size_t data_sz)
         // silently corrupting g_cov.cfi_stop[]. Zero means an unwritten
         // terminal reads as CFI_OK (0).
         memset(diags, 0, sizeof(diags));
-        int n = cfi_unwind_snapshot((int)s->h.pid, s, pcs, 64, sps, diags);
+        int n = cfi_unwind_snapshot_at(g_eng, (int)s->h.pid, g_seq, s, pcs, 64, sps, diags);
         if (n > 0) {
             g_cov.snaps_total++;
             g_cov.cfi_walks++;
@@ -773,7 +812,9 @@ static void process_call_return(const void *data, size_t data_sz)
             const char *syms[64];
             int nsym = n < 64 ? n : 64;
             for (int i = 0; i < nsym; i++) {
-                sym_resolve((int)s->h.pid, pcs[i], sym_store[i], sizeof(sym_store[i]));
+                sym_resolve_at(g_eng, (int)s->h.pid,
+                               sym_parent_pid((int)s->h.pid, s->h._pad),
+                               g_seq, pcs[i], sym_store[i], sizeof(sym_store[i]));
                 syms[i] = sym_store[i];
             }
 
@@ -788,17 +829,33 @@ static void process_call_return(const void *data, size_t data_sz)
     }
 }
 
+// Use the whole worker thread's CPU time (utime+stime) in milliseconds.
+static void worker_cpu_record(void)
+{
+    struct rusage ru;
+
+    if (getrusage(RUSAGE_THREAD, &ru) != 0)
+        return;
+    g_worker_cpu_ms = (long)((ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000 +
+                             (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000);
+}
+
 static void *funcs_worker_main(void *arg)
 {
     (void)arg;
     static char rec[sizeof(struct anubee_stack_snapshot) + 64];
+    _Static_assert(sizeof(rec) >= sizeof(struct funcs_qmap), "worker record too small");
     size_t sz;
     unsigned long flushed = 0;
     while (anubee_evq_pop(&g_q, rec, sizeof(rec), &sz)) {
+        g_seq++;
+        if ((g_seq & 4095) == 0)
+            sym_maps_compact(g_eng, g_seq);
         process_call_return(rec, sz);
         if (g_sink.f && (++flushed & ANUBEE_FLUSH_MASK) == 0)
             anubee_sink_flush(&g_sink); // fflush only; glibc FILE ops are thread-safe; no g_sink_lock needed
     }
+    worker_cpu_record();
     return NULL;
 }
 
@@ -827,23 +884,35 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (data_sz < sizeof(*e))
             return 0;
 
+        fdhold_note((int)header->pid, e->start, e->end, e->inode, e->dev);
+
         if (verbose) err_print("         [event]   | MMAP : %s\n", e->name);
         char path[256];
-        if (anubee_libtrace_resolve_path(header->pid, e->start, e->name, path, sizeof(path)) != 0)
-            return 0;
+        int have_path = anubee_libtrace_resolve_path(header->pid, e->start, e->name,
+                                                     path, sizeof(path)) == 0;
+        if (have_path) {
+            // Emit structured lib record for every load (regardless of probe filter).
+            // quiet=g_quiet||!verbose: sink always when -o; console [lib] line only under -v
+            // (funcs already prints [uprobe]/[sym] attach lines — avoids double-reporting).
+            if (g_sink.f || verbose) {
+                pthread_mutex_lock(&g_sink_lock);
+                anubee_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
+                pthread_mutex_unlock(&g_sink_lock);
+            }
 
-        // Emit structured lib record for every load (regardless of probe filter).
-        // quiet=g_quiet||!verbose: sink always when -o; console [lib] line only under -v
-        // (funcs already prints [uprobe]/[sym] attach lines — avoids double-reporting).
-        if (g_sink.f || verbose) {
-            pthread_mutex_lock(&g_sink_lock);
-            anubee_libtrace_emit_lib(&g_sink, g_quiet || !verbose, e, path, NULL);
-            pthread_mutex_unlock(&g_sink_lock);
+            if (custom_probe_spec_count > 0)
+                apply_custom_specs_for_file(rctx, header->pid, path, -1,
+                                            (unsigned long)e->start, (unsigned long)e->end);
         }
 
-        if (custom_probe_spec_count > 0)
-            apply_custom_specs_for_file(rctx, header->pid, path, -1,
-                                        (unsigned long)e->start, (unsigned long)e->end);
+        // Queue the event for the worker's maps model, with the resolved path
+        // when available and the event's own basename otherwise.
+        struct funcs_qmap q;
+        memset(&q, 0, sizeof(q));
+        q.e = *e;
+        q.e.h.type = FUNCS_QREC_MAP;
+        snprintf(q.path, sizeof(q.path), "%s", have_path ? path : e->name);
+        anubee_evq_push(&g_q, &q, sizeof(q));
 
         return 0;
     }
@@ -859,6 +928,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
             pthread_mutex_unlock(&g_sink_lock);
         }
 
+        anubee_evq_push(&g_q, data, data_sz);
         return 0;
     }
 
@@ -875,6 +945,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 // La driver function
 int funcs_setup(int argc, char **argv, const struct anubee_run_ctx *rc)
 {
+    g_eng = sym_engine_new();   // maps model for this engine, before the worker starts
     // Boilerplate setup
     int err = 0;
     int uid = -1;
@@ -1154,6 +1225,11 @@ void funcs_teardown(void)
         anubee_drain_progress_join(&g_dp, g_worker);
         g_worker_started = 0;
     }
+
+    sym_maps_report(stderr, "funcs");
+    fprintf(stderr, "[worker] funcs cpu_ms=%ld\n", g_worker_cpu_ms);
+    fprintf(stderr, "[fdhold] held=%zu\n", fdhold_count());
+    fdhold_close_all();
 
     if (g_events_rb) {
         ring_buffer__free(g_events_rb);

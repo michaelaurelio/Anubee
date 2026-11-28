@@ -657,7 +657,20 @@ is in DOCUMENTATION.md and the referenced specs.
   - `anubee mark --file` has no default path, so the report's automatic
     `<run>.marks` pickup only works when the harness names the file that way;
   - the beacon search (`beaconWindow`) is quadratic over a run of steady gaps,
-    so a run with very many regular connections to one host is slow to build.
+    so a run with very many regular connections to one host is slow to build;
+  - fix before merging to main: the persistence step still counts a forked
+    helper's `proc_exit` in its exits, signals and start time (respawns
+    themselves already skip `spawn` children), so a sample that runs shell
+    helpers and also respawns can show a wrong "from" time and signal mix;
+  - fix before merging to main: the automatic marks pickup looks for
+    `<run>.marks` only; it should look for `<run>.jsonl.marks` first;
+  - an `execve`/open with no result and no error still reads "Ran"/"Opened"
+    (an unknown outcome should read "Tried to");
+  - a clean exit outside a persistence step shows "Recorded: exit signal None";
+  - the standalone-number bolding uses a regex lookbehind, which throws on
+    Safari before 16.4 and blanks the page there;
+  - MCP `html_out` with a wrong `marks`/`meta`/`badging` path raises a raw
+    `FileNotFoundError` instead of the CLI's one-line message.
 
 - **`anubee mark` lab-action markers.** Userspace-only subcommand that appends
   `{"type":"lab_mark","ts_ns":...,"label":...}` to a file on `CLOCK_MONOTONIC`

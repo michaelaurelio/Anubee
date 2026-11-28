@@ -79,3 +79,28 @@ test('evidence buttons point at hidden panels; glance links hit step ids', () =>
   for (const m of h.matchAll(/href="#(e\d+)"/g)) assert.ok(h.includes(`id="${m[1]}"`));
   assert.ok(h.includes('Trace stopped') && h.includes('Limits of this run'));
 });
+
+test('a technique id that is not an ATT&CK id gets no link', () => {
+  const v = structuredClone(V);
+  const c = v.timeline.find((i) => i.kind === 'step' && i.card.techniques.length).card;
+  c.techniques = [{ id: 'T1406.002', name: 'Software Packing' }, { id: '../../evil', name: 'X' }, { id: 'T14060', name: 'Y' }];
+  const h = M.renderView(v);
+  assert.ok(h.includes('href="https://attack.mitre.org/techniques/T1406/002/"'));
+  assert.ok(!h.includes('evil/') && !/href="[^"]*T14060/.test(h));
+  assert.ok(h.includes('../../evil X') && h.includes('T14060 Y'));
+});
+
+const css = readFileSync(path.join(here, 'view.css'), 'utf8');
+const phone = [...css.matchAll(/@media\(max-width:900px\)\{((?:[^{}]*\{[^}]*\})*)\}/g)].map((m) => m[1]).join('');
+
+test('below 900 px the page reads: at a glance, timeline, then indicators', () => {
+  const order = (sel) => { const m = new RegExp('(^|\\})' + sel.replace('.', '\\.') + '\\{[^}]*order:(-?\\d+)').exec(phone); return m ? +m[2] : 0; };
+  assert.match(phone, /\.side\{[^}]*display:contents/);
+  assert.ok(order('.glance') < order('.main') && order('.main') < order('.iocs'));
+  const h = M.renderView(V);
+  assert.ok(h.indexOf('class="main"') < h.indexOf('class="glance"') && h.indexOf('class="glance"') < h.indexOf('class="iocs"'));
+});
+
+test('bold counts in a lab note are not lab-coloured, only its lead is', () => {
+  assert.ok(css.includes('.labnote>b{') && !/\.labnote b\{/.test(css));
+});

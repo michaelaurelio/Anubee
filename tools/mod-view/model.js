@@ -300,6 +300,7 @@ var AnubeeModView = (function () {
     var groups = new Map();           // (section, key) -> records, in first-seen order
     var payloads = new Map();         // ino -> dexload records
     var memloads = [], persist = [], a11y = [], opens = [], hidden = [], labPerm = [], otherPerm = [];
+    var hiddenExits = [];             // ordinary apps get killed too, but a respawn needs its exit
     var lookups = new Map();          // looked-up name -> {name, count, firstTs}
 
     records.forEach(function (r) {
@@ -307,6 +308,7 @@ var AnubeeModView = (function () {
       if (k === null) return;
       if (isNoise(profile, k[0], k[1])) {
         if (k[0] === 'net' && r.event === 'open' && !isLookup(r)) hidden.push(r);
+        if (r.type === 'proc_exit') hiddenExits.push(r);
         return;
       }
       var sec = k[0], key = k[1];
@@ -357,6 +359,7 @@ var AnubeeModView = (function () {
 
     var hasEvidence = persist.some(function (r) { return r.type === 'binder_api'; }) || respawns(records) > 0;
     if (hasEvidence) {
+      if (respawns(records) > 0) persist = persist.concat(hiddenExits);
       steps.push(mkStep('persistence', 'sample', persist, {
         alarmSets: persist.filter(function (r) { return r.type === 'binder_api' && r.method === 'set'; }).length,
         foregroundCalls: persist.filter(function (r) { return r.type === 'binder_api' && r.method === 'setServiceForeground'; }).length,
@@ -899,9 +902,10 @@ var AnubeeModView = (function () {
   function permKey(n) { return str(n).replace(/^android\.permission\./, ''); }
 
   // buildView(input): everything the page shows, as plain text. input =
-  // {records, marksText, profile, templates, meta?, badging?, staticApk?};
+  // {records, marksText, profile, templates, meta?, badging?, staticApk?, hidden?};
   // meta = {family, familySource, sha256, device, started, stopped} (any missing),
-  // badging = {permissions: [...]}, staticApk = {entries: [{name, size, isDex}]}.
+  // badging = {permissions: [...]}, staticApk = {entries: [{name, size, isDex}]},
+  // hidden = findings()' hidden counts of the whole run when records was trimmed of noise.
   function buildView(input) {
     var records = input.records || [], T = input.templates, V = T.view;
     var meta = input.meta || {}, profile = input.profile || {};
@@ -1021,8 +1025,9 @@ var AnubeeModView = (function () {
         foot.push(fill(F.declared, { list: list, n: nDecl }));
       }
     }
-    var hiddenN = 0;
-    Object.keys(f.hidden).forEach(function (k) { hiddenN += f.hidden[k].records; });
+    // a run trimmed of its noise records brings the whole run's hidden counts along
+    var hid = input.hidden && typeof input.hidden === 'object' ? input.hidden : f.hidden, hiddenN = 0;
+    Object.keys(hid).forEach(function (k) { hiddenN += hid[k] && typeof hid[k].records === 'number' ? hid[k].records : 0; });
     if (hiddenN) {
       foot.push(words(F.hidden, { n: plural(hiddenN, 'record'), v: profile.version,
         apps: Array.isArray(profile.apps) && profile.apps.length ? plural(profile.apps.length, 'app') : null }));

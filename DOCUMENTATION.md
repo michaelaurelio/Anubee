@@ -2025,6 +2025,71 @@ flowchart LR
 **Long-term:** a single unified `anubee-mcp` that treats `anubee funcs` structured
 output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLOG.md).
 
+### 8.1 Run view (`mod_findings.py report --html`)
+
+One `anubee mod` run as one self-contained HTML page: what the sample did,
+in order, with the lab's own actions told apart from it. The page model and
+renderer are plain JavaScript in `tools/mod-view/` (`model.js`, `render.js`,
+`view.css`, `templates.json`), tested with `node --test`; the Python CLI only
+gathers the inputs and packs the page.
+
+```sh
+mod_findings.py report PROFILE.json RUN.jsonl --html OUT.html \
+    [--marks MARKS] [--meta META.txt] [--badging BADGING.txt] [--apk APK]
+```
+
+```mermaid
+flowchart LR
+    R["run JSONL"] --> T["trim: drop what the<br/>profile hides, keep what<br/>the view still reads"]
+    P[(noise profile)] --> T
+    M["lab marks<br/>(anubee mark)"] --> B
+    X["meta.txt / badging /<br/>APK entry list"] --> B
+    T --> B["model.js buildView:<br/>steps, actors, wording,<br/>IOCs, limits"]
+    B --> V["render.js renderView"]
+    V --> H["one HTML file"]
+    B -.planned.-> D["Desktop tab<br/>(same model.js)"]
+```
+
+- **Steps and actors.** Records group into steps (payload, persistence,
+  suspected C2, accessibility abuse, file probes, permission changes...). A
+  permission change inside a `grant-begin:<k>` … `grant-end:<k>` mark window
+  (+2 s) is the lab's; one with no window around it is shown as
+  unattributed, never credited to the sample. A run without marks therefore
+  shows every permission change as unattributed. Respawns pair each process
+  exit with a new pid seen after it; exits back that count even when the
+  profile hides them (ordinary apps get killed too).
+- **Words come from templates only.** Every sentence on the page is a
+  `templates.json` string filled with record fields; nothing is generated.
+  "C2" always carries "(suspected)"; "about every N s" needs four steady
+  gaps; T1407 needs a connection opened within 120 s before the drop.
+- **Limits of this run** are stated from rules over the records: no
+  exfiltration shown (contents are not traced), no C2 commands seen (only
+  with clean `net`/`binder-api`/`execve` coverage and small replies), who
+  sent the kills, and degraded coverage.
+- **Self-contained.** View code, styles and data are inlined; the page loads
+  nothing, and its only outside links are ATT&CK technique pages. Embedded
+  JSON escapes `</`, `<!--` and U+2028/U+2029.
+- **What is embedded.** Every record the profile does not hide, plus all
+  `*_summary`, `coverage` and `perm_change` records, plus the hidden records
+  the model still reads (connections and lookups for the payload and C2
+  wording, process exits and execs, SMS binder calls, each pid's first record
+  for respawns, the run's first and last record for its times). The whole
+  run's hidden counts travel with it, and the profile is cut to the kept
+  records' keys (and its baseline apps to their number), so the trimmed data builds the same view as the full run
+  (a test checks this with Node). A saved payload copy's device path
+  (`saved.file`) is dropped; its hash and size stay. Payload files are never
+  embedded.
+- **Optional inputs.** `--meta`: the lab's `key=value` file (`family`,
+  `sha256`, `started`, `stopped`; a family read from it is labelled
+  "MalwareBazaar tag"). `--badging`: `aapt dump badging` output, for the
+  footer's declared-but-not-granted list. `--apk`: entry names and sizes are
+  read in memory with `zipfile` (never extracted), so a payload whose size
+  matches a non-DEX APK entry can be said to come from inside the APK.
+- **Phone layout.** Below 900 px the page reads: At a glance, the
+  timeline, then the indicators.
+- The MCP tool `mod_findings_view` takes an optional `html_out` that writes
+  the same page (records and profile only).
+
 ---
 
 ## 9. Detectability analysis

@@ -114,6 +114,8 @@ Anubee shows you, no matter how well it's hidden.
 | `anubee mod` | Runs ready-made analyzers for specific malware behavior; `anubee mod triage` runs every stealthy one at once |
 | `anubee mark` | Writes a timestamped lab-action marker (e.g. `launch`, `stop`) to a file, on the same clock as the tracers |
 
+To read an `anubee mod` run as one page (what the sample did, in order, with the lab's own actions told apart), write its run view on the host: `python3 tools/anubee-mcp/mod_findings.py report noise.json run.jsonl --html run.html [--marks run.marks]`. The file is self-contained and opens in any browser.
+
 ---
 
 ## Quick Start

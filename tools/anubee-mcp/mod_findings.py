@@ -15,12 +15,15 @@ an empty section can't be mistaken for "checked, nothing there".
 Stdlib only, so the lab harness can run it without the MCP server:
   mod_findings.py profile OUT.json RUN.jsonl [RUN.jsonl ...] [--min-apps N]
   mod_findings.py report  PROFILE.json RUN.jsonl [--json]
+  mod_findings.py report  PROFILE.json RUN.jsonl --html OUT.html [--marks MARKS]
+                          [--meta META.txt] [--badging BADGING.txt] [--apk APK]
 """
 import json
 import math
 import os
 import re
 import sys
+import zipfile
 
 PROFILE_VERSION = 1
 SKIP = object()          # record carries no behaviour (snapshot, summary, own files)
@@ -218,6 +221,159 @@ def render_text(f, width=110):
     return "\n".join(out)
 
 
+VIEW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mod-view")
+_BADGING_PERM = re.compile(r"^uses-permission(?:-sdk-23)?: name='([^']+)'")
+_SMS_URI = re.compile(r"^content://(sms|mms|mms-sms)(/|$)", re.I)
+_SMS_AUTH = re.compile(r"^(sms|mms|mms-sms)$", re.I)
+
+
+def parse_meta(text):
+    """The lab's meta.txt (key=value lines) -> the view's meta fields."""
+    kv = {}
+    for line in (text or "").splitlines():
+        k, sep, v = line.partition("=")
+        if sep and k.strip():
+            kv[k.strip()] = v.strip()
+    meta = {k: kv[k] for k in ("family", "sha256", "started", "stopped") if kv.get(k)}
+    if "family" in meta:
+        meta = {"family": meta["family"], "familySource": "MalwareBazaar tag",
+                **{k: v for k, v in meta.items() if k != "family"}}
+    return meta
+
+
+def parse_badging(text):
+    """`aapt dump badging` output -> {"permissions": [declared names, once each]}."""
+    perms = []
+    for line in (text or "").splitlines():
+        m = _BADGING_PERM.match(line.strip())
+        if m and m.group(1) not in perms:
+            perms.append(m.group(1))
+    return {"permissions": perms}
+
+
+def static_apk(path):
+    """Entry names and sizes of an APK, read in memory (never extracted)."""
+    entries = []
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            with z.open(info) as fh:
+                head = fh.read(4)
+            entries.append({"name": info.filename, "size": info.file_size, "isDex": head == b"dex\n"})
+    return {"entries": entries}
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _sms_binder(r):
+    call = r.get("call") if isinstance(r.get("call"), dict) else {}
+    return (_SMS_URI.search(str(r.get("uri") if r.get("uri") is not None else "")) is not None
+            or (bool(call) and _SMS_AUTH.search(str(call.get("authority"))) is not None)
+            or str(r.get("interface")).endswith(".ISms"))
+
+
+def _no_device_paths(r):
+    """The device-side path of a saved payload copy never leaves the lab."""
+    if isinstance(r, dict):
+        return {k: ({kk: vv for kk, vv in v.items() if kk != "file"} if k == "saved" and isinstance(v, dict)
+                    else _no_device_paths(v)) for k, v in r.items()}
+    if isinstance(r, list):
+        return [_no_device_paths(x) for x in r]
+    return r
+
+
+def view_records(run_path, prof, pkg=None):
+    """The records the view needs, in file order: everything the profile doesn't
+    hide, plus the hidden records the view still reads (connections and lookups
+    for the payload and C2 wording, process exits and execs, SMS binder calls,
+    each pid's first record for respawns, the run's first and last record for
+    its times). Returns (records, the profile cut to their keys and to the
+    number of baseline apps)."""
+    recs = list(_records(run_path))
+    pkg = pkg or infer_package(run_path)
+    first_of_pid, lo, hi = {}, None, None
+    for i, r in enumerate(recs):
+        ts = r.get("ts_ns")
+        if not _num(ts):
+            continue
+        if lo is None or ts < recs[lo]["ts_ns"]:
+            lo = i
+        if hi is None or ts > recs[hi]["ts_ns"]:
+            hi = i
+        pid = r.get("pid")
+        if _num(pid) and (pid not in first_of_pid or ts < recs[first_of_pid[pid]]["ts_ns"]):
+            first_of_pid[pid] = i
+    keep_idx = set(first_of_pid.values()) | {i for i in (lo, hi) if i is not None}
+    out, keys = [], {}
+    for i, r in enumerate(recs):
+        k = record_key(r, pkg)
+        if k is not SKIP and is_noise(prof, *k):
+            t = r.get("type")
+            if not (i in keep_idx or t in ("net", "proc_exit", "execve") or (t == "binder_api" and _sms_binder(r))):
+                continue
+        if k is not SKIP:
+            name = f"{k[0]}\t{k[1]}"
+            if name in prof.get("keys", {}):
+                keys[name] = prof["keys"][name]
+        out.append(_no_device_paths(r))
+    cut = {k: v for k, v in prof.items() if k != "keys"}
+    cut["keys"] = keys
+    cut["apps"] = [None] * len(prof.get("apps", []))   # the page shows how many, never which
+    return out, cut
+
+
+def _script_json(obj):
+    """JSON safe inside a <script> element."""
+    s = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    return (s.replace("</", "<\\/").replace("<!--", "\\u003c!--")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def build_html(run_path, profile, marks_text=None, meta=None, badging=None, static_apk=None):
+    """The run view as one self-contained HTML page: view code, styles and the
+    run's trimmed records inlined; nothing is loaded from anywhere."""
+    def read(name):
+        with open(os.path.join(VIEW_DIR, name), encoding="utf-8") as fh:
+            return fh.read()
+    records, prof = view_records(run_path, profile)
+    data = {"records": records, "marksText": marks_text, "profile": prof,
+            "templates": json.loads(read("templates.json")), "meta": meta, "badging": badging,
+            "staticApk": static_apk, "hidden": findings(run_path, profile)["hidden"]}
+    code = read("model.js") + "\n" + read("render.js")
+    if "</script" in code.lower() or "</style" in read("view.css").lower():
+        raise ValueError("view code would end its own element")
+    return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>Anubee run view</title>\n<style>\n" + read("view.css") + "</style></head><body>\n"
+            "<div id=\"app\"><noscript>This page needs JavaScript to show the run.</noscript></div>\n"
+            "<script type=\"application/json\" id=\"anubee-run\">" + _script_json(data) + "</script>\n"
+            "<script>\n" + code + "\n(function () {\n"
+            "  var el = document.getElementById('app');\n"
+            "  var input = JSON.parse(document.getElementById('anubee-run').textContent);\n"
+            "  el.innerHTML = AnubeeModView.renderView(AnubeeModView.buildView(input));\n"
+            "  AnubeeModView.wireView(el);\n"
+            "})();\n</script>\n</body></html>\n")
+
+
+def _opt(argv, flag):
+    if flag not in argv:
+        return None
+    i = argv.index(flag)
+    if i + 1 >= len(argv):
+        raise SystemExit(f"{flag} needs a value")
+    return argv[i + 1]
+
+
+def _read_text(path):
+    if path is None:
+        return None
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
 def _main(argv):
     if len(argv) >= 3 and argv[0] == "profile":
         min_apps = None
@@ -232,6 +388,18 @@ def _main(argv):
         return 0
     if len(argv) >= 3 and argv[0] == "report":
         prof = load_profile(argv[1]) if os.path.exists(argv[1]) else empty_profile()
+        out = _opt(argv, "--html")
+        if out is not None:
+            meta, badging, apk = (_read_text(_opt(argv, "--meta")), _read_text(_opt(argv, "--badging")),
+                                  _opt(argv, "--apk"))
+            html = build_html(argv[2], prof, marks_text=_read_text(_opt(argv, "--marks")),
+                              meta=parse_meta(meta) if meta is not None else None,
+                              badging=parse_badging(badging) if badging is not None else None,
+                              static_apk=static_apk(apk) if apk else None)
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            print(f"run view -> {out}")
+            return 0
         f = findings(argv[2], prof)
         if "--json" in argv:
             for lst in f["sections"].values():

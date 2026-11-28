@@ -21,7 +21,9 @@
     return String(s).split(/(\d+)/).map(function (p, i) { return i % 2 ? '<b>' + esc(p) + '</b>' : esc(p); }).join('');
   }
 
-  function techUrl(id) { return ATTACK + String(id).replace('.', '/') + '/'; }
+  var TECH_ID = /^T\d{4}(\.\d{3})?$/;
+  // null when the id is not an ATT&CK technique id: it is then shown without a link
+  function techUrl(id) { return TECH_ID.test(String(id)) ? ATTACK + String(id).replace('.', '/') + '/' : null; }
 
   function evidence(card, n) {
     if (!card.evidence.length) return '';
@@ -55,7 +57,8 @@
         '<small>' + esc(c.net.sub) + '</small></span></div>';
     }
     var links = c.techniques.map(function (t) {
-      return '<a class="att" href="' + esc(techUrl(t.id)) + '">' + esc(t.id) + ' ' + esc(t.name) + '</a>';
+      var u = techUrl(t.id), label = esc(t.id) + ' ' + esc(t.name);
+      return u ? '<a class="att" href="' + esc(u) + '">' + label + '</a>' : '<span class="att">' + label + '</span>';
     }).join('');
     if (links || c.evidence.length) h += '<div class="row">' + links + evButton(c, n) + '</div>';
     return open + h + evidence(c, n) + '</div></div></div>';

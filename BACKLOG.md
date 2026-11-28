@@ -640,6 +640,18 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-28
 
+- **Run view: one self-contained HTML page per `anubee mod` run**
+  (`mod_findings.py report --html`, MCP `mod_findings_view(html_out=...)`;
+  page model and renderer in `tools/mod-view/`). The sample's steps in time
+  order with plain wording from templates, the lab's actions (from marks)
+  told apart, unattributed permission changes never credited to anyone,
+  IOCs, and the run's limits. The page embeds only what the view needs and
+  loads nothing. Known drawbacks: no live view (post-run only); `execve` and
+  `file_access` steps carry no ATT&CK tag yet; the declared-but-not-granted
+  list needs `--badging` input; the Anubee-Desktop tab that reuses the same
+  model is pending; marks are written by hand (`anubee mark`) until the lab
+  helper (planned) writes them for every lab action.
+
 - **`anubee mark` lab-action markers.** Userspace-only subcommand that appends
   `{"type":"lab_mark","ts_ns":...,"label":...}` to a file on `CLOCK_MONOTONIC`
   (the tracers' clock), so a harness can timestamp launch / grant / stop actions

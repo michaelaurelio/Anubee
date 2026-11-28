@@ -4,8 +4,12 @@
 # Run: python3 tools/anubee-mcp/test_mod_findings.py  (no pytest dependency)
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mod_findings as mf  # noqa: E402
@@ -20,6 +24,9 @@ def check(cond, msg):
     if not cond:
         failures += 1
         print(f"  FAIL: {msg}")
+
+
+TD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mod-view", "testdata")
 
 
 def write(dirpath, name, recs):
@@ -47,6 +54,151 @@ def startup(pkg, pid, t0):
         {"type": "perm_change", "ts_ns": t0 + 5, "package": pkg, "category": "appop",
          "name": "SYSTEM_ALERT_WINDOW", "change": "granted", "old": "default", "new": "allow"},
     ]
+
+
+def write_big_run(dirpath, n):
+    """The shared fixture plus n noise binder calls (the first and last record among them), a kill whose respawned pid
+    shows up only in a noise record (respawns count it), and a noise connection
+    before the drop (the payload wording reads it)."""
+    with open(os.path.join(TD, "sample-run.jsonl")) as fh:
+        base = [json.loads(line) for line in fh if line.strip()]
+    t0 = min(r["ts_ns"] for r in base if "ts_ns" in r)
+    noise = [{"type": "net", "pid": 13620, "ts_ns": t0 + 2_000_000_000, "event": "open", "proto": "tcp",
+              "dest": "198.51.100.7:443", "host": "198.51.100.7:443", "host_source": "sni"}]
+    noise.append({"type": "proc_exit", "pid": 13620, "ts_ns": t0 + 249_000_000_000, "signal": 9})
+    noise.append({"type": "binder_api", "pid": 45000, "tid": 45000, "ts_ns": t0 + 249_500_000_000,
+                  "interface": "android.app.IActivityManager", "method": "attachApplication", "code": 17})
+    # the run's first and last records are noise: the view's times read them
+    call = {"type": "binder_api", "interface": "android.app.IActivityManager", "method": "attachApplication"}
+    noise += [dict(call, ts_ns=t0 - 1_000_000_000), dict(call, pid=13620, ts_ns=t0 + 300_000_000_000)]
+    for i in range(n - 3):
+        noise.append({"type": "binder_api", "pid": 40000 + i % 50, "tid": 40000 + i % 50,
+                      "ts_ns": t0 + 60_000_000_000 + i * 1000, "comm": "sample.app",
+                      "interface": "android.app.IActivityManager", "method": "attachApplication",
+                      "code": 17, "oneway": False})
+    return write(dirpath, "big.jsonl", base[:3] + noise + base[3:])
+
+
+def embedded(html):
+    m = re.search(r'<script type="application/json" id="anubee-run">(.*?)</script>', html, re.S)
+    return json.loads(m.group(1)) if m else None
+
+
+PARITY_JS = r"""
+const fs = require('fs'), assert = require('assert');
+const D = process.argv[1], M = require(D + '/model.js');
+const [full, emb] = [process.argv[2], process.argv[3]].map((p) => JSON.parse(fs.readFileSync(p, 'utf8')));
+full.records = fs.readFileSync(full.records, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+full.templates = emb.templates;
+assert.deepStrictEqual(M.buildView(emb), M.buildView(full));
+console.log('same view');
+"""
+
+
+def same_view(dirpath, run, prof, html, marks=None):
+    """The embedded, trimmed data builds the same View as the whole run."""
+    full = os.path.join(dirpath, "full.json")
+    with open(full, "w") as fh:
+        json.dump({"records": run, "marksText": marks, "profile": prof, "meta": None,
+                   "badging": None, "staticApk": None}, fh)
+    emb = os.path.join(dirpath, "emb.json")
+    with open(emb, "w") as fh:
+        json.dump(embedded(html), fh)
+    p = subprocess.run(["node", "-e", PARITY_JS, os.path.join(TD, ".."), full, emb],
+                       capture_output=True, text=True)
+    if p.returncode:
+        print(p.stderr[-2000:])
+    return p.returncode == 0
+
+
+def html_tests():
+    fixture = os.path.join(TD, "sample-run.jsonl")
+    prof = mf.load_profile(os.path.join(TD, "profile.json"))
+    with open(os.path.join(TD, "sample-run.marks")) as fh:
+        marks = fh.read()
+    with tempfile.TemporaryDirectory() as d:
+        html = mf.build_html(fixture, prof, marks_text=marks)
+        check("<script src=" not in html and "http://" not in html, "report loads nothing from the network")
+        check(all(u.startswith("https://attack.mitre.org/") for u in re.findall(r'https://[^"\'\s<]+', html)),
+              "only ATT&CK links")
+        check("AnubeeModView" in html and "sample-run" not in html, "view code and data inlined, no file references")
+        check("payloads/" not in html, "no device payload file paths embedded")
+        check("com.example.benign" not in html, "baseline app names stay in the lab (only their number is shown)")
+        big = write_big_run(d, 50_000)       # 50k records, mostly noise binder calls
+        bprof = json.loads(json.dumps(prof))
+        bprof["keys"]["net\ttcp 198.51.100.7:443"] = 1
+        bhtml = mf.build_html(big, bprof)
+        check(len(bhtml) < 3_000_000, "large run is trimmed to what the view needs")
+
+        data = embedded(html)
+        check(data is not None and data["marksText"] == marks, "marks embedded as given")
+        recs = data["records"] if data else []
+        saved = [r["saved"] for r in recs if isinstance(r.get("saved"), dict)]
+        check(saved and all("file" not in s and s.get("sha256") for s in saved),
+              "saved copies keep hash and size, never the device file path")
+        summ = [r for r in recs if r.get("type") == "dexload_detect_summary"]
+        check(summ and all("file" not in (f.get("saved") or {}) for f in summ[0]["files"]),
+              "summary's saved copies lose the device path too")
+        check(sum(r.get("method") == "attachApplication" for r in recs) <= 1, "noise records are not embedded")
+        check(data["hidden"] == {"binder": {"records": 1, "keys": 1}}, f"hidden counts passed along (got {data and data['hidden']})")
+        check(any(r.get("type") == "coverage" for r in recs) and any(r.get("type") == "net_summary" for r in recs),
+              "coverage and summary records embedded")
+        bdata = embedded(bhtml)
+        check(sum(r.get("method") == "attachApplication" for r in bdata["records"]) <= 54,
+              "only each pid's first noise record and the run's first and last stay")
+        check(bdata["hidden"]["binder"]["records"] == 50_001, "hidden count is the whole run's, not the trimmed one's")
+        check(any(r.get("dest") == "198.51.100.7:443" for r in bdata["records"]),
+              "noise connections stay: the payload wording reads them")
+        check(set(bdata["profile"]["keys"]) <= {"net\ttcp 198.51.100.7:443",
+                                                 "binder\tandroid.app.IActivityManager.attachApplication"},
+              "profile cut to the keys of the embedded records")
+
+        if shutil.which("node"):
+            check(same_view(d, fixture, prof, html, marks), "embedded data builds the same view as the whole run")
+            check(same_view(d, big, bprof, bhtml), "trimmed large run builds the same view as the whole run")
+        else:
+            print("  skip: node not available for the view parity checks")
+
+        evil = write(d, "evil.jsonl", [
+            {"type": "perm_change", "ts_ns": 1, "package": "com.example.sample", "category": "installed",
+             "name": "installed", "change": "baseline", "old": None, "new": "yes"},
+            {"type": "brand_new_analyzer", "ts_ns": 2, "pid": 1,
+             "what": "</script><script>alert(1)</script><!-- \u2028\u2029"}])
+        ehtml = mf.build_html(evil, mf.empty_profile())
+        check("</script><script>alert" not in ehtml and "<\\/script>" in ehtml, "</ escaped inside the embedded JSON")
+        check("\u2028" not in ehtml and "\u2029" not in ehtml and "<!--" not in ehtml,
+              "line separators and comment openers escaped")
+        check(embedded(ehtml)["records"][1]["what"].startswith("</script>"), "escaped JSON still parses to the text")
+
+        meta = mf.parse_meta("family=ExampleFam\npackage=com.example.sample\nsha256=" + "ab" * 32 +
+                             "\nstarted=2026-11-26T00:41:27+07:00\nstopped=2026-11-26T00:45:52+07:00\njunk\n")
+        check(meta == {"family": "ExampleFam", "familySource": "MalwareBazaar tag", "sha256": "ab" * 32,
+                       "started": "2026-11-26T00:41:27+07:00", "stopped": "2026-11-26T00:45:52+07:00"},
+              f"meta.txt parsed to the view's fields (got {meta})")
+        check(mf.parse_meta("sha256=" + "ab" * 32) == {"sha256": "ab" * 32}, "no family, no family source")
+        bad = mf.parse_badging("package: name='com.example.sample' versionCode='1'\n"
+                               "uses-permission: name='android.permission.READ_SMS'\n"
+                               "uses-permission: name='android.permission.READ_SMS'\n"
+                               "uses-permission: name='android.permission.CAMERA' maxSdkVersion='28'\n")
+        check(bad == {"permissions": ["android.permission.READ_SMS", "android.permission.CAMERA"]},
+              f"badging permissions, once each (got {bad})")
+
+        apk = os.path.join(d, "s.apk")
+        with zipfile.ZipFile(apk, "w") as z:
+            z.writestr("classes.dex", b"dex\n035\0" + b"\0" * 100)
+            z.writestr("assets/blob.bin", b"\x01" * 777)
+        out = os.path.join(d, "view.html")
+        rc = mf._main(["report", os.path.join(TD, "profile.json"), fixture, "--html", out,
+                       "--marks", os.path.join(TD, "sample-run.marks"), "--apk", apk])
+        with open(out) as fh:
+            cli = embedded(fh.read())
+        check(rc == 0 and cli["staticApk"] == {"entries": [{"name": "classes.dex", "size": 108, "isDex": True},
+                                                           {"name": "assets/blob.bin", "size": 777, "isDex": False}]},
+              f"--apk lists entries in memory (got {cli and cli['staticApk']})")
+        check(cli["marksText"] == marks and cli["meta"] is None and cli["badging"] is None,
+              "CLI passes the optional inputs it was given, nothing else")
+        check(os.listdir(d) and not any(n.endswith(".dex") or n == "assets" for n in os.listdir(d)),
+              "the APK is never extracted")
 
 
 def main():
@@ -139,7 +291,7 @@ def main():
         check("binder" in f0["sections"], "no profile -> every behaviour shown")
 
     # parity: the browser view's golden file is generated from this module
-    td = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mod-view", "testdata")
+    td = TD
     gf = mf.findings(os.path.join(td, "sample-run.jsonl"), mf.load_profile(os.path.join(td, "profile.json")),
                      "com.example.sample")
     stripped = {"sections": {sec: [{"key": x["key"], "count": x["count"], "errors": x["errors"]} for x in lst]
@@ -147,6 +299,8 @@ def main():
                 "hidden": gf["hidden"], "coverage": gf["coverage"]}
     with open(os.path.join(td, "expected-findings.json")) as fh:
         check(stripped == json.load(fh), "findings on the shared fixture equal the JS golden file")
+
+    html_tests()
 
     print(f"test_mod_findings: {checks} checks, {failures} failures")
     return 1 if failures else 0

@@ -881,3 +881,20 @@ test('trace length and step times use the same launch mark', () => {
   assert.equal(W.kicker, 'traced for 4 min 25 s');
   assert.equal(W.timeline.find((i) => i.kind === 'step' && i.card.title === 'Second-stage payload unpacked and loaded').time, '2.5 s');
 });
+
+test('hidden counts given with a trimmed run replace the ones counted from its records', () => {
+  const trimmed = records.filter((r) => r.method !== 'attachApplication');
+  assert.ok(!/Hidden because/.test(M.buildView({ ...input, records: trimmed }).footer));
+  const W = M.buildView({ ...input, records: trimmed, hidden: { binder: { records: 4000, keys: 1 }, file: { records: 2, keys: 2 } } });
+  assert.match(W.footer, /noise profile version 1, from 1 app\): 4002 records\./);
+});
+
+test('process exits hidden as noise still back the respawn wording', () => {
+  const prof = { ...profile, keys: { ...profile.keys, 'proc\texit signal 9': 1 } };
+  const W = M.buildView({ ...input, profile: prof });
+  const p = W.timeline.find((i) => i.kind === 'step' && i.card.title.startsWith('Scheduled alarms')).card;
+  assert.equal(p.facts, '28 alarms · foreground service · 12 respawns from 48 s');
+  assert.ok(p.evidence.some((e) => e[1] === '12 respawns, process exits: 12 (SIGKILL)'));
+  assert.ok(W.limits.includes('Who sent the 12 SIGKILLs is not recorded.'));
+  assert.ok(!W.timeline.some((i) => i.kind === 'step' && /exit signal/.test(i.card.title + i.card.facts)));
+});

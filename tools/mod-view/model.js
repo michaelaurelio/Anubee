@@ -257,19 +257,33 @@ var AnubeeModView = (function () {
     return found;
   }
 
-  function payloadStep(recs, opens) {
+  // A DNS question, or a flow to the resolver: a lookup, not a connection to the named host.
+  function isLookup(r) {
+    return r.type === 'net' && (r.event === 'dns' || r.host_source === 'dns' || /:53$/.test(str(r.dest)));
+  }
+
+  function payloadStep(recs, opens, hidden) {
     var drop = recs.filter(function (r) { return r.stage === 'drop'; })[0];
     var first = recs[0];
     var saved = null;
     recs.forEach(function (r) { if (r.saved) saved = r.saved; });
-    var netTs = drop && typeof drop.ts_ns === 'number' ? netOpensBefore(opens, drop.ts_ns) : null;
+    var dts = drop && typeof drop.ts_ns === 'number' ? drop.ts_ns : null;
+    var netTs = dts !== null ? netOpensBefore(opens, dts) : null;
+    var anyOpen = function (list, test) {
+      return dts !== null && list.some(function (r) { return typeof r.ts_ns === 'number' && test(r.ts_ns); });
+    };
     var stages = recs.map(function (r) { return r.stage; });
     return mkStep(netTs !== null ? 'payload_downloaded' : 'payload_packed', 'sample', recs, {
       path: first.path === undefined ? null : first.path, kind: first.kind, ino: first.ino,
       stages: stages, dropped: !!drop, loaded: stages.indexOf('load') >= 0,
       deleted: stages.indexOf('delete') >= 0,
       sha256: saved ? saved.sha256 : null, size: saved ? saved.size : null,
-      netBeforeTs: netTs
+      netBeforeTs: netTs,
+      // from the same noise-filtered open set that classifies the step
+      netBeforeAny: anyOpen(opens, function (t) { return t < dts; }),
+      netAfter: anyOpen(opens, function (t) { return t > dts; }),
+      hiddenNetBefore: anyOpen(hidden, function (t) { return t < dts && dts - t <= DROP_NET_WINDOW_NS; }),
+      hiddenNetEver: anyOpen(hidden, function (t) { return t < dts; })
     });
   }
 
@@ -280,12 +294,28 @@ var AnubeeModView = (function () {
     var steps = [];
     var groups = new Map();           // (section, key) -> records, in first-seen order
     var payloads = new Map();         // ino -> dexload records
-    var memloads = [], persist = [], a11y = [], opens = [], labPerm = [], otherPerm = [];
+    var memloads = [], persist = [], a11y = [], opens = [], hidden = [], labPerm = [], otherPerm = [];
+    var lookups = new Map();          // looked-up name -> {name, count, firstTs}
 
     records.forEach(function (r) {
       var k = recordKey(r, pkg);
-      if (k === null || isNoise(profile, k[0], k[1])) return;
+      if (k === null) return;
+      if (isNoise(profile, k[0], k[1])) {
+        if (k[0] === 'net' && r.event === 'open' && !isLookup(r)) hidden.push(r);
+        return;
+      }
       var sec = k[0], key = k[1];
+      if (isLookup(r)) {
+        // never a connection: only the looked-up names are kept
+        var nm = str(r.host).trim();
+        if (present(r.host) && nm) {
+          var lk = lookups.get(nm) || { name: nm, count: 0, firstTs: null };
+          lk.count++;
+          if (typeof r.ts_ns === 'number' && (lk.firstTs === null || r.ts_ns < lk.firstTs)) lk.firstTs = r.ts_ns;
+          lookups.set(nm, lk);
+        }
+        return;
+      }
       if (sec === 'net' && r.event === 'open') opens.push(r);
       if (sec === 'dexload') {
         if (r.stage === 'memload') memloads.push(r);
@@ -315,7 +345,7 @@ var AnubeeModView = (function () {
       if (m.label === 'launch') steps.push({ template: 'detonation', actor: 'lab', firstTs: m.ts, recs: [], data: { label: m.label } });
     });
 
-    payloads.forEach(function (recs) { steps.push(payloadStep(recs, opens)); });
+    payloads.forEach(function (recs) { steps.push(payloadStep(recs, opens, hidden)); });
     memloads.forEach(function (r) {
       steps.push(mkStep('payload_memload', 'sample', [r], { kind: r.kind, path: r.path === undefined ? null : r.path, start: r.start, regionSize: r.region_size }));
     });
@@ -384,7 +414,10 @@ var AnubeeModView = (function () {
       if (x !== y) return x < y ? -1 : 1;
       return TEMPLATE_ORDER.indexOf(a[0].template) - TEMPLATE_ORDER.indexOf(b[0].template) || a[1] - b[1];
     });
-    return order.map(function (e) { return e[0]; });
+    var out = order.map(function (e) { return e[0]; });
+    // Names looked up in DNS, by first lookup: [{name, count, firstTs}]. Read as steps.lookups.
+    out.lookups = Array.from(lookups.values()).sort(function (a, b) { return (a.firstTs || 0) - (b.firstTs || 0); });
+    return out;
   }
 
   // ---- step wording and ATT&CK tags ----
@@ -437,6 +470,12 @@ var AnubeeModView = (function () {
     if (s < (precise ? 100 : 10)) return (Math.round(s * 10) / 10) + ' s';
     s = Math.round(s);
     return s < 120 ? s + ' s' : Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  // Seconds as "20 s", "1.5 s" or "300 ms"; never "0 s".
+  function fmtDur(s) {
+    if (s >= 10) return Math.round(s) + ' s';
+    if (s >= 1) return (Math.round(s * 10) / 10) + ' s';
+    return Math.max(1, Math.round(s * 1000)) + ' ms';
   }
   function plural(n, w, pl) { return n + ' ' + (n === 1 ? w : (pl || w + 's')); }
 
@@ -532,9 +571,7 @@ var AnubeeModView = (function () {
     v.noDomain = fixed ? W.noDomain : null;
     if (d.beacon && b.end !== null) {
       var bw = d.beacon;
-      v.every = bw.intervalS >= 10 ? Math.round(bw.intervalS) + ' s'
-        : bw.intervalS >= 1 ? (Math.round(bw.intervalS * 10) / 10) + ' s'
-        : Math.max(1, Math.round(bw.intervalS * 1000)) + ' ms';
+      v.every = fmtDur(bw.intervalS);
       v.minutes = plural(Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS))), W.minute);
       v.from = fmtAt(bw.fromTs, b.start);
       v.to = fmtAt(bw.toTs, b.start);
@@ -592,31 +629,33 @@ var AnubeeModView = (function () {
       vars.deleted = d.deleted ? W.deleted : null;
       var dropTs = firstTsWhere(step.recs, function (r) { return r.stage === 'drop'; });
       var apk = (ctx.staticApk || []).filter(function (a) { return typeof d.size === 'number' && a.size === d.size; })[0];
-      var netOpen = function (before) {
-        return dropTs !== null && (ctx.records || []).some(function (r) {
-          return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && (before ? r.ts_ns < dropTs : r.ts_ns > dropTs);
-        });
-      };
-      var netBefore = netOpen(true), netAfter = netOpen(false);
+      var netAfter = !!d.netAfter;
+      var delTs = firstTsWhere(step.recs, function (r) { return r.stage === 'delete'; });
+      var lastUse = null;
+      step.recs.forEach(function (r) {
+        if ((r.stage === 'drop' || r.stage === 'load') && typeof r.ts_ns === 'number' && (lastUse === null || r.ts_ns > lastUse)) lastUse = r.ts_ns;
+      });
+      if (d.deleted) vars.deleted = lastUse !== null && delTs !== null && delTs < lastUse ? (fill(W.deletedAt, { at: atp(delTs) }) || W.deletedIt) : W.deleted;
       var deleteOnly = !d.dropped && !d.loaded;
       if (deleteOnly) vars.deleted = W.deletedOnly;
       ev1(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
       ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
         vars.decodedClause = apk && d.dropped ? W.decoded : null;
-        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !netBefore ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode) : null;
+        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !d.netBeforeAny && !d.hiddenNetEver ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode) : null;
         vars.ranClause = d.loaded ? (d.dropped || apk ? W.ranIt : W.ranCode) : null;
         if (d.dropped) ids.push('T1406.002');
         if (dropTs !== null) {
-          ev1(E.why, netBefore ? E.whyNoNet : E.whyNoNetAtAll);
-          ev1(E.notMapped, E.notMappedText);
+          var bg = d.hiddenNetBefore;
+          ev1(E.why, d.netBeforeAny || bg ? (bg ? E.whyNoNetBg : E.whyNoNet) : E.whyNoNetAtAll);
+          ev1(E.notMapped, bg ? E.notMappedTextBg : E.notMappedText);
         }
         if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
       } else {
         vars.wroteClause = d.dropped ? W.wroteCode : null;
         vars.ranClause = d.loaded ? (d.dropped ? W.ranIt : W.ranCode) : null;
         if (d.dropped) ids.push('T1407');
-        vars.gap = d.netBeforeTs !== null && dropTs !== null ? Math.round((dropTs - d.netBeforeTs) / NS) : null;
+        vars.gap = d.netBeforeTs !== null && dropTs !== null ? fmtDur((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));
       }
     } else if (step.template === 'payload_memload') {

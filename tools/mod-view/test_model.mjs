@@ -516,7 +516,69 @@ test('a DNS lookup alone does not make a payload "downloaded"', () => {
   const recs = [dns, dex('drop', 5)];
   assert.equal(one(recs).st.some((x) => x.template === 'payload_downloaded'), false);
   assert.deepEqual(desc(recs, 'payload_packed').techniques.map((t) => t.id), ['T1406.002']);
-  assert.ok(desc(recs, 'payload_packed').evidence.some((e) => /no network (traffic|connection)/.test(e[1])));
+  assert.ok(desc(recs, 'payload_packed').evidence.some((e) => /no network connection/.test(e[1])));
+  assert.ok(!desc(recs, 'payload_packed').evidence.some((e) => /traffic/.test(e[1])));
   const withOpen = [netOpenAt(1), dex('drop', 5)];
   assert.equal(one(withOpen).st.some((x) => x.template === 'payload_downloaded'), true);
+});
+
+// ---- round 3: lookups are not connections; one net set; durations; delete order ----
+const dnsAt = (sec, host = 'example.test') => ({ type: 'net', pid: 1, ts_ns: T0 + sec * 1e9, event: 'dns', proto: null, dest: null, host, host_source: 'netd' });
+const sniAt = (sec) => ({ type: 'net', pid: 1, ts_ns: T0 + sec * 1e9, event: 'open', proto: 'tcp', dest: '203.0.113.9:443', host: '203.0.113.9:443', host_source: 'sni' });
+const tmpl = (recs) => M.buildSteps(recs, [], { keys: {} }, PKG).map((x) => x.template);
+
+test('one DNS lookup makes no contact step; six lookups 20 s apart make no C2 step', () => {
+  assert.ok(!tmpl([dnsAt(1)]).some((t) => t === 'net_contact' || t === 'c2_beacon'));
+  const six = [0, 20, 40, 60, 80, 100].map((s) => dnsAt(s));
+  assert.ok(!tmpl(six).some((t) => t === 'net_contact' || t === 'c2_beacon'));
+  const resolver = [0, 1, 2].map((s) => ({ type: 'net', pid: 1, ts_ns: T0 + s * 1e9, event: 'open', proto: 'udp', dest: '10.0.0.1:53', host: 'a.test', host_source: 'dns' }));
+  assert.ok(!tmpl(resolver).some((t) => t === 'net_contact' || t === 'c2_beacon'));
+});
+
+test('DNS plus three SNI opens is one C2 step with 3 connections and a clean dest', () => {
+  const st = M.buildSteps([dnsAt(0), sniAt(1), sniAt(2), sniAt(3), dnsAt(4)], [], { keys: {} }, PKG);
+  const c2 = st.filter((x) => x.template === 'c2_beacon' || x.template === 'net_contact');
+  assert.equal(c2.length, 1);
+  assert.equal(c2[0].data.count, 3);
+  assert.equal(c2[0].data.dest, '203.0.113.9:443');
+});
+
+test('looked-up names are kept on steps.lookups, by first lookup', () => {
+  const st = M.buildSteps([dnsAt(5, 'b.test'), dnsAt(1, 'a.test'), dnsAt(9, 'b.test'), sniAt(2)], [], { keys: {} }, PKG);
+  assert.deepEqual(st.lookups.map((l) => [l.name, l.count, l.firstTs]), [['a.test', 1, T0 + 1e9], ['b.test', 2, T0 + 5e9]]);
+  assert.deepEqual(M.buildSteps([], [], { keys: {} }, PKG).lookups, []);
+});
+
+test('a noise-hidden connection before the drop is never denied', () => {
+  const noisy = { keys: { 'net\ttcp 203.0.113.77:80': 1 }, min_apps: 1 };
+  const bg = { ...netOpenAt(1), dest: '203.0.113.77:80', host: '203.0.113.77:80' };
+  const recs = [bg, dex('drop', 5), dex('load', 6)];
+  const st = M.buildSteps(recs, [], noisy, PKG);
+  const o = M.describe(st.find((x) => x.template === 'payload_packed'), { records: recs, marks: [] }, T);
+  assert.ok(o.evidence.some((e) => /other than ordinary background traffic/.test(e[1])), evText(o));
+  assert.ok(!/with no network connection before it|going online/.test(o.plain), o.plain);
+  assert.ok(!o.evidence.some((e) => /no network connection in the 120 s/.test(e[1])));
+});
+
+test('describe reads the step data, not a raw rescan of the records', () => {
+  const recs = [netOpenAt(1), dex('drop', 300)];
+  const st = M.buildSteps(recs, [], { keys: {} }, PKG).find((x) => x.template === 'payload_packed');
+  assert.equal(st.data.netBeforeAny, true);
+  const o = M.describe(st, { records: [], marks: [] }, T);
+  assert.ok(o.evidence.some((e) => /no network connection in the 120 s before the drop/.test(e[1])));
+});
+
+test('sub-second download gaps read in milliseconds', () => {
+  const recs = [{ ...netOpenAt(1), ts_ns: T0 + 1e9 }, dex('drop', 1.3)];
+  const o = desc(recs, 'payload_downloaded');
+  assert.match(o.facts, /network 300 ms before the write/);
+  assert.ok(o.evidence.some((e) => /opened 300 ms before/.test(e[1])), evText(o));
+});
+
+test('"afterwards" only when the delete follows the last drop or load', () => {
+  const after = desc([dex('drop', 1), dex('load', 2), dex('delete', 3)], 'payload_packed');
+  assert.match(after.plain, /deleted the file afterwards/);
+  const before = desc([dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_packed');
+  assert.ok(!/afterwards/.test(before.plain), before.plain);
+  assert.match(before.plain, /deleted it at 1 s/);
 });

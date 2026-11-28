@@ -147,7 +147,9 @@
         "ranIt": "ran it",
         "ranCode": "ran code from a file",
         "wroteNoNet": "wrote code to a file with no network connection before it",
-        "deletedOnly": "deleted a code file"
+        "deletedOnly": "deleted a code file",
+        "deletedIt": "deleted it",
+        "deletedAt": "deleted it at {at}"
       },
       "evidence": {
         "path": "Dropped file",
@@ -159,8 +161,10 @@
         "notMapped": "Not mapped",
         "notMappedText": "T1407 Download New Code at Runtime, because no network connection opened in the 120 s before the drop",
         "pathLoaded": "Loaded file",
-        "whyNoNetAtAll": "no network traffic before the drop in this trace",
-        "pathDeleted": "Deleted file"
+        "whyNoNetAtAll": "no network connection before the drop in this trace",
+        "pathDeleted": "Deleted file",
+        "whyNoNetBg": "no network connection (other than ordinary background traffic) in the 120 s before the drop",
+        "notMappedTextBg": "T1407 Download New Code at Runtime, because no network connection (other than ordinary background traffic) opened in the 120 s before the drop"
       }
     },
     "payload_downloaded": {
@@ -211,7 +215,7 @@
         "{kind}",
         "{size}",
         "{saved}",
-        "network {gap} s before the write"
+        "network {gap} before the write"
       ],
       "words": {
         "deleted": "deleted the file afterwards",
@@ -219,12 +223,14 @@
         "wroteCode": "wrote code to a file soon after a network connection opened",
         "ranIt": "ran it",
         "ranCode": "ran code from a file",
-        "deletedOnly": "deleted a code file"
+        "deletedOnly": "deleted a code file",
+        "deletedIt": "deleted it",
+        "deletedAt": "deleted it at {at}"
       },
       "evidence": {
         "path": "Dropped file",
         "why": "Why \"downloaded\"",
-        "whyText": "a network connection opened {gap} s before the file was written",
+        "whyText": "a network connection opened {gap} before the file was written",
         "sha": "SHA-256",
         "pathLoaded": "Loaded file",
         "pathDeleted": "Deleted file"

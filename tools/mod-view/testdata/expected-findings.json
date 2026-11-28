@@ -1,0 +1,121 @@
+{
+ "sections": {
+  "dexload": [
+   {
+    "key": "drop dex /data/data/<pkg>/app_x7k2/payload/0.bin",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "load dex /data/data/<pkg>/app_x7k2/payload/0.bin",
+    "count": 1,
+    "errors": {}
+   }
+  ],
+  "binder": [
+   {
+    "key": "android.app.IAlarmManager.set",
+    "count": 13,
+    "errors": {}
+   },
+   {
+    "key": "android.app.IActivityManager.setServiceForeground",
+    "count": 1,
+    "errors": {}
+   }
+  ],
+  "net": [
+   {
+    "key": "tcp 203.0.113.5:3434",
+    "count": 16,
+    "errors": {}
+   }
+  ],
+  "perm": [
+   {
+    "key": "appop SYSTEM_ALERT_WINDOW -> allow",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.READ_SMS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.POST_NOTIFICATIONS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.READ_PHONE_NUMBERS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.RECEIVE_SMS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.READ_PHONE_STATE -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.SEND_SMS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.CALL_PHONE -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.GET_ACCOUNTS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "permission android.permission.READ_CONTACTS -> granted",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "accessibility accessibility -> com.example.sample/com.example.sample.svc.HelperService",
+    "count": 1,
+    "errors": {}
+   }
+  ],
+  "proc": [
+   {
+    "key": "exit signal 9",
+    "count": 12,
+    "errors": {}
+   }
+  ],
+  "a11y": [
+   {
+    "key": "global_action performGlobalAction",
+    "count": 1,
+    "errors": {}
+   },
+   {
+    "key": "screen_read findAccessibilityNodeInfoByAccessibilityId",
+    "count": 1,
+    "errors": {}
+   }
+  ]
+ },
+ "hidden": {
+  "binder": {
+   "records": 1,
+   "keys": 1
+  }
+ },
+ "coverage": {
+  "records": 12,
+  "degraded": []
+ }
+}

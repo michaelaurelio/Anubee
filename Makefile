@@ -630,6 +630,8 @@ test:
 	sh tests/check_driver_symbols.sh
 	@if command -v python3 >/dev/null 2>&1; then python3 tools/anubee-mcp/test_mod_findings.py; \
 	 else echo "skip: python3 not available for the mod findings test"; fi
+	@if command -v node >/dev/null 2>&1; then node --test 'tools/mod-view/test_*.mjs'; \
+	 else echo "skip: node not available for the mod-view tests"; fi
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/anubee-mcp/test_unified_ingest.py; \
 	  python3 tools/anubee-mcp/test_mcp_structured_tools.py; \

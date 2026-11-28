@@ -138,6 +138,16 @@ def main():
         f0 = mf.findings(s, mf.empty_profile())
         check("binder" in f0["sections"], "no profile -> every behaviour shown")
 
+    # parity: the browser view's golden file is generated from this module
+    td = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mod-view", "testdata")
+    gf = mf.findings(os.path.join(td, "sample-run.jsonl"), mf.load_profile(os.path.join(td, "profile.json")),
+                     "com.example.sample")
+    stripped = {"sections": {sec: [{"key": x["key"], "count": x["count"], "errors": x["errors"]} for x in lst]
+                             for sec, lst in gf["sections"].items()},
+                "hidden": gf["hidden"], "coverage": gf["coverage"]}
+    with open(os.path.join(td, "expected-findings.json")) as fh:
+        check(stripped == json.load(fh), "findings on the shared fixture equal the JS golden file")
+
     print(f"test_mod_findings: {checks} checks, {failures} failures")
     return 1 if failures else 0
 

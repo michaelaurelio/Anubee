@@ -1,0 +1,10 @@
+{
+ "apps": [
+  "com.example.benign"
+ ],
+ "keys": {
+  "binder\tandroid.app.IActivityManager.attachApplication": 1
+ },
+ "min_apps": 1,
+ "version": 1
+}

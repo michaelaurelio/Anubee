@@ -431,14 +431,14 @@ var AnubeeModView = (function () {
     var v = n < 1e6 ? n / 1e3 : n / 1e6, u = n < 1e6 ? ' KB' : ' MB';
     return (v < 10 ? v.toFixed(1) : String(Math.round(v))) + u;
   }
-  function fmtAt(ts, start) {
+  function fmtAt(ts, start, precise) {
     if (typeof ts !== 'number' || typeof start !== 'number') return null;
     var s = (ts - start) / NS;
-    if (s < 10) return (Math.round(s * 10) / 10) + ' s';
+    if (s < (precise ? 100 : 10)) return (Math.round(s * 10) / 10) + ' s';
     s = Math.round(s);
     return s < 120 ? s + ' s' : Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
   }
-  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  function plural(n, w, pl) { return n + ' ' + (n === 1 ? w : (pl || w + 's')); }
 
   function firstTsWhere(recs, pred) {
     var best = null;
@@ -457,23 +457,32 @@ var AnubeeModView = (function () {
   function binderTotal(ctx, iface, method) {
     var s = summaryOf(ctx, 'binder_api_summary');
     if (!s) return null;
-    var n = 0;
+    var n = 0, procs = 0;
     (s.processes || []).forEach(function (p) {
+      var c = 0;
       (p.calls || []).forEach(function (k) {
-        if (k.method === method && str(k.interface).slice(-iface.length) === iface) n += k.count || 0;
+        if (k.method === method && str(k.interface).slice(-iface.length) === iface) c += k.count || 0;
       });
+      if (c) procs++;
+      n += c;
     });
-    return n || null;
+    return n ? { count: n, procs: procs } : null;
+  }
+  function pidsOf(recs, method) {
+    var seen = new Set();
+    recs.forEach(function (r) { if (r.type === 'binder_api' && r.method === method && r.pid !== undefined) seen.add(r.pid); });
+    return seen.size;
   }
   function a11yCounts(ctx, recs) {
     var out = { global_action: 0, action: 0, gesture: 0, screen_read: 0, screenshot: 0 };
     var s = summaryOf(ctx, 'accessibility_detect_summary');
+    out.total = !!s;
     if (s) {
       (s.processes || []).forEach(function (p) {
-        Object.keys(out).forEach(function (k) { out[k] += (p.calls || {})[k] || 0; });
+        Object.keys(out).forEach(function (k) { if (k !== 'total') out[k] += (p.calls || {})[k] || 0; });
       });
     } else {
-      recs.forEach(function (r) { if (has(out, r.category)) out[r.category]++; });
+      recs.forEach(function (r) { if (r.category !== 'total' && has(out, r.category)) out[r.category]++; });
     }
     return out;
   }
@@ -490,24 +499,40 @@ var AnubeeModView = (function () {
     return { start: launch !== null ? launch : first, end: stop !== null ? stop : last };
   }
 
-  var HTTP_SOURCES = { http: 'HTTP', https: 'HTTPS' };
+  var HTTP_SOURCES = { http: 'HTTP', https: 'HTTPS', sni: 'HTTPS' };
   var IPV4 = /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/;
 
-  function netVars(step, T, b) {
+  // Whether the destination was reached with no DNS lookup before the first
+  // connection: true/false, or null when the records cannot say.
+  function noLookupBefore(ctx, firstTs) {
+    var recs = ctx.records || [];
+    var dns = recs.filter(function (r) { return r.type === 'net' && r.event === 'dns'; });
+    if (dns.some(function (r) { return typeof r.ts_ns === 'number' && typeof firstTs === 'number' && r.ts_ns < firstTs; })) return false;
+    var s = summaryOf(ctx, 'net_summary');
+    if (!s && !dns.length) return null;
+    if (s && (s.lookups || []).length && !dns.length) return null;   // lookups listed without times
+    return true;
+  }
+
+  function netVars(step, T, b, ctx) {
     var d = step.data, W = T.steps.c2_beacon.words;
-    var src = str(d.hostSource).toLowerCase();
+    var src = present(d.hostSource) ? String(d.hostSource).toLowerCase() : '';
     var web = has(HTTP_SOURCES, src);
+    var host = present(d.host) ? d.host : d.dest;
     var v = {
-      proto: web ? HTTP_SOURCES[src] : str(d.proto).toUpperCase(), host: d.host, count: d.count, web: web,
-      first: fmtAt(minTs(step.recs), b.start), last: fmtAt(d.lastTs, b.start),
+      proto: web ? HTTP_SOURCES[src] : (present(d.proto) ? String(d.proto).toUpperCase() : null),
+      host: host, count: d.count, web: web,
+      first: fmtAt(minTs(step.recs), b.start, true), last: fmtAt(d.lastTs, b.start, true),
       connections: plural(d.count, 'connection'), beat: null
     };
-    var ip = IPV4.test(str(d.host));
-    v.variant = ip ? 'ip' : 'host';
-    v.noDomain = ip ? W.noDomain : null;
+    var ip = IPV4.test(str(host)), fixed = ip ? noLookupBefore(ctx, minTs(step.recs)) : false;
+    v.variant = fixed ? 'ip' : ip ? 'ipOnly' : 'host';
+    v.target = fixed ? W.hardcoded : ip ? W.ipAddress : host;
+    v.serverAt = ip ? fill(W.serverAtIp, v) : host;
+    v.noDomain = fixed ? W.noDomain : null;
     if (d.beacon && b.end !== null) {
       var bw = d.beacon;
-      v.interval = Math.round(bw.intervalS);
+      v.interval = bw.intervalS < 10 ? Math.round(bw.intervalS * 10) / 10 : Math.round(bw.intervalS);
       v.minutes = plural(Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS))), W.minute);
       v.from = fmtAt(bw.fromTs, b.start);
       v.to = fmtAt(bw.toTs, b.start);
@@ -551,31 +576,38 @@ var AnubeeModView = (function () {
     var b = runBounds(ctx);
     var vars = {}, ids = [], ev = [], net = null, approx = false, titleField = tpl.title;
     function at(ts) { return fmtAt(ts, b.start); }
+    function atp(ts) { return fmtAt(ts, b.start, true); }
     function ev1(label, value) { if (present(label) && present(value)) ev.push([label, value]); }
 
     if (step.template === 'detonation') {
       vars.pkg = ctx.pkg || inferPackage(ctx.records || []);
     } else if (step.template === 'payload_packed' || step.template === 'payload_downloaded') {
-      vars.variant = d.loaded ? 'loaded' : 'dropOnly';
+      vars.variant = d.dropped ? (d.loaded ? 'both' : 'dropOnly') : (d.loaded ? 'loadOnly' : 'neither');
       vars.file = d.path ? basename(d.path) : null;
       vars.kind = d.kind ? str(d.kind).toUpperCase() : null;
       vars.size = fmtSize(d.size);
       vars.saved = d.sha256 ? W.saved : null;
       vars.deleted = d.deleted ? W.deleted : null;
-      vars.ranClause = d.loaded ? W.ranClause : null;
-      ev1(E.path, d.path);
-      ev1(E.sha, d.sha256);
       var dropTs = firstTsWhere(step.recs, function (r) { return r.stage === 'drop'; });
+      var apk = (ctx.staticApk || []).filter(function (a) { return typeof d.size === 'number' && a.size === d.size; })[0];
+      var netBefore = dropTs !== null && (ctx.records || []).some(function (r) {
+        return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && r.ts_ns < dropTs;
+      });
+      ev1(d.dropped ? E.path : E.pathLoaded, d.path);
+      ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
+        vars.decodedClause = apk ? W.decoded : null;
+        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !netBefore ? W.wroteEarly : W.wroteCode) : null;
+        vars.ranClause = d.loaded ? (d.dropped || apk ? W.ranIt : W.ranCode) : null;
         ids.push('T1406.002');
-        var anyNet = dropTs !== null && (ctx.records || []).some(function (r) {
-          return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && r.ts_ns < dropTs;
-        });
-        ev1(E.why, anyNet ? E.whyNoNet : E.whyEarly);
-        var apk = (ctx.staticApk || []).filter(function (a) { return a.size === d.size; })[0];
+        if (dropTs !== null) {
+          ev1(E.why, netBefore ? E.whyNoNet : E.whyNoNetAtAll);
+          ev1(E.notMapped, E.notMappedText);
+        }
         if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
-        ev1(E.notMapped, E.notMappedText);
       } else {
+        vars.wroteClause = d.dropped ? W.wroteCode : null;
+        vars.ranClause = d.loaded ? (d.dropped ? W.ranIt : W.ranCode) : null;
         ids.push('T1407');
         vars.gap = d.netBeforeTs !== null && dropTs !== null ? Math.round((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));
@@ -586,36 +618,44 @@ var AnubeeModView = (function () {
       ev1(E.path, d.path);
       ev1(E.region, vars.region);
     } else if (step.template === 'persistence') {
-      var alarms = binderTotal(ctx, 'IAlarmManager', 'set') || d.alarmSets;
-      var fgCalls = binderTotal(ctx, 'IActivityManager', 'setServiceForeground') || d.foregroundCalls;
+      // Totals only from a summary row; first-seen records give "seen in N processes".
+      var alarmSum = binderTotal(ctx, 'IAlarmManager', 'set'), fgSum = binderTotal(ctx, 'IActivityManager', 'setServiceForeground');
+      var alarmSeen = d.alarmSets > 0, fgSeen = d.foregroundCalls > 0;
+      var alarmProcs = plural(pidsOf(step.recs, 'set'), 'process', 'processes');
+      var fgProcs = plural(pidsOf(step.recs, 'setServiceForeground'), 'process', 'processes');
+      var anyAlarm = !!alarmSum || alarmSeen, anyFg = !!fgSum || fgSeen;
       var firstCall = function (m) { return firstTsWhere(step.recs, function (r) { return r.type === 'binder_api' && r.method === m; }); };
-      vars.alarms = alarms || null;
-      vars.alarmT = alarms ? W.alarmT : null;
-      vars.alarmClause = alarms ? W.alarmClause : null;
-      vars.fgT = fgCalls ? W.fgT : null;
-      vars.fgClause = fgCalls ? W.fgClause : null;
-      vars.fgFact = fgCalls ? W.fgFact : null;
+      vars.alarms = alarmSum ? plural(alarmSum.count, 'alarm') : alarmSeen ? fill(W.alarmsSeen, { p: alarmProcs }) : null;
+      vars.alarmT = anyAlarm ? W.alarmT : null;
+      vars.alarmClause = anyAlarm ? W.alarmClause : null;
+      vars.fgT = anyFg ? W.fgT : null;
+      vars.fgClause = anyFg ? W.fgClause : null;
+      vars.fgFact = anyFg ? W.fgFact : null;
+      var sigs = new Map();
+      step.recs.forEach(function (r) { if (r.type === 'proc_exit') sigs.set(present(r.signal) ? String(r.signal) : '', 1); });
+      var sk = Array.from(sigs.keys());
+      var killed = sk.length > 0 && sk.every(function (x) { return x === '9' || x === '15'; });
       vars.respT = d.respawns ? W.respT : null;
-      vars.respawnClause = d.respawns ? (d.respawns >= d.exits ? W.respawnAll : W.respawnSome) : null;
-      vars.respawns = d.respawns || null;
+      var all = d.respawns >= d.exits;
+      vars.respawnClause = d.respawns ? (killed ? (all ? W.respawnKilledAll : W.respawnKilledSome) : (all ? W.respawnExitAll : W.respawnExitSome)) : null;
+      vars.respawnsN = d.respawns ? plural(d.respawns, 'respawn') : null;
       vars.from = d.respawns ? at(firstTsWhere(step.recs, function (r) { return r.type === 'proc_exit'; })) : null;
-      if (alarms) {
+      if (anyAlarm) {
         ids.push('T1603');
-        ev1(E.alarms, fill(E.alarmsText, { n: alarms, at: at(firstCall('set')) }));
+        ev1(E.alarms, alarmSum ? fill(E.alarmsText, { n: alarmSum.count, at: atp(firstCall('set')) })
+          : fill(E.alarmsSeenText, { p: alarmProcs, at: atp(firstCall('set')) }));
       }
-      if (fgCalls) {
+      if (anyFg) {
         ids.push('T1541');
-        ev1(E.foreground, fill(E.foregroundText, { times: plural(fgCalls, 'time'), at: at(firstCall('setServiceForeground')) }));
+        ev1(E.foreground, fgSum ? fill(E.foregroundText, { n: fgSum.count, p: plural(fgSum.procs, 'process', 'processes'), at: atp(firstCall('setServiceForeground')) })
+          : fill(E.foregroundSeenText, { p: fgProcs, at: atp(firstCall('setServiceForeground')) }));
       }
       if (d.respawns) {
-        var sigs = {};
-        step.recs.forEach(function (r) { if (r.type === 'proc_exit') sigs[str(r.signal)] = 1; });
-        var sk = Object.keys(sigs);
-        var sig = sk.length !== 1 ? 'several signals' : (has(T.signalNames, sk[0]) ? T.signalNames[sk[0]] : 'signal ' + sk[0]);
-        ev1(E.respawns, fill(E.respawnsText, { n: d.respawns, exits: d.exits, sig: sig }));
+        var sig = sk.length !== 1 ? (sk.length ? 'several signals' : null) : sk[0] === '' ? null : (has(T.signalNames, sk[0]) ? T.signalNames[sk[0]] : 'signal ' + sk[0]);
+        ev1(E.respawns, fill(E.respawnsText, { n: plural(d.respawns, 'respawn'), exits: d.exits, sigPart: sig ? ' (' + sig + ')' : '' }));
       }
     } else if (step.template === 'c2_beacon' || step.template === 'net_contact') {
-      vars = netVars(step, T, b);
+      vars = netVars(step, T, b, ctx);
       if (vars.web) ids.push('T1437.001');
       if (step.template === 'c2_beacon') {
         if (!d.beacon) titleField = tpl.titleNoBeat;
@@ -639,16 +679,18 @@ var AnubeeModView = (function () {
       vars.perms = andList(granted);
       vars.others = andList(others);
       vars.a11yClause = a11y ? W.a11yClause : null;
-      vars.count = d.perms.length;
+      vars.changes = plural(d.perms.length, 'permission change');
       vars.variant = granted.length && a11y ? 'both' : granted.length ? 'perms' : a11y ? 'a11y' : 'other';
     } else if (step.template === 'a11y_abuse') {
       var c = a11yCounts(ctx, step.recs);
       var input = c.global_action + c.action + c.gesture;
-      vars.presses = c.global_action || null;
-      vars.actions = c.action || null;
-      vars.gestures = c.gesture || null;
-      vars.reads = c.screen_read || null;
-      vars.shots = c.screenshot || null;
+      // Counts are totals only from the summary; first-seen records say "seen".
+      var cnt = function (n, one, many) { return !n ? null : c.total ? plural(n, one, many) : (many || one + 's') + ' ' + W.seen; };
+      vars.presses = cnt(c.global_action, 'button press', 'button presses');
+      vars.actions = cnt(c.action, 'node action');
+      vars.gestures = cnt(c.gesture, 'gesture');
+      vars.reads = cnt(c.screen_read, 'screen read');
+      vars.shots = cnt(c.screenshot, 'screenshot');
       if (c.screen_read) ids.push('T1453');
       if (input) ids.push('T1516');
       vars.abuse = [input ? W.injection : null, c.screen_read ? W.reading : null].filter(present).join(' and ') || null;
@@ -658,16 +700,19 @@ var AnubeeModView = (function () {
       if (c.gesture) cl.push(W.gestureClause);
       if (c.screen_read) { cl.push(W.readClause); gl.push(W.glanceRead); }
       if (c.screenshot) cl.push(W.shotClause);
+      // Only a lab grant that came before the first accessibility call can be its cause.
+      var firstA11y = minTs(step.recs);
       var labA11y = (ctx.records || []).filter(function (r) {
         return r.type === 'perm_change' && r.category === 'accessibility' && present(r.new) &&
-          r.change !== 'baseline' && labCaused(r, ctx.marks);
+          r.change !== 'baseline' && labCaused(r, ctx.marks) && typeof r.ts_ns === 'number' &&
+          firstA11y !== null && r.ts_ns <= firstA11y;
       });
       vars.lead = labA11y.length ? W.leadLab : W.leadPlain;
       vars.clauses = joinList(cl, { sep: ', ', twoSep: ' and ', lastSep: ', and ', keepCase: true });
       vars.glanceClauses = joinList(gl, { sep: ', ', twoSep: ' and ', lastSep: ', and ' });
       [['global_action', E.presses], ['action', E.actions], ['gesture', E.gestures],
         ['screen_read', E.reads], ['screenshot', E.shots]].forEach(function (o) {
-        if (c[o[0]]) ev1(o[1], fill(E.text, { n: c[o[0]], at: at(firstTsWhere(step.recs, function (r) { return r.category === o[0]; })) }));
+        if (c[o[0]]) ev1(o[1], fill(c.total ? E.text : E.textSeen, { n: c[o[0]], at: atp(firstTsWhere(step.recs, function (r) { return r.category === o[0]; })) }));
       });
       if (labA11y.length) ev1(E.depends, fill(E.dependsText, { at: at(minTs(labA11y)) }));
       ev1(E.notKnown, E.notKnownText);

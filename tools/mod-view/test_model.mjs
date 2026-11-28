@@ -316,7 +316,141 @@ test('every fixture step describes without placeholders left over', () => {
     const o = M.describe(s, ctx, T);
     ['title', 'plain', 'glance', 'short', 'plainShort', 'facts'].forEach((k) => {
       assert.equal(typeof o[k], 'string');
-      assert.ok(!/[{}]|undefined|null|NaN/.test(o[k]), s.template + '.' + k + ': ' + o[k]);
+      assert.ok(!/[{}]|undefined|null|NaN|\bnone\b/i.test(o[k]), s.template + '.' + k + ': ' + o[k]);
     });
   });
+});
+
+// ---- wording never states more than the records show ----
+const one = (recs, mk = [], extra = {}) => {
+  const st = M.buildSteps(recs, mk, { keys: {} }, PKG);
+  return { st, ctx: { records: recs, marks: mk, ...extra } };
+};
+const desc = (recs, tpl, mk = [], extra = {}) => {
+  const { st, ctx: c } = one(recs, mk, extra);
+  return M.describe(st.find((x) => x.template === tpl), c, T);
+};
+const dex = (stage, sec, extra = {}) => ({ type: 'dexload_detect', pid: 1, ts_ns: T0 + sec * 1e9, stage, kind: 'dex', path: '/data/data/x/p/0.bin', ino: 7, ...extra });
+const allWords = (o) => [o.title, o.plain, o.glance, o.short, o.plainShort, o.facts].join(' | ');
+
+test('a drop with no load never says it ran', () => {
+  const o = desc([dex('drop', 1)], 'payload_packed');
+  assert.ok(!/\bran\b|\brun\b|loaded/i.test([o.plain, o.glance, o.plainShort].join(' ')), allWords(o));
+  assert.match(o.plain, /wrote code to a file/i);
+});
+
+test('a load with no drop never says it wrote a file, and names the file as loaded', () => {
+  const o = desc([dex('load', 1)], 'payload_packed');
+  assert.ok(!/wrote|written|dropped/i.test([o.plain, o.glance, o.plainShort].join(' ')), allWords(o));
+  assert.ok(o.evidence.some((e) => e[0] === 'Loaded file'));
+  assert.ok(!o.evidence.some((e) => e[0] === 'Dropped file'));
+});
+
+test('a download is worded as network contact before the write, not as a fetch', () => {
+  const recs = [netOpenAt(1), dex('drop', 5)];
+  const o = desc(recs, 'payload_downloaded');
+  assert.ok(!/fetched|\bran\b|\brun\b/i.test([o.plain, o.glance, o.plainShort].join(' ')), allWords(o));
+  assert.match(o.glance, /soon after going online/);
+});
+
+test('APK wording needs a static match; "not mapped" states what was checked', () => {
+  const recs = [dex('drop', 1), dex('load', 2, { saved: { sha256: 'ab', size: 100 } })];
+  const plain = desc(recs, 'payload_packed');
+  assert.ok(!/APK|decoded|hidden/i.test(plain.plain + plain.glance), plain.plain);
+  assert.match(plain.plain, /before going online/);
+  assert.ok(plain.evidence.some((e) => e[0] === 'Not mapped' && /120 s/.test(e[1])));
+  const withApk = desc(recs, 'payload_packed', [], { staticApk: [{ name: 'blob', size: 100 }] });
+  assert.match(withApk.plain, /decoded code hidden inside its APK/i);
+  assert.ok(withApk.evidence.some((e) => e[0] === 'Static check'));
+});
+
+test('an early net open (over 120 s before) is not "nothing was downloaded"', () => {
+  const recs = [netOpenAt(1), dex('drop', 300)];
+  const o = desc(recs, 'payload_packed');
+  assert.ok(!o.evidence.some((e) => /nothing was downloaded|before any network/.test(e[1])));
+  assert.ok(o.evidence.some((e) => /no network connection in the 120 s before the drop/.test(e[1])));
+  assert.ok(!desc([dex('load', 1)], 'payload_packed').evidence.some((e) => e[0] === 'Not mapped'));
+});
+
+test('accessibility calls before the grant are not credited to the lab', () => {
+  const a11y = { type: 'accessibility_detect', pid: 1, ts_ns: T0 + 40e9, category: 'screen_read', method: 'm' };
+  const grant = { type: 'perm_change', ts_ns: T0 + 48.3e9, package: PKG, category: 'accessibility', name: 'accessibility', change: 'granted', new: 'x/y' };
+  const o = desc([a11y, grant], 'a11y_abuse', marks, {});
+  assert.ok(!/Once the lab/.test(o.plain), o.plain);
+  assert.ok(!o.evidence.some((e) => e[0] === 'Depends on'));
+});
+
+test('first-seen records give no totals, only "seen"', () => {
+  const a = desc(records.filter((r) => r.type === 'accessibility_detect'), 'a11y_abuse', marks);
+  assert.match(a.facts, /button presses seen/);
+  assert.ok(!/\d+ button/.test(a.facts));
+  const p = desc(records.filter((r) => r.type === 'binder_api' && r.method !== 'attachApplication'), 'persistence', marks);
+  assert.ok(!/\d+ alarms/.test(p.facts) && /alarms seen in \d+ process/.test(p.facts), p.facts);
+  const fg = p.evidence.find((e) => e[0] === 'Foreground');
+  assert.match(fg[1], /seen in 1 process, first at 3 s/);
+  const full = d('persistence').evidence.find((e) => e[0] === 'Foreground');
+  assert.ok(!/called 1 time/.test(full[1]), full[1]);
+});
+
+test('"killed" only for SIGKILL/SIGTERM exits; others say "exit"', () => {
+  const mk = (sig) => [
+    { type: 'binder_api', pid: 1, ts_ns: T0 + 1e9, interface: 'android.app.IAlarmManager', method: 'set' },
+    { type: 'proc_exit', pid: 1, ts_ns: T0 + 2e9, signal: sig },
+    { type: 'binder_api', pid: 2, ts_ns: T0 + 3e9, interface: 'android.app.IAlarmManager', method: 'set' },
+  ];
+  const segv = desc(mk(11), 'persistence');
+  assert.ok(!/killed/.test(segv.plain), segv.plain);
+  assert.match(segv.plain, /came back after every exit/);
+  assert.ok(segv.evidence.some((e) => /SIGSEGV/.test(e[1])));
+  assert.match(desc(mk(9), 'persistence').plain, /every time it was killed/);
+  const none = desc(mk(undefined), 'persistence');
+  assert.ok(!/None|signal/.test(none.evidence.map((e) => e[1]).join(' ')));
+});
+
+test('a revoke-only lab step is not worded as a grant', () => {
+  const rec = { type: 'perm_change', ts_ns: T0 + 48.3e9, package: PKG, category: 'permission', name: 'android.permission.READ_SMS', change: 'revoked', old: 'granted', new: 'denied' };
+  const m2 = [{ ts: T0 + 48.2e9, label: 'grant-begin:a' }, { ts: T0 + 48.4e9, label: 'grant-end:a' }];
+  const o = desc([rec], 'lab_grant', m2);
+  assert.equal(o.title, 'Changed android.permission.READ_SMS');
+  assert.ok(!/grant|enabled/i.test([o.title, o.glance, o.short].join(' ')), allWords(o));
+});
+
+test('a net flow with no proto or host source never prints None', () => {
+  const recs = [1, 2, 3, 4, 5].map((s) => ({ type: 'net', pid: 1, ts_ns: T0 + s * 1e9, event: 'open', dest: '203.0.113.9:80', host: '203.0.113.9:80' }));
+  const o = desc(recs, 'c2_beacon');
+  assert.ok(!/none/i.test(allWords(o) + (o.net.sub || '')), allWords(o));
+  assert.equal(o.techniques.length, 0);
+  assert.match(o.title, /C2 \(suspected\)/);
+});
+
+test('SNI flows count as HTTPS; a lookup before the connection is not "hard-coded"', () => {
+  const mk = (extra) => [1, 2, 3].map((s) => ({ type: 'net', pid: 1, ts_ns: T0 + s * 1e9, event: 'open', proto: 'tcp', dest: '203.0.113.9:443', host: '203.0.113.9:443', host_source: 'sni' })).concat(extra);
+  const o = desc(mk([]), 'c2_beacon', [], { records: undefined });
+  assert.deepEqual(o.techniques.map((t) => t.id), ['T1437.001']);
+  assert.match(o.title, /HTTPS/);
+  const dns = { type: 'net', pid: 1, ts_ns: T0 + 0.5e9, event: 'dns', host: 'example.test', host_source: 'netd' };
+  const l = desc(mk([dns]), 'c2_beacon');
+  assert.ok(!/hard-coded/.test(allWords(l)), allWords(l));
+  assert.match(l.title, /an IP address/);
+  const unknown = desc(mk([]), 'c2_beacon');
+  assert.ok(/an IP address/.test(unknown.title) && !/hard-coded/.test(unknown.title), unknown.title);
+});
+
+test('singular counts and sub-10 s intervals read correctly', () => {
+  const alarm = { type: 'binder_api', pid: 1, ts_ns: T0 + 1e9, interface: 'android.app.IAlarmManager', method: 'set' };
+  const sum = { type: 'binder_api_summary', processes: [{ pid: 1, calls: [{ interface: 'android.app.IAlarmManager', method: 'set', count: 1 }] }] };
+  const p = desc([alarm, sum], 'persistence');
+  assert.match(p.facts, /^1 alarm( |$)/);
+  const recs = [0, 0.4, 0.8, 1.2, 1.6, 2.0].map((s) => ({ ...netOpenAt(s), ts_ns: T0 + s * 1e9 }));
+  const c = desc(recs, 'c2_beacon');
+  assert.match(c.facts, /about every 0\.4 s/);
+  const one1 = desc([{ type: 'accessibility_detect', pid: 1, ts_ns: T0 + 60e9, category: 'global_action', method: 'm' },
+    { type: 'accessibility_detect_summary', processes: [{ pid: 1, calls: { global_action: 1 } }] }], 'a11y_abuse');
+  assert.match(one1.facts, /^1 button press · /);
+});
+
+test('evidence times use one decimal below 100 s and the C2 label says suspected', () => {
+  const a = d('a11y_abuse').evidence.find((e) => e[0] === 'Reads');
+  assert.match(a[1], /first at 54\.6 s/);
+  assert.ok(d('c2_beacon').evidence.some((e) => e[0] === 'Why "suspected C2"'));
 });

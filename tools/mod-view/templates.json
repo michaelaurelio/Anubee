@@ -90,16 +90,25 @@
     "payload_packed": {
       "title": {
         "variants": {
-          "loaded": "Second-stage payload unpacked and loaded",
-          "dropOnly": "Second-stage payload unpacked and written, not seen loaded"
+          "both": "Second-stage payload unpacked and loaded",
+          "dropOnly": "Second-stage payload unpacked and written, not seen loaded",
+          "loadOnly": "Second-stage payload loaded",
+          "neither": "Payload file activity"
         }
       },
-      "glance": "Unpacked hidden code and ran it",
+      "glance": {
+        "variants": {
+          "both": "Wrote code to a file and ran it",
+          "dropOnly": "Wrote code to a file",
+          "loadOnly": "Ran code from a file",
+          "neither": "Touched a payload file"
+        }
+      },
       "short": "Payload unpacked",
       "plain": {
         "list": [
-          "decoded code hidden inside its APK",
-          "wrote it to a file",
+          "{decodedClause}",
+          "{wroteClause}",
           "{ranClause}",
           "{deleted}"
         ],
@@ -107,7 +116,14 @@
         "lastSep": " and ",
         "end": "."
       },
-      "plainShort": "Hidden code written to a file and run",
+      "plainShort": {
+        "variants": {
+          "both": "Code written to a file, then run",
+          "dropOnly": "Code written to a file",
+          "loadOnly": "Code run from a file",
+          "neither": "Payload file touched"
+        }
+      },
       "facts": [
         "{file}",
         "{kind}",
@@ -117,33 +133,48 @@
       "words": {
         "deleted": "deleted the file afterwards",
         "saved": "copy saved",
-        "ranClause": "ran it"
+        "decoded": "decoded code hidden inside its APK",
+        "wroteIt": "wrote it to a file",
+        "wroteEarly": "wrote code to a file before going online",
+        "wroteCode": "wrote code to a file",
+        "ranIt": "ran it",
+        "ranCode": "ran code from a file"
       },
       "evidence": {
         "path": "Dropped file",
         "why": "Why \"packed\"",
-        "whyEarly": "loaded before any network traffic, so it came from inside the APK",
-        "whyNoNet": "no network connection in the 120 s before it was written",
+        "whyNoNet": "no network connection in the 120 s before the drop",
         "static": "Static check",
         "staticText": "the APK carries a {size}-byte non-DEX file ({name}), the same size",
         "sha": "SHA-256",
         "notMapped": "Not mapped",
-        "notMappedText": "T1407 Download New Code at Runtime, because nothing was downloaded first"
-      }
+        "notMappedText": "T1407 Download New Code at Runtime, because no network connection opened in the 120 s before the drop",
+        "pathLoaded": "Loaded file",
+        "whyNoNetAtAll": "no network traffic before the drop in this trace"
+      },
+      "plainNone": "Recorded activity on a payload file."
     },
     "payload_downloaded": {
       "title": {
         "variants": {
-          "loaded": "Second-stage payload written after network contact and loaded",
-          "dropOnly": "Payload written after network contact, not seen loaded"
+          "both": "Second-stage payload written after network contact and loaded",
+          "dropOnly": "Payload written after network contact, not seen loaded",
+          "loadOnly": "Payload loaded",
+          "neither": "Payload file activity"
         }
       },
-      "glance": "Fetched code and ran it",
+      "glance": {
+        "variants": {
+          "both": "Wrote code to a file soon after going online and ran it",
+          "dropOnly": "Wrote code to a file soon after going online",
+          "loadOnly": "Ran code from a file",
+          "neither": "Touched a payload file"
+        }
+      },
       "short": "Payload after network contact",
       "plain": {
         "list": [
-          "contacted the network",
-          "then wrote code to a file",
+          "{wroteClause}",
           "{ranClause}",
           "{deleted}"
         ],
@@ -151,7 +182,14 @@
         "lastSep": " and ",
         "end": "."
       },
-      "plainShort": "Code written after network contact and run",
+      "plainShort": {
+        "variants": {
+          "both": "Code written after network contact, then run",
+          "dropOnly": "Code written after network contact",
+          "loadOnly": "Code run from a file",
+          "neither": "Payload file touched"
+        }
+      },
       "facts": [
         "{file}",
         "{kind}",
@@ -162,14 +200,18 @@
       "words": {
         "deleted": "deleted the file afterwards",
         "saved": "copy saved",
-        "ranClause": "ran it"
+        "wroteCode": "wrote code to a file soon after a network connection opened",
+        "ranIt": "ran it",
+        "ranCode": "ran code from a file"
       },
       "evidence": {
         "path": "Dropped file",
         "why": "Why \"downloaded\"",
         "whyText": "a network connection opened {gap} s before the file was written",
-        "sha": "SHA-256"
-      }
+        "sha": "SHA-256",
+        "pathLoaded": "Loaded file"
+      },
+      "plainNone": "Recorded activity on a payload file."
     },
     "payload_memload": {
       "title": "Code loaded straight from memory",
@@ -212,58 +254,59 @@
       },
       "plainShort": "Kept itself running",
       "facts": [
-        "{alarms} alarms",
+        "{alarms}",
         "{fgFact}",
-        "{respawns} respawns from {from}"
+        "{respawnsN} from {from}"
       ],
       "words": {
         "alarmClause": "set alarms to wake itself",
         "fgClause": "ran as a foreground service",
-        "respawnAll": "came back every time it was killed",
-        "respawnSome": "came back after being killed",
         "alarmT": "scheduled alarms",
         "fgT": "foreground service",
         "respT": "process respawns",
-        "fgFact": "foreground service"
+        "fgFact": "foreground service",
+        "respawnKilledAll": "came back every time it was killed",
+        "respawnKilledSome": "came back after being killed",
+        "respawnExitAll": "came back after every exit",
+        "respawnExitSome": "came back after some exits",
+        "alarmsSeen": "alarms seen in {p}"
       },
       "evidence": {
         "alarms": "Alarms",
         "alarmsText": "{n} AlarmManager.set calls, first at {at}",
         "foreground": "Foreground",
-        "foregroundText": "setServiceForeground called {times}, first at {at}",
+        "foregroundText": "setServiceForeground called {n} times in {p}, first at {at}",
         "respawns": "Respawns",
-        "respawnsText": "{n}, process exits: {exits} ({sig}); sender not recorded"
+        "respawnsText": "{n}, process exits: {exits}{sigPart}",
+        "alarmsSeenText": "AlarmManager.set seen in {p}, first at {at}",
+        "foregroundSeenText": "setServiceForeground seen in {p}, first at {at}"
       }
     },
     "c2_beacon": {
       "title": {
-        "variants": {
-          "ip": "{proto} C2 (suspected) beaconing to a hard-coded IP",
-          "host": "{proto} C2 (suspected) beaconing to {host}"
-        }
+        "first": [
+          "{proto} C2 (suspected) beaconing to {target}",
+          "C2 (suspected) beaconing to {target}"
+        ]
       },
       "titleNoBeat": {
-        "variants": {
-          "ip": "Repeated {proto} contact with a hard-coded IP, C2 (suspected)",
-          "host": "Repeated {proto} contact with {host}, C2 (suspected)"
-        }
+        "first": [
+          "Repeated {proto} contact with {target}, C2 (suspected)",
+          "Repeated contact with {target}, C2 (suspected)"
+        ]
       },
-      "glance": {
-        "variants": {
-          "ip": "Kept contacting a server at a hard-coded IP",
-          "host": "Kept contacting {host}"
-        }
-      },
+      "glance": "Kept contacting {serverAt}",
       "short": "C2 (suspected) contact",
       "plain": {
         "variants": {
           "ip": "Kept contacting the same server, addressed by IP with no domain name.",
+          "ipOnly": "Kept contacting the same server, addressed by IP.",
           "host": "Kept contacting the same server, {host}."
         }
       },
       "plainShort": "Kept contacting one server",
       "facts": [
-        "{count} connections",
+        "{connections}",
         "{beat}"
       ],
       "words": {
@@ -271,7 +314,10 @@
         "beatBetween": "about every {interval} s between {from} and {to}",
         "minute": "minute",
         "minutes": "minutes",
-        "noDomain": "no domain name"
+        "noDomain": "no domain name looked up",
+        "hardcoded": "a hard-coded IP",
+        "ipAddress": "an IP address",
+        "serverAtIp": "a server at {target}"
       },
       "net": {
         "sub": [
@@ -282,7 +328,7 @@
         "traffic": "sent {tx}, received {rx}"
       },
       "evidence": {
-        "why": "Why \"C2\"",
+        "why": "Why \"suspected C2\"",
         "whyText": [
           "{count} connections to the same destination",
           "{noDomain}",
@@ -332,11 +378,18 @@
           "other": "Lab changed permissions"
         }
       },
-      "short": "Lab granted permissions",
+      "short": {
+        "variants": {
+          "both": "Lab granted permissions",
+          "perms": "Lab granted permissions",
+          "a11y": "Lab enabled accessibility",
+          "other": "Lab changed permissions"
+        }
+      },
       "plain": "analyst action, not attributed to the sample · times ±2 s",
       "plainShort": "analyst action, times ±2 s",
       "facts": [
-        "{count} permission changes"
+        "{changes}"
       ],
       "evidence": {
         "changes": "Changes",
@@ -353,7 +406,7 @@
       "plain": "Not credited to the sample or to a lab action · times ±2 s",
       "plainShort": "Not credited to anyone",
       "facts": [
-        "{count} permission changes"
+        "{changes}"
       ],
       "evidence": {
         "changes": "Changes",
@@ -382,11 +435,11 @@
       },
       "plainShort": "Used accessibility",
       "facts": [
-        "{presses} button presses",
-        "{actions} node actions",
-        "{gestures} gestures",
-        "{reads} screen reads",
-        "{shots} screenshots",
+        "{presses}",
+        "{actions}",
+        "{gestures}",
+        "{reads}",
+        "{shots}",
         "exact times after the first not recorded"
       ],
       "words": {
@@ -400,7 +453,8 @@
         "readClause": "read what was on screen",
         "shotClause": "took screenshots",
         "glancePress": "Pressed system buttons",
-        "glanceRead": "read the screen"
+        "glanceRead": "read the screen",
+        "seen": "seen"
       },
       "evidence": {
         "presses": "Presses",
@@ -412,7 +466,8 @@
         "depends": "Depends on",
         "dependsText": "the lab enabling accessibility at about {at}",
         "notKnown": "Not known",
-        "notKnownText": "what was on screen"
+        "notKnownText": "what was on screen",
+        "textSeen": "seen, first at {at}"
       }
     },
     "exec": {

@@ -454,7 +454,12 @@ var AnubeeModView = (function () {
       for (var i = 0; i < f.first.length; i++) { var w = fill(f.first[i], vars); if (w !== null) return w; }
       return null;
     }
-    var items = f.list.map(function (x) { return fill(x, vars); }).filter(function (x) { return x !== null; });
+    var items = [];
+    f.list.forEach(function (x) {
+      var spread = /^\{\*(\w+)\}$/.exec(x);   // "{*name}": the items of an array var
+      if (spread) (vars[spread[1]] || []).forEach(function (y) { if (present(y)) items.push(String(y)); });
+      else { var w = fill(x, vars); if (w !== null) items.push(w); }
+    });
     return joinList(items, f);
   }
 
@@ -600,6 +605,43 @@ var AnubeeModView = (function () {
     return { techniques: techniques, tactic: tactic || null };
   }
 
+  // The payload sentence's clauses, one per run of drop/load/delete records in
+  // time order (a run of one kind is one clause), each only with its record.
+  // Any of them without a time: the unordered wording (no "then", no "afterwards").
+  function payloadClauses(recs, W, atp, wrote) {
+    var ev = recs.filter(function (r) { return r.stage === 'drop' || r.stage === 'load' || r.stage === 'delete'; });
+    var has3 = function (st) { return ev.some(function (r) { return r.stage === st; }); };
+    if (ev.some(function (r) { return typeof r.ts_ns !== 'number'; })) {
+      var out = has3('drop') ? wrote.slice() : [];
+      if (has3('load')) out.push(has3('drop') ? W.ranIt : W.ranCode);
+      if (has3('delete')) out.push(has3('drop') || has3('load') ? W.deletedIt : W.deletedOnly);
+      return out;
+    }
+    ev = ev.map(function (r, i) { return { r: r, i: i }; })
+      .sort(function (a, b) { return a.r.ts_ns - b.r.ts_ns || a.i - b.i; }).map(function (x) { return x.r; });
+    var runs = [];
+    ev.forEach(function (r) {
+      if (!runs.length || runs[runs.length - 1].stage !== r.stage) runs.push({ stage: r.stage, ts: r.ts_ns });
+    });
+    var many = runs.length > 1, clauses = [], dropped = false;
+    runs.forEach(function (run, i) {
+      var prev = i ? runs[i - 1].stage : null, c, timed = many && i === 0;
+      if (run.stage === 'drop') {
+        c = dropped ? [W.wroteAgain] : wrote.slice();
+        dropped = true;
+      } else if (run.stage === 'load') {
+        c = [prev === 'drop' ? W.ranIt : prev === 'delete' ? W.ranFromIt : timed ? fill(W.ranCodeAt, { at: atp(run.ts) }) : W.ranCode];
+      } else {
+        c = [i === 0 ? (timed ? fill(W.deletedFirstAt, { at: atp(run.ts) }) : W.deletedOnly)
+          : i === runs.length - 1 ? W.deleted : fill(W.deletedAt, { at: atp(run.ts) })];
+        if (i && i === runs.length - 1) { clauses.push.apply(clauses, c); return; }   // "afterwards" orders itself
+      }
+      if (i) c[0] = fill(W.then, { c: c[0] });
+      clauses.push.apply(clauses, c);
+    });
+    return clauses;
+  }
+
   function andList(l) {
     return l.length ? l.slice(0, -1).join(', ') + (l.length > 1 ? ' and ' : '') + l[l.length - 1] : null;
   }
@@ -626,29 +668,14 @@ var AnubeeModView = (function () {
       vars.kind = d.kind ? str(d.kind).toUpperCase() : null;
       vars.size = fmtSize(d.size);
       vars.saved = d.sha256 ? W.saved : null;
-      vars.deleted = d.deleted ? W.deleted : null;
       var dropTs = firstTsWhere(step.recs, function (r) { return r.stage === 'drop'; });
       var apk = (ctx.staticApk || []).filter(function (a) { return typeof d.size === 'number' && a.size === d.size; })[0];
       var netAfter = !!d.netAfter;
-      var delTs = firstTsWhere(step.recs, function (r) { return r.stage === 'delete'; });
-      var lastUse = null;
-      step.recs.forEach(function (r) {
-        if ((r.stage === 'drop' || r.stage === 'load') && typeof r.ts_ns === 'number' && (lastUse === null || r.ts_ns > lastUse)) lastUse = r.ts_ns;
-      });
-      if (d.deleted) vars.deleted = lastUse !== null && delTs !== null && delTs < lastUse ? (fill(W.deletedAt, { at: atp(delTs) }) || W.deletedIt) : W.deleted;
-      var deleteOnly = !d.dropped && !d.loaded;
-      if (deleteOnly) vars.deleted = W.deletedOnly;
-      // a delete before the first load is told before the run, as the records order them
-      var loadTs = firstTsWhere(step.recs, function (r) { return r.stage === 'load'; });
-      var delFirst = d.loaded && d.deleted && delTs !== null && loadTs !== null && delTs < loadTs;
-      if (delFirst && !d.dropped) vars.deleted = fill(W.deletedFirstAt, { at: atp(delTs) });
       ev1(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
       ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
-        vars.decodedClause = apk && d.dropped ? W.decoded : null;
-        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !d.netBeforeAny && !d.hiddenNetEver ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode) : null;
-        vars.ranClause = d.loaded ? (d.dropped || apk ? W.ranIt : W.ranCode) : null;
-        if (delFirst) { vars.ranLater = W.ranLater; vars.ranClause = null; }
+        var wrote = apk ? W.wroteIt : dropTs !== null && !d.netBeforeAny && !d.hiddenNetEver ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode;
+        vars.clauses = payloadClauses(step.recs, W, atp, apk ? [W.decoded, wrote] : [wrote]);
         if (d.dropped) ids.push('T1406.002');
         if (dropTs !== null) {
           var bg = d.hiddenNetBefore;
@@ -657,9 +684,7 @@ var AnubeeModView = (function () {
         }
         if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
       } else {
-        vars.wroteClause = d.dropped ? W.wroteCode : null;
-        vars.ranClause = d.loaded ? (d.dropped ? W.ranIt : W.ranCode) : null;
-        if (delFirst) { vars.ranLater = W.ranLater; vars.ranClause = null; }
+        vars.clauses = payloadClauses(step.recs, W, atp, [W.wroteCode]);
         if (d.dropped) ids.push('T1407');
         vars.gap = d.netBeforeTs !== null && dropTs !== null ? fmtDur((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));

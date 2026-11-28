@@ -612,11 +612,42 @@ test('a resolver flow before an IP connection blocks "hard-coded"', () => {
 
 test('a delete before the load is told in record order', () => {
   const o = desc([dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_packed');
-  assert.equal(o.plain, 'Wrote code to a file with no network connection before it, deleted it at 1 s and then ran code from it.');
+  assert.equal(o.plain, 'Wrote code to a file with no network connection before it, then deleted it at 1 s and then ran code from it.');
   const lo = desc([dex('delete', 2), dex('load', 3)], 'payload_packed');
   assert.equal(lo.plain, 'Deleted a code file at 0 s and then ran code from it.');
   const after = desc([dex('drop', 1), dex('load', 2), dex('delete', 3)], 'payload_packed');
-  assert.equal(after.plain, 'Wrote code to a file with no network connection before it, ran it and deleted the file afterwards.');
+  assert.equal(after.plain, 'Wrote code to a file with no network connection before it, then ran it and deleted the file afterwards.');
   const dl = desc([netOpenAt(0.5), dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_downloaded');
   assert.match(dl.plain, /deleted it at 1\.5 s and then ran code from it\.$/);
+});
+
+// ---- round 5: the payload sentence follows the records' time order ----
+test('payload clauses follow record order, whatever the order', () => {
+  const P = (recs) => desc(recs, 'payload_packed').plain;
+  const NN = 'with no network connection before it';
+  assert.equal(P([dex('delete', 1), dex('drop', 2), dex('load', 3)]),
+    `Deleted a code file at 0 s, then wrote code to a file ${NN} and then ran it.`);
+  assert.equal(P([dex('delete', 1), dex('drop', 2)]),
+    `Deleted a code file at 0 s and then wrote code to a file ${NN}.`);
+  assert.equal(P([dex('drop', 1), dex('delete', 2), dex('load', 3)]),
+    `Wrote code to a file ${NN}, then deleted it at 1 s and then ran code from it.`);
+  assert.equal(P([dex('drop', 1), dex('load', 2), dex('delete', 3)]),
+    `Wrote code to a file ${NN}, then ran it and deleted the file afterwards.`);
+  assert.equal(P([dex('drop', 1), dex('load', 2), dex('delete', 3), dex('load', 4)]),
+    `Wrote code to a file ${NN}, then ran it, then deleted it at 2 s and then ran code from it.`);
+  assert.equal(P([dex('drop', 1), dex('drop', 1.5), dex('load', 2)]), `Wrote code to a file ${NN} and then ran it.`);
+  assert.equal(P([dex('load', 1), dex('drop', 2)]), `Ran code from a file at 0 s and then wrote code to a file ${NN}.`);
+  assert.equal(P([dex('drop', 1), dex('delete', 2), dex('drop', 3)]), `Wrote code to a file ${NN}, then deleted it at 1 s and then wrote code to the file again.`);
+});
+
+test('payload_downloaded clauses follow record order too', () => {
+  const o = desc([netOpenAt(0.5), dex('delete', 1), dex('drop', 2), dex('load', 3)], 'payload_downloaded');
+  assert.equal(o.plain, 'Deleted a code file at 0.5 s, then wrote code to a file soon after a network connection opened and then ran it.');
+});
+
+test('a payload record without a time gives the unordered wording: no "then", no "afterwards"', () => {
+  const o = desc([{ ...dex('drop', 1), ts_ns: undefined }, dex('delete', 2), dex('load', 3)], 'payload_packed');
+  assert.equal(o.plain, 'Wrote code to a file, ran it and deleted it.');
+  const late = desc([dex('drop', 1), dex('load', 2), { ...dex('delete', 3), ts_ns: undefined }], 'payload_packed');
+  assert.equal(late.plain, 'Wrote code to a file with no network connection before it, ran it and deleted it.');
 });

@@ -114,11 +114,7 @@
       },
       "plain": {
         "list": [
-          "{decodedClause}",
-          "{wroteClause}",
-          "{ranClause}",
-          "{deleted}",
-          "{ranLater}"
+          "{*clauses}"
         ],
         "sep": ", ",
         "lastSep": " and ",
@@ -152,7 +148,10 @@
         "deletedIt": "deleted it",
         "deletedAt": "deleted it at {at}",
         "deletedFirstAt": "deleted a code file at {at}",
-        "ranLater": "then ran code from it"
+        "ranFromIt": "ran code from it",
+        "ranCodeAt": "ran code from a file at {at}",
+        "wroteAgain": "wrote code to the file again",
+        "then": "then {c}"
       },
       "evidence": {
         "path": "Dropped file",
@@ -197,10 +196,7 @@
       },
       "plain": {
         "list": [
-          "{wroteClause}",
-          "{ranClause}",
-          "{deleted}",
-          "{ranLater}"
+          "{*clauses}"
         ],
         "sep": ", ",
         "lastSep": " and ",
@@ -231,7 +227,10 @@
         "deletedIt": "deleted it",
         "deletedAt": "deleted it at {at}",
         "deletedFirstAt": "deleted a code file at {at}",
-        "ranLater": "then ran code from it"
+        "ranFromIt": "ran code from it",
+        "ranCodeAt": "ran code from a file at {at}",
+        "wroteAgain": "wrote code to the file again",
+        "then": "then {c}"
       },
       "evidence": {
         "path": "Dropped file",

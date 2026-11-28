@@ -80,7 +80,7 @@
   function glanceHtml(g) {
     return g.map(function (x) {
       var lab = x.actor === 'lab';
-      return '<li><a href="#e' + x.n + '"' + (lab ? ' class="lab-row"' : '') + '><span class="n" style="background:var(--' + (lab ? 'lab' : 'app') + ')">' +
+      return '<li><a href="#e' + x.n + '"' + (lab ? ' class="lab-row"' : '') + '><span class="n ' + (lab ? 'l' : 'a') + '">' +
         x.n + '</span><span>' + esc(x.text) + '</span></a></li>';
     }).join('');
   }

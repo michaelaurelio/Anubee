@@ -2069,6 +2069,16 @@ flowchart LR
 - **Self-contained.** View code, styles and data are inlined; the page loads
   nothing, and its only outside links are ATT&CK technique pages. Embedded
   JSON escapes `</`, `<!--` and U+2028/U+2029.
+- **Theming.** `view.css` uses Anubee Desktop's theme tokens (`--surface`,
+  `--panel`, `--text`, `--accent`... with Desktop's dark and light values) and
+  its font names (Inter, JetBrains Mono), referenced by name only, so the page
+  falls back to system fonts when they are not installed. Setting
+  `data-theme="dark"` or `"light"` on `<html>` selects the theme, exactly as in
+  Desktop, so a Desktop tab sets it once; with no attribute the standalone page
+  follows the system setting and defaults to dark. The sample, the lab and the
+  network keep three separable colours taken from Desktop's palette; they mark
+  dots and borders, while text stays in the theme's text colour so it keeps
+  its contrast in both themes. Printing uses the light theme.
 - **What is embedded.** Every record the profile does not hide, plus all
   `*_summary`, `coverage` and `perm_change` records, plus the hidden records
   the model still reads (connections and lookups for the payload and C2

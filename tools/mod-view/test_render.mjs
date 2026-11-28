@@ -2,7 +2,7 @@
 // Run: node --test 'tools/mod-view/test_*.mjs'
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -103,4 +103,50 @@ test('below 900 px the page reads: at a glance, timeline, then indicators', () =
 
 test('bold counts in a lab note are not lab-coloured, only its lead is', () => {
   assert.ok(css.includes('.labnote>b{') && !/\.labnote b\{/.test(css));
+});
+
+// ---- Anubee Desktop theme ----
+const LITERAL = {
+  dark: { surface: '#0f0e11', panel: '#16151a', 'panel-2': '#1c1a20', bar: '#211f26', border: '#322e38', 'border-soft': '#29262f', text: '#e7e3d9', muted: '#97918a', hover: '#23202a', accent: '#c9a24a', 'accent-bd': '#d8b05a', 'accent-soft': '#c9a24a26', 'accent-fg': '#e0be6a', 'accent-ink': '#17140d', 'warn-bg': '#3a2f12', 'warn-bd': '#5c4a1a', 'warn-fg': '#e8c977', shadow: '0 2px 10px rgba(0,0,0,.35)', 'k-syscall': '#e8845c', 'cat-emulator': '#b888c8', 'cat-hook': '#4fb6a0' },
+  light: { surface: '#f5f3ee', panel: '#fbfaf6', 'panel-2': '#f1eee7', bar: '#ede9e0', border: '#dcd6c9', 'border-soft': '#e8e3d8', text: '#201e1b', muted: '#6e675c', hover: '#f6ecea', accent: '#b0812e', 'accent-bd': '#9a6f24', 'accent-soft': '#f2e6cf', 'accent-fg': '#8a6417', 'accent-ink': '#17140d', 'warn-bg': '#fff3cd', 'warn-bd': '#ffe08a', 'warn-fg': '#7a5c00', shadow: '0 1px 4px rgba(0,0,0,.12)', 'k-syscall': '#c25a34', 'cat-emulator': '#8e5aa8', 'cat-hook': '#1e8f7e' },
+};
+const desktopHtml = path.join(here, '../../../Anubee-Desktop/src/renderer/index.html');
+const block = (src, sel) => {
+  const i = src.indexOf(sel + ' {') >= 0 ? src.indexOf(sel + ' {') : src.indexOf(sel + '{');
+  assert.ok(i >= 0, 'missing block ' + sel);
+  const j = src.indexOf('}', i);
+  const out = {};
+  for (const m of src.slice(i, j).matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) out[m[1]] = m[2].trim();
+  return out;
+};
+for (const theme of ['dark', 'light']) {
+  test(`view.css ${theme} tokens equal Desktop's`, (t) => {
+    const mine = block(css, `:root[data-theme=${theme}]`);
+    let want = LITERAL[theme];
+    if (existsSync(desktopHtml)) {
+      const d = block(readFileSync(desktopHtml, 'utf8'), `:root[data-theme="${theme}"]`);
+      want = Object.fromEntries(Object.keys(LITERAL[theme]).map((k) => [k, d[k]]));
+      assert.deepEqual(want, LITERAL[theme], 'literal table drifted from Desktop');
+    } else t.diagnostic('Anubee-Desktop checkout absent; comparing to literal values');
+    for (const [k, v] of Object.entries(want)) assert.equal(mine[k], v, `--${k} (${theme})`);
+  });
+}
+test('actor colours resolve to Desktop tokens', () => {
+  const root = block(css, ':root');
+  assert.equal(root.app, 'var(--k-syscall)');
+  assert.equal(root.lab, 'var(--cat-emulator)');
+  assert.equal(root.net, 'var(--cat-hook)');
+});
+test('no dark-only palette is left, no embedded fonts or urls', () => {
+  assert.ok(!/@font-face/.test(css) && !/url\(/.test(css));
+  assert.ok(css.includes(":root[data-theme=light]") && css.includes(":root[data-theme=dark]"));
+  assert.ok(!/light-dark\(/.test(css));
+  assert.ok(css.includes("'Inter', system-ui, sans-serif") && css.includes("'JetBrains Mono', ui-monospace, \"SF Mono\", Menlo, monospace"));
+  assert.ok(/prefers-color-scheme:\s*light/.test(css));
+  assert.ok(!/\.stage\{[^}]*#0e1117/.test(css));
+});
+
+test('no actor-coloured fill carries text: glance numbers are classed, not inline-styled', () => {
+  const html = M.renderView(V);
+  assert.ok(/class="n [al]"/.test(html) && !/class="n[^"]*" style=/.test(html));
 });

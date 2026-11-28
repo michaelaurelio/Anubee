@@ -387,6 +387,321 @@ var AnubeeModView = (function () {
     return order.map(function (e) { return e[0]; });
   }
 
+  // ---- step wording and ATT&CK tags ----
+  // Every word comes from templates.json or from record fields and counts.
+  // A string is filled in; a placeholder with no value drops that piece.
+  function present(v) { return v !== undefined && v !== null && v !== '' && v !== false; }
+  function fill(s, vars) {
+    var ok = true;
+    var out = s.replace(/\{(\w+)\}/g, function (m, k) {
+      if (!present(vars[k])) { ok = false; return ''; }
+      return String(vars[k]);
+    });
+    return ok ? out : null;
+  }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function joinList(items, o) {
+    if (!items.length) return null;
+    var s;
+    if (items.length === 1) s = items[0];
+    else if (items.length === 2 && o.twoSep !== undefined) s = items[0] + o.twoSep + items[1];
+    else s = items.slice(0, -1).join(o.sep) + (o.lastSep !== undefined ? o.lastSep : o.sep) + items[items.length - 1];
+    return (o.keepCase ? s : cap(s)) + (o.end || '');
+  }
+  // A template field is a string, a list of " · " segments, {first}, {variants} or {list}.
+  function words(f, vars) {
+    if (f === undefined || f === null) return null;
+    if (typeof f === 'string') return fill(f, vars);
+    if (Array.isArray(f)) {
+      var segs = f.map(function (x) { return fill(x, vars); }).filter(function (x) { return x !== null; });
+      return segs.length ? segs.join(' · ') : null;
+    }
+    if (f.variants) return has(f.variants, vars.variant) ? fill(f.variants[vars.variant], vars) : null;
+    if (f.first) {
+      for (var i = 0; i < f.first.length; i++) { var w = fill(f.first[i], vars); if (w !== null) return w; }
+      return null;
+    }
+    var items = f.list.map(function (x) { return fill(x, vars); }).filter(function (x) { return x !== null; });
+    return joinList(items, f);
+  }
+
+  function fmtSize(n) {
+    if (typeof n !== 'number') return null;
+    if (n < 1000) return n + ' B';
+    var v = n < 1e6 ? n / 1e3 : n / 1e6, u = n < 1e6 ? ' KB' : ' MB';
+    return (v < 10 ? v.toFixed(1) : String(Math.round(v))) + u;
+  }
+  function fmtAt(ts, start) {
+    if (typeof ts !== 'number' || typeof start !== 'number') return null;
+    var s = (ts - start) / NS;
+    if (s < 10) return (Math.round(s * 10) / 10) + ' s';
+    s = Math.round(s);
+    return s < 120 ? s + ' s' : Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+
+  function firstTsWhere(recs, pred) {
+    var best = null;
+    recs.forEach(function (r) {
+      if (pred(r) && typeof r.ts_ns === 'number' && (best === null || r.ts_ns < best)) best = r.ts_ns;
+    });
+    return best;
+  }
+  function summaryOf(ctx, type) {
+    if (ctx.summaries && ctx.summaries[type]) return ctx.summaries[type];
+    var found = null;
+    (ctx.records || []).forEach(function (r) { if (r.type === type) found = r; });
+    return found;
+  }
+  // Total of one binder call over a binder_api_summary, or null when there is none.
+  function binderTotal(ctx, iface, method) {
+    var s = summaryOf(ctx, 'binder_api_summary');
+    if (!s) return null;
+    var n = 0;
+    (s.processes || []).forEach(function (p) {
+      (p.calls || []).forEach(function (k) {
+        if (k.method === method && str(k.interface).slice(-iface.length) === iface) n += k.count || 0;
+      });
+    });
+    return n || null;
+  }
+  function a11yCounts(ctx, recs) {
+    var out = { global_action: 0, action: 0, gesture: 0, screen_read: 0, screenshot: 0 };
+    var s = summaryOf(ctx, 'accessibility_detect_summary');
+    if (s) {
+      (s.processes || []).forEach(function (p) {
+        Object.keys(out).forEach(function (k) { out[k] += (p.calls || {})[k] || 0; });
+      });
+    } else {
+      recs.forEach(function (r) { if (has(out, r.category)) out[r.category]++; });
+    }
+    return out;
+  }
+
+  // The run's start (launch mark, else first record) and end (stop mark, else last record).
+  function runBounds(ctx) {
+    var ts = (ctx.records || []).map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
+    var launch = null, stop = null;
+    (ctx.marks || []).forEach(function (m) {
+      if (m.label === 'launch') launch = m.ts;
+      if (m.label === 'stop') stop = m.ts;
+    });
+    var first = ts.length ? Math.min.apply(null, ts) : null, last = ts.length ? Math.max.apply(null, ts) : null;
+    return { start: launch !== null ? launch : first, end: stop !== null ? stop : last };
+  }
+
+  var HTTP_SOURCES = { http: 'HTTP', https: 'HTTPS' };
+  var IPV4 = /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/;
+
+  function netVars(step, T, b) {
+    var d = step.data, W = T.steps.c2_beacon.words;
+    var src = str(d.hostSource).toLowerCase();
+    var web = has(HTTP_SOURCES, src);
+    var v = {
+      proto: web ? HTTP_SOURCES[src] : str(d.proto).toUpperCase(), host: d.host, count: d.count, web: web,
+      first: fmtAt(minTs(step.recs), b.start), last: fmtAt(d.lastTs, b.start),
+      connections: plural(d.count, 'connection'), beat: null
+    };
+    var ip = IPV4.test(str(d.host));
+    v.variant = ip ? 'ip' : 'host';
+    v.noDomain = ip ? W.noDomain : null;
+    if (d.beacon && b.end !== null) {
+      var bw = d.beacon;
+      v.interval = Math.round(bw.intervalS);
+      v.minutes = plural(Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS))), W.minute);
+      v.from = fmtAt(bw.fromTs, b.start);
+      v.to = fmtAt(bw.toTs, b.start);
+      // "in the last N minutes" only while the beat runs to the end of the run
+      v.beat = fill(b.end - bw.toTs <= 2 * bw.intervalS * NS ? W.beatLast : W.beatBetween, v);
+    }
+    return v;
+  }
+
+  function trafficOf(ctx, dest, T) {
+    var s = summaryOf(ctx, 'net_summary');
+    var row = s && (s.destinations || []).filter(function (x) { return x.dest === dest; })[0];
+    if (!row || typeof row.tx !== 'number' || typeof row.rx !== 'number') return null;
+    return fill(T.steps.c2_beacon.net.traffic, { tx: fmtSize(row.tx), rx: fmtSize(row.rx) });
+  }
+
+  // Tactic label: the techniques' tactics, once each, in ATT&CK matrix order.
+  function techList(T, ids) {
+    var techniques = [], tacs = {};
+    ids.forEach(function (id) {
+      var t = T.techniques[id];
+      techniques.push({ id: id, name: t.name });
+      t.tactics.forEach(function (x) { tacs[x] = 1; });
+    });
+    var tactic = T.tacticOrder.filter(function (x) { return tacs[x]; }).join(' · ');
+    return { techniques: techniques, tactic: tactic || null };
+  }
+
+  function andList(l) {
+    return l.length ? l.slice(0, -1).join(', ') + (l.length > 1 ? ' and ' : '') + l[l.length - 1] : null;
+  }
+
+  // describe(step, ctx, templates): the words and tags one card shows.
+  // ctx = {records, marks, summaries, staticApk}; summaries maps a summary
+  // record type to its record (read from ctx.records when absent); staticApk
+  // is an optional [{name, size}] list of non-DEX files found in the APK.
+  function describe(step, ctx, T) {
+    ctx = ctx || {};
+    var tpl = T.steps[step.template] || T.steps.recorded;
+    var W = tpl.words || {}, E = tpl.evidence || {}, d = step.data;
+    var b = runBounds(ctx);
+    var vars = {}, ids = [], ev = [], net = null, approx = false, titleField = tpl.title;
+    function at(ts) { return fmtAt(ts, b.start); }
+    function ev1(label, value) { if (present(label) && present(value)) ev.push([label, value]); }
+
+    if (step.template === 'detonation') {
+      vars.pkg = ctx.pkg || inferPackage(ctx.records || []);
+    } else if (step.template === 'payload_packed' || step.template === 'payload_downloaded') {
+      vars.variant = d.loaded ? 'loaded' : 'dropOnly';
+      vars.file = d.path ? basename(d.path) : null;
+      vars.kind = d.kind ? str(d.kind).toUpperCase() : null;
+      vars.size = fmtSize(d.size);
+      vars.saved = d.sha256 ? W.saved : null;
+      vars.deleted = d.deleted ? W.deleted : null;
+      vars.ranClause = d.loaded ? W.ranClause : null;
+      ev1(E.path, d.path);
+      ev1(E.sha, d.sha256);
+      var dropTs = firstTsWhere(step.recs, function (r) { return r.stage === 'drop'; });
+      if (step.template === 'payload_packed') {
+        ids.push('T1406.002');
+        var anyNet = dropTs !== null && (ctx.records || []).some(function (r) {
+          return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && r.ts_ns < dropTs;
+        });
+        ev1(E.why, anyNet ? E.whyNoNet : E.whyEarly);
+        var apk = (ctx.staticApk || []).filter(function (a) { return a.size === d.size; })[0];
+        if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
+        ev1(E.notMapped, E.notMappedText);
+      } else {
+        ids.push('T1407');
+        vars.gap = d.netBeforeTs !== null && dropTs !== null ? Math.round((dropTs - d.netBeforeTs) / NS) : null;
+        ev1(E.why, fill(E.whyText, vars));
+      }
+    } else if (step.template === 'payload_memload') {
+      vars.kind = d.kind ? str(d.kind).toUpperCase() : null;
+      vars.region = fmtSize(d.regionSize);
+      ev1(E.path, d.path);
+      ev1(E.region, vars.region);
+    } else if (step.template === 'persistence') {
+      var alarms = binderTotal(ctx, 'IAlarmManager', 'set') || d.alarmSets;
+      var fgCalls = binderTotal(ctx, 'IActivityManager', 'setServiceForeground') || d.foregroundCalls;
+      var firstCall = function (m) { return firstTsWhere(step.recs, function (r) { return r.type === 'binder_api' && r.method === m; }); };
+      vars.alarms = alarms || null;
+      vars.alarmT = alarms ? W.alarmT : null;
+      vars.alarmClause = alarms ? W.alarmClause : null;
+      vars.fgT = fgCalls ? W.fgT : null;
+      vars.fgClause = fgCalls ? W.fgClause : null;
+      vars.fgFact = fgCalls ? W.fgFact : null;
+      vars.respT = d.respawns ? W.respT : null;
+      vars.respawnClause = d.respawns ? (d.respawns >= d.exits ? W.respawnAll : W.respawnSome) : null;
+      vars.respawns = d.respawns || null;
+      vars.from = d.respawns ? at(firstTsWhere(step.recs, function (r) { return r.type === 'proc_exit'; })) : null;
+      if (alarms) {
+        ids.push('T1603');
+        ev1(E.alarms, fill(E.alarmsText, { n: alarms, at: at(firstCall('set')) }));
+      }
+      if (fgCalls) {
+        ids.push('T1541');
+        ev1(E.foreground, fill(E.foregroundText, { times: plural(fgCalls, 'time'), at: at(firstCall('setServiceForeground')) }));
+      }
+      if (d.respawns) {
+        var sigs = {};
+        step.recs.forEach(function (r) { if (r.type === 'proc_exit') sigs[str(r.signal)] = 1; });
+        var sk = Object.keys(sigs);
+        var sig = sk.length !== 1 ? 'several signals' : (has(T.signalNames, sk[0]) ? T.signalNames[sk[0]] : 'signal ' + sk[0]);
+        ev1(E.respawns, fill(E.respawnsText, { n: d.respawns, exits: d.exits, sig: sig }));
+      }
+    } else if (step.template === 'c2_beacon' || step.template === 'net_contact') {
+      vars = netVars(step, T, b);
+      if (vars.web) ids.push('T1437.001');
+      if (step.template === 'c2_beacon') {
+        if (!d.beacon) titleField = tpl.titleNoBeat;
+        vars.traffic = trafficOf(ctx, d.dest, T);
+        var why = E.whyText.map(function (x) { return fill(x, vars); }).filter(function (x) { return x !== null; });
+        ev1(E.why, why.join(', ') + '. ' + E.whyEnd);
+      }
+      net = { endpoint: d.dest, sub: words(tpl.net.sub, vars) };
+      ev1(E.seen, fill(E.seenText, vars));
+    } else if (step.template === 'lab_grant' || step.template === 'perm_unattributed') {
+      approx = true;
+      var granted = [], others = [], a11y = false;
+      d.perms.forEach(function (p) {
+        ev1(E.changes, fill(E.changeText, { name: p.name, old: present(p.old) ? p.old : 'none', new: p.new }));
+        if (p.category === 'accessibility' && present(p.new)) { a11y = true; return; }
+        var ok = p.new === 'granted' || p.new === 'allow';
+        var label = ok && has(T.permissionWords, p.name) ? T.permissionWords[p.name] : p.name;
+        var list = ok ? granted : others;
+        if (list.indexOf(label) < 0) list.push(label);
+      });
+      vars.perms = andList(granted);
+      vars.others = andList(others);
+      vars.a11yClause = a11y ? W.a11yClause : null;
+      vars.count = d.perms.length;
+      vars.variant = granted.length && a11y ? 'both' : granted.length ? 'perms' : a11y ? 'a11y' : 'other';
+    } else if (step.template === 'a11y_abuse') {
+      var c = a11yCounts(ctx, step.recs);
+      var input = c.global_action + c.action + c.gesture;
+      vars.presses = c.global_action || null;
+      vars.actions = c.action || null;
+      vars.gestures = c.gesture || null;
+      vars.reads = c.screen_read || null;
+      vars.shots = c.screenshot || null;
+      if (c.screen_read) ids.push('T1453');
+      if (input) ids.push('T1516');
+      vars.abuse = [input ? W.injection : null, c.screen_read ? W.reading : null].filter(present).join(' and ') || null;
+      var cl = [], gl = [];
+      if (c.global_action) { cl.push(W.pressClause); gl.push(W.glancePress); }
+      if (c.action) cl.push(W.actionClause);
+      if (c.gesture) cl.push(W.gestureClause);
+      if (c.screen_read) { cl.push(W.readClause); gl.push(W.glanceRead); }
+      if (c.screenshot) cl.push(W.shotClause);
+      var labA11y = (ctx.records || []).filter(function (r) {
+        return r.type === 'perm_change' && r.category === 'accessibility' && present(r.new) &&
+          r.change !== 'baseline' && labCaused(r, ctx.marks);
+      });
+      vars.lead = labA11y.length ? W.leadLab : W.leadPlain;
+      vars.clauses = joinList(cl, { sep: ', ', twoSep: ' and ', lastSep: ', and ', keepCase: true });
+      vars.glanceClauses = joinList(gl, { sep: ', ', twoSep: ' and ', lastSep: ', and ' });
+      [['global_action', E.presses], ['action', E.actions], ['gesture', E.gestures],
+        ['screen_read', E.reads], ['screenshot', E.shots]].forEach(function (o) {
+        if (c[o[0]]) ev1(o[1], fill(E.text, { n: c[o[0]], at: at(firstTsWhere(step.recs, function (r) { return r.category === o[0]; })) }));
+      });
+      if (labA11y.length) ev1(E.depends, fill(E.dependsText, { at: at(minTs(labA11y)) }));
+      ev1(E.notKnown, E.notKnownText);
+    } else if (step.template === 'exec') {
+      vars.cmd = d.cmd;
+      vars.times = plural(d.count, 'time');
+      ev1(E.cmd, d.cmd);
+    } else if (step.template === 'file_probe') {
+      vars.path = d.path;
+      vars.times = plural(d.count, 'time');
+      ev1(E.path, d.path);
+    } else {
+      vars.key = d.key;
+      vars.records = plural(d.count, 'record');
+      ev1(E.section, d.section);
+      ev1(E.key, d.key);
+    }
+
+    var tl = techList(T, ids);
+    return {
+      tactic: tl.tactic,
+      title: words(titleField, vars),
+      plain: words(tpl.plain, vars),
+      glance: words(tpl.glance, vars),
+      short: words(tpl.short, vars),
+      plainShort: words(tpl.plainShort, vars),
+      facts: words(tpl.facts, vars) || '',
+      net: net,
+      techniques: tl.techniques,
+      evidence: ev,
+      approx: approx
+    };
+  }
+
   return {
     PROFILE_VERSION: PROFILE_VERSION,
     norm: norm,
@@ -397,7 +712,8 @@ var AnubeeModView = (function () {
     labCaused: labCaused,
     beaconWindow: beaconWindow,
     respawns: respawns,
-    buildSteps: buildSteps
+    buildSteps: buildSteps,
+    describe: describe
   };
 })();
 

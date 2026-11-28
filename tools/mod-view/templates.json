@@ -1,0 +1,459 @@
+{
+  "tacticOrder": [
+    "Initial Access",
+    "Execution",
+    "Persistence",
+    "Privilege Escalation",
+    "Defense Evasion",
+    "Credential Access",
+    "Discovery",
+    "Lateral Movement",
+    "Collection",
+    "Command and Control",
+    "Exfiltration",
+    "Impact"
+  ],
+  "techniques": {
+    "T1406.002": {
+      "name": "Software Packing",
+      "tactics": [
+        "Defense Evasion"
+      ]
+    },
+    "T1407": {
+      "name": "Download New Code at Runtime",
+      "tactics": [
+        "Defense Evasion"
+      ]
+    },
+    "T1603": {
+      "name": "Scheduled Task/Job",
+      "tactics": [
+        "Persistence"
+      ]
+    },
+    "T1541": {
+      "name": "Foreground Persistence",
+      "tactics": [
+        "Persistence"
+      ]
+    },
+    "T1437.001": {
+      "name": "Application Layer Protocol: Web Protocols",
+      "tactics": [
+        "Command and Control"
+      ]
+    },
+    "T1453": {
+      "name": "Abuse Accessibility Features",
+      "tactics": [
+        "Collection"
+      ]
+    },
+    "T1516": {
+      "name": "Input Injection",
+      "tactics": [
+        "Defense Evasion",
+        "Impact"
+      ]
+    }
+  },
+  "permissionWords": {
+    "android.permission.READ_SMS": "SMS",
+    "android.permission.SEND_SMS": "SMS",
+    "android.permission.RECEIVE_SMS": "SMS",
+    "android.permission.READ_PHONE_STATE": "phone",
+    "android.permission.READ_PHONE_NUMBERS": "phone",
+    "android.permission.CALL_PHONE": "phone",
+    "android.permission.READ_CONTACTS": "contacts",
+    "android.permission.GET_ACCOUNTS": "contacts",
+    "android.permission.POST_NOTIFICATIONS": "notifications",
+    "SYSTEM_ALERT_WINDOW": "overlay"
+  },
+  "signalNames": {
+    "6": "SIGABRT",
+    "9": "SIGKILL",
+    "11": "SIGSEGV",
+    "15": "SIGTERM"
+  },
+  "steps": {
+    "detonation": {
+      "title": "Installed and opened the sample",
+      "glance": "Lab installed and opened the sample",
+      "short": "Lab opened the sample",
+      "plain": "analyst action, not attributed to the sample",
+      "plainShort": "analyst action",
+      "facts": [
+        "{pkg}"
+      ]
+    },
+    "payload_packed": {
+      "title": {
+        "variants": {
+          "loaded": "Second-stage payload unpacked and loaded",
+          "dropOnly": "Second-stage payload unpacked and written, not seen loaded"
+        }
+      },
+      "glance": "Unpacked hidden code and ran it",
+      "short": "Payload unpacked",
+      "plain": {
+        "list": [
+          "decoded code hidden inside its APK",
+          "wrote it to a file",
+          "{ranClause}",
+          "{deleted}"
+        ],
+        "sep": ", ",
+        "lastSep": " and ",
+        "end": "."
+      },
+      "plainShort": "Hidden code written to a file and run",
+      "facts": [
+        "{file}",
+        "{kind}",
+        "{size}",
+        "{saved}"
+      ],
+      "words": {
+        "deleted": "deleted the file afterwards",
+        "saved": "copy saved",
+        "ranClause": "ran it"
+      },
+      "evidence": {
+        "path": "Dropped file",
+        "why": "Why \"packed\"",
+        "whyEarly": "loaded before any network traffic, so it came from inside the APK",
+        "whyNoNet": "no network connection in the 120 s before it was written",
+        "static": "Static check",
+        "staticText": "the APK carries a {size}-byte non-DEX file ({name}), the same size",
+        "sha": "SHA-256",
+        "notMapped": "Not mapped",
+        "notMappedText": "T1407 Download New Code at Runtime, because nothing was downloaded first"
+      }
+    },
+    "payload_downloaded": {
+      "title": {
+        "variants": {
+          "loaded": "Second-stage payload written after network contact and loaded",
+          "dropOnly": "Payload written after network contact, not seen loaded"
+        }
+      },
+      "glance": "Fetched code and ran it",
+      "short": "Payload after network contact",
+      "plain": {
+        "list": [
+          "contacted the network",
+          "then wrote code to a file",
+          "{ranClause}",
+          "{deleted}"
+        ],
+        "sep": ", ",
+        "lastSep": " and ",
+        "end": "."
+      },
+      "plainShort": "Code written after network contact and run",
+      "facts": [
+        "{file}",
+        "{kind}",
+        "{size}",
+        "{saved}",
+        "network {gap} s before the write"
+      ],
+      "words": {
+        "deleted": "deleted the file afterwards",
+        "saved": "copy saved",
+        "ranClause": "ran it"
+      },
+      "evidence": {
+        "path": "Dropped file",
+        "why": "Why \"downloaded\"",
+        "whyText": "a network connection opened {gap} s before the file was written",
+        "sha": "SHA-256"
+      }
+    },
+    "payload_memload": {
+      "title": "Code loaded straight from memory",
+      "glance": "Loaded code from memory",
+      "short": "Code loaded from memory",
+      "plain": "Loaded {kind} code from memory rather than from a file.",
+      "plainShort": "Code loaded from memory",
+      "facts": [
+        "{kind}",
+        "{region} region"
+      ],
+      "evidence": {
+        "path": "Path",
+        "region": "Region"
+      }
+    },
+    "persistence": {
+      "title": {
+        "list": [
+          "{alarmT}",
+          "{fgT}",
+          "{respT}"
+        ],
+        "sep": ", ",
+        "lastSep": ", ",
+        "end": ""
+      },
+      "glance": "Made sure it keeps running",
+      "short": "Persistence",
+      "plain": {
+        "list": [
+          "{alarmClause}",
+          "{fgClause}",
+          "{respawnClause}"
+        ],
+        "sep": ", ",
+        "twoSep": " and ",
+        "lastSep": ", and ",
+        "end": "."
+      },
+      "plainShort": "Kept itself running",
+      "facts": [
+        "{alarms} alarms",
+        "{fgFact}",
+        "{respawns} respawns from {from}"
+      ],
+      "words": {
+        "alarmClause": "set alarms to wake itself",
+        "fgClause": "ran as a foreground service",
+        "respawnAll": "came back every time it was killed",
+        "respawnSome": "came back after being killed",
+        "alarmT": "scheduled alarms",
+        "fgT": "foreground service",
+        "respT": "process respawns",
+        "fgFact": "foreground service"
+      },
+      "evidence": {
+        "alarms": "Alarms",
+        "alarmsText": "{n} AlarmManager.set calls, first at {at}",
+        "foreground": "Foreground",
+        "foregroundText": "setServiceForeground called {times}, first at {at}",
+        "respawns": "Respawns",
+        "respawnsText": "{n}, process exits: {exits} ({sig}); sender not recorded"
+      }
+    },
+    "c2_beacon": {
+      "title": {
+        "variants": {
+          "ip": "{proto} C2 (suspected) beaconing to a hard-coded IP",
+          "host": "{proto} C2 (suspected) beaconing to {host}"
+        }
+      },
+      "titleNoBeat": {
+        "variants": {
+          "ip": "Repeated {proto} contact with a hard-coded IP, C2 (suspected)",
+          "host": "Repeated {proto} contact with {host}, C2 (suspected)"
+        }
+      },
+      "glance": {
+        "variants": {
+          "ip": "Kept contacting a server at a hard-coded IP",
+          "host": "Kept contacting {host}"
+        }
+      },
+      "short": "C2 (suspected) contact",
+      "plain": {
+        "variants": {
+          "ip": "Kept contacting the same server, addressed by IP with no domain name.",
+          "host": "Kept contacting the same server, {host}."
+        }
+      },
+      "plainShort": "Kept contacting one server",
+      "facts": [
+        "{count} connections",
+        "{beat}"
+      ],
+      "words": {
+        "beatLast": "about every {interval} s in the last {minutes}",
+        "beatBetween": "about every {interval} s between {from} and {to}",
+        "minute": "minute",
+        "minutes": "minutes",
+        "noDomain": "no domain name"
+      },
+      "net": {
+        "sub": [
+          "suspected C2 endpoint",
+          "{proto}",
+          "{traffic}"
+        ],
+        "traffic": "sent {tx}, received {rx}"
+      },
+      "evidence": {
+        "why": "Why \"C2\"",
+        "whyText": [
+          "{count} connections to the same destination",
+          "{noDomain}",
+          "{beat}"
+        ],
+        "whyEnd": "The server's role is inferred from this pattern",
+        "seen": "Connections",
+        "seenText": "first at {first}, last at {last}"
+      }
+    },
+    "net_contact": {
+      "title": "Network contact with {host}",
+      "glance": "Contacted {host}",
+      "short": "Network contact",
+      "plain": "Connected to {host}.",
+      "plainShort": "Connected to {host}",
+      "facts": [
+        "{connections}"
+      ],
+      "net": {
+        "sub": [
+          "{proto}"
+        ]
+      },
+      "evidence": {
+        "seen": "Connections",
+        "seenText": "first at {first}, last at {last}"
+      }
+    },
+    "lab_grant": {
+      "title": {
+        "list": [
+          "granted {perms} access",
+          "{a11yClause}",
+          "changed {others}"
+        ],
+        "sep": ", ",
+        "twoSep": ", and ",
+        "lastSep": ", and ",
+        "end": ""
+      },
+      "glance": {
+        "variants": {
+          "both": "Lab granted permissions and enabled accessibility",
+          "perms": "Lab granted permissions",
+          "a11y": "Lab enabled accessibility",
+          "other": "Lab changed permissions"
+        }
+      },
+      "short": "Lab granted permissions",
+      "plain": "analyst action, not attributed to the sample · times ±2 s",
+      "plainShort": "analyst action, times ±2 s",
+      "facts": [
+        "{count} permission changes"
+      ],
+      "evidence": {
+        "changes": "Changes",
+        "changeText": "{name}: {old} to {new}"
+      },
+      "words": {
+        "a11yClause": "enabled the accessibility service"
+      }
+    },
+    "perm_unattributed": {
+      "title": "Permission changes with no lab action around them",
+      "glance": "Permissions changed with no lab action recorded",
+      "short": "Unattributed permission changes",
+      "plain": "Not credited to the sample or to a lab action · times ±2 s",
+      "plainShort": "Not credited to anyone",
+      "facts": [
+        "{count} permission changes"
+      ],
+      "evidence": {
+        "changes": "Changes",
+        "changeText": "{name}: {old} to {new}"
+      }
+    },
+    "a11y_abuse": {
+      "title": {
+        "first": [
+          "Accessibility abuse: {abuse}",
+          "Accessibility service calls"
+        ]
+      },
+      "glance": {
+        "first": [
+          "{glanceClauses}",
+          "Called the accessibility service"
+        ]
+      },
+      "short": "Accessibility abuse",
+      "plain": {
+        "first": [
+          "{lead} {clauses}.",
+          "It called the accessibility service."
+        ]
+      },
+      "plainShort": "Used accessibility",
+      "facts": [
+        "{presses} button presses",
+        "{actions} node actions",
+        "{gestures} gestures",
+        "{reads} screen reads",
+        "{shots} screenshots",
+        "exact times after the first not recorded"
+      ],
+      "words": {
+        "injection": "input injection",
+        "reading": "screen reading",
+        "leadLab": "Once the lab enabled accessibility, it",
+        "leadPlain": "It",
+        "pressClause": "pressed system buttons",
+        "actionClause": "acted on screen elements",
+        "gestureClause": "performed gestures",
+        "readClause": "read what was on screen",
+        "shotClause": "took screenshots",
+        "glancePress": "Pressed system buttons",
+        "glanceRead": "read the screen"
+      },
+      "evidence": {
+        "presses": "Presses",
+        "actions": "Node actions",
+        "gestures": "Gestures",
+        "reads": "Reads",
+        "shots": "Screenshots",
+        "text": "{n} calls, first at {at}",
+        "depends": "Depends on",
+        "dependsText": "the lab enabling accessibility at about {at}",
+        "notKnown": "Not known",
+        "notKnownText": "what was on screen"
+      }
+    },
+    "exec": {
+      "title": "Ran a command",
+      "glance": "Ran {cmd}",
+      "short": "Ran a command",
+      "plain": "Ran {cmd}.",
+      "plainShort": "Ran {cmd}",
+      "facts": [
+        "{times}"
+      ],
+      "evidence": {
+        "cmd": "Command"
+      }
+    },
+    "file_probe": {
+      "title": "Looked at a file outside its own folder",
+      "glance": "Looked at {path}",
+      "short": "File access",
+      "plain": "Opened {path}.",
+      "plainShort": "Opened {path}",
+      "facts": [
+        "{times}"
+      ],
+      "evidence": {
+        "path": "Path"
+      }
+    },
+    "recorded": {
+      "title": "Recorded: {key}",
+      "glance": "Recorded: {key}",
+      "short": "Recorded: {key}",
+      "plain": "Shown as recorded, with no interpretation.",
+      "plainShort": "Recorded, not interpreted",
+      "facts": [
+        "{records}"
+      ],
+      "evidence": {
+        "section": "Section",
+        "key": "Key"
+      }
+    }
+  }
+}

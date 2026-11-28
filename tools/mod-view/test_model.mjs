@@ -198,3 +198,125 @@ test('respawn-only run still gets a persistence step; a bare exit does not', () 
   const bare = M.buildSteps(rs.slice(0, 2), [], { keys: {} }, null).map((x) => x.template);
   assert.ok(!bare.includes('persistence') && bare.includes('recorded'));
 });
+
+// ---- step wording and ATT&CK tags ----
+const T = JSON.parse(data('../templates.json'));
+const steps = M.buildSteps(records, marks, profile, PKG);
+const ctx = { records, marks, summaries: null, staticApk: null };
+const d = (id) => M.describe(steps.find((s) => s.template === id), ctx, T);
+
+test('payload step words and tag', () => {
+  assert.equal(d('payload_packed').title, 'Second-stage payload unpacked and loaded');
+  assert.deepEqual(d('payload_packed').techniques.map((t) => t.id), ['T1406.002']);
+  assert.ok(!/delet/i.test(d('payload_packed').plain));
+  assert.equal(d('payload_packed').tactic, 'Defense Evasion');
+  assert.match(d('payload_packed').facts, /0\.bin · DEX · 777 KB · copy saved/);
+});
+
+test('payload wording mentions deletion only with a delete record', () => {
+  const del = { type: 'dexload_detect', pid: 1, ts_ns: T0 + 2.6e9, stage: 'delete', kind: 'dex', path: records.find((r) => r.stage === 'drop').path, ino: 38531 };
+  const s = M.buildSteps([...records, del], marks, profile, PKG).find((x) => x.template === 'payload_packed');
+  assert.match(M.describe(s, ctx, T).plain, /deleted the file afterwards/);
+});
+
+test('C2 is always "suspected" and counts connections', () => {
+  const c = d('c2_beacon');
+  assert.match(c.net.sub, /suspected C2 endpoint/);
+  assert.equal(c.net.endpoint, '203.0.113.5:3434');
+  assert.match(c.net.sub, /sent 6\.2 KB, received 1\.4 KB/);
+  assert.match(c.facts, /16 connections/);
+  assert.match(c.facts, /about every 20 s in the last \d+ minutes?/);
+  assert.match(c.title, /C2 \(suspected\)/);
+  assert.deepEqual(c.techniques.map((t) => t.id), ['T1437.001']);
+  assert.equal(c.tactic, 'Command and Control');
+});
+
+test('no regular window means no "about every" phrase', () => {
+  const irregular = [1, 3, 8, 9, 20, 41].map((s) => ({ ...netOpenAt(s), dest: '203.0.113.9:80' }));
+  const st = M.buildSteps(irregular, [], { keys: {} }, PKG).find((x) => x.template === 'c2_beacon');
+  const c = M.describe(st, { records: irregular, marks: [], summaries: null }, T);
+  assert.ok(!/about every/.test(c.facts));
+  assert.match(c.net.sub, /suspected C2 endpoint/);
+});
+
+test('accessibility: first-seen totals, never activity over time', () => {
+  const a = d('a11y_abuse');
+  assert.equal(a.tactic, 'Defense Evasion · Collection · Impact');
+  assert.match(a.facts, /20 button presses · 18 screen reads · exact times after the first not recorded/);
+  assert.deepEqual(a.techniques.map((t) => t.id).sort(), ['T1453', 'T1516']);
+  assert.equal(a.title, 'Accessibility abuse: input injection and screen reading');
+  assert.match(a.plain, /^Once the lab enabled accessibility, it pressed system buttons and read what was on screen\.$/);
+});
+
+test('accessibility tags need their own calls', () => {
+  const only = records.filter((r) => r.type === 'accessibility_detect' && r.category === 'screen_read');
+  const st = M.buildSteps(only, [], { keys: {} }, PKG).find((x) => x.template === 'a11y_abuse');
+  const a = M.describe(st, { records: only, marks: [], summaries: null }, T);
+  assert.deepEqual(a.techniques.map((t) => t.id), ['T1453']);
+  assert.equal(a.tactic, 'Collection');
+  assert.ok(!/Once the lab/.test(a.plain));
+});
+
+test('persistence counts come from summaries and tags follow the calls', () => {
+  const p = d('persistence');
+  assert.equal(p.title, 'Scheduled alarms, foreground service, process respawns');
+  assert.match(p.facts, /28 alarms · foreground service · 12 respawns from 48 s/);
+  assert.deepEqual(p.techniques.map((t) => t.id), ['T1603', 'T1541']);
+  assert.equal(p.tactic, 'Persistence');
+  assert.match(p.plain, /^Set alarms to wake itself, ran as a foreground service, and came back every time it was killed\.$/);
+});
+
+test('lab grant is approximate and not attributed to the sample', () => {
+  const l = d('lab_grant');
+  assert.equal(l.approx, true);
+  assert.match(l.plain, /analyst action, not attributed to the sample/);
+  assert.equal(l.tactic, null);
+  assert.deepEqual(l.techniques, []);
+  assert.equal(l.title, 'Granted overlay, SMS, notifications, phone and contacts access, and enabled the accessibility service');
+});
+
+test('permissions outside the fixed list keep their raw name', () => {
+  const rec = { type: 'perm_change', ts_ns: T0 + 48.3e9, package: PKG, category: 'permission', name: 'android.permission.BODY_SENSORS', change: 'granted', new: 'granted' };
+  const m2 = [{ ts: T0 + 48.2e9, label: 'grant-begin:a' }, { ts: T0 + 48.4e9, label: 'grant-end:a' }];
+  const st = M.buildSteps([rec], m2, { keys: {} }, PKG).find((x) => x.template === 'lab_grant');
+  assert.equal(M.describe(st, { records: [rec], marks: m2 }, T).title, 'Granted android.permission.BODY_SENSORS access');
+});
+
+test('detonation is the lab opening the sample, exact', () => {
+  const x = d('detonation');
+  assert.equal(x.approx, false);
+  assert.equal(x.title, 'Installed and opened the sample');
+  assert.match(x.facts, /com\.example\.sample/);
+});
+
+test('unknown record types are shown, not guessed', () => {
+  const s = M.buildSteps([...records, { type: 'brand_new_analyzer', ts_ns: T0 + 9e9, what: 'x' }], marks, profile, PKG);
+  assert.equal(M.describe(s.find((x) => x.template === 'recorded'), ctx, T).title, 'Recorded: brand_new_analyzer');
+});
+
+test('T1407 never tagged without a prior download', () => {
+  assert.ok(!steps.some((s) => M.describe(s, ctx, T).techniques.some((t) => t.id === 'T1407')));
+});
+
+test('a download is tagged T1407 only when a net open precedes the drop', () => {
+  const recs = [netOpenAt(1), ...records.filter((r) => r.type === 'dexload_detect')];
+  const st = M.buildSteps(recs, [], { keys: {} }, PKG).find((x) => x.template === 'payload_downloaded');
+  const o = M.describe(st, { records: recs, marks: [], summaries: null }, T);
+  assert.deepEqual(o.techniques.map((t) => t.id), ['T1407']);
+});
+
+test('persistence tags need their calls (alarm-only run has no T1541)', () => {
+  const recs = records.filter((r) => r.type === 'binder_api' && r.method === 'set');
+  const st = M.buildSteps(recs, [], { keys: {} }, PKG).find((x) => x.template === 'persistence');
+  assert.deepEqual(M.describe(st, { records: recs, marks: [] }, T).techniques.map((t) => t.id), ['T1603']);
+});
+
+test('every fixture step describes without placeholders left over', () => {
+  steps.forEach((s) => {
+    const o = M.describe(s, ctx, T);
+    ['title', 'plain', 'glance', 'short', 'plainShort', 'facts'].forEach((k) => {
+      assert.equal(typeof o[k], 'string');
+      assert.ok(!/[{}]|undefined|null|NaN/.test(o[k]), s.template + '.' + k + ': ' + o[k]);
+    });
+  });
+});

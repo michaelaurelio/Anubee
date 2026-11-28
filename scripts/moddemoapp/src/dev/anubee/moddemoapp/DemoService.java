@@ -25,8 +25,8 @@ import java.net.InetAddress;
 // delivered anywhere. No persistence, no obfuscation, no C2.
 //
 // Runs as a foreground service, not a plain background thread on the
-// Activity: this device's OEM power manager (confirmed: Transsion/HiOS's
-// Usf_Hiber freezer) suspends a backgrounded app's process ~5s after it
+// Activity: this device's OEM power manager (confirmed: the vendor's
+// app freezer) suspends a backgrounded app's process ~5s after it
 // loses foreground visibility -- regardless of held wake locks, since a
 // wake lock only blocks device suspend, not this class of OEM app-freeze
 // policy (a PARTIAL_WAKE_LOCK was tried first and confirmed, via logcat,

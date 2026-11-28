@@ -1,0 +1,15 @@
+{"type":"perm_change","ts_ns":15435093600303,"package":"com.example.sample","category":"installed","name":"installed","change":"baseline","old":null,"new":"yes"}
+{"type":"perm_change","ts_ns":15435093600303,"package":"com.example.sample","category":"permission","name":"android.permission.FOREGROUND_SERVICE","change":"baseline","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15435093600303,"package":"com.example.sample","category":"permission","name":"android.permission.INTERNET","change":"baseline","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15435093600303,"package":"com.example.sample","category":"permission","name":"android.permission.WAKE_LOCK","change":"baseline","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15483393600303,"package":"com.example.sample","category":"appop","name":"SYSTEM_ALERT_WINDOW","change":"changed","old":"default","new":"allow"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.READ_SMS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.POST_NOTIFICATIONS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.READ_PHONE_NUMBERS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.RECEIVE_SMS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.READ_PHONE_STATE","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.SEND_SMS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.CALL_PHONE","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.GET_ACCOUNTS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.READ_CONTACTS","change":"granted","old":null,"new":"granted"}
+{"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"accessibility","name":"accessibility","change":"granted","old":null,"new":"com.example.sample/com.example.sample.svc.HelperService"}

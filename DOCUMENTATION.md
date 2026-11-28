@@ -2003,6 +2003,24 @@ Design points worth knowing:
 - **`-q` does not suppress it.** `-q` governs per-event *stdout*; this is
   operational status on *stderr*.
 
+### 7.7 Lab markers (`anubee mark`)
+
+`anubee mark <label> --file PATH` appends one JSON line to PATH (created 0644 if
+missing) and exits:
+
+```json
+{"type":"lab_mark","ts_ns":123456789,"label":"grant-begin:a11y"}
+```
+
+- **Clock.** `ts_ns` is `CLOCK_MONOTONIC`, the same base as `bpf_ktime_get_ns`
+  (and so every tracer record's `ts_ns`), so a mark lines up with tracer output
+  with no conversion.
+- **Quiet.** Userspace only, no BPF object, nothing written into any target.
+- **Label convention** (used by the lab harness): `launch`, `grant-begin:<kind>`,
+  `grant-end:<kind>`, `stop`. The label is JSON-escaped and otherwise opaque.
+- **Exit codes.** 0 written, 2 usage error (missing label/`--file`, or a label
+  too long for one line), 1 open/write failure (message on stderr).
+
 ## 8. MCP server (`tools/anubee-mcp`, host-side Python)
 
 - `trace_store.py` — two ingest paths. `load()` loads a `type:"syscall"` trace
@@ -2037,7 +2055,8 @@ Design points worth knowing:
   `task/<tid>`, hex and 6+-digit numbers normalized out. A *noise profile*
   counts, per key, how many benign baseline apps showed it; a key seen in at
   least `min_apps` of them (default half, rounded up) is device noise.
-  Snapshots (`perm_change` baseline), summaries and own-folder opens are not
+  Snapshots (`perm_change` baseline), summaries, own-folder opens and `net`
+  `close` records (a connection counts once, at its `open`) are not
   behaviour; record types it doesn't know are always shown. The view groups
   findings per section in first-appearance order with count, first-seen
   seconds and failed outcomes, counts what it hid, and carries degraded
@@ -2081,6 +2100,112 @@ flowchart LR
 
 **Long-term:** a single unified `anubee-mcp` that treats `anubee funcs` structured
 output as a first-class trace source alongside syscalls. See [BACKLOG.md](BACKLOG.md).
+
+### 8.1 Run view (`mod_findings.py report --html`)
+
+One `anubee mod` run as one self-contained HTML page: what the sample did,
+in order, with the lab's own actions told apart from it. The page model and
+renderer are plain JavaScript in `tools/mod-view/` (`model.js`, `render.js`,
+`view.css`, `templates.json`), tested with `node --test`; the Python CLI only
+gathers the inputs and packs the page.
+
+```sh
+mod_findings.py report PROFILE.json RUN.jsonl --html OUT.html \
+    [--marks MARKS] [--meta META.txt] [--badging BADGING.txt] [--apk APK]
+```
+
+```mermaid
+flowchart LR
+    R["run JSONL"] --> T["trim: drop what the<br/>profile hides, keep what<br/>the view still reads"]
+    P[(noise profile)] --> T
+    M["lab marks<br/>(anubee mark)"] --> B
+    X["meta.txt / badging /<br/>APK entry list"] --> B
+    T --> B["model.js buildView:<br/>steps, actors, wording,<br/>IOCs, limits"]
+    B --> V["render.js renderView"]
+    V --> H["one HTML file"]
+    B -.planned.-> D["Desktop tab<br/>(same model.js)"]
+```
+
+- **Steps and actors.** Records group into steps (payload, persistence,
+  suspected C2, accessibility abuse, file probes, permission changes...). A
+  permission change inside a `grant-begin:<k>` … `grant-end:<k>` mark window
+  (+2 s) is the lab's; one with no window around it is shown as
+  unattributed, never credited to the sample. A run without marks therefore
+  shows every permission change as unattributed; those steps are drawn in a
+  neutral colour (key: "Not attributed"), not the sample's. Respawns pair each
+  process exit with a new pid seen after it; exits back that count even when
+  the profile hides them (ordinary apps get killed too). A pid a traced
+  process forked (a `spawn` record's `child_pid`, such as a `sh -c` helper) is
+  never a respawn, and its exit is not the app dying: it stays out of the
+  persistence step's exits, signals and start time.
+- **Failed attempts are told as failures.** An `execve` or `file_access`
+  record with an `error` or a negative `result` is a failed attempt. When every
+  attempt in a step failed, the card, the glance row and the headline say
+  "Tried to run su" / "Tried to open ..." with the failure count and errno
+  names; a step with some failures gives both counts.
+- **Trace length and end row.** With a `stop` mark, the kicker's length and
+  the end row ("Trace stopped") both run from the start to that mark. Without
+  one, the end row reads "Last record", and the kicker uses meta's
+  `started`/`stopped` labelled "(wall clock)", else the record span.
+- **Words come from templates only.** Every sentence on the page is a
+  `templates.json` string filled with record fields; nothing is generated.
+  "C2" always carries "(suspected)"; "about every N s" needs four steady
+  gaps; T1407 needs a connection opened within 120 s before the drop.
+- **Limits of this run** are stated from rules over the records: no
+  exfiltration shown (contents are not traced); commands from the suspected
+  C2 can't be seen, with the bytes it sent back and no SMS access or command
+  execution recorded (only with clean `net`/`binder-api`/`execve` coverage; an
+  engine with any degraded record is not clean, and untracked flows make the
+  byte total "at least"); who sent the kills; and degraded coverage.
+- **Self-contained.** View code, styles and data are inlined; the page loads
+  nothing, and its only outside links are ATT&CK technique pages. Embedded
+  JSON escapes `</`, `<!--` and U+2028/U+2029.
+- **Theming.** `view.css` uses Anubee Desktop's theme tokens (`--surface`,
+  `--panel`, `--text`, `--accent`... with Desktop's dark and light values) and
+  its font names (Inter, JetBrains Mono), referenced by name only, so the page
+  falls back to system fonts when they are not installed. Setting
+  `data-theme="dark"` or `"light"` on `<html>` selects the theme, exactly as in
+  Desktop, so a Desktop tab sets it once; with no attribute the standalone page
+  follows the system setting and defaults to dark. The sample, the lab and the
+  network keep three separable colours taken from Desktop's palette; they mark
+  dots and borders, while text stays in the theme's text colour so it keeps
+  its contrast in both themes. Printing uses the light theme.
+- **What is embedded.** Every record the profile does not hide, plus all
+  `*_summary`, `coverage` and `perm_change` records, plus the hidden records
+  the model still reads (connections and lookups for the payload and C2
+  wording, process exits and execs, SMS binder calls, each pid's first record
+  and every `spawn` record for respawns, the run's first and last record for
+  its times), and the traced package, which the model prefers to inferring
+  it. The whole
+  run's hidden counts travel with it, and the profile is cut to the kept
+  records' keys (and its baseline apps to their number), so the trimmed data builds the same view as the full run
+  (a test checks this with Node). A saved payload copy's device path
+  (`saved.file`) is dropped; its hash and size stay. Payload files are never
+  embedded.
+- **Optional inputs.** `--marks`: the run's `anubee mark` file; without the
+  flag, a marks file next to the run is used when it exists, and stderr says
+  so: `run.jsonl.marks` (the default name) first, else `run.marks`. `--meta`: the lab's `key=value` file
+  (`family`, `sha256`, `device`, `started`, `stopped`; a family read from it
+  is labelled "MalwareBazaar tag"; the device shows in the kicker). `--badging`: `aapt dump badging` output, for the
+  footer's declared-but-not-granted list. `--apk`: entry names and sizes are
+  read in memory with `zipfile` (never extracted), so a payload whose size
+  matches a non-DEX APK entry can be said to come from inside the APK. An
+  entry whose first bytes can't be read (encryption bit, unknown compression)
+  stays listed with its DEX check unknown; a file that isn't a readable zip
+  is skipped with a note on stderr, and the page is still written.
+- **Hostile input.** Invalid UTF-8 in the run (raw-byte paths) and lone
+  surrogates from `\ud800`-style escapes are replaced with U+FFFD when the
+  records are read, so the page and the printed text/JSON findings never
+  fail on them; a leading byte-order mark is ignored. The embedded JSON is
+  ASCII-escaped. Any error reading an APK entry leaves its DEX check unknown,
+  and an unknown check never backs the "inside the APK" wording.
+- **Phone layout.** Below 900 px the page reads: At a glance, the
+  timeline, then the indicators.
+- **Missing inputs.** A profile, run, `--marks`, `--meta`, `--badging` or
+  `--apk` path that doesn't exist is a one-line error on stderr and exit 2.
+- The MCP tool `mod_findings_view` takes an optional `html_out` that writes
+  the same page, with optional `marks`, `meta` and `badging` paths passed
+  through and `package` embedded in the page.
 
 ---
 

@@ -120,10 +120,11 @@ COMMON_CSRC := $(SRC)/common/lib_trace.c $(SRC)/common/proc_mem.c $(SRC)/common/
                $(SRC)/common/syscall_argtypes.c $(SRC)/common/jsonl_merge.c \
                $(SRC)/common/human_out.c $(SRC)/common/target_registry.c \
                $(SRC)/common/drain_progress.c $(SRC)/common/sha256.c \
-               $(SRC)/common/binder_decode.c
+               $(SRC)/common/binder_decode.c \
+               $(SRC)/common/lab_mark.c
 COMMON_OBJ  := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(COMMON_CSRC))
 COMMON_PART := $(BUILD)/common.part.o
-COMMON_API  := anubee_libtrace_resolve_path anubee_libtrace_format_lib \
+COMMON_API  := lab_mark_format cmd_mark anubee_libtrace_resolve_path anubee_libtrace_format_lib \
                anubee_libtrace_emit_lib anubee_libtrace_emit_unlib \
                anubee_libtrace_emit_packed apk_list_sos apk_so_count apk_so_get apk_so_at \
                proc_mem_open proc_mem_read nterp_name \
@@ -646,6 +647,8 @@ test:
 	$(BUILD)/test_lib_seed
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_coverage.c src/common/coverage.c src/common/emit.c -o $(BUILD)/test_coverage
 	$(BUILD)/test_coverage
+	$(HOST_CC) -Wall -Wextra -Isrc tests/test_lab_mark.c src/common/lab_mark.c src/common/emit.c -o $(BUILD)/test_lab_mark
+	$(BUILD)/test_lab_mark
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_human_out.c src/common/human_out.c -o $(BUILD)/test_human_out -lpthread
 	$(BUILD)/test_human_out
 	$(HOST_CC) -Wall -Wextra -Isrc tests/test_syscall_argtypes.c -o $(BUILD)/test_syscall_argtypes
@@ -658,6 +661,8 @@ test:
 	@if command -v python3 >/dev/null 2>&1; then python3 tools/anubee-mcp/test_mod_findings.py; \
 	 else echo "skip: python3 not available for the mod findings test"; fi
 	sh tests/check_argp_errors.sh
+	@if command -v node >/dev/null 2>&1; then node --test 'tools/mod-view/test_*.mjs'; \
+	 else echo "skip: node not available for the mod-view tests"; fi
 	@if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" 2>/dev/null; then \
 	  python3 tools/anubee-mcp/test_unified_ingest.py; \
 	  python3 tools/anubee-mcp/test_mcp_structured_tools.py; \

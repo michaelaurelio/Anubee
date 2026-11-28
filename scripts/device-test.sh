@@ -5,11 +5,14 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|mark|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
 #   ANUBEE_TEST_TIMEOUT=<secs>   per-run window (default: 10)
+#   ANUBEE_SCREENREC_PKG / _SVC / _ACTION   a pre-installed screen recorder's
+#                                package, exported service (e.g. .RecordingService)
+#                                and its start action; screencapture-detect skips if unset
 #
 # WHY each anubee run gets its OWN `su -c`: chaining `am force-stop ...; anubee ...`
 # inside a single `su -c` runs anubee under an intermediate shell in a reduced
@@ -448,7 +451,7 @@ test_funcs_structured() {
     info "funcs --structured OK — structured call record found"
 }
 
-# mod file-access: kprobe-only analyzer. deskclock's own /data/data opens at
+# mod file-access: kprobe-only analyzer. The test app's own /data/data opens at
 # startup are enough to prove attach + emission; we don't rely on it touching
 # external storage or another app's dir (timing/app-dependent).
 test_mod_file_access() {
@@ -801,9 +804,9 @@ for n,l in enumerate(sys.stdin,1):
     info "fileless-detect ART-name exclusion check on a real app (informational): $jit_lines line(s) against $PKG"
 }
 
-# mod screencapture-detect: real trigger via com.transsion.screenrecorder
-# (pre-installed OEM screen-recorder app, confirmed installed on the test
-# device), whose exported RecordingService legitimately requests a
+# mod screencapture-detect: real trigger via a pre-installed OEM screen
+# recorder named by the environment (ANUBEE_SCREENREC_PKG, _SVC, _ACTION;
+# the test skips when they're unset), whose exported recording service legitimately requests a
 # MediaProjection-typed foreground service (types=0x000000A0 =
 # MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
 # installed APK). Unlike massdelete-detect/fileless-detect's synthetic
@@ -835,8 +838,12 @@ test_screencapture_detect() {
     # and IDisplayManager.createVirtualDisplay (Binder). The consent prompt is
     # accepted by tapping its "Start recording" node when it appears (the app
     # skips it once consent was given). The recording is deleted afterwards.
-    local pkg="com.transsion.screenrecorder"
-    local svc="$pkg/.service.RecordingService"
+    local pkg="${ANUBEE_SCREENREC_PKG:-}" act="${ANUBEE_SCREENREC_ACTION:-}"
+    local svc="$pkg/${ANUBEE_SCREENREC_SVC:-}"
+    if [ -z "$pkg" ] || [ -z "$act" ] || [ -z "${ANUBEE_SCREENREC_SVC:-}" ]; then
+        info "SKIP: screencapture-detect needs ANUBEE_SCREENREC_PKG, ANUBEE_SCREENREC_SVC and ANUBEE_SCREENREC_ACTION (a pre-installed screen recorder with an exported recording service)"
+        return 0
+    fi
     if ! adb shell "pm path $pkg" >/dev/null 2>&1; then
         info "SKIP: screencapture-detect needs the OEM recorder ($pkg), not installed"
         return 0
@@ -845,7 +852,7 @@ test_screencapture_detect() {
     local drive="/data/local/tmp/anubee_sc_drive.sh"
     adb shell "cat > $drive" <<SH
 sleep 2
-am start-foreground-service -a transsion.intent.screenrecorder.RECORDER_SERVICE -n $svc >/dev/null 2>&1
+am start-foreground-service -a $act -n $svc >/dev/null 2>&1
 sleep 2
 uiautomator dump /data/local/tmp/anubee_sc_ui.xml >/dev/null 2>&1
 b=\$(grep -o 'text="Start recording"[^>]*bounds="[^"]*"' /data/local/tmp/anubee_sc_ui.xml | grep -o '[0-9][0-9]*' | tail -4 | tr '\n' ' ')
@@ -1453,6 +1460,24 @@ DRV
     fi
 }
 
+# mark: userspace-only lab-action marker. Two calls must append two well-formed
+# lines whose CLOCK_MONOTONIC ts_ns does not go backwards.
+test_mark() {
+    echo "=== mark (lab-action marker, no BPF) ==="
+    local f="/data/local/tmp/anubee_mark.jsonl" out
+    adb shell "su -c 'rm -f $f'" >/dev/null 2>&1
+    adb shell "su -c '$DEVICE_PATH mark launch --file $f'" >/dev/null 2>&1 || fail "mark: first call failed"
+    adb shell "su -c '$DEVICE_PATH mark launch --file $f'" >/dev/null 2>&1 || fail "mark: second call failed"
+    out="$(adb shell "su -c 'cat $f; rm -f $f'" | tr -d '\r')"
+    [ "$(grep -cE '^\{"type":"lab_mark","ts_ns":[0-9]+,"label":"launch"\}$' <<<"$out")" = "2" ] \
+        || { echo "$out" >&2; fail "mark: expected two lab_mark lines"; }
+    local t1 t2
+    t1="$(sed -n 1p <<<"$out" | sed -E 's/.*"ts_ns":([0-9]+).*/\1/')"
+    t2="$(sed -n 2p <<<"$out" | sed -E 's/.*"ts_ns":([0-9]+).*/\1/')"
+    [ "$t2" -ge "$t1" ] || fail "mark: ts_ns went backwards ($t1 -> $t2)"
+    info "mark OK - two lines, ts_ns $t1 -> $t2"
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -1483,8 +1508,9 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    mark)              test_mark ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now; test_mark ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | mark | all)" ;;
 esac
 
 forcestop

@@ -295,8 +295,8 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ### Device-test portability — 2026-11-24
 
-Found running the full `make device-test` suite on a second phone (MediaTek,
-GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
+Found running the full `make device-test` suite on a second phone
+(GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
 the tests encode the original phone's environment.
 
 - **DT1 — `lib` asserts `bionic/libc.so` appears.** The app inherits libc
@@ -630,6 +630,44 @@ the tests encode the original phone's environment.
 
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
+
+### 2026-11-28
+
+- **Run view: one self-contained HTML page per `anubee mod` run**
+  (`mod_findings.py report --html`, MCP `mod_findings_view(html_out=...)`;
+  page model and renderer in `tools/mod-view/`). The sample's steps in time
+  order with plain wording from templates, the lab's actions (from marks)
+  told apart, unattributed permission changes never credited to anyone,
+  IOCs, and the run's limits. The page embeds only what the view needs and
+  loads nothing. Known drawbacks: no live view (post-run only); `execve` and
+  `file_access` steps carry no ATT&CK tag yet; the declared-but-not-granted
+  list needs `--badging` input; the Anubee-Desktop tab that reuses the same
+  model is pending; marks are written by hand (`anubee mark`) until the lab
+  helper (planned) writes them for every lab action. Also open:
+  - every `file_access` step reads "Looked at a file outside its own folder";
+    the per-category wording ("Probes for a debugger", ...) is not built yet
+    (the generic line is true, just less specific);
+  - `anubee mark --file` has no default path, so the report's automatic
+    pickup (`<run>.jsonl.marks`, else `<run>.marks`) only works when the
+    harness names the file that way;
+  - the beacon search (`beaconWindow`) is quadratic over a run of steady gaps,
+    so a run with very many regular connections to one host is slow to build;
+  - an `execve`/open with no result and no error still reads "Ran"/"Opened"
+    (an unknown outcome should read "Tried to");
+  - a clean exit outside a persistence step shows "Recorded: exit signal None";
+  - the standalone-number bolding uses a regex lookbehind, which throws on
+    Safari before 16.4 and blanks the page there;
+  - MCP `html_out` with a wrong `marks`/`meta`/`badging` path raises a raw
+    `FileNotFoundError` instead of the CLI's one-line message.
+
+- **`anubee mark` lab-action markers.** Userspace-only subcommand that appends
+  `{"type":"lab_mark","ts_ns":...,"label":...}` to a file on `CLOCK_MONOTONIC`
+  (the tracers' clock), so a harness can timestamp launch / grant / stop actions
+  for later correlation (DOCUMENTATION.md §7.7).
+- **Findings view counts each connection once.** `net` writes an `open` and a
+  `close` record per connection, so net findings counted every connection
+  twice; `close` records are now skipped (records without `event`, from older
+  runs, still count).
 
 ### 2026-11-25
 
@@ -1746,7 +1784,7 @@ is in DOCUMENTATION.md and the referenced specs.
   old strict-contiguity walk-back stopped at libandroid_runtime's 1-page RO→exec gap and
   returned the wrong base. The CFI walk now crosses `art_jni_trampoline` into AOT-compiled
   Java (`boot.oat!android.os.BinderProxy.transact`, full `…→ActivityThread.main` chains;
-  ~95 crossings on deskclock). Blast radius beyond CFI: symbol naming also improved for
+  ~95 crossings on the test app). Blast radius beyond CFI: symbol naming also improved for
   gapped libs. Diagnostic instrumentation commits: `cd0c628`, `d861340`, `275d3a2`,
   `8b35511`.
 

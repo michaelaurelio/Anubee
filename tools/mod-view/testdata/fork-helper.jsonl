@@ -1,0 +1,10 @@
+{"type":"perm_change","ts_ns":15435093600303,"package":"com.example.sample","category":"installed","name":"installed","change":"baseline","old":null,"new":"yes"}
+{"type":"binder_api","pid":100,"tid":100,"ts_ns":15436093600303,"comm":"example.sample","interface":"android.app.IActivityManager","method":"attachApplication","code":17,"oneway":false}
+{"type":"spawn","pid":100,"tid":100,"ts_ns":15437093600303,"child_pid":200,"comm":"example.sample"}
+{"type":"execve","pid":200,"tid":200,"ts_ns":15437094600303,"comm":"example.sample","filename":"/system/bin/sh","argc":3,"argv":["sh","-c","id"],"backtrace":[],"argv_truncated":false,"flags":[],"result":0}
+{"type":"proc_exit","pid":200,"tid":200,"ts_ns":15437193600303,"comm":"sh","exit_status":0}
+{"type":"spawn","pid":100,"tid":100,"ts_ns":15438093600303,"child_pid":201,"comm":"example.sample"}
+{"type":"execve","pid":201,"tid":201,"ts_ns":15438094600303,"comm":"example.sample","filename":"/system/bin/sh","argc":3,"argv":["sh","-c","id"],"backtrace":[],"argv_truncated":false,"flags":[],"result":0}
+{"type":"proc_exit","pid":201,"tid":201,"ts_ns":15438193600303,"comm":"sh","exit_status":0}
+{"type":"proc_exit","pid":100,"tid":100,"ts_ns":15445093600303,"comm":"example.sample","signal":9}
+{"type":"binder_api","pid":300,"tid":300,"ts_ns":15446093600303,"comm":"example.sample","interface":"android.app.IActivityManager","method":"attachApplication","code":17,"oneway":false}

@@ -75,7 +75,7 @@ python3 tools/anubee-mcp/mod_findings.py report noise.json run.jsonl --html run.
         [--marks run.marks] [--meta meta.txt] [--badging badging.txt] [--apk sample.apk]
 ```
 
-`--marks` is an `anubee mark` file (without the flag, `run.marks` next to
+`--marks` is an `anubee mark` file (without the flag, `run.jsonl.marks`, else `run.marks`, next to
 `run.jsonl` is used when it exists; with no marks, permission changes are
 shown as unattributed); `--meta` is `key=value` lines (`family`, `sha256`,
 `device`, `started`, `stopped`); `--badging` is `aapt dump badging` output; `--apk` is

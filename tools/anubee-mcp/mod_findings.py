@@ -416,9 +416,12 @@ def _need_file(path, what):
 
 
 def _sidecar_marks(run_path):
-    """<run>.marks next to RUN.jsonl (run.jsonl -> run.marks), when it exists."""
-    side = os.path.splitext(run_path)[0] + ".marks"
-    return side if os.path.isfile(side) else None
+    """The marks file next to RUN.jsonl, when one exists: run.jsonl.marks
+    (the default name), else run.marks."""
+    for side in (run_path + ".marks", os.path.splitext(run_path)[0] + ".marks"):
+        if os.path.isfile(side):
+            return side
+    return None
 
 
 def _main(argv):

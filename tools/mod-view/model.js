@@ -321,6 +321,8 @@ var AnubeeModView = (function () {
     var payloads = new Map();         // ino -> dexload records
     var memloads = [], persist = [], a11y = [], opens = [], hidden = [], labPerm = [], otherPerm = [];
     var hiddenExits = [];             // ordinary apps get killed too, but a respawn needs its exit
+    var forked = new Set();           // a spawn's child is a helper: its exit is not the app dying
+    records.forEach(function (r) { if (r.type === 'spawn' && typeof r.child_pid === 'number') forked.add(r.child_pid); });
     var lookups = new Map();          // looked-up name -> {name, count, firstTs}
 
     records.forEach(function (r) {
@@ -328,7 +330,7 @@ var AnubeeModView = (function () {
       if (k === null) return;
       if (isNoise(profile, k[0], k[1])) {
         if (k[0] === 'net' && r.event === 'open' && !isLookup(r)) hidden.push(r);
-        if (r.type === 'proc_exit') hiddenExits.push(r);
+        if (r.type === 'proc_exit' && !forked.has(r.pid)) hiddenExits.push(r);
         return;
       }
       var sec = k[0], key = k[1];
@@ -362,7 +364,7 @@ var AnubeeModView = (function () {
         if (isPersistKey(key)) persist.push(r);
         return;                       // unclaimed binder calls are footer counts only
       }
-      if (sec === 'proc' && r.type === 'proc_exit') { persist.push(r); return; }
+      if (sec === 'proc' && r.type === 'proc_exit' && !forked.has(r.pid)) { persist.push(r); return; }
       var gk = sec + '\u0000' + key;
       if (!groups.has(gk)) groups.set(gk, { sec: sec, key: key, recs: [] });
       groups.get(gk).recs.push(r);

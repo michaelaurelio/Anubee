@@ -655,15 +655,10 @@ is in DOCUMENTATION.md and the referenced specs.
     the per-category wording ("Probes for a debugger", ...) is not built yet
     (the generic line is true, just less specific);
   - `anubee mark --file` has no default path, so the report's automatic
-    `<run>.marks` pickup only works when the harness names the file that way;
+    pickup (`<run>.jsonl.marks`, else `<run>.marks`) only works when the
+    harness names the file that way;
   - the beacon search (`beaconWindow`) is quadratic over a run of steady gaps,
     so a run with very many regular connections to one host is slow to build;
-  - fix before merging to main: the persistence step still counts a forked
-    helper's `proc_exit` in its exits, signals and start time (respawns
-    themselves already skip `spawn` children), so a sample that runs shell
-    helpers and also respawns can show a wrong "from" time and signal mix;
-  - fix before merging to main: the automatic marks pickup looks for
-    `<run>.marks` only; it should look for `<run>.jsonl.marks` first;
   - an `execve`/open with no result and no error still reads "Ran"/"Opened"
     (an unknown outcome should read "Tried to");
   - a clean exit outside a persistence step shows "Recorded: exit signal None";

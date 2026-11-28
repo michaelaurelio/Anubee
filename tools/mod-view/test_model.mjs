@@ -189,6 +189,23 @@ test('respawns pairs each exit with a distinct new pid', () => {
   assert.equal(M.respawns([ex(1), { type: 'execve', pid: 2, ts_ns: 2 }, { type: 'execve', pid: 3, ts_ns: 3 }]), 1);
 });
 
+test('a forked helper exit never feeds the persistence step', () => {
+  // app pid 1 forks helper 200 (exits 0 at 2.5 s), app SIGKILLed at 3 s, back as pid 2 at 4 s
+  const s = 1e9;
+  const rs = [{ type: 'execve', pid: 1, ts_ns: 1 * s, argv: ['app'] },
+    { type: 'spawn', pid: 1, child_pid: 200, ts_ns: 1.5 * s },
+    { type: 'execve', pid: 200, ts_ns: 1.6 * s, argv: ['sh', '-c', 'id'] },
+    { type: 'proc_exit', pid: 200, ts_ns: 2.5 * s, signal: 0 },
+    { type: 'proc_exit', pid: 1, ts_ns: 3 * s, signal: 9 },
+    { type: 'execve', pid: 2, ts_ns: 4 * s, argv: ['app'] }];
+  const p = M.buildSteps(rs, [], { keys: {} }, null).find((x) => x.template === 'persistence');
+  assert.ok(p);
+  assert.equal(p.data.respawns, 1);
+  assert.equal(p.data.exits, 1);
+  assert.ok(!p.recs.some((r) => r.pid === 200), 'helper exit kept out of the step');
+  assert.equal(p.firstTs, 3 * s);
+});
+
 test('respawn-only run still gets a persistence step; a bare exit does not', () => {
   const rs = [{ type: 'execve', pid: 1, ts_ns: 1, argv: ['a'] }, { type: 'proc_exit', pid: 1, ts_ns: 2, signal: 9 },
     { type: 'execve', pid: 2, ts_ns: 3, argv: ['a'] }];

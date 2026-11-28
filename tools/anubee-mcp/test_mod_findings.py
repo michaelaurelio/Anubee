@@ -440,6 +440,17 @@ def final_fix_tests(d, fixture, prof, marks, here):
         got = embedded(fh.read())
     check(pr.returncode == 0 and got["marksText"] == marks and "run.marks" in pr.stderr,
           f"sidecar marks used and named on stderr (rc {pr.returncode}: {pr.stderr[-300:]})")
+    # the documented default name <run>.jsonl.marks wins over <run>.marks
+    other = "# other\n"
+    with open(os.path.join(side, "run.jsonl.marks"), "w") as fh:
+        fh.write(other)
+    pr = subprocess.run([sys.executable, "-I", here, "report", pfile, os.path.join(side, "run.jsonl"), "--html", out],
+                        capture_output=True, text=True)
+    with open(out) as fh:
+        got = embedded(fh.read())
+    check(pr.returncode == 0 and got["marksText"] == other and "run.jsonl.marks" in pr.stderr,
+          f"<run>.jsonl.marks preferred over <run>.marks (rc {pr.returncode}: {pr.stderr[-300:]})")
+    os.remove(os.path.join(side, "run.jsonl.marks"))
     os.remove(os.path.join(side, "run.marks"))
     pr = subprocess.run([sys.executable, "-I", here, "report", pfile, os.path.join(side, "run.jsonl"), "--html", out],
                         capture_output=True, text=True)

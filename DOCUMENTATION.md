@@ -2060,7 +2060,8 @@ flowchart LR
   process exit with a new pid seen after it; exits back that count even when
   the profile hides them (ordinary apps get killed too). A pid a traced
   process forked (a `spawn` record's `child_pid`, such as a `sh -c` helper) is
-  never a respawn, and its exit is not the app dying.
+  never a respawn, and its exit is not the app dying: it stays out of the
+  persistence step's exits, signals and start time.
 - **Failed attempts are told as failures.** An `execve` or `file_access`
   record with an `error` or a negative `result` is a failed attempt. When every
   attempt in a step failed, the card, the glance row and the headline say
@@ -2106,8 +2107,8 @@ flowchart LR
   (`saved.file`) is dropped; its hash and size stay. Payload files are never
   embedded.
 - **Optional inputs.** `--marks`: the run's `anubee mark` file; without the
-  flag, `<run>.marks` next to the run (`run.jsonl` -> `run.marks`) is used
-  when it exists, and stderr says so. `--meta`: the lab's `key=value` file
+  flag, a marks file next to the run is used when it exists, and stderr says
+  so: `run.jsonl.marks` (the default name) first, else `run.marks`. `--meta`: the lab's `key=value` file
   (`family`, `sha256`, `device`, `started`, `stopped`; a family read from it
   is labelled "MalwareBazaar tag"; the device shows in the kicker). `--badging`: `aapt dump badging` output, for the
   footer's declared-but-not-granted list. `--apk`: entry names and sizes are

@@ -2084,7 +2084,13 @@ flowchart LR
   "MalwareBazaar tag"). `--badging`: `aapt dump badging` output, for the
   footer's declared-but-not-granted list. `--apk`: entry names and sizes are
   read in memory with `zipfile` (never extracted), so a payload whose size
-  matches a non-DEX APK entry can be said to come from inside the APK.
+  matches a non-DEX APK entry can be said to come from inside the APK. An
+  entry whose first bytes can't be read (encryption bit, unknown compression)
+  stays listed with its DEX check unknown; a file that isn't a readable zip
+  is skipped with a note on stderr, and the page is still written.
+- **Hostile input.** Invalid UTF-8 in the run (raw-byte paths) is replaced,
+  never fatal, here and in the text/JSON findings; the embedded JSON is
+  ASCII-escaped, so a lone surrogate can't fail the write.
 - **Phone layout.** Below 900 px the page reads: At a glance, the
   timeline, then the indicators.
 - The MCP tool `mod_findings_view` takes an optional `html_out` that writes

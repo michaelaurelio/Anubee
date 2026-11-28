@@ -95,12 +95,12 @@ console.log('same view');
 """
 
 
-def same_view(dirpath, run, prof, html, marks=None):
+def same_view(dirpath, run, prof, html, marks=None, meta=None, badging=None):
     """The embedded, trimmed data builds the same View as the whole run."""
     full = os.path.join(dirpath, "full.json")
     with open(full, "w") as fh:
-        json.dump({"records": run, "marksText": marks, "profile": prof, "meta": None,
-                   "badging": None, "staticApk": None}, fh)
+        json.dump({"records": run, "marksText": marks, "profile": prof, "meta": meta,
+                   "badging": badging, "staticApk": None}, fh)
     emb = os.path.join(dirpath, "emb.json")
     with open(emb, "w") as fh:
         json.dump(embedded(html), fh)
@@ -156,6 +156,22 @@ def html_tests():
         if shutil.which("node"):
             check(same_view(d, fixture, prof, html, marks), "embedded data builds the same view as the whole run")
             check(same_view(d, big, bprof, bhtml), "trimmed large run builds the same view as the whole run")
+            # a grant the profile hides still counts as granted for the declared-only footer
+            with open(fixture) as fh:
+                base = [json.loads(line) for line in fh if line.strip()]
+            pg = write(d, "pg.jsonl", base + [
+                {"type": "perm_change", "ts_ns": base[0]["ts_ns"] + 49_000_000_000, "package": "com.example.sample",
+                 "category": "permission", "name": "android.permission.READ_CALENDAR", "change": "granted",
+                 "old": "denied", "new": "granted"}])
+            pprof = json.loads(json.dumps(prof))
+            pprof["keys"]["perm\tpermission android.permission.READ_CALENDAR -> granted"] = 1
+            badg = {"permissions": ["android.permission.READ_CALENDAR", "android.permission.CAMERA"]}
+            pmeta = {"family": "ExampleFam", "familySource": "MalwareBazaar tag", "sha256": "ab" * 32}
+            phtml = mf.build_html(pg, pprof, marks_text=marks, meta=pmeta, badging=badg)
+            check(sum(r.get("name") == "android.permission.READ_CALENDAR" for r in embedded(phtml)["records"]) == 1,
+                  "every perm_change record is embedded, hidden or not")
+            check(same_view(d, pg, pprof, phtml, marks, pmeta, badg),
+                  "hidden grant: embedded data builds the same footer as the whole run")
         else:
             print("  skip: node not available for the view parity checks")
 
@@ -199,6 +215,92 @@ def html_tests():
               "CLI passes the optional inputs it was given, nothing else")
         check(os.listdir(d) and not any(n.endswith(".dex") or n == "assets" for n in os.listdir(d)),
               "the APK is never extracted")
+
+        # hostile APKs: the page is still written, nothing is extracted
+        garbage = os.path.join(d, "garbage.apk")
+        with open(garbage, "wb") as fh:
+            fh.write(b"PK\x03\x04 not really a zip")
+        empty = os.path.join(d, "empty.apk")
+        open(empty, "wb").close()
+        trunc = os.path.join(d, "trunc.apk")
+        with open(apk, "rb") as fh:
+            whole = fh.read()
+        with open(trunc, "wb") as fh:
+            fh.write(whole[:len(whole) // 2])
+        for bad_apk in (garbage, empty, trunc):
+            o = os.path.join(d, "bad.html")
+            try:
+                rc = mf._main(["report", os.path.join(TD, "profile.json"), fixture, "--html", o, "--apk", bad_apk])
+                with open(o) as fh:
+                    got = embedded(fh.read())
+                ok = rc == 0 and got["staticApk"] is None
+            except Exception as e:  # noqa: BLE001
+                ok = False
+                print(f"  {os.path.basename(bad_apk)}: {type(e).__name__}: {e}")
+            check(ok, f"unreadable APK {os.path.basename(bad_apk)} is skipped, page still written")
+        # fake encryption bit and an unsupported compression method: the entry stays, isDex unknown
+        hostile = os.path.join(d, "hostile.apk")
+        with zipfile.ZipFile(hostile, "w") as z:
+            z.writestr("classes.dex", b"dex\n035\0" + b"\0" * 20)
+            z.writestr("enc.bin", b"\x02" * 50)
+            z.writestr("odd.bin", b"\x03" * 60)
+        raw = bytearray(open(hostile, "rb").read())
+        with zipfile.ZipFile(hostile) as z:
+            infos = {i.filename: i for i in z.infolist()}
+        cd = raw.rfind(b"PK\x01\x02\x00\x00", 0)  # patch central directory entries
+        pos = 0
+        while True:
+            pos = raw.find(b"PK\x01\x02", pos)
+            if pos < 0:
+                break
+            nlen = int.from_bytes(raw[pos + 28:pos + 30], "little")
+            name = raw[pos + 46:pos + 46 + nlen].decode()
+            lh = infos[name].header_offset
+            if name == "enc.bin":
+                raw[pos + 8] |= 1          # general purpose flag: encrypted
+                raw[lh + 6] |= 1
+            if name == "odd.bin":
+                raw[pos + 10:pos + 12] = (99).to_bytes(2, "little")   # unknown method
+                raw[lh + 8:lh + 10] = (99).to_bytes(2, "little")
+            pos += 4
+        with open(hostile, "wb") as fh:
+            fh.write(raw)
+        try:
+            st = mf.static_apk(hostile)
+        except Exception as e:  # noqa: BLE001
+            st = None
+            print(f"  hostile.apk: {type(e).__name__}: {e}")
+        check(st == {"entries": [{"name": "classes.dex", "size": 28, "isDex": True},
+                                 {"name": "enc.bin", "size": 50, "isDex": None},
+                                 {"name": "odd.bin", "size": 60, "isDex": None}]},
+              f"encrypted / unknown-method entries are listed with isDex unknown (got {st})")
+
+        # raw bytes and lone surrogates in a malware-controlled path never crash the report
+        rawrun = os.path.join(d, "raw.jsonl")
+        with open(rawrun, "wb") as fh:
+            fh.write(json.dumps({"type": "perm_change", "ts_ns": 1, "package": "com.example.sample",
+                                 "category": "installed", "name": "installed", "change": "baseline",
+                                 "old": None, "new": "yes"}).encode() + b"\n")
+            fh.write(b'{"type":"file_access","pid":1,"ts_ns":2,"path":"/sdcard/\xff\xfe.bin","categories":[]}\n')
+            fh.write(b'{"type":"file_access","pid":1,"ts_ns":3,"path":"/sdcard/\\ud800.bin","categories":[]}\n')
+        try:
+            rh = mf.build_html(rawrun, mf.empty_profile())
+            ok = len(embedded(rh)["records"]) == 3
+            rf = mf.findings(rawrun, mf.empty_profile())
+            ok = ok and len(rf["sections"].get("file", [])) == 2
+        except Exception as e:  # noqa: BLE001
+            ok = False
+            print(f"  raw.jsonl: {type(e).__name__}: {e}")
+        check(ok, "invalid UTF-8 and lone surrogates are replaced, never fatal")
+
+        check(mf.parse_meta("\ufefffamily=ExampleFam\n") == {"family": "ExampleFam", "familySource": "MalwareBazaar tag"},
+              "meta.txt with a byte-order mark")
+        try:
+            mf._main(["report", os.path.join(TD, "profile.json"), fixture, "--html", "--marks", "x"])
+            ok = False
+        except SystemExit as e:
+            ok = "--html" in str(e.code)
+        check(ok, "a flag is never taken as the previous flag's value")
 
 
 def main():

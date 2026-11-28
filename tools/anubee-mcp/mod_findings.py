@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import zipfile
+import zlib
 
 PROFILE_VERSION = 1
 SKIP = object()          # record carries no behaviour (snapshot, summary, own files)
@@ -89,7 +90,8 @@ KNOWN_SECTIONS = {"binder", "file", "exec", "net", "perm", "a11y", "dexload", "p
 
 
 def _records(path):
-    with open(path) as f:
+    # malware-controlled paths can be raw bytes: never fatal, replaced instead
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -230,7 +232,7 @@ _SMS_AUTH = re.compile(r"^(sms|mms|mms-sms)$", re.I)
 def parse_meta(text):
     """The lab's meta.txt (key=value lines) -> the view's meta fields."""
     kv = {}
-    for line in (text or "").splitlines():
+    for line in (text or "").lstrip("\ufeff").splitlines():
         k, sep, v = line.partition("=")
         if sep and k.strip():
             kv[k.strip()] = v.strip()
@@ -252,16 +254,30 @@ def parse_badging(text):
 
 
 def static_apk(path):
-    """Entry names and sizes of an APK, read in memory (never extracted)."""
+    """Entry names and sizes of an APK, read in memory (never extracted). An
+    entry whose first bytes can't be read (fake encryption bit, unknown
+    compression, truncated data) stays listed with isDex unknown (None).
+    Raises zipfile.BadZipFile when the file isn't a readable zip at all."""
     entries = []
     with zipfile.ZipFile(path) as z:
         for info in z.infolist():
             if info.is_dir():
                 continue
-            with z.open(info) as fh:
-                head = fh.read(4)
-            entries.append({"name": info.filename, "size": info.file_size, "isDex": head == b"dex\n"})
+            try:
+                with z.open(info) as fh:
+                    is_dex = fh.read(4) == b"dex\n"
+            except (RuntimeError, NotImplementedError, OSError, EOFError, zlib.error, zipfile.BadZipFile):
+                is_dex = None
+            entries.append({"name": info.filename, "size": info.file_size, "isDex": is_dex})
     return {"entries": entries}
+
+
+def _static_apk_or_none(path):
+    try:
+        return static_apk(path)
+    except (zipfile.BadZipFile, OSError, EOFError) as e:
+        print(f"--apk {path}: not a readable zip ({e}); page written without the APK check", file=sys.stderr)
+        return None
 
 
 def _num(v):
@@ -288,7 +304,8 @@ def _no_device_paths(r):
 def view_records(run_path, prof, pkg=None):
     """The records the view needs, in file order: everything the profile doesn't
     hide, plus the hidden records the view still reads (connections and lookups
-    for the payload and C2 wording, process exits and execs, SMS binder calls,
+    for the payload and C2 wording, process exits and execs, every permission
+    change (the declared-only footer reads grants), SMS binder calls,
     each pid's first record for respawns, the run's first and last record for
     its times). Returns (records, the profile cut to their keys and to the
     number of baseline apps)."""
@@ -312,7 +329,8 @@ def view_records(run_path, prof, pkg=None):
         k = record_key(r, pkg)
         if k is not SKIP and is_noise(prof, *k):
             t = r.get("type")
-            if not (i in keep_idx or t in ("net", "proc_exit", "execve") or (t == "binder_api" and _sms_binder(r))):
+            if not (i in keep_idx or t in ("net", "proc_exit", "execve", "perm_change")
+                    or (t == "binder_api" and _sms_binder(r))):
                 continue
         if k is not SKIP:
             name = f"{k[0]}\t{k[1]}"
@@ -327,21 +345,21 @@ def view_records(run_path, prof, pkg=None):
 
 def _script_json(obj):
     """JSON safe inside a <script> element."""
-    s = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    s = json.dumps(obj, separators=(",", ":"), ensure_ascii=True)   # a lone surrogate can't fail the write
     return (s.replace("</", "<\\/").replace("<!--", "\\u003c!--")
             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
-def build_html(run_path, profile, marks_text=None, meta=None, badging=None, static_apk=None):
+def build_html(run_path, profile, marks_text=None, meta=None, badging=None, static_apk=None, pkg=None):
     """The run view as one self-contained HTML page: view code, styles and the
     run's trimmed records inlined; nothing is loaded from anywhere."""
     def read(name):
         with open(os.path.join(VIEW_DIR, name), encoding="utf-8") as fh:
             return fh.read()
-    records, prof = view_records(run_path, profile)
+    records, prof = view_records(run_path, profile, pkg)
     data = {"records": records, "marksText": marks_text, "profile": prof,
             "templates": json.loads(read("templates.json")), "meta": meta, "badging": badging,
-            "staticApk": static_apk, "hidden": findings(run_path, profile)["hidden"]}
+            "staticApk": static_apk, "hidden": findings(run_path, profile, pkg)["hidden"]}
     code = read("model.js") + "\n" + read("render.js")
     if "</script" in code.lower() or "</style" in read("view.css").lower():
         raise ValueError("view code would end its own element")
@@ -362,8 +380,8 @@ def _opt(argv, flag):
     if flag not in argv:
         return None
     i = argv.index(flag)
-    if i + 1 >= len(argv):
-        raise SystemExit(f"{flag} needs a value")
+    if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+        raise SystemExit(f"{flag} needs a value\n" + __doc__.split("\n\n")[-1])
     return argv[i + 1]
 
 
@@ -395,7 +413,7 @@ def _main(argv):
             html = build_html(argv[2], prof, marks_text=_read_text(_opt(argv, "--marks")),
                               meta=parse_meta(meta) if meta is not None else None,
                               badging=parse_badging(badging) if badging is not None else None,
-                              static_apk=static_apk(apk) if apk else None)
+                              static_apk=_static_apk_or_none(apk) if apk else None)
             with open(out, "w", encoding="utf-8") as fh:
                 fh.write(html)
             print(f"run view -> {out}")

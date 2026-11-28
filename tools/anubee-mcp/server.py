@@ -330,7 +330,7 @@ def mod_findings_view(trace: str, profile: Optional[str] = None,
     f = mod_findings.findings(trace, prof, pkg=package)
     if html_out:
         with open(html_out, "w", encoding="utf-8") as fh:
-            fh.write(mod_findings.build_html(trace, prof))
+            fh.write(mod_findings.build_html(trace, prof, pkg=package))
         f["html"] = html_out
     return f
 

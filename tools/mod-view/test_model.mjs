@@ -182,3 +182,19 @@ test('memload is its own step; record strings like __proto__ do not misbehave', 
   assert.ok(s.some((x) => x.template === 'file_probe'));
   assert.ok(s.some((x) => x.template === 'net_contact'));
 });
+
+test('respawns pairs each exit with a distinct new pid', () => {
+  const ex = (ts) => ({ type: 'proc_exit', pid: 1, ts_ns: ts });
+  assert.equal(M.respawns([ex(1), ex(2), ex(3), { type: 'execve', pid: 2, ts_ns: 4 }]), 1);
+  assert.equal(M.respawns([ex(1), { type: 'execve', pid: 2, ts_ns: 2 }, { type: 'execve', pid: 3, ts_ns: 3 }]), 1);
+});
+
+test('respawn-only run still gets a persistence step; a bare exit does not', () => {
+  const rs = [{ type: 'execve', pid: 1, ts_ns: 1, argv: ['a'] }, { type: 'proc_exit', pid: 1, ts_ns: 2, signal: 9 },
+    { type: 'execve', pid: 2, ts_ns: 3, argv: ['a'] }];
+  const p = M.buildSteps(rs, [], { keys: {} }, null).find((x) => x.template === 'persistence');
+  assert.ok(p);
+  assert.equal(p.data.alarmSets, 0); assert.equal(p.data.foregroundCalls, 0); assert.equal(p.data.respawns, 1);
+  const bare = M.buildSteps(rs.slice(0, 2), [], { keys: {} }, null).map((x) => x.template);
+  assert.ok(!bare.includes('persistence') && bare.includes('recorded'));
+});

@@ -212,18 +212,21 @@ var AnubeeModView = (function () {
     return { intervalS: best.med, fromTs: ts[best.i], toTs: ts[best.j + 1] };
   }
 
-  // proc_exit records followed later by a record from a pid first seen after
-  // that exit. Time order, not file order (the sink groups records by type).
+  // proc_exit records each paired with a distinct pid first seen after that
+  // exit. Time order, not file order (the sink groups records by type).
   function respawns(records) {
-    var firstSeen = new Map(), exits = [], lastNew = -1;
-    var timed = records.filter(function (r) { return typeof r.ts_ns === 'number'; })
-      .sort(function (a, b) { return a.ts_ns - b.ts_ns; });
-    timed.forEach(function (r, i) {
-      if (typeof r.pid !== 'number') return;
-      if (!firstSeen.has(r.pid)) { firstSeen.set(r.pid, i); lastNew = i; }
-      if (r.type === 'proc_exit') exits.push(i);
-    });
-    return exits.filter(function (i) { return i < lastNew; }).length;
+    var seen = new Set(), pending = 0, n = 0;
+    records.filter(function (r) { return typeof r.ts_ns === 'number'; })
+      .sort(function (a, b) { return a.ts_ns - b.ts_ns; })
+      .forEach(function (r) {
+        if (typeof r.pid !== 'number') return;
+        if (!seen.has(r.pid)) {
+          seen.add(r.pid);
+          if (pending > 0) { pending--; n++; }
+        }
+        if (r.type === 'proc_exit') pending++;
+      });
+    return n;
   }
 
   function minTs(recs) {
@@ -317,7 +320,7 @@ var AnubeeModView = (function () {
       steps.push(mkStep('payload_memload', 'sample', [r], { kind: r.kind, path: r.path === undefined ? null : r.path, start: r.start, regionSize: r.region_size }));
     });
 
-    var hasEvidence = persist.some(function (r) { return r.type === 'binder_api'; });
+    var hasEvidence = persist.some(function (r) { return r.type === 'binder_api'; }) || respawns(records) > 0;
     if (hasEvidence) {
       steps.push(mkStep('persistence', 'sample', persist, {
         alarmSets: persist.filter(function (r) { return r.type === 'binder_api' && r.method === 'set'; }).length,

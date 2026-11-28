@@ -582,3 +582,41 @@ test('"afterwards" only when the delete follows the last drop or load', () => {
   assert.ok(!/afterwards/.test(before.plain), before.plain);
   assert.match(before.plain, /deleted it at 1 s/);
 });
+
+// ---- round 4: an old hidden open is not denied; resolver flows are lookups; clause order ----
+test('a noise-hidden connection more than 120 s before the drop is not denied', () => {
+  const noisy = { keys: { 'net\ttcp 203.0.113.77:80': 1 }, min_apps: 1 };
+  const bg = { ...netOpenAt(1), dest: '203.0.113.77:80', host: '203.0.113.77:80' };
+  const recs = [bg, dex('drop', 300), dex('load', 301)];
+  const st = M.buildSteps(recs, [], noisy, PKG);
+  const o = M.describe(st.find((x) => x.template === 'payload_packed'), { records: recs, marks: [] }, T);
+  assert.ok(!o.evidence.some((e) => /before the drop in this trace/.test(e[1])), evText(o));
+  assert.ok(o.evidence.some((e) => e[1] === 'no network connection in the 120 s before the drop'), evText(o));
+  assert.ok(!/with no network connection before it|going online/.test(o.plain), o.plain);
+});
+
+test('a resolver flow before an IP connection blocks "hard-coded"', () => {
+  const mk = (extra) => [1, 2, 3].map((s) => ({ type: 'net', pid: 1, ts_ns: T0 + s * 1e9, event: 'open', proto: 'tcp', dest: '203.0.113.9:443', host: '203.0.113.9:443', host_source: 'sni' })).concat(extra);
+  const flows = [
+    { type: 'net', pid: 1, ts_ns: T0 + 0.5e9, event: 'open', proto: 'udp', dest: '10.0.0.1:53', host: 'a.test', host_source: 'dns' },
+    { type: 'net', pid: 1, ts_ns: T0 + 0.5e9, event: 'open', proto: 'udp', dest: '10.0.0.1:53', host: 'a.test', host_source: 'ip' },
+    { type: 'net', pid: 1, ts_ns: T0 + 0.5e9, event: 'open', proto: 'udp', dest: '10.0.0.1:5353', host: 'a.test', host_source: 'dns' },
+  ];
+  const sum = { type: 'net_summary', destinations: [], lookups: [] };
+  for (const f of flows) {
+    const o = desc(mk([f, sum]), 'c2_beacon');
+    assert.ok(!/hard-coded|no domain name/.test(allWords(o) + evText(o)), allWords(o) + evText(o));
+  }
+  assert.match(desc(mk([sum]), 'c2_beacon').title, /hard-coded/);
+});
+
+test('a delete before the load is told in record order', () => {
+  const o = desc([dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_packed');
+  assert.equal(o.plain, 'Wrote code to a file with no network connection before it, deleted it at 1 s and then ran code from it.');
+  const lo = desc([dex('delete', 2), dex('load', 3)], 'payload_packed');
+  assert.equal(lo.plain, 'Deleted a code file at 0 s and then ran code from it.');
+  const after = desc([dex('drop', 1), dex('load', 2), dex('delete', 3)], 'payload_packed');
+  assert.equal(after.plain, 'Wrote code to a file with no network connection before it, ran it and deleted the file afterwards.');
+  const dl = desc([netOpenAt(0.5), dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_downloaded');
+  assert.match(dl.plain, /deleted it at 1\.5 s and then ran code from it\.$/);
+});

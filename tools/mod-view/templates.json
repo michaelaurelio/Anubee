@@ -117,7 +117,8 @@
           "{decodedClause}",
           "{wroteClause}",
           "{ranClause}",
-          "{deleted}"
+          "{deleted}",
+          "{ranLater}"
         ],
         "sep": ", ",
         "lastSep": " and ",
@@ -149,7 +150,9 @@
         "wroteNoNet": "wrote code to a file with no network connection before it",
         "deletedOnly": "deleted a code file",
         "deletedIt": "deleted it",
-        "deletedAt": "deleted it at {at}"
+        "deletedAt": "deleted it at {at}",
+        "deletedFirstAt": "deleted a code file at {at}",
+        "ranLater": "then ran code from it"
       },
       "evidence": {
         "path": "Dropped file",
@@ -196,7 +199,8 @@
         "list": [
           "{wroteClause}",
           "{ranClause}",
-          "{deleted}"
+          "{deleted}",
+          "{ranLater}"
         ],
         "sep": ", ",
         "lastSep": " and ",
@@ -225,7 +229,9 @@
         "ranCode": "ran code from a file",
         "deletedOnly": "deleted a code file",
         "deletedIt": "deleted it",
-        "deletedAt": "deleted it at {at}"
+        "deletedAt": "deleted it at {at}",
+        "deletedFirstAt": "deleted a code file at {at}",
+        "ranLater": "then ran code from it"
       },
       "evidence": {
         "path": "Dropped file",

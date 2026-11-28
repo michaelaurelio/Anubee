@@ -545,7 +545,7 @@ var AnubeeModView = (function () {
   // connection: true/false, or null when the records cannot say.
   function noLookupBefore(ctx, firstTs) {
     var recs = ctx.records || [];
-    var dns = recs.filter(function (r) { return r.type === 'net' && r.event === 'dns'; });
+    var dns = recs.filter(isLookup);
     if (dns.some(function (r) { return typeof r.ts_ns === 'number' && typeof firstTs === 'number' && r.ts_ns < firstTs; })) return false;
     var s = summaryOf(ctx, 'net_summary');
     if (!s && !dns.length) return null;
@@ -638,22 +638,28 @@ var AnubeeModView = (function () {
       if (d.deleted) vars.deleted = lastUse !== null && delTs !== null && delTs < lastUse ? (fill(W.deletedAt, { at: atp(delTs) }) || W.deletedIt) : W.deleted;
       var deleteOnly = !d.dropped && !d.loaded;
       if (deleteOnly) vars.deleted = W.deletedOnly;
+      // a delete before the first load is told before the run, as the records order them
+      var loadTs = firstTsWhere(step.recs, function (r) { return r.stage === 'load'; });
+      var delFirst = d.loaded && d.deleted && delTs !== null && loadTs !== null && delTs < loadTs;
+      if (delFirst && !d.dropped) vars.deleted = fill(W.deletedFirstAt, { at: atp(delTs) });
       ev1(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
       ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
         vars.decodedClause = apk && d.dropped ? W.decoded : null;
         vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !d.netBeforeAny && !d.hiddenNetEver ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode) : null;
         vars.ranClause = d.loaded ? (d.dropped || apk ? W.ranIt : W.ranCode) : null;
+        if (delFirst) { vars.ranLater = W.ranLater; vars.ranClause = null; }
         if (d.dropped) ids.push('T1406.002');
         if (dropTs !== null) {
           var bg = d.hiddenNetBefore;
-          ev1(E.why, d.netBeforeAny || bg ? (bg ? E.whyNoNetBg : E.whyNoNet) : E.whyNoNetAtAll);
+          ev1(E.why, d.netBeforeAny || d.hiddenNetEver ? (bg ? E.whyNoNetBg : E.whyNoNet) : E.whyNoNetAtAll);
           ev1(E.notMapped, bg ? E.notMappedTextBg : E.notMappedText);
         }
         if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
       } else {
         vars.wroteClause = d.dropped ? W.wroteCode : null;
         vars.ranClause = d.loaded ? (d.dropped ? W.ranIt : W.ranCode) : null;
+        if (delFirst) { vars.ranLater = W.ranLater; vars.ranClause = null; }
         if (d.dropped) ids.push('T1407');
         vars.gap = d.netBeforeTs !== null && dropTs !== null ? fmtDur((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));

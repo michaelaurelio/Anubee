@@ -247,8 +247,7 @@ def html_tests():
         raw = bytearray(open(hostile, "rb").read())
         with zipfile.ZipFile(hostile) as z:
             infos = {i.filename: i for i in z.infolist()}
-        cd = raw.rfind(b"PK\x01\x02\x00\x00", 0)  # patch central directory entries
-        pos = 0
+        pos = 0                    # patch the central directory entries
         while True:
             pos = raw.find(b"PK\x01\x02", pos)
             if pos < 0:
@@ -275,6 +274,51 @@ def html_tests():
                                  {"name": "odd.bin", "size": 60, "isDex": None}]},
               f"encrypted / unknown-method entries are listed with isDex unknown (got {st})")
 
+        # bad data under every compression method, then byte flips over the central directory
+        def methods_zip(path, method, data):
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("classes.dex", b"dex\n035\0" + b"\0" * 40)
+                z.writestr("x.bin", data)
+            b = bytearray(open(path, "rb").read())
+            q = 0
+            while True:
+                q = b.find(b"PK\x01\x02", q)
+                if q < 0:
+                    break
+                n = int.from_bytes(b[q + 28:q + 30], "little")
+                if b[q + 46:q + 46 + n] == b"x.bin":
+                    b[q + 10:q + 12] = method.to_bytes(2, "little")
+                    lh = int.from_bytes(b[q + 42:q + 46], "little")
+                    b[lh + 8:lh + 10] = method.to_bytes(2, "little")
+                q += 4
+            with open(path, "wb") as fh:
+                fh.write(b)
+            return bytes(b)
+        mp = os.path.join(d, "m.apk")
+        for method, data in ((14, b"\x00" * 60), (14, b"\x09\x14\x05\x00\x5d\x00\x00\x10\x00" + b"\xff" * 50),
+                             (12, b"BZh9garbage" * 5), (8, b"\xff" * 60), (9, b"\x00" * 60)):
+            methods_zip(mp, method, data)
+            try:
+                got = mf.static_apk(mp)["entries"][1]["isDex"]
+            except Exception as e:  # noqa: BLE001
+                got = f"{type(e).__name__}: {e}"
+            check(got is None, f"method {method} with bad data: entry listed, DEX check unknown (got {got})")
+        import random
+        whole = methods_zip(mp, 8, b"hello" * 20)
+        cdir = whole.find(b"PK\x01\x02")
+        rng, crashed = random.Random(1), []
+        for _ in range(1500):
+            b = bytearray(whole)
+            for _ in range(rng.randint(1, 6)):
+                b[rng.randrange(cdir, len(b)) if rng.random() < 0.7 else rng.randrange(len(b))] = rng.randrange(256)
+            with open(mp, "wb") as fh:
+                fh.write(b)
+            try:
+                mf._static_apk_or_none(mp)
+            except Exception as e:  # noqa: BLE001
+                crashed.append(f"{type(e).__name__}: {e}")
+        check(not crashed, f"byte-flipped zips never raise (first: {crashed[:3]})")
+
         # raw bytes and lone surrogates in a malware-controlled path never crash the report
         rawrun = os.path.join(d, "raw.jsonl")
         with open(rawrun, "wb") as fh:
@@ -292,6 +336,20 @@ def html_tests():
             ok = False
             print(f"  raw.jsonl: {type(e).__name__}: {e}")
         check(ok, "invalid UTF-8 and lone surrogates are replaced, never fatal")
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mod_findings.py")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8:strict")
+        for extra in ([], ["--json"]):
+            pr = subprocess.run([sys.executable, "-I", here, "report", os.path.join(d, "none.json"), rawrun] + extra,
+                                capture_output=True, text=True, env=env)
+            check(pr.returncode == 0 and "/sdcard/" in pr.stdout,
+                  f"printed {'JSON' if extra else 'text'} report survives a lone surrogate (rc {pr.returncode}: {pr.stderr[-200:]})")
+
+        bom = os.path.join(d, "bom.jsonl")
+        with open(fixture, "rb") as fh, open(bom, "wb") as out:
+            out.write(b"\xef\xbb\xbf" + fh.read())
+        n_plain = len(embedded(mf.build_html(fixture, prof))["records"])
+        check(len(embedded(mf.build_html(bom, prof))["records"]) == n_plain and mf.infer_package(bom) == "com.example.sample",
+              "a byte-order mark doesn't drop the run's first record")
 
         check(mf.parse_meta("\ufefffamily=ExampleFam\n") == {"family": "ExampleFam", "familySource": "MalwareBazaar tag"},
               "meta.txt with a byte-order mark")

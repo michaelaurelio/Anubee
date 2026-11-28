@@ -898,3 +898,9 @@ test('process exits hidden as noise still back the respawn wording', () => {
   assert.ok(W.limits.includes('Who sent the 12 SIGKILLs is not recorded.'));
   assert.ok(!W.timeline.some((i) => i.kind === 'step' && /exit signal/.test(i.card.title + i.card.facts)));
 });
+
+test('an APK entry whose DEX check is unknown never backs the static claim', () => {
+  const N = M.buildView({ ...input, staticApk: { entries: [{ name: 'blob', size: 777276, isDex: null }] } });
+  assert.deepEqual(N, V);
+  assert.ok(!/Static check|inside its APK|inside the APK/.test(JSON.stringify(N)));
+});

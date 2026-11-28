@@ -24,7 +24,6 @@ import os
 import re
 import sys
 import zipfile
-import zlib
 
 PROFILE_VERSION = 1
 SKIP = object()          # record carries no behaviour (snapshot, summary, own files)
@@ -89,15 +88,29 @@ def record_key(r, pkg):
 KNOWN_SECTIONS = {"binder", "file", "exec", "net", "perm", "a11y", "dexload", "prop", "proc"}
 
 
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _no_surrogates(v):
+    """A \\ud800 escape decodes to a lone surrogate, which no output can encode."""
+    if isinstance(v, str):
+        return _SURROGATE.sub("\ufffd", v) if _SURROGATE.search(v) else v
+    if isinstance(v, dict):
+        return {_no_surrogates(k): _no_surrogates(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_no_surrogates(x) for x in v]
+    return v
+
+
 def _records(path):
     # malware-controlled paths can be raw bytes: never fatal, replaced instead
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                yield _no_surrogates(json.loads(line))
             except ValueError:
                 continue
 
@@ -257,7 +270,8 @@ def static_apk(path):
     """Entry names and sizes of an APK, read in memory (never extracted). An
     entry whose first bytes can't be read (fake encryption bit, unknown
     compression, truncated data) stays listed with isDex unknown (None).
-    Raises zipfile.BadZipFile when the file isn't a readable zip at all."""
+    Raises when the file isn't a readable zip at all (any exception: the zip
+    is hostile input)."""
     entries = []
     with zipfile.ZipFile(path) as z:
         for info in z.infolist():
@@ -266,7 +280,7 @@ def static_apk(path):
             try:
                 with z.open(info) as fh:
                     is_dex = fh.read(4) == b"dex\n"
-            except (RuntimeError, NotImplementedError, OSError, EOFError, zlib.error, zipfile.BadZipFile):
+            except Exception:   # noqa: BLE001 -- hostile input: the answer is "unknown", never a crash
                 is_dex = None
             entries.append({"name": info.filename, "size": info.file_size, "isDex": is_dex})
     return {"entries": entries}
@@ -275,7 +289,7 @@ def static_apk(path):
 def _static_apk_or_none(path):
     try:
         return static_apk(path)
-    except (zipfile.BadZipFile, OSError, EOFError) as e:
+    except Exception as e:   # noqa: BLE001 -- hostile input: skip the check, still write the page
         print(f"--apk {path}: not a readable zip ({e}); page written without the APK check", file=sys.stderr)
         return None
 

@@ -914,8 +914,9 @@ var AnubeeModView = (function () {
     var steps = buildSteps(records, marks, profile, pkg);
     var summaries = Object.create(null);
     records.forEach(function (r) { if (typeof r.type === 'string' && r.type.slice(-8) === '_summary') summaries[r.type] = r; });
+    // only a proven non-DEX entry backs the static claim: an unknown (null) DEX check proves nothing
     var apk = input.staticApk && input.staticApk.entries ? input.staticApk.entries
-      .filter(function (e) { return !e.isDex; }).map(function (e) { return { name: e.name, size: e.size }; }) : null;
+      .filter(function (e) { return e.isDex === false; }).map(function (e) { return { name: e.name, size: e.size }; }) : null;
     var ctx = { records: records, marks: marks, summaries: summaries, staticApk: apk, pkg: pkg };
     var b = runBounds(ctx);
     var cards = steps.map(function (s) { return describe(s, ctx, T); });

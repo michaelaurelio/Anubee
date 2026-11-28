@@ -2088,9 +2088,12 @@ flowchart LR
   entry whose first bytes can't be read (encryption bit, unknown compression)
   stays listed with its DEX check unknown; a file that isn't a readable zip
   is skipped with a note on stderr, and the page is still written.
-- **Hostile input.** Invalid UTF-8 in the run (raw-byte paths) is replaced,
-  never fatal, here and in the text/JSON findings; the embedded JSON is
-  ASCII-escaped, so a lone surrogate can't fail the write.
+- **Hostile input.** Invalid UTF-8 in the run (raw-byte paths) and lone
+  surrogates from `\ud800`-style escapes are replaced with U+FFFD when the
+  records are read, so the page and the printed text/JSON findings never
+  fail on them; a leading byte-order mark is ignored. The embedded JSON is
+  ASCII-escaped. Any error reading an APK entry leaves its DEX check unknown,
+  and an unknown check never backs the "inside the APK" wording.
 - **Phone layout.** Below 900 px the page reads: At a glance, the
   timeline, then the indicators.
 - The MCP tool `mod_findings_view` takes an optional `html_out` that writes

@@ -10,6 +10,11 @@ Files: `sample-run.jsonl` (records), `sample-run.marks` (lab marks, same clock),
 `profile.json` (version-1 noise profile), `expected-findings.json` (Python's
 output on the three, minus first-seen times). `degraded.jsonl` is `sample-run.jsonl` with the
 `file-access` coverage record set to `clean:false` (the degraded-coverage case).
+`fork-helper.jsonl`: app pid 100 forks `sh -c id` twice (pid 200, then 201; each
+`spawn` record names its `child_pid`, each child exits 0), then pid 100 is
+killed (SIGKILL at +10) and pid 300 appears with no `spawn` record: one respawn,
+the helpers none. Both suites read it (the Python side with `spawn` hidden by the
+profile, to pin that spawn records are always embedded).
 
 | When | Records |
 |---|---|

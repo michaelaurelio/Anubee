@@ -85,6 +85,7 @@
         ]
       },
       "traced": "traced for {dur}",
+      "tracedWall": "traced for {dur} (wall clock)",
       "sep": " · "
     },
     "duration": {
@@ -99,6 +100,10 @@
     "headlineRecordedDegraded": "Activity recorded, none of it interpreted, with degraded coverage for {engines}",
     "gapS": "{n} s later",
     "gapMin": "{n} min later",
+    "end": {
+      "stopped": "Trace stopped",
+      "last": "Last record"
+    },
     "otherHosts": "Other hosts contacted",
     "ioc": {
       "sampleSha": "Sample SHA-256",
@@ -118,8 +123,9 @@
       "screenshots": "Screenshots",
       "c2Traffic": "suspected C2 traffic",
       "netTraffic": "network connections",
-      "noCommands": "No commands from the suspected C2 were observed. It sent back {rx} in total, and no SMS access or command execution was recorded.",
-      "noCommandsMany": "No commands from the suspected C2 servers were observed. They sent back {rx} in total, and no SMS access or command execution was recorded.",
+      "noCommands": "Commands from the suspected C2 can't be seen: traffic contents aren't traced. It sent back {rx}, and no SMS access or command execution was recorded.",
+      "noCommandsMany": "Commands from the suspected C2 servers can't be seen: traffic contents aren't traced. They sent back {rx}, and no SMS access or command execution was recorded.",
+      "rxAtLeast": "at least {rx}",
       "killOne": "Who sent the {sig} is not recorded.",
       "killMany": "Who sent the {n} {sig}s is not recorded.",
       "killMixed": "Who sent the {n} kill signals is not recorded.",
@@ -149,8 +155,8 @@
   },
   "steps": {
     "detonation": {
-      "title": "Installed and opened the sample",
-      "glance": "Lab installed and opened the sample",
+      "title": "Opened the sample",
+      "glance": "Lab opened the sample",
       "short": "Lab opened the sample",
       "plain": "analyst action, not attributed to the sample",
       "plainShort": "analyst action",
@@ -508,7 +514,13 @@
       "evidence": {
         "changes": "Changes",
         "changeText": "{name}: {old} to {new}",
-        "changeNew": "{name}: now {new}"
+        "changeNew": "{name}: now {new}",
+        "changeRemoved": {
+          "first": [
+            "{name}: {old}, now removed",
+            "{name}: removed"
+          ]
+        }
       },
       "words": {
         "a11yClause": "enabled the accessibility service"
@@ -526,7 +538,13 @@
       "evidence": {
         "changes": "Changes",
         "changeText": "{name}: {old} to {new}",
-        "changeNew": "{name}: now {new}"
+        "changeNew": "{name}: now {new}",
+        "changeRemoved": {
+          "first": [
+            "{name}: {old}, now removed",
+            "{name}: removed"
+          ]
+        }
       }
     },
     "a11y_abuse": {
@@ -593,27 +611,87 @@
       }
     },
     "exec": {
-      "title": "Ran a command",
-      "glance": "Ran {cmd}",
-      "short": "Ran a command",
-      "plain": "Ran {cmd}.",
-      "plainShort": "Ran {cmd}",
+      "title": {
+        "variants": {
+          "ran": "Ran a command",
+          "failed": "Tried to run a command"
+        }
+      },
+      "glance": {
+        "variants": {
+          "ran": "Ran {cmd}",
+          "failed": "Tried to run {cmd}"
+        }
+      },
+      "short": {
+        "variants": {
+          "ran": "Ran a command",
+          "failed": "Tried to run a command"
+        }
+      },
+      "plain": {
+        "variants": {
+          "ran": "Ran {cmd}.",
+          "failed": "Tried to run {cmd}."
+        }
+      },
+      "plainShort": {
+        "variants": {
+          "ran": "Ran {cmd}",
+          "failed": "Tried to run {cmd}"
+        }
+      },
       "facts": [
-        "{times}"
+        "{times}",
+        "{failedPart}"
       ],
+      "words": {
+        "failedAll": "failed {n}",
+        "failedSome": "{n} failed"
+      },
       "evidence": {
         "cmd": "Command"
       }
     },
     "file_probe": {
-      "title": "Looked at a file outside its own folder",
-      "glance": "Looked at {path}",
-      "short": "File access",
-      "plain": "Opened {path}.",
-      "plainShort": "Opened {path}",
+      "title": {
+        "variants": {
+          "ran": "Looked at a file outside its own folder",
+          "failed": "Tried to open a file outside its own folder"
+        }
+      },
+      "glance": {
+        "variants": {
+          "ran": "Looked at {path}",
+          "failed": "Tried to open {path}"
+        }
+      },
+      "short": {
+        "variants": {
+          "ran": "File access",
+          "failed": "Tried to open a file"
+        }
+      },
+      "plain": {
+        "variants": {
+          "ran": "Opened {path}.",
+          "failed": "Tried to open {path}."
+        }
+      },
+      "plainShort": {
+        "variants": {
+          "ran": "Opened {path}",
+          "failed": "Tried to open {path}"
+        }
+      },
       "facts": [
-        "{times}"
+        "{times}",
+        "{failedPart}"
       ],
+      "words": {
+        "failedAll": "failed {n}",
+        "failedSome": "{n} failed"
+      },
       "evidence": {
         "path": "Path"
       }

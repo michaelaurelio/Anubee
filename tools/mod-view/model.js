@@ -213,13 +213,16 @@ var AnubeeModView = (function () {
   }
 
   // proc_exit records each paired with a distinct pid first seen after that
-  // exit. Time order, not file order (the sink groups records by type).
+  // exit. Time order, not file order (the sink groups records by type). A pid
+  // a traced process forked (a spawn record's child_pid) is a helper, not the
+  // app coming back, and its exit is not the app dying.
   function respawns(records) {
-    var seen = new Set(), pending = 0, n = 0;
+    var seen = new Set(), forked = new Set(), pending = 0, n = 0;
+    records.forEach(function (r) { if (r.type === 'spawn' && typeof r.child_pid === 'number') forked.add(r.child_pid); });
     records.filter(function (r) { return typeof r.ts_ns === 'number'; })
       .sort(function (a, b) { return a.ts_ns - b.ts_ns; })
       .forEach(function (r) {
-        if (typeof r.pid !== 'number') return;
+        if (typeof r.pid !== 'number' || forked.has(r.pid)) return;
         if (!seen.has(r.pid)) {
           seen.add(r.pid);
           if (pending > 0) { pending--; n++; }
@@ -229,6 +232,9 @@ var AnubeeModView = (function () {
     return n;
   }
 
+  // Loops, not Math.min/max.apply: spreading a long list overflows the stack.
+  function minOf(xs) { var m = null; xs.forEach(function (x) { if (m === null || x < m) m = x; }); return m; }
+  function maxOf(xs) { var m = null; xs.forEach(function (x) { if (m === null || x > m) m = x; }); return m; }
   function minTs(recs) {
     var best = null;
     recs.forEach(function (r) {
@@ -290,6 +296,20 @@ var AnubeeModView = (function () {
       hiddenNetBefore: anyOpen(hidden, function (t) { return t < dts && dts - t <= DROP_NET_WINDOW_NS; }),
       hiddenNetEver: anyOpen(hidden, function (t) { return t < dts; })
     });
+  }
+
+  // Attempts, failures (an errno name, or a negative result) and the errno
+  // names in first-seen order; an attempt with no result is not a failure.
+  function outcomes(recs, data) {
+    var errors = [];
+    data.count = recs.length;
+    data.failed = recs.filter(function (r) {
+      var bad = present(r.error) || (typeof r.result === 'number' && r.result < 0);
+      if (bad && present(r.error) && errors.indexOf(String(r.error)) < 0) errors.push(String(r.error));
+      return bad;
+    }).length;
+    data.errors = errors;
+    return data;
   }
 
   function buildSteps(records, marks, profile, pkg) {
@@ -378,11 +398,11 @@ var AnubeeModView = (function () {
       if (g.sec === 'net') {
         var ts = g.recs.map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
         var data = { dest: g.key.replace(/^\S+ /, ''), proto: g.recs[0].proto, host: or(g.recs[0].host, g.recs[0].dest),
-          hostSource: g.recs[0].host_source, count: g.recs.length, lastTs: ts.length ? Math.max.apply(null, ts) : null };
+          hostSource: g.recs[0].host_source, count: g.recs.length, lastTs: maxOf(ts) };
         if (g.recs.length >= 3) { data.beacon = beaconWindow(ts); steps.push(mkStep('c2_beacon', 'sample', g.recs, data)); }
         else steps.push(mkStep('net_contact', 'sample', g.recs, data));
-      } else if (g.sec === 'exec') steps.push(mkStep('exec', 'sample', g.recs, { cmd: g.key, count: g.recs.length }));
-      else if (g.sec === 'file') steps.push(mkStep('file_probe', 'sample', g.recs, { path: g.key, count: g.recs.length }));
+      } else if (g.sec === 'exec') steps.push(mkStep('exec', 'sample', g.recs, outcomes(g.recs, { cmd: g.key })));
+      else if (g.sec === 'file') steps.push(mkStep('file_probe', 'sample', g.recs, outcomes(g.recs, { path: g.key })));
       else steps.push(mkStep('recorded', 'sample', g.recs, { section: g.sec, key: g.key, count: g.recs.length }));
     });
 
@@ -539,7 +559,6 @@ var AnubeeModView = (function () {
     return out;
   }
 
-  // The run's start (launch mark, else first record) and end (stop mark, else last record).
   // The run's launch (first launch mark) and stop (last stop mark), null when absent.
   function launchStop(marks) {
     var launch = null, stop = null;
@@ -549,11 +568,13 @@ var AnubeeModView = (function () {
     });
     return { launch: launch, stop: stop };
   }
+  // The run's start (launch mark, else first record) and end (stop mark, else
+  // last record); stopped says which end it is.
   function runBounds(ctx) {
     var ts = (ctx.records || []).map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
     var ls = launchStop(ctx.marks), launch = ls.launch, stop = ls.stop;
-    var first = ts.length ? Math.min.apply(null, ts) : null, last = ts.length ? Math.max.apply(null, ts) : null;
-    return { start: launch !== null ? launch : first, end: stop !== null ? stop : last };
+    var first = minOf(ts), last = maxOf(ts);
+    return { start: launch !== null ? launch : first, end: stop !== null ? stop : last, stopped: stop !== null };
   }
 
   var HTTP_SOURCES = { http: 'HTTP', https: 'HTTPS', sni: 'HTTPS' };
@@ -590,7 +611,8 @@ var AnubeeModView = (function () {
     if (d.beacon && b.end !== null) {
       var bw = d.beacon;
       v.every = fmtDur(bw.intervalS);
-      v.minutes = plural(Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS))), W.minute);
+      var mins = Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS)));
+      v.minutes = mins === 1 ? W.minute : plural(mins, W.minute);   // "in the last minute", never "1 minute"
       v.from = fmtAt(bw.fromTs, b.start);
       v.to = fmtAt(bw.toTs, b.start);
       // "in the last N minutes" only while the beat runs to the end of the run
@@ -785,7 +807,9 @@ var AnubeeModView = (function () {
       approx = true;
       var granted = [], others = [], a11y = false;
       d.perms.forEach(function (p) {
-        ev1(E.changes, present(p.old) ? fill(E.changeText, { name: p.name, old: p.old, new: p.new }) : fill(E.changeNew, { name: p.name, new: p.new }));
+        // a removed value (revoked, cleared) is a change too: counted, so listed
+        ev1(E.changes, !present(p.new) ? words(E.changeRemoved, { name: p.name, old: p.old })
+          : present(p.old) ? fill(E.changeText, { name: p.name, old: p.old, new: p.new }) : fill(E.changeNew, { name: p.name, new: p.new }));
         if (p.category === 'accessibility' && present(p.new)) { a11y = true; return; }
         var ok = p.new === 'granted' || p.new === 'allow';
         var label = ok && has(T.permissionWords, p.name) ? T.permissionWords[p.name] : p.name;
@@ -833,14 +857,17 @@ var AnubeeModView = (function () {
       });
       if (labA11y.length) ev1(E.depends, fill(E.dependsText, { at: at(minTs(labA11y)) }));
       ev1(E.notKnown, E.notKnownText);
-    } else if (step.template === 'exec') {
+    } else if (step.template === 'exec' || step.template === 'file_probe') {
+      // every attempt failed: nothing ran or was opened, so nothing says it was
+      var failed = d.failed || 0, allFailed = failed > 0 && failed === d.count;
+      vars.variant = allFailed ? 'failed' : 'ran';
       vars.cmd = d.cmd;
-      vars.times = plural(d.count, 'time');
-      ev1(E.cmd, d.cmd);
-    } else if (step.template === 'file_probe') {
       vars.path = d.path;
-      vars.times = plural(d.count, 'time');
-      ev1(E.path, d.path);
+      vars.times = allFailed ? null : plural(d.count, 'time');
+      vars.errs = (d.errors || []).length ? ' (' + d.errors.join(', ') + ')' : '';
+      vars.failedPart = !failed ? null : (allFailed ? fill(W.failedAll, { n: plural(failed, 'time') })
+        : fill(W.failedSome, { n: String(failed) })) + vars.errs;
+      ev1(step.template === 'exec' ? E.cmd : E.path, step.template === 'exec' ? d.cmd : d.path);
     } else {
       vars.key = d.key;
       vars.records = plural(d.count, 'record');
@@ -867,7 +894,6 @@ var AnubeeModView = (function () {
   // ---- the page model ----
   var VIEW_HEADLINE_SKIP = { recorded: 1 };   // shown, not interpreted: no headline claim
   var GAP_NS = 10 * NS;                       // a gap this long is written on the line
-  var NO_COMMAND_RX = 10000;                  // bytes: below this, no C2 reply big enough to carry commands
 
   function lowerFirst(s) { return /^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
   function fmtLen(sec, D) {
@@ -880,15 +906,14 @@ var AnubeeModView = (function () {
     var s = Math.round(ns / NS);
     return s < 120 ? fill(V.gapS, { n: String(s) }) : fill(V.gapMin, { n: String(Math.round(s / 60)) });
   }
-  // Trace length in seconds: meta started/stopped, else launch..stop marks, else first..last timed record.
-  function traceSeconds(meta, marks, records) {
-    var a = Date.parse(str(meta.started)), b = Date.parse(str(meta.stopped));
-    if (present(meta.started) && present(meta.stopped) && !isNaN(a) && !isNaN(b) && b > a) return (b - a) / 1000;
-    var ls = launchStop(marks);
-    if (ls.launch !== null && ls.stop !== null && ls.stop > ls.launch) return (ls.stop - ls.launch) / NS;
-    var ts = records.map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
-    var lo = ts.length ? Math.min.apply(null, ts) : null, hi = ts.length ? Math.max.apply(null, ts) : null;
-    return lo !== null && hi > lo ? (hi - lo) / NS : null;     // one timestamp is no length
+  // Trace length {s, wall}: up to the stop mark, from the same start the end
+  // row uses; else meta started/stopped (wall: the kicker names it); else the
+  // same start to the last timed record. null when there is no length.
+  function traceSeconds(meta, b) {
+    if (b.stopped && b.end > b.start) return { s: (b.end - b.start) / NS, wall: false };
+    var x = Date.parse(str(meta.started)), y = Date.parse(str(meta.stopped));
+    if (present(meta.started) && present(meta.stopped) && !isNaN(x) && !isNaN(y) && y > x) return { s: (y - x) / 1000, wall: true };
+    return b.start !== null && b.end > b.start ? { s: (b.end - b.start) / NS, wall: false } : null;   // one timestamp is no length
   }
   function smsEvidence(records) {
     return records.some(function (r) {
@@ -896,21 +921,24 @@ var AnubeeModView = (function () {
         (r.call && /^(sms|mms|mms-sms)$/i.test(str(r.call.authority))) || /\.ISms$/.test(str(r.interface)));
     });
   }
+  // Clean: a clean coverage record for the engine and no degraded one.
   function cleanEngine(records, engine) {
-    return records.some(function (r) { return r.type === 'coverage' && r.engine === engine && r.clean === true; });
+    var cov = records.filter(function (r) { return r.type === 'coverage' && r.engine === engine; });
+    return cov.some(function (r) { return r.clean === true; }) && !cov.some(function (r) { return !r.clean && !r.exempt; });
   }
   function permKey(n) { return str(n).replace(/^android\.permission\./, ''); }
 
   // buildView(input): everything the page shows, as plain text. input =
-  // {records, marksText, profile, templates, meta?, badging?, staticApk?, hidden?};
+  // {records, marksText, profile, templates, meta?, badging?, staticApk?, hidden?, pkg?};
   // meta = {family, familySource, sha256, device, started, stopped} (any missing),
   // badging = {permissions: [...]}, staticApk = {entries: [{name, size, isDex}]},
-  // hidden = findings()' hidden counts of the whole run when records was trimmed of noise.
+  // hidden = findings()' hidden counts of the whole run when records was trimmed of noise,
+  // pkg = the traced package when the caller knows it (else read from the records).
   function buildView(input) {
     var records = input.records || [], T = input.templates, V = T.view;
     var meta = input.meta || {}, profile = input.profile || {};
     var marks = parseMarks(input.marksText);
-    var pkg = inferPackage(records);
+    var pkg = present(input.pkg) ? String(input.pkg) : inferPackage(records);
     var steps = buildSteps(records, marks, profile, pkg);
     var summaries = Object.create(null);
     records.forEach(function (r) { if (typeof r.type === 'string' && r.type.slice(-8) === '_summary') summaries[r.type] = r; });
@@ -925,8 +953,8 @@ var AnubeeModView = (function () {
     var kick = [];
     if (present(meta.family)) kick.push(words(V.kicker.family, { family: meta.family, source: meta.familySource }));
     if (present(meta.device)) kick.push(String(meta.device));
-    var len = traceSeconds(meta, marks, records);
-    if (len !== null) kick.push(fill(V.kicker.traced, { dur: fmtLen(len, V.duration) }));
+    var len = traceSeconds(meta, b);
+    if (len !== null) kick.push(fill(len.wall ? V.kicker.tracedWall : V.kicker.traced, { dur: fmtLen(len.s, V.duration) }));
 
     // headline: the sample's steps' short forms, in step order, once each
     var shorts = [];
@@ -954,7 +982,7 @@ var AnubeeModView = (function () {
       }
       timeline.push({ kind: 'step', n: n, actor: s.actor, time: fmtAt(s.firstTs, b.start), approx: card.approx, card: card });
     });
-    if (b.end !== null) timeline.push({ kind: 'end', time: fmtAt(b.end, b.start) });
+    if (b.end !== null) timeline.push({ kind: 'end', time: fmtAt(b.end, b.start), text: b.stopped ? V.end.stopped : V.end.last });
 
     // IOCs: hashes, paths and endpoints only (never the saved copy's device path)
     var iocs = [], seenIoc = new Set(), otherHosts = [];
@@ -993,9 +1021,11 @@ var AnubeeModView = (function () {
       rx += row.rx;
       return true;
     });
-    if (rxKnown && !(ns.untracked > 0) && cleanEngine(records, 'net') && rx < NO_COMMAND_RX && !smsEvidence(records) && !records.some(function (r) { return r.type === 'execve'; }) &&
+    // contents are never traced, so this states facts, never "no commands"
+    if (rxKnown && cleanEngine(records, 'net') && !smsEvidence(records) && !records.some(function (r) { return r.type === 'execve'; }) &&
         cleanEngine(records, 'binder-api') && cleanEngine(records, 'execve')) {
-      limits.push(fill(c2.length > 1 ? L.noCommandsMany : L.noCommands, { rx: fmtSize(rx) }));
+      var rxText = ns.untracked > 0 ? fill(L.rxAtLeast, { rx: fmtSize(rx) }) : fmtSize(rx);
+      limits.push(fill(c2.length > 1 ? L.noCommandsMany : L.noCommands, { rx: rxText }));
     }
     var pers = has1('persistence')[0];
     if (pers && pers.data.respawns > 0) {
@@ -1035,7 +1065,7 @@ var AnubeeModView = (function () {
     }
     // exempt records had nothing to check: never counted as checks that ran
     var nEx = records.filter(function (r) { return r.type === 'coverage' && r.exempt; }).length;
-    var nRan = f.coverage.records - nEx, cv = { k: String(f.coverage.degraded.length), n: plural(nRan, 'check'), e: String(nEx), engines: degraded.join(', ') };
+    var nRan = f.coverage.records - nEx, cv = { k: String(degraded.length), n: plural(nRan, 'check'), e: String(nEx), engines: degraded.join(', ') };
     foot.push(!f.coverage.records ? F.coverageNone : !nRan ? fill(F.coverageAllExempt, { n: plural(nEx, 'check') })
       : degraded.length ? fill(nEx ? F.coverageBadExempt : F.coverageBad, cv)
       : nEx ? cap(fill(F.coverageOkExempt, cv)) : nRan === 1 ? F.coverageOkOne : fill(F.coverageOk, cv));

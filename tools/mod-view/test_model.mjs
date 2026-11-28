@@ -285,7 +285,7 @@ test('permissions outside the fixed list keep their raw name', () => {
 test('detonation is the lab opening the sample, exact', () => {
   const x = d('detonation');
   assert.equal(x.approx, false);
-  assert.equal(x.title, 'Installed and opened the sample');
+  assert.equal(x.title, 'Opened the sample');
   assert.match(x.facts, /com\.example\.sample/);
 });
 
@@ -734,8 +734,8 @@ test('static check only when an APK entry matches the payload size', () => {
 
 test('kicker: family with its source, device, trace length from meta, marks or records', () => {
   assert.equal(V.kicker, 'Family: ExampleFam (MalwareBazaar tag) · real Android 16 phone · traced for 4 min 25 s');
-  const m = M.buildView({ ...input, meta: { family: 'X', started: '2026-11-25T23:03:59+07:00', stopped: '2026-11-25T23:09:05+07:00' } });
-  assert.equal(m.kicker, 'Family: X · traced for 5 min 6 s');
+  const m = M.buildView({ ...input, marksText: '', meta: { family: 'X', started: '2026-11-25T23:03:59+07:00', stopped: '2026-11-25T23:09:05+07:00' } });
+  assert.equal(m.kicker, 'Family: X · traced for 5 min 6 s (wall clock)');
   const r = M.buildView({ ...input, marksText: '', meta: {} });
   assert.equal(r.kicker, 'traced for 4 min 10 s');            // first to last timed record
 });
@@ -770,13 +770,14 @@ test('IOCs: sample hash, package, payload hash and dropped path, suspected C2, l
 
 test('limits: no C2 commands only when backed by data; the kill sender is unknown', () => {
   assert.ok(V.limits.some((l) => l === 'Who sent the 12 SIGKILLs is not recorded.'), V.limits.join('\n'));
-  assert.ok(V.limits.some((l) => /^No commands from the suspected C2 were observed\. It sent back 1\.4 KB in total/.test(l)), V.limits.join('\n'));
+  assert.ok(V.limits.includes("Commands from the suspected C2 can't be seen: traffic contents aren't traced. It sent back 1.4 KB, and no SMS access or command execution was recorded."), V.limits.join('\n'));
   const sms = { type: 'binder_api', pid: 13620, ts_ns: T0 + 60e9, interface: 'android.content.IContentProvider', method: 'QUERY', uri: 'content://sms/inbox' };
-  assert.ok(!M.buildView({ ...input, records: [...records, sms] }).limits.some((l) => /No commands/.test(l)));
+  assert.ok(!M.buildView({ ...input, records: [...records, sms] }).limits.some((l) => /can't be seen/.test(l)));
   const big = records.map((r) => r.type === 'net_summary' ? { ...r, destinations: r.destinations.map((x) => ({ ...x, rx: 20000 })) } : r);
-  assert.ok(!M.buildView({ ...input, records: big }).limits.some((l) => /No commands/.test(l)));
+  // a big reply proves nothing either way: the limit states facts, so it stays
+  assert.ok(M.buildView({ ...input, records: big }).limits.some((l) => /It sent back 20 KB, and no SMS/.test(l)));
   const noSum = records.filter((r) => r.type !== 'net_summary');
-  assert.ok(!M.buildView({ ...input, records: noSum }).limits.some((l) => /No commands/.test(l)));
+  assert.ok(!M.buildView({ ...input, records: noSum }).limits.some((l) => /can't be seen/.test(l)));
 });
 
 test('every user-visible "C2" carries "suspected"', () => {
@@ -812,10 +813,10 @@ const lim = (W) => W.limits.join('\n');
 
 test('"no commands" and byte totals need clean, fully tracked net data', () => {
   const netBad = recsWith((r) => r.type === 'coverage' && r.engine === 'net' ? { ...r, clean: false } : null);
-  assert.ok(!/No commands/.test(lim(M.buildView({ ...input, records: netBad }))));
+  assert.ok(!/can't be seen/.test(lim(M.buildView({ ...input, records: netBad }))));
   const untracked = recsWith((r) => r.type === 'net_summary' ? { ...r, untracked: 2 } : null);
   const U = M.buildView({ ...input, records: untracked });
-  assert.ok(!/No commands/.test(lim(U)));
+  assert.match(lim(U), /It sent back at least 1\.4 KB, and no SMS/);
   const c2 = U.timeline.find((i) => i.kind === 'step' && i.card.net).card;
   assert.match(c2.net.sub, /sent at least 6\.2 KB, received at least 1\.4 KB/);
 });
@@ -903,4 +904,119 @@ test('an APK entry whose DEX check is unknown never backs the static claim', () 
   const N = M.buildView({ ...input, staticApk: { entries: [{ name: 'blob', size: 777276, isDex: null }] } });
   assert.deepEqual(N, V);
   assert.ok(!/Static check|inside its APK|inside the APK/.test(JSON.stringify(N)));
+});
+
+// ---- final review fixes ----
+const execAt = (sec, extra = {}) => ({ type: 'execve', pid: 1, ts_ns: T0 + sec * 1e9, filename: '/system/bin/su', argv: ['su'], ...extra });
+const openAt = (sec, extra = {}) => ({ type: 'file_access', pid: 1, ts_ns: T0 + sec * 1e9, path: '/system/xbin/su', categories: [], ...extra });
+const viewOf = (recs, extra = {}) => M.buildView({ records: recs, marksText: '', profile: { keys: {} }, templates: T, ...extra });
+
+test('a failed exec or open is never told as a success', () => {
+  const recs = [execAt(1, { result: -2, error: 'ENOENT' }), execAt(2, { result: -2, error: 'ENOENT' }), openAt(3, { result: -2, error: 'ENOENT' })];
+  const W = viewOf(recs);
+  assert.ok(!/\bRan\b|\bOpened\b/.test(JSON.stringify(W)), JSON.stringify(W));
+  assert.equal(W.headline, 'Tried to run a command and tried to open a file');
+  const ex = desc(recs, 'exec'), fo = desc(recs, 'file_probe');
+  assert.equal(ex.plain, 'Tried to run su.');
+  assert.equal(ex.glance, 'Tried to run su');
+  assert.equal(ex.facts, 'failed 2 times (ENOENT)');
+  assert.equal(fo.plain, 'Tried to open /system/xbin/su.');
+  assert.equal(fo.facts, 'failed 1 time (ENOENT)');
+  // a negative result with no errno name is a failure too
+  assert.equal(desc([execAt(1, { result: -1 })], 'exec').facts, 'failed 1 time');
+});
+
+test('a mixed exec states both counts; a clean one reads as before', () => {
+  const mixed = desc([execAt(1, { result: -2, error: 'ENOENT' }), execAt(2, { result: -13, error: 'EACCES' }), execAt(3, { result: 0 })], 'exec');
+  assert.equal(mixed.plain, 'Ran su.');
+  assert.equal(mixed.facts, '3 times · 2 failed (ENOENT, EACCES)');
+  const ok = desc([execAt(1, { result: 0 }), execAt(2)], 'exec');
+  assert.equal(ok.plain, 'Ran su.');
+  assert.equal(ok.facts, '2 times');
+  assert.equal(viewOf([execAt(1, { result: 0 })]).headline, 'Ran a command');
+});
+
+const forkRun = data('fork-helper.jsonl').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+test('a forked helper that exits and is forked again is not a respawn', () => {
+  const forkOnly = forkRun.slice(0, 8);                     // spawn sh, exit 0, spawn sh again
+  assert.equal(M.respawns(forkOnly), 0);
+  const W = M.buildView({ records: forkOnly, marksText: '', profile: { keys: {} }, templates: T });
+  assert.ok(!/persistence|respawn/i.test(JSON.stringify(W)), W.headline);
+});
+test('the app dying and coming back as a new pid still counts', () => {
+  assert.equal(M.respawns(forkRun), 1);                     // pid 100 killed, pid 300 appears unforked
+  const p = M.buildSteps(forkRun, [], { keys: {} }, PKG).find((x) => x.template === 'persistence');
+  assert.equal(p.data.respawns, 1);
+});
+
+test('the kicker length and the end row agree: marks first, then a named wall clock, then the records', () => {
+  const wall = { started: '2026-11-25T23:03:59+07:00', stopped: '2026-11-25T23:09:05+07:00' };
+  const endOf = (W) => W.timeline[W.timeline.length - 1];
+  const A = M.buildView({ ...input, meta: wall });                // marks given: they win over meta
+  assert.equal(A.kicker, 'traced for 4 min 25 s');
+  assert.deepEqual([endOf(A).text, endOf(A).time], ['Trace stopped', '4:25']);
+  const B = M.buildView({ ...input, marksText: '', meta: wall });  // no marks: wall clock, said so
+  assert.equal(B.kicker, 'traced for 5 min 6 s (wall clock)');
+  assert.deepEqual([endOf(B).text, endOf(B).time], ['Last record', '4:10']);
+  const C = M.buildView({ ...input, marksText: '', meta: {} });    // nothing else: the record span
+  assert.equal(C.kicker, 'traced for 4 min 10 s');
+  assert.deepEqual([endOf(C).text, endOf(C).time], ['Last record', '4:10']);
+  const launchOnly = data('sample-run.marks').split('\n').filter((l) => !/"stop"/.test(l)).join('\n');
+  assert.equal(endOf(M.buildView({ ...input, marksText: launchOnly, meta: {} })).text, 'Last record');
+});
+
+test('a 200k-record run builds a View (no argument-spreading min/max)', () => {
+  const big = [];
+  for (let i = 0; i < 200000; i++) {
+    big.push({ type: 'net', pid: 1, ts_ns: T0 + i * (i % 2 ? 3e9 : 1e9), event: 'open', proto: 'tcp', dest: '203.0.113.5:3434', host: '203.0.113.5:3434' });
+  }
+  const W = M.buildView({ records: big, marksText: '', profile: { keys: {} }, templates: T });
+  assert.match(W.kicker, /^traced for /);
+  assert.ok(W.timeline.some((i) => i.kind === 'end'));
+  assert.ok(!/Math\.(min|max)\.apply/.test(readFileSync(path.join(here, 'model.js'), 'utf8')));
+});
+
+test('the C2 command limit states facts only and keeps its gates', () => {
+  assert.ok(!/No commands/.test(lim(V)));
+  const two = recsWith((r) => r.type === 'net_summary' ? { ...r, destinations: [...r.destinations, { dest: '203.0.113.6:80', tx: 10, rx: 600 }] } : null);
+  const opens = [0, 1, 2].map((s) => ({ ...netOpenAt(100 + s), dest: '203.0.113.6:80', host: '203.0.113.6:80' }));
+  assert.ok(lim(M.buildView({ ...input, records: [...two, ...opens] })).includes(
+    "Commands from the suspected C2 servers can't be seen: traffic contents aren't traced. They sent back 2.0 KB, and no SMS access or command execution was recorded."));
+  const ex = [...records, { type: 'execve', pid: 13620, ts_ns: T0 + 70e9, argv: ['id'], result: 0 }];
+  assert.ok(!/can't be seen/.test(lim(M.buildView({ ...input, records: ex }))));
+  assert.ok(!/NO_COMMAND_RX/.test(readFileSync(path.join(here, 'model.js'), 'utf8')));
+});
+
+test('coverage problems count distinct engines, and an engine with any degraded record is not clean', () => {
+  const twice = [...degraded, { type: 'coverage', engine: 'file-access', clean: false }];
+  assert.match(M.buildView({ ...input, records: twice }).footer, /1 of 13 checks reported problems: file-access\./);
+  const netMixed = [...records, { type: 'coverage', engine: 'net', clean: false }];
+  assert.ok(!/can't be seen/.test(lim(M.buildView({ ...input, records: netMixed }))));
+});
+
+test('the stale comment above launchStop is gone', () => {
+  assert.ok(!readFileSync(path.join(here, 'model.js'), 'utf8').includes("// The run's start (launch mark, else first record) and end (stop mark, else last record).\n  // The run's launch"));
+});
+
+test('detonation says only what the lab did: opened the sample', () => {
+  const x = d('detonation');
+  assert.equal(x.title, 'Opened the sample');
+  assert.ok(!/install/i.test(allWords(x)));
+});
+
+test('one minute reads "in the last minute", never "1 minute"', () => {
+  const recs = [0, 20, 40, 60, 80].map((s) => netOpenAt(s));
+  const c = viewOf(recs).timeline.find((i) => i.kind === 'step').card;
+  assert.match(c.facts, /about every 20 s in the last minute$/);
+  assert.ok(!/\b1 minute/.test(JSON.stringify(viewOf(recs))));
+});
+
+test('every counted permission change, revocations included, is in the evidence', () => {
+  const rec = (name, change, old, nw) => ({ type: 'perm_change', ts_ns: T0 + 48.3e9, package: PKG, category: 'appop', name, change, old, new: nw });
+  const recs = [rec('READ_SMS', 'revoked', 'ignore', null), rec('SEND_SMS', 'changed', 'allow', ''), rec('CAMERA', 'granted', null, 'allow'),
+    { type: 'perm_change', ts_ns: T0 + 48.3e9, package: PKG, category: 'accessibility', name: 'accessibility', change: 'revoked', old: 'com.example.sample/.Svc', new: null }];
+  const o = desc(recs, 'perm_unattributed');
+  assert.equal(o.facts, '4 permission changes');
+  const rows = o.evidence.filter((e) => e[0] === 'Changes').map((e) => e[1]);
+  assert.deepEqual(rows, ['READ_SMS: ignore, now removed', 'SEND_SMS: allow, now removed', 'CAMERA: now allow', 'accessibility: com.example.sample/.Svc, now removed']);
 });

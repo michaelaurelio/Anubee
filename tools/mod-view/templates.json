@@ -95,8 +95,11 @@
     },
     "headlineNone": "No activity beyond what ordinary apps also do was credited to the sample",
     "headlineRecorded": "Activity recorded, none of it interpreted",
+    "headlineNoneDegraded": "No activity beyond what ordinary apps also do was credited to the sample, but coverage was degraded for {engines}",
+    "headlineRecordedDegraded": "Activity recorded, none of it interpreted, with degraded coverage for {engines}",
     "gapS": "{n} s later",
     "gapMin": "{n} min later",
+    "otherHosts": "Other hosts contacted",
     "ioc": {
       "sampleSha": "Sample SHA-256",
       "package": "Package",
@@ -107,7 +110,6 @@
         ]
       },
       "c2": "Suspected C2",
-      "contacted": "Contacted host",
       "lookups": "Domains looked up"
     },
     "limits": {
@@ -128,7 +130,7 @@
       "declared": "Declared in the app but not granted in this run: {list} ({n} declared in total).",
       "declaredMore": "{list} and {k} more",
       "declaredAllGranted": "All {n} declared in the app were granted in this run.",
-      "declaredUnchecked": "Declared in the app: {n} (not checked against grants: no permission records in this run).",
+      "declaredUnchecked": "Declared in the app: {n} (not checked against grants in this run).",
       "hidden": {
         "first": [
           "Hidden because ordinary apps do the same (noise profile version {v}, from {apps}): {n}.",
@@ -138,6 +140,9 @@
       "coverageOk": "All {n} ran without problems.",
       "coverageOkOne": "The one check ran without problems.",
       "coverageBad": "{k} of {n} reported problems: {engines}.",
+      "coverageOkExempt": "{n} ran without problems; {e} had nothing to check.",
+      "coverageBadExempt": "{k} of {n} reported problems: {engines}; {e} had nothing to check.",
+      "coverageAllExempt": "None of the {n} had anything to check.",
       "coverageNone": "No coverage checks were recorded.",
       "attack": "Stages and techniques: MITRE ATT&CK for Mobile."
     }
@@ -218,7 +223,8 @@
         "ranFromIt": "ran code from it",
         "ranCodeAt": "ran code from a file at {at}",
         "wroteAgain": "wrote code to the file again",
-        "then": "then {c}"
+        "then": "then {c}",
+        "andAfter": "{a}, and {c}"
       },
       "evidence": {
         "path": "Dropped file",
@@ -297,7 +303,8 @@
         "ranFromIt": "ran code from it",
         "ranCodeAt": "ran code from a file at {at}",
         "wroteAgain": "wrote code to the file again",
-        "then": "then {c}"
+        "then": "then {c}",
+        "andAfter": "{a}, and {c}"
       },
       "evidence": {
         "path": "Dropped file",
@@ -431,7 +438,8 @@
           "{proto}",
           "{traffic}"
         ],
-        "traffic": "sent {tx}, received {rx}"
+        "traffic": "sent {tx}, received {rx}",
+        "trafficAtLeast": "sent at least {tx}, received at least {rx}"
       },
       "evidence": {
         "why": "Why \"suspected C2\"",

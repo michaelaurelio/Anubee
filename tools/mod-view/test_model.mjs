@@ -765,7 +765,7 @@ test('IOCs: sample hash, package, payload hash and dropped path, suspected C2, l
   ]);
   const recs = [dnsAt(1, 'a.example.test'), dnsAt(2, 'b.example.test'), dnsAt(3, 'a.example.test'), netOpenAt(4)];
   const L = M.buildView({ records: recs, marksText: '', profile: { keys: {} }, templates: T });
-  assert.deepEqual(L.iocs, [['Contacted host', '203.0.113.9:80'], ['Domains looked up', 'a.example.test, b.example.test']]);
+  assert.deepEqual(L.iocs, [['Domains looked up', 'a.example.test'], ['Domains looked up', 'b.example.test']]);
 });
 
 test('limits: no C2 commands only when backed by data; the kill sender is unknown', () => {
@@ -804,4 +804,80 @@ test('a run with no interpreted sample step never claims nothing happened', () =
   assert.equal(N.headline, 'No activity beyond what ordinary apps also do was credited to the sample');
   const R = M.buildView({ records: [{ type: 'mystery', pid: 1, ts_ns: T0 }], marksText: '', profile: { keys: {} }, templates: T });
   assert.equal(R.headline, 'Activity recorded, none of it interpreted');
+});
+
+// ---- Task 6 fix round 1 ----
+const recsWith = (fn) => records.map((r) => fn(r) || r);
+const lim = (W) => W.limits.join('\n');
+
+test('"no commands" and byte totals need clean, fully tracked net data', () => {
+  const netBad = recsWith((r) => r.type === 'coverage' && r.engine === 'net' ? { ...r, clean: false } : null);
+  assert.ok(!/No commands/.test(lim(M.buildView({ ...input, records: netBad }))));
+  const untracked = recsWith((r) => r.type === 'net_summary' ? { ...r, untracked: 2 } : null);
+  const U = M.buildView({ ...input, records: untracked });
+  assert.ok(!/No commands/.test(lim(U)));
+  const c2 = U.timeline.find((i) => i.kind === 'step' && i.card.net).card;
+  assert.match(c2.net.sub, /sent at least 6\.2 KB, received at least 1\.4 KB/);
+});
+
+test('the write+run-before-online wording counts noise-hidden opens too', () => {
+  const hid = { type: 'net', pid: 1, ts_ns: T0 + 1.5e9, event: 'open', proto: 'tcp', dest: '203.0.113.7:443', host: '203.0.113.7:443', host_source: 'sni' };
+  const recs = [dex('drop', 1), hid, dex('load', 2), netOpenAt(200)];
+  const prof = { keys: { 'net\ttcp 203.0.113.7:443': 1 }, min_apps: 1 };
+  const st = M.buildSteps(recs, [], prof, PKG).find((x) => x.template === 'payload_packed');
+  assert.equal(M.describe(st, { records: recs, marks: [] }, T).plain, 'Wrote code to a file before going online and ran it.');
+});
+
+test('exempt coverage records are not counted as checks that ran', () => {
+  const ex = recsWith((r) => r.type === 'coverage' && r.engine === 'lib' ? { ...r, clean: false, exempt: true } : null);
+  assert.match(M.buildView({ ...input, records: ex }).footer, /11 checks ran without problems; 1 had nothing to check\./);
+  const both = ex.map((r) => r.type === 'coverage' && r.engine === 'file-access' ? { ...r, clean: false } : r);
+  assert.match(M.buildView({ ...input, records: both }).footer, /1 of 11 checks reported problems: file-access; 1 had nothing to check\./);
+});
+
+test('negative headlines are hedged when coverage is degraded', () => {
+  const bad = { type: 'coverage', engine: 'perm-watch', clean: false };
+  assert.equal(M.buildView({ records: [...noMarks, bad], marksText: '', profile, templates: T }).headline,
+    'No activity beyond what ordinary apps also do was credited to the sample, but coverage was degraded for perm-watch');
+  assert.equal(M.buildView({ records: [{ type: 'mystery', pid: 1, ts_ns: T0 }, bad], marksText: '', profile: { keys: {} }, templates: T }).headline,
+    'Activity recorded, none of it interpreted, with degraded coverage for perm-watch');
+});
+
+test('one timestamp gives no trace length', () => {
+  assert.equal(M.buildView({ records: [{ type: 'mystery', pid: 1, ts_ns: T0 }], marksText: '', profile: { keys: {} }, templates: T }).kicker, '');
+});
+
+test('gap minutes are rounded', () => {
+  const at = (s) => ({ ...netOpenAt(s), dest: '203.0.113.' + Math.round(s) + ':80', host: '203.0.113.' + Math.round(s) + ':80' });
+  const G = M.buildView({ records: [at(0), at(179), at(298.9)], marksText: '', profile: { keys: {} }, templates: T });
+  assert.deepEqual(G.timeline.filter((i) => i.kind === 'gap').map((i) => i.text), ['3 min later', '2 min later']);
+});
+
+test('a trailing delete after a network-timed clause is set off by a comma', () => {
+  assert.equal(desc([dex('drop', 1), dex('load', 2), dex('delete', 3), netOpenAt(200)], 'payload_packed').plain,
+    'Wrote code to a file and ran it before going online, and deleted the file afterwards.');
+});
+
+test('other contacted hosts are not IOCs; each looked-up domain is its own entry', () => {
+  const recs = [dnsAt(1, 'a.example.test'), dnsAt(2, 'b.example.test'), dnsAt(3, 'a.example.test'), netOpenAt(4)];
+  const L = M.buildView({ records: recs, marksText: '', profile: { keys: {} }, templates: T });
+  assert.deepEqual(L.iocs, [['Domains looked up', 'a.example.test'], ['Domains looked up', 'b.example.test']]);
+  assert.deepEqual(L.otherHosts, ['203.0.113.9:80']);
+  assert.equal(L.otherHostsLabel, 'Other hosts contacted');
+  assert.deepEqual(V.otherHosts, []);
+});
+
+test('declared-only permissions need clean perm-watch coverage', () => {
+  const badging = { permissions: ['android.permission.READ_SMS', 'android.permission.QUERY_ALL_PACKAGES'] };
+  const noPw = records.filter((r) => !(r.type === 'coverage' && r.engine === 'perm-watch'));
+  const F = M.buildView({ ...input, records: noPw, badging }).footer;
+  assert.ok(!/not granted in this run/.test(F), F);
+  assert.match(F, /^Declared in the app: 2 permissions \(not checked against grants in this run\)\./);
+});
+
+test('trace length and step times use the same launch mark', () => {
+  const two = data('sample-run.marks') + JSON.stringify({ type: 'lab_mark', ts_ns: T0 + 10e9, label: 'launch' }) + '\n';
+  const W = M.buildView({ ...input, marksText: two, meta: {} });
+  assert.equal(W.kicker, 'traced for 4 min 25 s');
+  assert.equal(W.timeline.find((i) => i.kind === 'step' && i.card.title === 'Second-stage payload unpacked and loaded').time, '2.5 s');
 });

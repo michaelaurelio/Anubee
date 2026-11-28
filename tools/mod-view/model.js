@@ -269,8 +269,8 @@ var AnubeeModView = (function () {
     recs.forEach(function (r) { if (r.saved) saved = r.saved; });
     var dts = minTs(drops);           // the earliest timed drop, the one describe() words too
     var netTs = dts !== null ? netOpensBefore(opens, dts) : null;
-    var netAfterTs = null;
-    opens.forEach(function (r) {
+    var netAfterTs = null;                 // first open after the drop, visible or noise-hidden
+    opens.concat(hidden).forEach(function (r) {
       if (dts !== null && typeof r.ts_ns === 'number' && r.ts_ns > dts && (netAfterTs === null || r.ts_ns < netAfterTs)) netAfterTs = r.ts_ns;
     });
     var anyOpen = function (list, test) {
@@ -537,13 +537,18 @@ var AnubeeModView = (function () {
   }
 
   // The run's start (launch mark, else first record) and end (stop mark, else last record).
+  // The run's launch (first launch mark) and stop (last stop mark), null when absent.
+  function launchStop(marks) {
+    var launch = null, stop = null;
+    (marks || []).forEach(function (m) {
+      if (m.label === 'launch' && (launch === null || m.ts < launch)) launch = m.ts;
+      if (m.label === 'stop' && (stop === null || m.ts > stop)) stop = m.ts;
+    });
+    return { launch: launch, stop: stop };
+  }
   function runBounds(ctx) {
     var ts = (ctx.records || []).map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
-    var launch = null, stop = null;
-    (ctx.marks || []).forEach(function (m) {
-      if (m.label === 'launch') launch = m.ts;
-      if (m.label === 'stop') stop = m.ts;
-    });
+    var ls = launchStop(ctx.marks), launch = ls.launch, stop = ls.stop;
     var first = ts.length ? Math.min.apply(null, ts) : null, last = ts.length ? Math.max.apply(null, ts) : null;
     return { start: launch !== null ? launch : first, end: stop !== null ? stop : last };
   }
@@ -595,7 +600,8 @@ var AnubeeModView = (function () {
     var s = summaryOf(ctx, 'net_summary');
     var row = s && (s.destinations || []).filter(function (x) { return x.dest === dest; })[0];
     if (!row || typeof row.tx !== 'number' || typeof row.rx !== 'number') return null;
-    return fill(T.steps.c2_beacon.net.traffic, { tx: fmtSize(row.tx), rx: fmtSize(row.rx) });
+    var N = T.steps.c2_beacon.net;
+    return fill(s.untracked > 0 ? N.trafficAtLeast : N.traffic, { tx: fmtSize(row.tx), rx: fmtSize(row.rx) });
   }
 
   // Tactic label: the techniques' tactics, once each, in ATT&CK matrix order.
@@ -654,7 +660,13 @@ var AnubeeModView = (function () {
         var lastRun = i === runs.length - 1;
         c = [i === 0 ? (timed ? timedWord(W.deletedFirstAt, run.ts, W.deletedOnly) : W.deletedOnly)
           : lastRun ? W.deleted : timedWord(W.deletedAt, run.ts, W.deletedIt)];
-        if (i && lastRun) { clauses.push.apply(clauses, c); prevNet = false; return; }   // "afterwards" orders itself
+        if (i && lastRun) {                    // "afterwards" orders itself
+          // after a network-timed clause, set it off so it can't read as part of that timing
+          if (prevNet) clauses[clauses.length - 1] = fill(W.andAfter, { a: clauses[clauses.length - 1], c: c[0] });
+          else clauses.push.apply(clauses, c);
+          prevNet = false;
+          return;
+        }
       }
       if (i && !prevNet) c[0] = fill(W.then, { c: c[0] });
       prevNet = net;
@@ -863,20 +875,17 @@ var AnubeeModView = (function () {
   }
   function fmtGap(ns, V) {
     var s = Math.round(ns / NS);
-    return s < 120 ? fill(V.gapS, { n: String(s) }) : fill(V.gapMin, { n: String(Math.floor(s / 60)) });
+    return s < 120 ? fill(V.gapS, { n: String(s) }) : fill(V.gapMin, { n: String(Math.round(s / 60)) });
   }
   // Trace length in seconds: meta started/stopped, else launch..stop marks, else first..last timed record.
   function traceSeconds(meta, marks, records) {
     var a = Date.parse(str(meta.started)), b = Date.parse(str(meta.stopped));
-    if (present(meta.started) && present(meta.stopped) && !isNaN(a) && !isNaN(b) && b >= a) return (b - a) / 1000;
-    var launch = null, stop = null;
-    marks.forEach(function (m) {
-      if (m.label === 'launch' && launch === null) launch = m.ts;
-      if (m.label === 'stop') stop = m.ts;
-    });
-    if (launch !== null && stop !== null && stop >= launch) return (stop - launch) / NS;
+    if (present(meta.started) && present(meta.stopped) && !isNaN(a) && !isNaN(b) && b > a) return (b - a) / 1000;
+    var ls = launchStop(marks);
+    if (ls.launch !== null && ls.stop !== null && ls.stop > ls.launch) return (ls.stop - ls.launch) / NS;
     var ts = records.map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
-    return ts.length ? (Math.max.apply(null, ts) - Math.min.apply(null, ts)) / NS : null;
+    var lo = ts.length ? Math.min.apply(null, ts) : null, hi = ts.length ? Math.max.apply(null, ts) : null;
+    return lo !== null && hi > lo ? (hi - lo) / NS : null;     // one timestamp is no length
   }
   function smsEvidence(records) {
     return records.some(function (r) {
@@ -920,9 +929,14 @@ var AnubeeModView = (function () {
       var w = cards[i].short;
       if (s.actor === 'sample' && !VIEW_HEADLINE_SKIP[s.template] && present(w) && shorts.indexOf(w) < 0) shorts.push(w);
     });
+    var f = findings(records, profile, pkg);
+    var degraded = f.coverage.degraded.filter(function (e, i, a) { return a.indexOf(e) === i; }).map(str);
     var recordedOnly = steps.some(function (s) { return s.actor === 'sample' && VIEW_HEADLINE_SKIP[s.template]; });
+    // a "nothing found" headline is hedged when an analyzer reported degraded coverage
+    var hedge = { engines: degraded.join(', ') };
     var headline = shorts.length ? cap(andList(shorts.map(function (w, i) { return i ? lowerFirst(w) : w; })))
-      : recordedOnly ? V.headlineRecorded : V.headlineNone;
+      : recordedOnly ? (degraded.length ? fill(V.headlineRecordedDegraded, hedge) : V.headlineRecorded)
+      : (degraded.length ? fill(V.headlineNoneDegraded, hedge) : V.headlineNone);
 
     // glance and timeline
     var glance = [], timeline = [], prevTs = null;
@@ -938,7 +952,7 @@ var AnubeeModView = (function () {
     if (b.end !== null) timeline.push({ kind: 'end', time: fmtAt(b.end, b.start) });
 
     // IOCs: hashes, paths and endpoints only (never the saved copy's device path)
-    var iocs = [], seenIoc = new Set();
+    var iocs = [], seenIoc = new Set(), otherHosts = [];
     function ioc(label, value) {
       if (!present(label) || !present(value) || seenIoc.has(label + '\u0000' + value)) return;
       seenIoc.add(label + '\u0000' + value);
@@ -954,9 +968,10 @@ var AnubeeModView = (function () {
         ioc(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
       }
       if (s.template === 'c2_beacon') ioc(V.ioc.c2, d.dest);
-      if (s.template === 'net_contact') ioc(V.ioc.contacted, d.dest);
+      // contacted, not suspected: listed apart, never as an indicator
+      if (s.template === 'net_contact' && present(d.dest) && otherHosts.indexOf(String(d.dest)) < 0) otherHosts.push(String(d.dest));
     });
-    if (steps.lookups.length) ioc(V.ioc.lookups, steps.lookups.map(function (l) { return l.name; }).join(', '));
+    steps.lookups.forEach(function (l) { ioc(V.ioc.lookups, l.name); });
 
     // limits, each from a rule over the records
     var L = V.limits, limits = [];
@@ -973,7 +988,7 @@ var AnubeeModView = (function () {
       rx += row.rx;
       return true;
     });
-    if (rxKnown && rx < NO_COMMAND_RX && !smsEvidence(records) && !records.some(function (r) { return r.type === 'execve'; }) &&
+    if (rxKnown && !(ns.untracked > 0) && cleanEngine(records, 'net') && rx < NO_COMMAND_RX && !smsEvidence(records) && !records.some(function (r) { return r.type === 'execve'; }) &&
         cleanEngine(records, 'binder-api') && cleanEngine(records, 'execve')) {
       limits.push(fill(c2.length > 1 ? L.noCommandsMany : L.noCommands, { rx: fmtSize(rx) }));
     }
@@ -986,8 +1001,6 @@ var AnubeeModView = (function () {
         limits.push(kills.length === 1 ? fill(L.killOne, { sig: sig }) : fill(L.killMany, { n: String(kills.length), sig: sig }));
       } else if (kills.length) limits.push(fill(L.killMixed, { n: String(kills.length) }));
     }
-    var f = findings(records, profile, pkg);
-    var degraded = f.coverage.degraded.filter(function (e, i, a) { return a.indexOf(e) === i; }).map(str);
     var coverageWarning = degraded.length ? fill(V.coverageWarning, { engines: degraded.join(', ') }) : null;
     if (degraded.length) limits.push(fill(L.coverage, { engines: degraded.join(', ') }));
 
@@ -1000,7 +1013,8 @@ var AnubeeModView = (function () {
       perms.forEach(function (r) { if (r.new === 'granted' || r.new === 'allow') granted.add(permKey(r.name)); });
       var only = declared.filter(function (p) { return !granted.has(permKey(p)); });
       var nDecl = plural(declared.length, 'permission');
-      if (!perms.length) foot.push(fill(F.declaredUnchecked, { n: nDecl }));
+      // "not granted" only when perm-watch covered the run cleanly
+      if (!perms.length || !cleanEngine(records, 'perm-watch')) foot.push(fill(F.declaredUnchecked, { n: nDecl }));
       else if (!only.length) foot.push(fill(F.declaredAllGranted, { n: nDecl }));
       else {
         var list = only.length > 8 ? fill(F.declaredMore, { list: only.slice(0, 8).join(', '), k: String(only.length - 8) }) : only.join(', ');
@@ -1013,9 +1027,12 @@ var AnubeeModView = (function () {
       foot.push(words(F.hidden, { n: plural(hiddenN, 'record'), v: profile.version,
         apps: Array.isArray(profile.apps) && profile.apps.length ? plural(profile.apps.length, 'app') : null }));
     }
-    var nCov = f.coverage.records;
-    foot.push(!nCov ? F.coverageNone : degraded.length ? fill(F.coverageBad, { k: String(f.coverage.degraded.length), n: plural(nCov, 'check'), engines: degraded.join(', ') })
-      : nCov === 1 ? F.coverageOkOne : fill(F.coverageOk, { n: plural(nCov, 'check') }));
+    // exempt records had nothing to check: never counted as checks that ran
+    var nEx = records.filter(function (r) { return r.type === 'coverage' && r.exempt; }).length;
+    var nRan = f.coverage.records - nEx, cv = { k: String(f.coverage.degraded.length), n: plural(nRan, 'check'), e: String(nEx), engines: degraded.join(', ') };
+    foot.push(!f.coverage.records ? F.coverageNone : !nRan ? fill(F.coverageAllExempt, { n: plural(nEx, 'check') })
+      : degraded.length ? fill(nEx ? F.coverageBadExempt : F.coverageBad, cv)
+      : nEx ? cap(fill(F.coverageOkExempt, cv)) : nRan === 1 ? F.coverageOkOne : fill(F.coverageOk, cv));
     foot.push(F.attack);
 
     return {
@@ -1024,6 +1041,8 @@ var AnubeeModView = (function () {
       glance: glance,
       timeline: timeline,
       iocs: iocs,
+      otherHosts: otherHosts,
+      otherHostsLabel: V.otherHosts,
       limits: limits,
       coverageWarning: coverageWarning,
       footer: foot.filter(present).join(' ')

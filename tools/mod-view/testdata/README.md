@@ -8,7 +8,8 @@ view's tests; the Python findings view must give `expected-findings.json` too
 
 Files: `sample-run.jsonl` (records), `sample-run.marks` (lab marks, same clock),
 `profile.json` (version-1 noise profile), `expected-findings.json` (Python's
-output on the three, minus first-seen times).
+output on the three, minus first-seen times). `degraded.jsonl` is `sample-run.jsonl` with the
+`file-access` coverage record set to `clean:false` (the degraded-coverage case).
 
 | When | Records |
 |---|---|

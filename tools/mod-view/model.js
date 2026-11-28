@@ -263,25 +263,30 @@ var AnubeeModView = (function () {
   }
 
   function payloadStep(recs, opens, hidden) {
-    var drop = recs.filter(function (r) { return r.stage === 'drop'; })[0];
+    var drops = recs.filter(function (r) { return r.stage === 'drop'; });
     var first = recs[0];
     var saved = null;
     recs.forEach(function (r) { if (r.saved) saved = r.saved; });
-    var dts = drop && typeof drop.ts_ns === 'number' ? drop.ts_ns : null;
+    var dts = minTs(drops);           // the earliest timed drop, the one describe() words too
     var netTs = dts !== null ? netOpensBefore(opens, dts) : null;
+    var netAfterTs = null;
+    opens.forEach(function (r) {
+      if (dts !== null && typeof r.ts_ns === 'number' && r.ts_ns > dts && (netAfterTs === null || r.ts_ns < netAfterTs)) netAfterTs = r.ts_ns;
+    });
     var anyOpen = function (list, test) {
       return dts !== null && list.some(function (r) { return typeof r.ts_ns === 'number' && test(r.ts_ns); });
     };
     var stages = recs.map(function (r) { return r.stage; });
     return mkStep(netTs !== null ? 'payload_downloaded' : 'payload_packed', 'sample', recs, {
       path: first.path === undefined ? null : first.path, kind: first.kind, ino: first.ino,
-      stages: stages, dropped: !!drop, loaded: stages.indexOf('load') >= 0,
+      stages: stages, dropped: drops.length > 0, loaded: stages.indexOf('load') >= 0,
       deleted: stages.indexOf('delete') >= 0,
       sha256: saved ? saved.sha256 : null, size: saved ? saved.size : null,
       netBeforeTs: netTs,
       // from the same noise-filtered open set that classifies the step
       netBeforeAny: anyOpen(opens, function (t) { return t < dts; }),
       netAfter: anyOpen(opens, function (t) { return t > dts; }),
+      netAfterTs: netAfterTs,
       hiddenNetBefore: anyOpen(hidden, function (t) { return t < dts && dts - t <= DROP_NET_WINDOW_NS; }),
       hiddenNetEver: anyOpen(hidden, function (t) { return t < dts; })
     });
@@ -608,7 +613,11 @@ var AnubeeModView = (function () {
   // The payload sentence's clauses, one per run of drop/load/delete records in
   // time order (a run of one kind is one clause), each only with its record.
   // Any of them without a time: the unordered wording (no "then", no "afterwards").
-  function payloadClauses(recs, W, atp, wrote) {
+  // o.netTimed: the write clause places the write against the network, so the
+  // next clause gets no "then" (it would read as after that network event).
+  // o.ranEarly: the write+run wording used when the run also came before o.netAfterTs.
+  function payloadClauses(recs, W, atp, wrote, o) {
+    o = o || {};
     var ev = recs.filter(function (r) { return r.stage === 'drop' || r.stage === 'load' || r.stage === 'delete'; });
     var has3 = function (st) { return ev.some(function (r) { return r.stage === st; }); };
     if (ev.some(function (r) { return typeof r.ts_ns !== 'number'; })) {
@@ -621,22 +630,34 @@ var AnubeeModView = (function () {
       .sort(function (a, b) { return a.r.ts_ns - b.r.ts_ns || a.i - b.i; }).map(function (x) { return x.r; });
     var runs = [];
     ev.forEach(function (r) {
-      if (!runs.length || runs[runs.length - 1].stage !== r.stage) runs.push({ stage: r.stage, ts: r.ts_ns });
+      var last = runs[runs.length - 1];
+      if (!last || last.stage !== r.stage) runs.push({ stage: r.stage, ts: r.ts_ns, lastTs: r.ts_ns });
+      else last.lastTs = r.ts_ns;
     });
-    var many = runs.length > 1, clauses = [], dropped = false;
+    // a timed word falls back to its untimed one when the time can't be given
+    var timedWord = function (w, ts, plain) { return fill(w, { at: atp(ts) }) || plain; };
+    var many = runs.length > 1, clauses = [], dropped = false, prevNet = false, skip = -1;
     runs.forEach(function (run, i) {
-      var prev = i ? runs[i - 1].stage : null, c, timed = many && i === 0;
+      if (i === skip) return;
+      var prev = i ? runs[i - 1].stage : null, c, timed = many && i === 0, net = false;
       if (run.stage === 'drop') {
-        c = dropped ? [W.wroteAgain] : wrote.slice();
+        var next = runs[i + 1];
+        if (!dropped && o.ranEarly && next && next.stage === 'load' && typeof o.netAfterTs === 'number' && next.lastTs < o.netAfterTs) {
+          c = [o.ranEarly];
+          skip = i + 1;
+        } else c = dropped ? [W.wroteAgain] : wrote.slice();
+        net = !dropped && !!o.netTimed;
         dropped = true;
       } else if (run.stage === 'load') {
-        c = [prev === 'drop' ? W.ranIt : prev === 'delete' ? W.ranFromIt : timed ? fill(W.ranCodeAt, { at: atp(run.ts) }) : W.ranCode];
+        c = [prev === 'drop' ? W.ranIt : prev === 'delete' ? W.ranFromIt : timed ? timedWord(W.ranCodeAt, run.ts, W.ranCode) : W.ranCode];
       } else {
-        c = [i === 0 ? (timed ? fill(W.deletedFirstAt, { at: atp(run.ts) }) : W.deletedOnly)
-          : i === runs.length - 1 ? W.deleted : fill(W.deletedAt, { at: atp(run.ts) })];
-        if (i && i === runs.length - 1) { clauses.push.apply(clauses, c); return; }   // "afterwards" orders itself
+        var lastRun = i === runs.length - 1;
+        c = [i === 0 ? (timed ? timedWord(W.deletedFirstAt, run.ts, W.deletedOnly) : W.deletedOnly)
+          : lastRun ? W.deleted : timedWord(W.deletedAt, run.ts, W.deletedIt)];
+        if (i && lastRun) { clauses.push.apply(clauses, c); prevNet = false; return; }   // "afterwards" orders itself
       }
-      if (i) c[0] = fill(W.then, { c: c[0] });
+      if (i && !prevNet) c[0] = fill(W.then, { c: c[0] });
+      prevNet = net;
       clauses.push.apply(clauses, c);
     });
     return clauses;
@@ -655,7 +676,7 @@ var AnubeeModView = (function () {
     var tpl = T.steps[step.template] || T.steps.recorded;
     var W = tpl.words || {}, E = tpl.evidence || {}, d = step.data;
     var b = runBounds(ctx);
-    var vars = {}, ids = [], ev = [], net = null, approx = false, titleField = tpl.title;
+    var vars = {}, ids = [], ev = [], net = null, approx = false, titleField = tpl.title, shortField = tpl.short;
     function at(ts) { return fmtAt(ts, b.start); }
     function atp(ts) { return fmtAt(ts, b.start, true); }
     function ev1(label, value) { if (present(label) && present(value)) ev.push([label, value]); }
@@ -675,7 +696,10 @@ var AnubeeModView = (function () {
       ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
         var wrote = apk ? W.wroteIt : dropTs !== null && !d.netBeforeAny && !d.hiddenNetEver ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode;
-        vars.clauses = payloadClauses(step.recs, W, atp, apk ? [W.decoded, wrote] : [wrote]);
+        vars.clauses = payloadClauses(step.recs, W, atp, apk ? [W.decoded, wrote] : [wrote], {
+          netTimed: wrote === W.wroteEarly || wrote === W.wroteNoNet,
+          ranEarly: wrote === W.wroteEarly ? W.wroteRanEarly : null, netAfterTs: d.netAfterTs
+        });
         if (d.dropped) ids.push('T1406.002');
         if (dropTs !== null) {
           var bg = d.hiddenNetBefore;
@@ -684,7 +708,7 @@ var AnubeeModView = (function () {
         }
         if (apk) ev1(E.static, fill(E.staticText, { size: d.size, name: apk.name }));
       } else {
-        vars.clauses = payloadClauses(step.recs, W, atp, [W.wroteCode]);
+        vars.clauses = payloadClauses(step.recs, W, atp, [W.wroteCode], { netTimed: true });
         if (d.dropped) ids.push('T1407');
         vars.gap = d.netBeforeTs !== null && dropTs !== null ? fmtDur((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));
@@ -735,7 +759,7 @@ var AnubeeModView = (function () {
       vars = netVars(step, T, b, ctx);
       if (vars.web) ids.push('T1437.001');
       if (step.template === 'c2_beacon') {
-        if (!d.beacon) titleField = tpl.titleNoBeat;
+        if (!d.beacon) { titleField = tpl.titleNoBeat; shortField = tpl.shortNoBeat; }
         vars.traffic = trafficOf(ctx, d.dest, T);
         var why = E.whyText.map(function (x) { return fill(x, vars); }).filter(function (x) { return x !== null; });
         ev1(E.why, why.join(', ') + '. ' + E.whyEnd);
@@ -771,6 +795,7 @@ var AnubeeModView = (function () {
       if (c.screen_read) ids.push('T1453');
       if (input) ids.push('T1516');
       vars.abuse = [input ? W.injection : null, c.screen_read ? W.reading : null].filter(present).join(' and ') || null;
+      vars.abuseShort = vars.abuse ? W.abuseShort : null;
       var cl = [], gl = [];
       if (c.global_action) { cl.push(W.pressClause); gl.push(W.glancePress); }
       if (c.action) cl.push(W.actionClause);
@@ -814,13 +839,194 @@ var AnubeeModView = (function () {
       title: words(titleField, vars),
       plain: words(tpl.plain, vars),
       glance: words(tpl.glance, vars),
-      short: words(tpl.short, vars),
+      short: words(shortField, vars),
       plainShort: words(tpl.plainShort, vars),
       facts: words(tpl.facts, vars) || '',
       net: net,
       techniques: tl.techniques,
       evidence: ev,
       approx: approx
+    };
+  }
+
+  // ---- the page model ----
+  var VIEW_HEADLINE_SKIP = { recorded: 1 };   // shown, not interpreted: no headline claim
+  var GAP_NS = 10 * NS;                       // a gap this long is written on the line
+  var NO_COMMAND_RX = 10000;                  // bytes: below this, no C2 reply big enough to carry commands
+
+  function lowerFirst(s) { return /^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+  function fmtLen(sec, D) {
+    var t = Math.round(sec), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
+    if (t < 60) return fill(D.s, { s: String(t) });
+    if (h) return fill(D.hm, { h: String(h), m: String(m) });
+    return x ? fill(D.ms, { m: String(m), s: String(x) }) : fill(D.m, { m: String(m) });
+  }
+  function fmtGap(ns, V) {
+    var s = Math.round(ns / NS);
+    return s < 120 ? fill(V.gapS, { n: String(s) }) : fill(V.gapMin, { n: String(Math.floor(s / 60)) });
+  }
+  // Trace length in seconds: meta started/stopped, else launch..stop marks, else first..last timed record.
+  function traceSeconds(meta, marks, records) {
+    var a = Date.parse(str(meta.started)), b = Date.parse(str(meta.stopped));
+    if (present(meta.started) && present(meta.stopped) && !isNaN(a) && !isNaN(b) && b >= a) return (b - a) / 1000;
+    var launch = null, stop = null;
+    marks.forEach(function (m) {
+      if (m.label === 'launch' && launch === null) launch = m.ts;
+      if (m.label === 'stop') stop = m.ts;
+    });
+    if (launch !== null && stop !== null && stop >= launch) return (stop - launch) / NS;
+    var ts = records.map(function (r) { return r.ts_ns; }).filter(function (t) { return typeof t === 'number'; });
+    return ts.length ? (Math.max.apply(null, ts) - Math.min.apply(null, ts)) / NS : null;
+  }
+  function smsEvidence(records) {
+    return records.some(function (r) {
+      return r.type === 'binder_api' && (/^content:\/\/(sms|mms|mms-sms)(\/|$)/i.test(str(r.uri)) ||
+        (r.call && /^(sms|mms|mms-sms)$/i.test(str(r.call.authority))) || /\.ISms$/.test(str(r.interface)));
+    });
+  }
+  function cleanEngine(records, engine) {
+    return records.some(function (r) { return r.type === 'coverage' && r.engine === engine && r.clean === true; });
+  }
+  function permKey(n) { return str(n).replace(/^android\.permission\./, ''); }
+
+  // buildView(input): everything the page shows, as plain text. input =
+  // {records, marksText, profile, templates, meta?, badging?, staticApk?};
+  // meta = {family, familySource, sha256, device, started, stopped} (any missing),
+  // badging = {permissions: [...]}, staticApk = {entries: [{name, size, isDex}]}.
+  function buildView(input) {
+    var records = input.records || [], T = input.templates, V = T.view;
+    var meta = input.meta || {}, profile = input.profile || {};
+    var marks = parseMarks(input.marksText);
+    var pkg = inferPackage(records);
+    var steps = buildSteps(records, marks, profile, pkg);
+    var summaries = Object.create(null);
+    records.forEach(function (r) { if (typeof r.type === 'string' && r.type.slice(-8) === '_summary') summaries[r.type] = r; });
+    var apk = input.staticApk && input.staticApk.entries ? input.staticApk.entries
+      .filter(function (e) { return !e.isDex; }).map(function (e) { return { name: e.name, size: e.size }; }) : null;
+    var ctx = { records: records, marks: marks, summaries: summaries, staticApk: apk, pkg: pkg };
+    var b = runBounds(ctx);
+    var cards = steps.map(function (s) { return describe(s, ctx, T); });
+
+    // kicker
+    var kick = [];
+    if (present(meta.family)) kick.push(words(V.kicker.family, { family: meta.family, source: meta.familySource }));
+    if (present(meta.device)) kick.push(String(meta.device));
+    var len = traceSeconds(meta, marks, records);
+    if (len !== null) kick.push(fill(V.kicker.traced, { dur: fmtLen(len, V.duration) }));
+
+    // headline: the sample's steps' short forms, in step order, once each
+    var shorts = [];
+    steps.forEach(function (s, i) {
+      var w = cards[i].short;
+      if (s.actor === 'sample' && !VIEW_HEADLINE_SKIP[s.template] && present(w) && shorts.indexOf(w) < 0) shorts.push(w);
+    });
+    var recordedOnly = steps.some(function (s) { return s.actor === 'sample' && VIEW_HEADLINE_SKIP[s.template]; });
+    var headline = shorts.length ? cap(andList(shorts.map(function (w, i) { return i ? lowerFirst(w) : w; })))
+      : recordedOnly ? V.headlineRecorded : V.headlineNone;
+
+    // glance and timeline
+    var glance = [], timeline = [], prevTs = null;
+    steps.forEach(function (s, i) {
+      var n = i + 1, card = cards[i];
+      glance.push({ n: n, actor: s.actor, text: card.glance || card.title });
+      if (typeof s.firstTs === 'number') {
+        if (prevTs !== null && s.firstTs - prevTs >= GAP_NS) timeline.push({ kind: 'gap', text: fmtGap(s.firstTs - prevTs, V) });
+        prevTs = s.firstTs;
+      }
+      timeline.push({ kind: 'step', n: n, actor: s.actor, time: fmtAt(s.firstTs, b.start), approx: card.approx, card: card });
+    });
+    if (b.end !== null) timeline.push({ kind: 'end', time: fmtAt(b.end, b.start) });
+
+    // IOCs: hashes, paths and endpoints only (never the saved copy's device path)
+    var iocs = [], seenIoc = new Set();
+    function ioc(label, value) {
+      if (!present(label) || !present(value) || seenIoc.has(label + '\u0000' + value)) return;
+      seenIoc.add(label + '\u0000' + value);
+      iocs.push([label, String(value)]);
+    }
+    ioc(V.ioc.sampleSha, meta.sha256);
+    ioc(V.ioc.package, pkg);
+    steps.forEach(function (s) {
+      var d = s.data;
+      if (s.template === 'payload_packed' || s.template === 'payload_downloaded') {
+        var E = T.steps[s.template].evidence;
+        ioc(words(V.ioc.payloadSha, { file: d.path ? basename(d.path) : null }), d.sha256);
+        ioc(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
+      }
+      if (s.template === 'c2_beacon') ioc(V.ioc.c2, d.dest);
+      if (s.template === 'net_contact') ioc(V.ioc.contacted, d.dest);
+    });
+    if (steps.lookups.length) ioc(V.ioc.lookups, steps.lookups.map(function (l) { return l.name; }).join(', '));
+
+    // limits, each from a rule over the records
+    var L = V.limits, limits = [];
+    var has1 = function (t) { return steps.filter(function (s) { return s.template === t; }); };
+    var c2 = has1('c2_beacon'), netSteps = c2.concat(has1('net_contact')), a11y = has1('a11y_abuse')[0];
+    var ac = a11y ? a11yCounts(ctx, a11y.recs) : null;
+    if (netSteps.length && ac && (ac.screen_read || ac.screenshot)) {
+      limits.push(fill(L.exfil, { what: ac.screen_read ? L.screenReads : L.screenshots, net: c2.length ? L.c2Traffic : L.netTraffic }));
+    }
+    var ns = summaries.net_summary, rx = 0;
+    var rxKnown = !!ns && c2.length > 0 && c2.every(function (s) {
+      var row = (ns.destinations || []).filter(function (x) { return x.dest === s.data.dest; })[0];
+      if (!row || typeof row.rx !== 'number') return false;
+      rx += row.rx;
+      return true;
+    });
+    if (rxKnown && rx < NO_COMMAND_RX && !smsEvidence(records) && !records.some(function (r) { return r.type === 'execve'; }) &&
+        cleanEngine(records, 'binder-api') && cleanEngine(records, 'execve')) {
+      limits.push(fill(c2.length > 1 ? L.noCommandsMany : L.noCommands, { rx: fmtSize(rx) }));
+    }
+    var pers = has1('persistence')[0];
+    if (pers && pers.data.respawns > 0) {
+      var kills = pers.recs.filter(function (r) { return r.type === 'proc_exit' && (str(r.signal) === '9' || str(r.signal) === '15'); });
+      var kinds = new Set(kills.map(function (r) { return str(r.signal); }));
+      if (kills.length && kinds.size === 1) {
+        var sig = T.signalNames[str(kills[0].signal)];
+        limits.push(kills.length === 1 ? fill(L.killOne, { sig: sig }) : fill(L.killMany, { n: String(kills.length), sig: sig }));
+      } else if (kills.length) limits.push(fill(L.killMixed, { n: String(kills.length) }));
+    }
+    var f = findings(records, profile, pkg);
+    var degraded = f.coverage.degraded.filter(function (e, i, a) { return a.indexOf(e) === i; }).map(str);
+    var coverageWarning = degraded.length ? fill(V.coverageWarning, { engines: degraded.join(', ') }) : null;
+    if (degraded.length) limits.push(fill(L.coverage, { engines: degraded.join(', ') }));
+
+    // footer: declared-only permissions, hidden noise, coverage, ATT&CK source
+    var F = V.footer, foot = [];
+    var declared = input.badging && Array.isArray(input.badging.permissions) ? input.badging.permissions.filter(function (p, i, a) { return present(p) && a.indexOf(p) === i; }) : null;
+    if (declared && declared.length) {
+      var perms = records.filter(function (r) { return r.type === 'perm_change'; });
+      var granted = new Set();
+      perms.forEach(function (r) { if (r.new === 'granted' || r.new === 'allow') granted.add(permKey(r.name)); });
+      var only = declared.filter(function (p) { return !granted.has(permKey(p)); });
+      var nDecl = plural(declared.length, 'permission');
+      if (!perms.length) foot.push(fill(F.declaredUnchecked, { n: nDecl }));
+      else if (!only.length) foot.push(fill(F.declaredAllGranted, { n: nDecl }));
+      else {
+        var list = only.length > 8 ? fill(F.declaredMore, { list: only.slice(0, 8).join(', '), k: String(only.length - 8) }) : only.join(', ');
+        foot.push(fill(F.declared, { list: list, n: nDecl }));
+      }
+    }
+    var hiddenN = 0;
+    Object.keys(f.hidden).forEach(function (k) { hiddenN += f.hidden[k].records; });
+    if (hiddenN) {
+      foot.push(words(F.hidden, { n: plural(hiddenN, 'record'), v: profile.version,
+        apps: Array.isArray(profile.apps) && profile.apps.length ? plural(profile.apps.length, 'app') : null }));
+    }
+    var nCov = f.coverage.records;
+    foot.push(!nCov ? F.coverageNone : degraded.length ? fill(F.coverageBad, { k: String(f.coverage.degraded.length), n: plural(nCov, 'check'), engines: degraded.join(', ') })
+      : nCov === 1 ? F.coverageOkOne : fill(F.coverageOk, { n: plural(nCov, 'check') }));
+    foot.push(F.attack);
+
+    return {
+      kicker: kick.filter(present).join(V.kicker.sep),
+      headline: headline,
+      glance: glance,
+      timeline: timeline,
+      iocs: iocs,
+      limits: limits,
+      coverageWarning: coverageWarning,
+      footer: foot.filter(present).join(' ')
     };
   }
 
@@ -835,7 +1041,8 @@ var AnubeeModView = (function () {
     beaconWindow: beaconWindow,
     respawns: respawns,
     buildSteps: buildSteps,
-    describe: describe
+    describe: describe,
+    buildView: buildView
   };
 })();
 

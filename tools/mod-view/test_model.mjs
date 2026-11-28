@@ -612,11 +612,11 @@ test('a resolver flow before an IP connection blocks "hard-coded"', () => {
 
 test('a delete before the load is told in record order', () => {
   const o = desc([dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_packed');
-  assert.equal(o.plain, 'Wrote code to a file with no network connection before it, then deleted it at 1 s and then ran code from it.');
+  assert.equal(o.plain, 'Wrote code to a file with no network connection before it, deleted it at 1 s and then ran code from it.');
   const lo = desc([dex('delete', 2), dex('load', 3)], 'payload_packed');
   assert.equal(lo.plain, 'Deleted a code file at 0 s and then ran code from it.');
   const after = desc([dex('drop', 1), dex('load', 2), dex('delete', 3)], 'payload_packed');
-  assert.equal(after.plain, 'Wrote code to a file with no network connection before it, then ran it and deleted the file afterwards.');
+  assert.equal(after.plain, 'Wrote code to a file with no network connection before it, ran it and deleted the file afterwards.');
   const dl = desc([netOpenAt(0.5), dex('drop', 1), dex('delete', 2), dex('load', 3)], 'payload_downloaded');
   assert.match(dl.plain, /deleted it at 1\.5 s and then ran code from it\.$/);
 });
@@ -626,23 +626,23 @@ test('payload clauses follow record order, whatever the order', () => {
   const P = (recs) => desc(recs, 'payload_packed').plain;
   const NN = 'with no network connection before it';
   assert.equal(P([dex('delete', 1), dex('drop', 2), dex('load', 3)]),
-    `Deleted a code file at 0 s, then wrote code to a file ${NN} and then ran it.`);
+    `Deleted a code file at 0 s, then wrote code to a file ${NN} and ran it.`);
   assert.equal(P([dex('delete', 1), dex('drop', 2)]),
     `Deleted a code file at 0 s and then wrote code to a file ${NN}.`);
   assert.equal(P([dex('drop', 1), dex('delete', 2), dex('load', 3)]),
-    `Wrote code to a file ${NN}, then deleted it at 1 s and then ran code from it.`);
+    `Wrote code to a file ${NN}, deleted it at 1 s and then ran code from it.`);
   assert.equal(P([dex('drop', 1), dex('load', 2), dex('delete', 3)]),
-    `Wrote code to a file ${NN}, then ran it and deleted the file afterwards.`);
+    `Wrote code to a file ${NN}, ran it and deleted the file afterwards.`);
   assert.equal(P([dex('drop', 1), dex('load', 2), dex('delete', 3), dex('load', 4)]),
-    `Wrote code to a file ${NN}, then ran it, then deleted it at 2 s and then ran code from it.`);
-  assert.equal(P([dex('drop', 1), dex('drop', 1.5), dex('load', 2)]), `Wrote code to a file ${NN} and then ran it.`);
+    `Wrote code to a file ${NN}, ran it, then deleted it at 2 s and then ran code from it.`);
+  assert.equal(P([dex('drop', 1), dex('drop', 1.5), dex('load', 2)]), `Wrote code to a file ${NN} and ran it.`);
   assert.equal(P([dex('load', 1), dex('drop', 2)]), `Ran code from a file at 0 s and then wrote code to a file ${NN}.`);
-  assert.equal(P([dex('drop', 1), dex('delete', 2), dex('drop', 3)]), `Wrote code to a file ${NN}, then deleted it at 1 s and then wrote code to the file again.`);
+  assert.equal(P([dex('drop', 1), dex('delete', 2), dex('drop', 3)]), `Wrote code to a file ${NN}, deleted it at 1 s and then wrote code to the file again.`);
 });
 
 test('payload_downloaded clauses follow record order too', () => {
   const o = desc([netOpenAt(0.5), dex('delete', 1), dex('drop', 2), dex('load', 3)], 'payload_downloaded');
-  assert.equal(o.plain, 'Deleted a code file at 0.5 s, then wrote code to a file soon after a network connection opened and then ran it.');
+  assert.equal(o.plain, 'Deleted a code file at 0.5 s, then wrote code to a file soon after a network connection opened and ran it.');
 });
 
 test('a payload record without a time gives the unordered wording: no "then", no "afterwards"', () => {
@@ -650,4 +650,158 @@ test('a payload record without a time gives the unordered wording: no "then", no
   assert.equal(o.plain, 'Wrote code to a file, ran it and deleted it.');
   const late = desc([dex('drop', 1), dex('load', 2), { ...dex('delete', 3), ts_ns: undefined }], 'payload_packed');
   assert.equal(late.plain, 'Wrote code to a file with no network connection before it, ran it and deleted it.');
+});
+
+// ---- carried wording fixes: network-timed clauses, one drop, no order claims, untimed fallback ----
+test('no "then" right after a clause that places the write against the network', () => {
+  assert.equal(d('payload_packed').plain, 'Wrote code to a file and ran it before going online.');
+  const P = (recs) => desc(recs, 'payload_packed').plain;
+  assert.equal(P([dex('drop', 1), netOpenAt(200), dex('load', 300)]), 'Wrote code to a file before going online and ran it.');
+  assert.equal(P([dex('drop', 1), dex('load', 2), netOpenAt(200)]), 'Wrote code to a file and ran it before going online.');
+});
+
+test('the network is judged against the earliest timed drop, in the step and in the words', () => {
+  const recs = [{ ...dex('drop', 0), ts_ns: undefined }, netOpenAt(3), dex('drop', 5), dex('load', 6)];
+  const st = one(recs).st.find((x) => x.template.startsWith('payload_'));
+  assert.equal(st.template, 'payload_downloaded');
+  const o = M.describe(st, { records: recs, marks: [] }, T);
+  assert.ok(!/no network connection before it/.test(o.plain + evText(o)), o.plain);
+});
+
+test('titles and short forms make no order claim', () => {
+  const strings = (f) => f === undefined || f === null ? [] : typeof f === 'string' ? [f]
+    : Array.isArray(f) ? f : f.variants ? Object.values(f.variants) : f.first ? f.first : f.list || [];
+  for (const [id, t] of Object.entries(T.steps)) {
+    for (const k of ['title', 'titleNoBeat', 'glance', 'short', 'shortNoBeat', 'plainShort']) {
+      for (const w of strings(t[k])) assert.ok(!/\bthen\b/i.test(w), `${id}.${k}: ${w}`);
+    }
+  }
+  assert.equal(d('payload_packed').plainShort, 'Code written to a file and run');
+});
+
+test('a timed clause with no run start keeps its untimed word', () => {
+  const P = (recs) => M.describe(one(recs).st.find((x) => x.template === 'payload_packed'), {}, T).plain;
+  const NN = 'with no network connection before it';
+  assert.equal(P([dex('delete', 1), dex('drop', 2), dex('load', 3)]), `Deleted a code file, then wrote code to a file ${NN} and ran it.`);
+  assert.equal(P([dex('load', 1), dex('drop', 2)]), `Ran code from a file and then wrote code to a file ${NN}.`);
+  assert.equal(P([dex('drop', 1), dex('delete', 2), dex('load', 3)]), `Wrote code to a file ${NN}, deleted it and then ran code from it.`);
+});
+
+// ---- the page model ----
+const degraded = data('degraded.jsonl').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+const input = {
+  records, marksText: data('sample-run.marks'), profile, templates: T,
+  meta: { family: 'ExampleFam', familySource: 'MalwareBazaar tag', sha256: 'aa'.repeat(32), device: 'real Android 16 phone' },
+  badging: null, staticApk: null,
+};
+const V = M.buildView(input);
+const allStrings = (o) => JSON.stringify(o).match(/"(?:[^"\\]|\\.)*"/g).map((s) => JSON.parse(s));
+
+test('headline joins short forms in step order', () => {
+  assert.equal(V.headline, 'Packed second-stage payload, persistence, suspected HTTP C2 beaconing and accessibility abuse');
+});
+test('a 45 s gap is written on the line', () => {
+  assert.ok(V.timeline.some((i) => i.kind === 'gap' && i.text === '45 s later'));
+});
+test('IOCs list hashes and paths, never payload bytes', () => {
+  const labels = V.iocs.map((x) => x[0]);
+  assert.ok(labels.includes('Payload SHA-256 (0.bin)') && labels.includes('Suspected C2'));
+  assert.ok(!JSON.stringify(V).includes('payloads/'));             // no saved-file paths from the device
+});
+test('limits: no exfiltration claim when net and screen reads both occur', () => {
+  assert.ok(V.limits.some((l) => /T1646 Exfiltration Over C2 Channel is not mapped/.test(l)));
+});
+test('degraded coverage is stated up front', () => {
+  const D = M.buildView({ ...input, records: degraded });
+  assert.match(D.coverageWarning, /file-access/);
+  assert.ok(D.limits.some((l) => /file-access/.test(l)));
+  assert.equal(V.coverageWarning, null);
+});
+test('missing metadata leaves fields out instead of inventing them', () => {
+  const N = M.buildView({ ...input, meta: {} });
+  assert.ok(!/Family/.test(N.kicker));
+  assert.ok(!N.iocs.some((x) => x[0] === 'Sample SHA-256'));
+  const U = M.buildView({ ...input, meta: undefined, badging: undefined, staticApk: undefined });
+  assert.equal(U.kicker, 'traced for 4 min 25 s');
+});
+test('static check only when an APK entry matches the payload size', () => {
+  const S = M.buildView({ ...input, staticApk: { entries: [{ name: 'od1KPHsFbf', size: 777276, isDex: false }] } });
+  assert.ok(JSON.stringify(S).includes('Static check'));
+  assert.ok(!JSON.stringify(V).includes('Static check'));
+  const X = M.buildView({ ...input, staticApk: { entries: [{ name: 'classes.dex', size: 777276, isDex: true }] } });
+  assert.ok(!JSON.stringify(X).includes('Static check'));
+});
+
+test('kicker: family with its source, device, trace length from meta, marks or records', () => {
+  assert.equal(V.kicker, 'Family: ExampleFam (MalwareBazaar tag) · real Android 16 phone · traced for 4 min 25 s');
+  const m = M.buildView({ ...input, meta: { family: 'X', started: '2026-11-25T23:03:59+07:00', stopped: '2026-11-25T23:09:05+07:00' } });
+  assert.equal(m.kicker, 'Family: X · traced for 5 min 6 s');
+  const r = M.buildView({ ...input, marksText: '', meta: {} });
+  assert.equal(r.kicker, 'traced for 4 min 10 s');            // first to last timed record
+});
+
+test('timeline: hanging times, lab steps approximate, gaps of 10 s or more before a step, then the end', () => {
+  const items = V.timeline.map((i) => i.kind === 'step' ? `${i.n}:${i.actor}:${i.approx ? '~' : ''}${i.time}` : i.kind === 'gap' ? i.text : 'end ' + i.time);
+  assert.deepEqual(items, ['1:lab:0 s', '2:sample:2.5 s', '3:sample:2.9 s', '4:sample:3.1 s', '45 s later',
+    '5:lab:~48 s', '6:sample:51 s', 'end 4:25']);
+  assert.equal(V.timeline[1].card.title, 'Second-stage payload unpacked and loaded');
+  assert.deepEqual(V.glance.map((g) => [g.n, g.actor]), [[1, 'lab'], [2, 'sample'], [3, 'sample'], [4, 'sample'], [5, 'lab'], [6, 'sample']]);
+  assert.equal(V.glance[1].text, 'Wrote code to a file and ran it');
+});
+
+test('gap labels: whole seconds under 2 min, whole minutes from 2 min', () => {
+  const at = (s) => ({ ...netOpenAt(s), dest: '203.0.113.' + Math.round(s) + ':80', host: '203.0.113.' + Math.round(s) + ':80' });
+  const G = M.buildView({ records: [at(0), at(9.9), at(129.8), at(250)], marksText: '', profile: { keys: {} }, templates: T });
+  assert.deepEqual(G.timeline.filter((i) => i.kind === 'gap').map((i) => i.text), ['2 min later', '2 min later']);
+});
+
+test('IOCs: sample hash, package, payload hash and dropped path, suspected C2, looked-up domains', () => {
+  assert.deepEqual(V.iocs, [
+    ['Sample SHA-256', 'aa'.repeat(32)],
+    ['Package', 'com.example.sample'],
+    ['Payload SHA-256 (0.bin)', '3465e6af755a134139545a68d508e6eff33635397415fd896b4e6b79490e081b'],
+    ['Dropped file', '/data/data/com.example.sample/app_x7k2/payload/0.bin'],
+    ['Suspected C2', '203.0.113.5:3434'],
+  ]);
+  const recs = [dnsAt(1, 'a.example.test'), dnsAt(2, 'b.example.test'), dnsAt(3, 'a.example.test'), netOpenAt(4)];
+  const L = M.buildView({ records: recs, marksText: '', profile: { keys: {} }, templates: T });
+  assert.deepEqual(L.iocs, [['Contacted host', '203.0.113.9:80'], ['Domains looked up', 'a.example.test, b.example.test']]);
+});
+
+test('limits: no C2 commands only when backed by data; the kill sender is unknown', () => {
+  assert.ok(V.limits.some((l) => l === 'Who sent the 12 SIGKILLs is not recorded.'), V.limits.join('\n'));
+  assert.ok(V.limits.some((l) => /^No commands from the suspected C2 were observed\. It sent back 1\.4 KB in total/.test(l)), V.limits.join('\n'));
+  const sms = { type: 'binder_api', pid: 13620, ts_ns: T0 + 60e9, interface: 'android.content.IContentProvider', method: 'QUERY', uri: 'content://sms/inbox' };
+  assert.ok(!M.buildView({ ...input, records: [...records, sms] }).limits.some((l) => /No commands/.test(l)));
+  const big = records.map((r) => r.type === 'net_summary' ? { ...r, destinations: r.destinations.map((x) => ({ ...x, rx: 20000 })) } : r);
+  assert.ok(!M.buildView({ ...input, records: big }).limits.some((l) => /No commands/.test(l)));
+  const noSum = records.filter((r) => r.type !== 'net_summary');
+  assert.ok(!M.buildView({ ...input, records: noSum }).limits.some((l) => /No commands/.test(l)));
+});
+
+test('every user-visible "C2" carries "suspected"', () => {
+  for (const s of allStrings(V)) if (/\bC2\b/.test(s)) assert.match(s, /suspected/i, s);
+});
+
+test('footer: declared-only permissions, hidden noise, coverage, ATT&CK source', () => {
+  assert.equal(V.footer, 'Hidden because ordinary apps do the same (noise profile version 1, from 1 app): 1 record. ' +
+    'All 12 checks ran without problems. Stages and techniques: MITRE ATT&CK for Mobile.');
+  const B = M.buildView({ ...input, badging: { permissions: ['android.permission.INTERNET', 'android.permission.READ_SMS',
+    'android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.REQUEST_INSTALL_PACKAGES', 'android.permission.QUERY_ALL_PACKAGES'] } });
+  assert.match(B.footer, /^Declared in the app but not granted in this run: android\.permission\.REQUEST_INSTALL_PACKAGES, android\.permission\.QUERY_ALL_PACKAGES \(5 permissions declared in total\)\. /);
+  const D = M.buildView({ ...input, records: degraded });
+  assert.match(D.footer, /1 of 12 checks reported problems: file-access\./);
+});
+
+test('the view never prints placeholders or empty values', () => {
+  for (const W of [V, M.buildView({ records: [], marksText: '', profile: { keys: {} }, templates: T })]) {
+    for (const s of allStrings(W)) assert.ok(!/[{}]|undefined|\bnull\b|NaN/.test(s), s);
+  }
+});
+
+test('a run with no interpreted sample step never claims nothing happened', () => {
+  const N = M.buildView({ records: noMarks, marksText: '', profile, templates: T });
+  assert.equal(N.headline, 'No activity beyond what ordinary apps also do was credited to the sample');
+  const R = M.buildView({ records: [{ type: 'mystery', pid: 1, ts_ns: T0 }], marksText: '', profile: { keys: {} }, templates: T });
+  assert.equal(R.headline, 'Activity recorded, none of it interpreted');
 });

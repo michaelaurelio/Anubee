@@ -76,6 +76,72 @@
     "11": "SIGSEGV",
     "15": "SIGTERM"
   },
+  "view": {
+    "kicker": {
+      "family": {
+        "first": [
+          "Family: {family} ({source})",
+          "Family: {family}"
+        ]
+      },
+      "traced": "traced for {dur}",
+      "sep": " · "
+    },
+    "duration": {
+      "s": "{s} s",
+      "ms": "{m} min {s} s",
+      "m": "{m} min",
+      "hm": "{h} h {m} min"
+    },
+    "headlineNone": "No activity beyond what ordinary apps also do was credited to the sample",
+    "headlineRecorded": "Activity recorded, none of it interpreted",
+    "gapS": "{n} s later",
+    "gapMin": "{n} min later",
+    "ioc": {
+      "sampleSha": "Sample SHA-256",
+      "package": "Package",
+      "payloadSha": {
+        "first": [
+          "Payload SHA-256 ({file})",
+          "Payload SHA-256"
+        ]
+      },
+      "c2": "Suspected C2",
+      "contacted": "Contacted host",
+      "lookups": "Domains looked up"
+    },
+    "limits": {
+      "exfil": "No exfiltration is shown. {what} and {net} both happened, but the tracer doesn't see traffic contents, so T1646 Exfiltration Over C2 Channel is not mapped.",
+      "screenReads": "Screen reads",
+      "screenshots": "Screenshots",
+      "c2Traffic": "suspected C2 traffic",
+      "netTraffic": "network connections",
+      "noCommands": "No commands from the suspected C2 were observed. It sent back {rx} in total, and no SMS access or command execution was recorded.",
+      "noCommandsMany": "No commands from the suspected C2 servers were observed. They sent back {rx} in total, and no SMS access or command execution was recorded.",
+      "killOne": "Who sent the {sig} is not recorded.",
+      "killMany": "Who sent the {n} {sig}s is not recorded.",
+      "killMixed": "Who sent the {n} kill signals is not recorded.",
+      "coverage": "Coverage was degraded for {engines}, so a missing record there proves nothing."
+    },
+    "coverageWarning": "Degraded coverage reported by {engines}: some behaviour may be missing from this page.",
+    "footer": {
+      "declared": "Declared in the app but not granted in this run: {list} ({n} declared in total).",
+      "declaredMore": "{list} and {k} more",
+      "declaredAllGranted": "All {n} declared in the app were granted in this run.",
+      "declaredUnchecked": "Declared in the app: {n} (not checked against grants: no permission records in this run).",
+      "hidden": {
+        "first": [
+          "Hidden because ordinary apps do the same (noise profile version {v}, from {apps}): {n}.",
+          "Hidden because ordinary apps do the same: {n}."
+        ]
+      },
+      "coverageOk": "All {n} ran without problems.",
+      "coverageOkOne": "The one check ran without problems.",
+      "coverageBad": "{k} of {n} reported problems: {engines}.",
+      "coverageNone": "No coverage checks were recorded.",
+      "attack": "Stages and techniques: MITRE ATT&CK for Mobile."
+    }
+  },
   "steps": {
     "detonation": {
       "title": "Installed and opened the sample",
@@ -106,8 +172,8 @@
       },
       "short": {
         "variants": {
-          "both": "Payload unpacked",
-          "dropOnly": "Payload unpacked",
+          "both": "Packed second-stage payload",
+          "dropOnly": "Packed second-stage payload",
           "loadOnly": "Second-stage payload loaded",
           "neither": "Payload file deleted"
         }
@@ -122,7 +188,7 @@
       },
       "plainShort": {
         "variants": {
-          "both": "Code written to a file, then run",
+          "both": "Code written to a file and run",
           "dropOnly": "Code written to a file",
           "loadOnly": "Code run from a file",
           "neither": "Code file deleted"
@@ -140,6 +206,7 @@
         "decoded": "decoded code hidden inside its APK",
         "wroteIt": "wrote it to a file",
         "wroteEarly": "wrote code to a file before going online",
+        "wroteRanEarly": "wrote code to a file and ran it before going online",
         "wroteCode": "wrote code to a file",
         "ranIt": "ran it",
         "ranCode": "ran code from a file",
@@ -204,7 +271,7 @@
       },
       "plainShort": {
         "variants": {
-          "both": "Code written after network contact, then run",
+          "both": "Code written after network contact and run",
           "dropOnly": "Code written after network contact",
           "loadOnly": "Code run from a file",
           "neither": "Code file deleted"
@@ -324,7 +391,18 @@
         ]
       },
       "glance": "Kept contacting {serverAt}",
-      "short": "C2 (suspected) contact",
+      "short": {
+        "first": [
+          "Suspected {proto} C2 beaconing",
+          "Suspected C2 beaconing"
+        ]
+      },
+      "shortNoBeat": {
+        "first": [
+          "Suspected {proto} C2 contact",
+          "Suspected C2 contact"
+        ]
+      },
       "plain": {
         "variants": {
           "ip": "Kept contacting the same server, addressed by IP with no domain name.",
@@ -456,7 +534,12 @@
           "Called the accessibility service"
         ]
       },
-      "short": "Accessibility abuse",
+      "short": {
+        "first": [
+          "{abuseShort}",
+          "Accessibility service calls"
+        ]
+      },
       "plain": {
         "first": [
           "{lead} {clauses}.",
@@ -473,6 +556,7 @@
         "exact times after the first not recorded"
       ],
       "words": {
+        "abuseShort": "Accessibility abuse",
         "injection": "input injection",
         "reading": "screen reading",
         "leadLab": "Once the lab enabled accessibility, it",

@@ -638,6 +638,13 @@ the tests encode the original phone's environment.
 Reverse-chronological. Identifiers preserved for traceability; full technical detail
 is in DOCUMENTATION.md and the referenced specs.
 
+### 2026-11-28
+
+- **Findings view counts each connection once.** `net` writes an `open` and a
+  `close` record per connection, so net findings counted every connection
+  twice; `close` records are now skipped (records without `event`, from older
+  runs, still count).
+
 ### 2026-11-25
 
 - **"What's new" findings view for `anubee mod` runs** (`mod_findings.py`,

@@ -83,6 +83,10 @@ def main():
              "dest": "203.0.113.5:3434", "host": "203.0.113.5:3434"},
             {"type": "net", "pid": 300, "ts_ns": 13_000_000_000, "event": "open", "proto": "tcp",
              "dest": "203.0.113.5:3434", "host": "203.0.113.5:3434"},
+            {"type": "net", "pid": 300, "ts_ns": 12_500_000_000, "event": "close", "proto": "tcp",
+             "dest": "203.0.113.5:3434", "host": "203.0.113.5:3434"},
+            {"type": "net", "pid": 300, "ts_ns": 13_500_000_000, "event": "close", "proto": "tcp",
+             "dest": "203.0.113.5:3434", "host": "203.0.113.5:3434"},
             {"type": "execve", "pid": 301, "ts_ns": 14_000_000_000, "filename": "/product/bin/ping",
              "argv": ["ping", "-c", "2", "example.com"], "result": -2, "error": "ENOENT"},
             {"type": "execve", "pid": 301, "ts_ns": 14_000_000_100, "filename": "/system/bin/ping",
@@ -111,6 +115,7 @@ def main():
         net = sec.get("net", [])
         check(len(net) == 1 and net[0]["count"] == 2 and net[0]["key"] == "tcp 203.0.113.5:3434",
               "repeated connections collapse into one finding with a count")
+        check(len(net) == 1 and net[0]["count"] == 2, "a connection is counted once, not per open+close record")
         check(abs(net[0]["first_s"] - 2.0) < 1e-6, "first-seen time is seconds since the run's first record")
         ex = sec.get("exec", [])
         check(len(ex) == 1 and ex[0]["count"] == 2 and ex[0]["errors"] == {"ENOENT": 1},

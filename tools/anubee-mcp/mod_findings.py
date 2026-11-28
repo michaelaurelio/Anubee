@@ -62,6 +62,8 @@ def record_key(r, pkg):
         argv = r.get("argv") or [os.path.basename(r.get("filename") or "")]
         return ("exec", norm(" ".join(argv), pkg))
     if t == "net":
+        if r.get("event") == "close":
+            return SKIP
         return ("net", f"{r.get('proto')} {norm(r.get('host') or r.get('dest'), pkg)}")
     if t == "perm_change":
         if r.get("change") == "baseline":

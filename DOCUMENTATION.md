@@ -1961,7 +1961,8 @@ Design points worth knowing:
   `task/<tid>`, hex and 6+-digit numbers normalized out. A *noise profile*
   counts, per key, how many benign baseline apps showed it; a key seen in at
   least `min_apps` of them (default half, rounded up) is device noise.
-  Snapshots (`perm_change` baseline), summaries and own-folder opens are not
+  Snapshots (`perm_change` baseline), summaries, own-folder opens and `net`
+  `close` records (a connection counts once, at its `open`) are not
   behaviour; record types it doesn't know are always shown. The view groups
   findings per section in first-appearance order with count, first-seen
   seconds and failed outcomes, counts what it hid, and carries degraded

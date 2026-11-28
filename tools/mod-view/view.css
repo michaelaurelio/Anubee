@@ -24,7 +24,7 @@ h1{font-size:clamp(25px,3.8vw,36px);line-height:1.15;letter-spacing:-.02em;margi
 .glance h2,.iocs h2{font-size:15px;margin:0 0 10px;font-weight:700}
 .glance ol{list-style:none;margin:0;padding:0;display:grid;gap:4px}
 .glance a{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;align-items:start;padding:7px 8px;min-height:32px;border-radius:8px;color:var(--text);text-decoration:none;font-size:15px;line-height:1.35}
-.glance a:hover{background:var(--accent-soft)}
+.glance a:hover{background:var(--accent-soft);color:var(--text)}
 .glance .n{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;color:var(--text);background:var(--panel);border:2px solid var(--muted);margin-top:-1px}
 .glance .lab-row{color:var(--muted)}
 .key{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--muted);margin-top:12px;border-top:1px solid var(--border-soft);padding-top:10px}
@@ -36,9 +36,10 @@ h1{font-size:clamp(25px,3.8vw,36px);line-height:1.15;letter-spacing:-.02em;margi
 .ev:first-child::before{top:18px}.ev.last::before{bottom:calc(100% - 18px)}
 .t{text-align:right;font-weight:700;font-size:15px;padding-top:8px;color:var(--text);white-space:nowrap}
 .dot{position:relative;z-index:1;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;color:var(--text);background:var(--panel);border:2px solid var(--muted);margin-top:4px;box-shadow:0 0 0 4px var(--panel)}
-.a .dot,.n.a{border-color:var(--app)}.l .dot,.n.l{border-color:var(--lab)}
+.a .dot,.n.a{border-color:var(--app)}.l .dot,.n.l{border-color:var(--lab)}.u .dot,.n.u{border-color:var(--muted)}
 .body{padding:0 0 22px}
 .card{background:var(--panel-2);border:1px solid var(--border);box-shadow:var(--shadow);border-left:4px solid var(--app);border-radius:12px;padding:12px 14px}
+.u .card{border-left-color:var(--muted)}
 .tac{font-size:12px;font-weight:700;color:var(--text);letter-spacing:.01em}
 .card h3{margin:2px 0 2px;font-size:17px;line-height:1.3;font-weight:600}
 .card p{margin:0;color:var(--text);font-size:15px;line-height:1.45}

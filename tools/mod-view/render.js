@@ -16,10 +16,15 @@
   }
 
   // Counts in a facts line are bolded piece by piece, so the escaping never
-  // sees (or splits) the markup that bolds them.
+  // sees (or splits) the markup that bolds them. Only a standalone number is a
+  // count: digits touching a letter, '.' or '/' belong to a name (0.pobfs).
+  var COUNT = /((?<![\w./])\d+(?:\.\d+)?(?![\w/]|\.\w))/;
   function factsHtml(s) {
-    return String(s).split(/(\d+)/).map(function (p, i) { return i % 2 ? '<b>' + esc(p) + '</b>' : esc(p); }).join('');
+    return String(s).split(COUNT).map(function (p, i) { return i % 2 ? '<b>' + esc(p) + '</b>' : esc(p); }).join('');
   }
+
+  // actor class: l = the lab, u = not attributed (neutral), a = the sample
+  function actorClass(actor) { return actor === 'lab' ? 'l' : actor === 'unattributed' ? 'u' : 'a'; }
 
   var TECH_ID = /^T\d{4}(\.\d{3})?$/;
   // null when the id is not an ATT&CK technique id: it is then shown without a link
@@ -40,7 +45,7 @@
     var c = item.card, n = item.n, lab = item.actor === 'lab';
     var time = '<div class="t">' + (item.time === null || item.time === undefined ? '' : (item.approx ? '~' : '') + esc(item.time)) + '</div>' +
       '<div class="dot">' + n + '</div>';
-    var open = '<div class="ev ' + (lab ? 'l' : 'a') + (last ? ' last' : '') + '" id="e' + n + '">' + time;
+    var open = '<div class="ev ' + actorClass(item.actor) + (last ? ' last' : '') + '" id="e' + n + '">' + time;
     if (lab) {
       return open + '<div class="body labnote"><b>Lab:</b> ' + esc(c.title) +
         (c.plain ? '<span>' + esc(c.plain) + '</span>' : '') +
@@ -71,7 +76,7 @@
         return '<div class="ev' + (last ? ' last' : '') + '"><div></div><div></div><div class="gap">' + esc(item.text) + '</div></div>';
       }
       if (item.kind === 'end') {
-        return '<div class="ev endrow last"><div class="t">' + esc(item.time) + '</div><div class="dot"></div><div class="labnote">Trace stopped</div></div>';
+        return '<div class="ev endrow last"><div class="t">' + esc(item.time) + '</div><div class="dot"></div><div class="labnote">' + esc(item.text) + '</div></div>';
       }
       return stepHtml(item, last);
     }).join('');
@@ -80,7 +85,7 @@
   function glanceHtml(g) {
     return g.map(function (x) {
       var lab = x.actor === 'lab';
-      return '<li><a href="#e' + x.n + '"' + (lab ? ' class="lab-row"' : '') + '><span class="n ' + (lab ? 'l' : 'a') + '">' +
+      return '<li><a href="#e' + x.n + '"' + (lab ? ' class="lab-row"' : '') + '><span class="n ' + actorClass(x.actor) + '">' +
         x.n + '</span><span>' + esc(x.text) + '</span></a></li>';
     }).join('');
   }
@@ -99,7 +104,7 @@
       '<p class="kicker">' + esc(view.kicker) + '</p><h1>' + esc(view.headline) + '</h1>' +
       '<div class="wrap"><div class="main">' + warn + '<div class="rail">' + timelineHtml(view.timeline) + '</div></div>' +
       '<aside class="side"><div class="glance"><h2>At a glance</h2><ol>' + glanceHtml(view.glance) + '</ol>' +
-      '<div class="key"><span><i style="background:var(--app)"></i>the sample</span><span><i style="background:var(--lab)"></i>the lab (analyst)</span><span><i style="background:var(--net)"></i>the network</span></div></div>' +
+      '<div class="key"><span><i style="background:var(--app)"></i>the sample</span><span><i style="background:var(--lab)"></i>the lab (analyst)</span><span><i style="background:var(--net)"></i>the network</span><span><i style="background:var(--muted)"></i>Not attributed</span></div></div>' +
       '<div class="iocs"><h2>Indicators of compromise</h2><dl class="ioc">' + iocs + '</dl>' + other + '</div></aside>' +
       '</div></div></section>' +
       '<section class="in below"><div class="limits"><h2>Limits of this run</h2><ul>' +

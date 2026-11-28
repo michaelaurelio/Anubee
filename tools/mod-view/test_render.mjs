@@ -150,3 +150,33 @@ test('no actor-coloured fill carries text: glance numbers are classed, not inlin
   const html = M.renderView(V);
   assert.ok(/class="n [al]"/.test(html) && !/class="n[^"]*" style=/.test(html));
 });
+
+// ---- final review fixes ----
+test('unattributed steps are neutral: their own class, a muted ring and border, a key entry, still in the sample lane', () => {
+  const recs = [{ type: 'perm_change', ts_ns: records[0].ts_ns + 5e9, package: 'com.example.sample', category: 'appop', name: 'CAMERA', change: 'granted', old: null, new: 'allow' }];
+  const W = M.buildView({ records: recs, marksText: '', profile: { keys: {} }, templates: JSON.parse(data('templates.json')) });
+  const h = M.renderView(W);
+  assert.match(h, /<div class="ev u" id="e1">/);
+  assert.match(h, /class="card"/);                                        // a card in the sample lane, not a lab note
+  assert.match(h, /<span class="n u">1<\/span>/);
+  assert.ok(!/class="n a"|class="ev a/.test(h));
+  assert.match(h, /<span><i style="background:var\(--muted\)"><\/i>Not attributed<\/span><\/div>/);
+  assert.match(css, /\.u \.dot,\.n\.u\{border-color:var\(--muted\)\}/);
+  assert.match(css, /\.u \.card\{border-left-color:var\(--muted\)\}/);
+  assert.ok(!/\.u[^{]*\{[^}]*--app/.test(css));
+});
+
+test('a hovered glance row keeps full text contrast', () => {
+  assert.match(css, /\.glance a:hover\{[^}]*color:var\(--text\)/);
+});
+
+test('facts bold only standalone numbers, never digits inside names', () => {
+  const v = structuredClone(V); step(v).card.facts = '0.pobfs · DEX · 1.4 KB · 12 respawns from 48 s · x2 · 3465e6af · a/1/b · 777276-byte';
+  const h = M.renderView(v);
+  assert.ok(h.includes('0.pobfs · DEX · <b>1.4</b> KB · <b>12</b> respawns from <b>48</b> s · x2 · 3465e6af · a/1/b · <b>777276</b>-byte'), h.match(/class="facts">[^<]*(?:<b>[^<]*<\/b>[^<]*)*/)[0]);
+});
+
+test('the end row names its source', () => {
+  const v = structuredClone(V); v.timeline[v.timeline.length - 1].text = 'Last record';
+  assert.ok(M.renderView(v).includes('<div class="labnote">Last record</div>'));
+});

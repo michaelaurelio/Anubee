@@ -10,6 +10,9 @@
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
 #   ANUBEE_TEST_TIMEOUT=<secs>   per-run window (default: 10)
+#   ANUBEE_SCREENREC_PKG / _SVC / _ACTION   a pre-installed screen recorder's
+#                                package, exported service (e.g. .RecordingService)
+#                                and its start action; screencapture-detect skips if unset
 #
 # WHY each anubee run gets its OWN `su -c`: chaining `am force-stop ...; anubee ...`
 # inside a single `su -c` runs anubee under an intermediate shell in a reduced
@@ -448,7 +451,7 @@ test_funcs_structured() {
     info "funcs --structured OK — structured call record found"
 }
 
-# mod file-access: kprobe-only analyzer. deskclock's own /data/data opens at
+# mod file-access: kprobe-only analyzer. The test app's own /data/data opens at
 # startup are enough to prove attach + emission; we don't rely on it touching
 # external storage or another app's dir (timing/app-dependent).
 test_mod_file_access() {
@@ -801,9 +804,9 @@ for n,l in enumerate(sys.stdin,1):
     info "fileless-detect ART-name exclusion check on a real app (informational): $jit_lines line(s) against $PKG"
 }
 
-# mod screencapture-detect: real trigger via com.transsion.screenrecorder
-# (pre-installed OEM screen-recorder app, confirmed installed on the test
-# device), whose exported RecordingService legitimately requests a
+# mod screencapture-detect: real trigger via a pre-installed OEM screen
+# recorder named by the environment (ANUBEE_SCREENREC_PKG, _SVC, _ACTION;
+# the test skips when they're unset), whose exported recording service legitimately requests a
 # MediaProjection-typed foreground service (types=0x000000A0 =
 # MEDIA_PROJECTION|MICROPHONE, confirmed via `aapt2 dump xmltree` on the
 # installed APK). Unlike massdelete-detect/fileless-detect's synthetic
@@ -835,8 +838,12 @@ test_screencapture_detect() {
     # and IDisplayManager.createVirtualDisplay (Binder). The consent prompt is
     # accepted by tapping its "Start recording" node when it appears (the app
     # skips it once consent was given). The recording is deleted afterwards.
-    local pkg="com.transsion.screenrecorder"
-    local svc="$pkg/.service.RecordingService"
+    local pkg="${ANUBEE_SCREENREC_PKG:-}" act="${ANUBEE_SCREENREC_ACTION:-}"
+    local svc="$pkg/${ANUBEE_SCREENREC_SVC:-}"
+    if [ -z "$pkg" ] || [ -z "$act" ] || [ -z "${ANUBEE_SCREENREC_SVC:-}" ]; then
+        info "SKIP: screencapture-detect needs ANUBEE_SCREENREC_PKG, ANUBEE_SCREENREC_SVC and ANUBEE_SCREENREC_ACTION (a pre-installed screen recorder with an exported recording service)"
+        return 0
+    fi
     if ! adb shell "pm path $pkg" >/dev/null 2>&1; then
         info "SKIP: screencapture-detect needs the OEM recorder ($pkg), not installed"
         return 0
@@ -845,7 +852,7 @@ test_screencapture_detect() {
     local drive="/data/local/tmp/anubee_sc_drive.sh"
     adb shell "cat > $drive" <<SH
 sleep 2
-am start-foreground-service -a transsion.intent.screenrecorder.RECORDER_SERVICE -n $svc >/dev/null 2>&1
+am start-foreground-service -a $act -n $svc >/dev/null 2>&1
 sleep 2
 uiautomator dump /data/local/tmp/anubee_sc_ui.xml >/dev/null 2>&1
 b=\$(grep -o 'text="Start recording"[^>]*bounds="[^"]*"' /data/local/tmp/anubee_sc_ui.xml | grep -o '[0-9][0-9]*' | tail -4 | tr '\n' ' ')

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 // Host unit tests for the screencapture-detect dumpsys output parser. REAL_FIXTURE
 // is genuine `dumpsys activity services` output captured 2026-07-13 from a
-// connected test device (com.transsion.screenrecorder's exported
-// RecordingService, triggered via `adb shell am start-foreground-service`) --
-// not a synthetic guess. See design doc's Motivation/Scope for how this was
-// confirmed.
+// connected test device (a pre-installed screen recorder's exported
+// RecordingService, triggered via `adb shell am start-foreground-service`),
+// with the vendor's package, action and APK names replaced by neutral
+// placeholders. The structure is the device's, not a synthetic guess.
 #include <stdio.h>
 #include <string.h>
 #include "modules/screencapture_detect_parse.h"
@@ -18,14 +18,14 @@ static int checks = 0, failures = 0;
 static const char *REAL_FIXTURE =
 "ACTIVITY MANAGER SERVICES (dumpsys activity services)\n"
 "  User 0 active services:\n"
-"  * ServiceRecord{9734fa9 u0 com.transsion.screenrecorder/.service.RecordingService c:com.android.shell}\n"
-"    intent={act=transsion.intent.screenrecorder.RECORDER_SERVICE cmp=com.transsion.screenrecorder/.service.RecordingService}\n"
-"    packageName=com.transsion.screenrecorder\n"
-"    processName=com.transsion.screenrecorder\n"
+"  * ServiceRecord{9734fa9 u0 com.example.screenrecorder/.service.RecordingService c:com.android.shell}\n"
+"    intent={act=com.example.screenrecorder.RECORDER_SERVICE cmp=com.example.screenrecorder/.service.RecordingService}\n"
+"    packageName=com.example.screenrecorder\n"
+"    processName=com.example.screenrecorder\n"
 "    targetSdkVersion=36\n"
-"    baseDir=/system_ext/app/TranScreenRecord/TranScreenRecord.apk\n"
-"    dataDir=/data/user/0/com.transsion.screenrecorder\n"
-"    app=ProcessRecord{d056ccf 7570:com.transsion.screenrecorder/u0a153}\n"
+"    baseDir=/system_ext/app/ScreenRecorder/ScreenRecorder.apk\n"
+"    dataDir=/data/user/0/com.example.screenrecorder\n"
+"    app=ProcessRecord{d056ccf 7570:com.example.screenrecorder/u0a153}\n"
 "    isForeground=true foregroundId=4276 types=0x000000A0 foregroundNoti=Notification(channel=screen_record)\n"
 "    createTime=-1s198ms startingBgTimeout=--\n";
 
@@ -35,7 +35,7 @@ int main(void)
 
     // ---- real fixture, matching package -> active, pid parsed -------------
     pid = -1;
-    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", &pid) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.example.screenrecorder", &pid) == 1,
           "real fixture: active session detected");
     CHECK(pid == 7570, "real fixture: pid parsed as 7570");
 
@@ -107,7 +107,7 @@ int main(void)
     CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "", &pid) == -1, "empty pkg -> -1");
 
     // ---- out_pid may be NULL (caller doesn't care about the pid) -----------
-    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.transsion.screenrecorder", NULL) == 1,
+    CHECK(screencapture_detect_parse_dumpsys(REAL_FIXTURE, "com.example.screenrecorder", NULL) == 1,
           "NULL out_pid is tolerated");
 
     // ---- Binder capture stages ---------------------------------------------

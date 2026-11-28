@@ -295,8 +295,8 @@ describes the code (EPIC H), not the downstream doc/UX follow-ups tracked here.
 
 ### Device-test portability — 2026-11-24
 
-Found running the full `make device-test` suite on a second phone (MediaTek,
-GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
+Found running the full `make device-test` suite on a second phone
+(GKI 6.6, Android 16, vendor skin, KernelSU root, offline). Not engine bugs;
 the tests encode the original phone's environment.
 
 - **DT1 — `lib` asserts `bionic/libc.so` appears.** The app inherits libc
@@ -1783,7 +1783,7 @@ is in DOCUMENTATION.md and the referenced specs.
   old strict-contiguity walk-back stopped at libandroid_runtime's 1-page RO→exec gap and
   returned the wrong base. The CFI walk now crosses `art_jni_trampoline` into AOT-compiled
   Java (`boot.oat!android.os.BinderProxy.transact`, full `…→ActivityThread.main` chains;
-  ~95 crossings on deskclock). Blast radius beyond CFI: symbol naming also improved for
+  ~95 crossings on the test app). Blast radius beyond CFI: symbol naming also improved for
   gapped libs. Diagnostic instrumentation commits: `cd0c628`, `d861340`, `275d3a2`,
   `8b35511`.
 

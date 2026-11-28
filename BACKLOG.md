@@ -650,7 +650,14 @@ is in DOCUMENTATION.md and the referenced specs.
   `file_access` steps carry no ATT&CK tag yet; the declared-but-not-granted
   list needs `--badging` input; the Anubee-Desktop tab that reuses the same
   model is pending; marks are written by hand (`anubee mark`) until the lab
-  helper (planned) writes them for every lab action.
+  helper (planned) writes them for every lab action. Also open:
+  - every `file_access` step reads "Looked at a file outside its own folder";
+    the per-category wording ("Probes for a debugger", ...) is not built yet
+    (the generic line is true, just less specific);
+  - `anubee mark --file` has no default path, so the report's automatic
+    `<run>.marks` pickup only works when the harness names the file that way;
+  - the beacon search (`beaconWindow`) is quadratic over a run of steady gaps,
+    so a run with very many regular connections to one host is slow to build.
 
 - **`anubee mark` lab-action markers.** Userspace-only subcommand that appends
   `{"type":"lab_mark","ts_ns":...,"label":...}` to a file on `CLOCK_MONOTONIC`

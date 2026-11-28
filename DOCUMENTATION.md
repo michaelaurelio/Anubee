@@ -2055,17 +2055,31 @@ flowchart LR
   permission change inside a `grant-begin:<k>` … `grant-end:<k>` mark window
   (+2 s) is the lab's; one with no window around it is shown as
   unattributed, never credited to the sample. A run without marks therefore
-  shows every permission change as unattributed. Respawns pair each process
-  exit with a new pid seen after it; exits back that count even when the
-  profile hides them (ordinary apps get killed too).
+  shows every permission change as unattributed; those steps are drawn in a
+  neutral colour (key: "Not attributed"), not the sample's. Respawns pair each
+  process exit with a new pid seen after it; exits back that count even when
+  the profile hides them (ordinary apps get killed too). A pid a traced
+  process forked (a `spawn` record's `child_pid`, such as a `sh -c` helper) is
+  never a respawn, and its exit is not the app dying.
+- **Failed attempts are told as failures.** An `execve` or `file_access`
+  record with an `error` or a negative `result` is a failed attempt. When every
+  attempt in a step failed, the card, the glance row and the headline say
+  "Tried to run su" / "Tried to open ..." with the failure count and errno
+  names; a step with some failures gives both counts.
+- **Trace length and end row.** With a `stop` mark, the kicker's length and
+  the end row ("Trace stopped") both run from the start to that mark. Without
+  one, the end row reads "Last record", and the kicker uses meta's
+  `started`/`stopped` labelled "(wall clock)", else the record span.
 - **Words come from templates only.** Every sentence on the page is a
   `templates.json` string filled with record fields; nothing is generated.
   "C2" always carries "(suspected)"; "about every N s" needs four steady
   gaps; T1407 needs a connection opened within 120 s before the drop.
 - **Limits of this run** are stated from rules over the records: no
-  exfiltration shown (contents are not traced), no C2 commands seen (only
-  with clean `net`/`binder-api`/`execve` coverage and small replies), who
-  sent the kills, and degraded coverage.
+  exfiltration shown (contents are not traced); commands from the suspected
+  C2 can't be seen, with the bytes it sent back and no SMS access or command
+  execution recorded (only with clean `net`/`binder-api`/`execve` coverage; an
+  engine with any degraded record is not clean, and untracked flows make the
+  byte total "at least"); who sent the kills; and degraded coverage.
 - **Self-contained.** View code, styles and data are inlined; the page loads
   nothing, and its only outside links are ATT&CK technique pages. Embedded
   JSON escapes `</`, `<!--` and U+2028/U+2029.
@@ -2083,15 +2097,19 @@ flowchart LR
   `*_summary`, `coverage` and `perm_change` records, plus the hidden records
   the model still reads (connections and lookups for the payload and C2
   wording, process exits and execs, SMS binder calls, each pid's first record
-  for respawns, the run's first and last record for its times). The whole
+  and every `spawn` record for respawns, the run's first and last record for
+  its times), and the traced package, which the model prefers to inferring
+  it. The whole
   run's hidden counts travel with it, and the profile is cut to the kept
   records' keys (and its baseline apps to their number), so the trimmed data builds the same view as the full run
   (a test checks this with Node). A saved payload copy's device path
   (`saved.file`) is dropped; its hash and size stay. Payload files are never
   embedded.
-- **Optional inputs.** `--meta`: the lab's `key=value` file (`family`,
-  `sha256`, `started`, `stopped`; a family read from it is labelled
-  "MalwareBazaar tag"). `--badging`: `aapt dump badging` output, for the
+- **Optional inputs.** `--marks`: the run's `anubee mark` file; without the
+  flag, `<run>.marks` next to the run (`run.jsonl` -> `run.marks`) is used
+  when it exists, and stderr says so. `--meta`: the lab's `key=value` file
+  (`family`, `sha256`, `device`, `started`, `stopped`; a family read from it
+  is labelled "MalwareBazaar tag"; the device shows in the kicker). `--badging`: `aapt dump badging` output, for the
   footer's declared-but-not-granted list. `--apk`: entry names and sizes are
   read in memory with `zipfile` (never extracted), so a payload whose size
   matches a non-DEX APK entry can be said to come from inside the APK. An
@@ -2106,8 +2124,11 @@ flowchart LR
   and an unknown check never backs the "inside the APK" wording.
 - **Phone layout.** Below 900 px the page reads: At a glance, the
   timeline, then the indicators.
+- **Missing inputs.** A profile, run, `--marks`, `--meta`, `--badging` or
+  `--apk` path that doesn't exist is a one-line error on stderr and exit 2.
 - The MCP tool `mod_findings_view` takes an optional `html_out` that writes
-  the same page (records and profile only).
+  the same page, with optional `marks`, `meta` and `badging` paths passed
+  through and `package` embedded in the page.
 
 ---
 

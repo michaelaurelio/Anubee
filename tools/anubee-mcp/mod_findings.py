@@ -249,7 +249,7 @@ def parse_meta(text):
         k, sep, v = line.partition("=")
         if sep and k.strip():
             kv[k.strip()] = v.strip()
-    meta = {k: kv[k] for k in ("family", "sha256", "started", "stopped") if kv.get(k)}
+    meta = {k: kv[k] for k in ("family", "sha256", "device", "started", "stopped") if kv.get(k)}
     if "family" in meta:
         meta = {"family": meta["family"], "familySource": "MalwareBazaar tag",
                 **{k: v for k, v in meta.items() if k != "family"}}
@@ -320,8 +320,9 @@ def view_records(run_path, prof, pkg=None):
     hide, plus the hidden records the view still reads (connections and lookups
     for the payload and C2 wording, process exits and execs, every permission
     change (the declared-only footer reads grants), SMS binder calls,
-    each pid's first record for respawns, the run's first and last record for
-    its times). Returns (records, the profile cut to their keys and to the
+    each pid's first record and every spawn record for respawns (a forked
+    helper is never one), the run's first and last record for its times).
+    Returns (records, the profile cut to their keys and to the
     number of baseline apps)."""
     recs = list(_records(run_path))
     pkg = pkg or infer_package(run_path)
@@ -343,7 +344,7 @@ def view_records(run_path, prof, pkg=None):
         k = record_key(r, pkg)
         if k is not SKIP and is_noise(prof, *k):
             t = r.get("type")
-            if not (i in keep_idx or t in ("net", "proc_exit", "execve", "perm_change")
+            if not (i in keep_idx or t in ("net", "proc_exit", "execve", "perm_change", "spawn")
                     or (t == "binder_api" and _sms_binder(r))):
                 continue
         if k is not SKIP:
@@ -371,7 +372,7 @@ def build_html(run_path, profile, marks_text=None, meta=None, badging=None, stat
         with open(os.path.join(VIEW_DIR, name), encoding="utf-8") as fh:
             return fh.read()
     records, prof = view_records(run_path, profile, pkg)
-    data = {"records": records, "marksText": marks_text, "profile": prof,
+    data = {"records": records, "pkg": pkg or infer_package(run_path), "marksText": marks_text, "profile": prof,
             "templates": json.loads(read("templates.json")), "meta": meta, "badging": badging,
             "staticApk": static_apk, "hidden": findings(run_path, profile, pkg)["hidden"]}
     code = read("model.js") + "\n" + read("render.js")
@@ -406,6 +407,20 @@ def _read_text(path):
         return fh.read()
 
 
+def _need_file(path, what):
+    """A missing input is a one-line usage error (exit 2), never a traceback."""
+    if path is not None and not os.path.isfile(path):
+        print(f"{what} {path}: no such file", file=sys.stderr)
+        raise SystemExit(2)
+    return path
+
+
+def _sidecar_marks(run_path):
+    """<run>.marks next to RUN.jsonl (run.jsonl -> run.marks), when it exists."""
+    side = os.path.splitext(run_path)[0] + ".marks"
+    return side if os.path.isfile(side) else None
+
+
 def _main(argv):
     if len(argv) >= 3 and argv[0] == "profile":
         min_apps = None
@@ -419,12 +434,19 @@ def _main(argv):
               f"noise = seen in >= {prof['min_apps']} app(s) -> {argv[1]}")
         return 0
     if len(argv) >= 3 and argv[0] == "report":
-        prof = load_profile(argv[1]) if os.path.exists(argv[1]) else empty_profile()
+        prof = load_profile(_need_file(argv[1], "profile"))
+        _need_file(argv[2], "run")
         out = _opt(argv, "--html")
         if out is not None:
-            meta, badging, apk = (_read_text(_opt(argv, "--meta")), _read_text(_opt(argv, "--badging")),
-                                  _opt(argv, "--apk"))
-            html = build_html(argv[2], prof, marks_text=_read_text(_opt(argv, "--marks")),
+            marks = _need_file(_opt(argv, "--marks"), "--marks")
+            meta, badging, apk = (_read_text(_need_file(_opt(argv, "--meta"), "--meta")),
+                                  _read_text(_need_file(_opt(argv, "--badging"), "--badging")),
+                                  _need_file(_opt(argv, "--apk"), "--apk"))
+            if marks is None:
+                marks = _sidecar_marks(argv[2])
+                if marks is not None:
+                    print(f"marks: using {marks} (found next to the run)", file=sys.stderr)
+            html = build_html(argv[2], prof, marks_text=_read_text(marks),
                               meta=parse_meta(meta) if meta is not None else None,
                               badging=parse_badging(badging) if badging is not None else None,
                               static_apk=_static_apk_or_none(apk) if apk else None)

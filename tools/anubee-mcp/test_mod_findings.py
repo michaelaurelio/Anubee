@@ -338,6 +338,7 @@ def html_tests():
         check(ok, "invalid UTF-8 and lone surrogates are replaced, never fatal")
         here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mod_findings.py")
         env = dict(os.environ, PYTHONIOENCODING="utf-8:strict")
+        mf.save_profile(mf.empty_profile(), os.path.join(d, "none.json"))
         for extra in ([], ["--json"]):
             pr = subprocess.run([sys.executable, "-I", here, "report", os.path.join(d, "none.json"), rawrun] + extra,
                                 capture_output=True, text=True, env=env)
@@ -359,6 +360,116 @@ def html_tests():
         except SystemExit as e:
             ok = "--html" in str(e.code)
         check(ok, "a flag is never taken as the previous flag's value")
+        final_fix_tests(d, fixture, prof, marks, here)
+
+
+SERVER_JS_STUB = r'''
+import json, os, sys, types
+from unittest import mock
+fast = types.ModuleType("mcp.server.fastmcp")
+class FastMCP:
+    def __init__(self, *a, **k): pass
+    def tool(self, *a, **k): return lambda f: f
+    def run(self, *a, **k): pass
+fast.FastMCP = FastMCP
+for name in ("mcp", "mcp.server"):
+    sys.modules.setdefault(name, types.ModuleType(name))
+sys.modules["mcp.server.fastmcp"] = fast
+try:
+    import duckdb  # noqa: F401
+except ImportError:
+    sys.modules["duckdb"] = mock.MagicMock()
+sys.path.insert(0, sys.argv[1])
+import server
+a = json.loads(sys.argv[2])
+f = server.mod_findings_view(**a)
+print(json.dumps({"html": f.get("html"), "doc": server.mod_findings_view.__doc__}))
+'''
+
+
+def final_fix_tests(d, fixture, prof, marks, here):
+    # a forked helper's spawn records stay embedded even when the profile hides them
+    fork = os.path.join(TD, "fork-helper.jsonl")
+    fprof = mf.empty_profile()
+    fprof["keys"] = {"proc\tspawn": 1, "exec\tsh -c id": 1, "proc\texit signal None": 1,
+                     "binder\tandroid.app.IActivityManager.attachApplication": 1}
+    fhtml = mf.build_html(fork, fprof)
+    check(sum(r.get("type") == "spawn" for r in embedded(fhtml)["records"]) == 2, "spawn records are always embedded")
+    if shutil.which("node"):
+        check(same_view(d, fork, fprof, fhtml), "forked helpers: embedded data builds the same view as the whole run")
+
+    # the package travels with the page, and the model prefers it to inference
+    pdata = embedded(mf.build_html(fixture, prof, pkg="com.example.other"))
+    check(pdata.get("pkg") == "com.example.other", f"given package embedded (got {pdata.get('pkg')})")
+    check(embedded(mf.build_html(fixture, prof)).get("pkg") == "com.example.sample", "inferred package embedded")
+    if shutil.which("node"):
+        js = ("const M=require(process.argv[1]+'/model.js');const i=JSON.parse(require('fs').readFileSync(0,'utf8'));"
+              "const v=M.buildView(i);console.log(JSON.stringify(v.iocs.filter(x=>x[0]==='Package')))")
+        pr = subprocess.run(["node", "-e", js, os.path.join(TD, "..")], input=json.dumps(pdata), capture_output=True, text=True)
+        check(pr.returncode == 0 and json.loads(pr.stdout) == [["Package", "com.example.other"]],
+              f"buildView prefers the embedded package (got {pr.stdout.strip()} {pr.stderr[-300:]})")
+
+    # meta keeps the device
+    check(mf.parse_meta("family=X\ndevice=Pixel 7 test phone\n").get("device") == "Pixel 7 test phone", "meta keeps the device")
+
+    # a missing input file: one line on stderr, exit 2, no traceback
+    pfile = os.path.join(TD, "profile.json")
+    nope = os.path.join(d, "nope.txt")
+    out = os.path.join(d, "m5.html")
+    for args in (["report", nope, fixture, "--html", out],
+                 ["report", nope, fixture],
+                 ["report", pfile, nope, "--html", out],
+                 ["report", pfile, fixture, "--html", out, "--marks", nope],
+                 ["report", pfile, fixture, "--html", out, "--meta", nope],
+                 ["report", pfile, fixture, "--html", out, "--badging", nope],
+                 ["report", pfile, fixture, "--html", out, "--apk", nope]):
+        pr = subprocess.run([sys.executable, "-I", here] + args, capture_output=True, text=True)
+        lines = pr.stderr.strip().splitlines()
+        check(pr.returncode == 2 and len(lines) == 1 and "Traceback" not in pr.stderr and nope in pr.stderr,
+              f"missing file in {args[1:]}: one-line error, exit 2 (rc {pr.returncode}: {pr.stderr[-300:]})")
+
+    # <run>.marks next to the run is used when --marks isn't given, and said so
+    side = os.path.join(d, "side")
+    os.makedirs(side, exist_ok=True)
+    shutil.copy(fixture, os.path.join(side, "run.jsonl"))
+    shutil.copy(os.path.join(TD, "sample-run.marks"), os.path.join(side, "run.marks"))
+    out = os.path.join(side, "run.html")
+    pr = subprocess.run([sys.executable, "-I", here, "report", pfile, os.path.join(side, "run.jsonl"), "--html", out],
+                        capture_output=True, text=True)
+    with open(out) as fh:
+        got = embedded(fh.read())
+    check(pr.returncode == 0 and got["marksText"] == marks and "run.marks" in pr.stderr,
+          f"sidecar marks used and named on stderr (rc {pr.returncode}: {pr.stderr[-300:]})")
+    os.remove(os.path.join(side, "run.marks"))
+    pr = subprocess.run([sys.executable, "-I", here, "report", pfile, os.path.join(side, "run.jsonl"), "--html", out],
+                        capture_output=True, text=True)
+    with open(out) as fh:
+        check(pr.returncode == 0 and embedded(fh.read())["marksText"] is None and "marks" not in pr.stderr,
+              "no sidecar, no marks, nothing said")
+
+    # server.py html_out: says what it takes, passes package, marks, meta and badging through
+    meta_p = os.path.join(d, "meta.txt")
+    with open(meta_p, "w") as fh:
+        fh.write("family=ExampleFam\ndevice=Pixel 7 test phone\n")
+    badg_p = os.path.join(d, "badging.txt")
+    with open(badg_p, "w") as fh:
+        fh.write("uses-permission: name='android.permission.CAMERA'\n")
+    sout = os.path.join(d, "srv.html")
+    args = {"trace": fixture, "profile": pfile, "package": "com.example.sample", "html_out": sout,
+            "marks": os.path.join(TD, "sample-run.marks"), "meta": meta_p, "badging": badg_p}
+    pr = subprocess.run([sys.executable, "-I", "-c", SERVER_JS_STUB, os.path.dirname(here), json.dumps(args)],
+                        capture_output=True, text=True)
+    ok = pr.returncode == 0
+    res = json.loads(pr.stdout.strip().splitlines()[-1]) if ok else {}
+    if ok:
+        with open(sout) as fh:
+            sd = embedded(fh.read())
+        ok = (res["html"] == sout and sd["marksText"] == marks and sd["pkg"] == "com.example.sample"
+              and sd["meta"] == {"family": "ExampleFam", "familySource": "MalwareBazaar tag", "device": "Pixel 7 test phone"}
+              and sd["badging"] == {"permissions": ["android.permission.CAMERA"]})
+        for word in ("html_out", "marks", "meta", "badging"):
+            ok = ok and f"`{word}`" in res["doc"]
+    check(ok, f"server html_out passes its inputs through (rc {pr.returncode}: {pr.stderr[-600:]})")
 
 
 def main():

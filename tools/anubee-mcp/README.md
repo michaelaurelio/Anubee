@@ -62,7 +62,7 @@ Aggregation-first — the model is told to start broad, then drill down:
 | `get_event(id)` | Full detail of one event incl. backtrace. |
 | `search(text,limit)` | Events whose paths/args/symbols contain `text`. |
 | `diff_traces(baseline,compare,top,via)` | What fired only in `compare` vs `baseline` — new call stacks, probed paths, syscalls, errors, endpoints. Highest-leverage RASP triage (clean vs rooted run). |
-| `mod_findings_view(trace,profile,package,html_out)` / `mod_noise_profile(out,baseline_traces,min_apps)` | `anubee mod` run reduced to what benign apps on the same device never did, per section with counts, first-seen time, failed outcomes; the profile is learned from benign baseline runs. `html_out` also writes the run view page there |
+| `mod_findings_view(trace,profile,package,html_out,marks,meta,badging)` / `mod_noise_profile(out,baseline_traces,min_apps)` | `anubee mod` run reduced to what benign apps on the same device never did, per section with counts, first-seen time, failed outcomes; the profile is learned from benign baseline runs. `html_out` also writes the run view page there (with the optional `marks`, `meta` and `badging` paths) |
 
 ### Run view (`mod_findings.py report --html`)
 
@@ -75,10 +75,12 @@ python3 tools/anubee-mcp/mod_findings.py report noise.json run.jsonl --html run.
         [--marks run.marks] [--meta meta.txt] [--badging badging.txt] [--apk sample.apk]
 ```
 
-`--marks` is an `anubee mark` file (without it, permission changes are shown
-as unattributed); `--meta` is `key=value` lines (`family`, `sha256`,
-`started`, `stopped`); `--badging` is `aapt dump badging` output; `--apk` is
-read in memory for its entry names and sizes, never extracted. The page
+`--marks` is an `anubee mark` file (without the flag, `run.marks` next to
+`run.jsonl` is used when it exists; with no marks, permission changes are
+shown as unattributed); `--meta` is `key=value` lines (`family`, `sha256`,
+`device`, `started`, `stopped`); `--badging` is `aapt dump badging` output; `--apk` is
+read in memory for its entry names and sizes, never extracted. A missing
+input file is a one-line error and exit 2. The page
 needs the files in `tools/mod-view/` next to this directory, loads nothing
 from the network, and never embeds payload files or their device paths.
 

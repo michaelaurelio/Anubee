@@ -313,7 +313,9 @@ def diff_traces(baseline: str, compare: str, top: int = 50,
 
 @mcp.tool()
 def mod_findings_view(trace: str, profile: Optional[str] = None,
-                      package: Optional[str] = None, html_out: Optional[str] = None) -> dict:
+                      package: Optional[str] = None, html_out: Optional[str] = None,
+                      marks: Optional[str] = None, meta: Optional[str] = None,
+                      badging: Optional[str] = None) -> dict:
     """The "what's new" view of an `anubee mod` run (-o JSONL): only behaviour
     that benign apps on the same device never showed, grouped by section
     (binder, file, exec, net, perm, a11y, dexload, prop, proc, plus any record
@@ -323,14 +325,23 @@ def mod_findings_view(trace: str, profile: Optional[str] = None,
     runs of ordinary apps; without one nothing is hidden. `hidden` counts what
     was filtered per section and `coverage` lists degraded analyzers, so an
     empty section is never silently "nothing there". Records' `example` holds
-    the first full record of each finding. `html_out` also writes the run view
-    (one self-contained HTML page, the same as `mod_findings.py report --html`)
-    to that path and returns it as `html`."""
+    the first full record of each finding. `html_out` (a path) also writes the
+    run view, one self-contained HTML page the same as `mod_findings.py report
+    --html`, to that path and returns it as `html`; the page is built from
+    `trace`, `profile` and `package` (embedded, so the page names the same
+    package), plus these optional paths, used only with `html_out`: `marks`
+    (the run's `anubee mark` file), `meta` (the lab's key=value meta.txt) and
+    `badging` (`aapt dump badging` output)."""
     prof = mod_findings.load_profile(profile) if profile else mod_findings.empty_profile()
     f = mod_findings.findings(trace, prof, pkg=package)
     if html_out:
+        meta_t, badging_t = mod_findings._read_text(meta), mod_findings._read_text(badging)
+        page = mod_findings.build_html(
+            trace, prof, marks_text=mod_findings._read_text(marks), pkg=package,
+            meta=mod_findings.parse_meta(meta_t) if meta_t is not None else None,
+            badging=mod_findings.parse_badging(badging_t) if badging_t is not None else None)
         with open(html_out, "w", encoding="utf-8") as fh:
-            fh.write(mod_findings.build_html(trace, prof, pkg=package))
+            fh.write(page)
         f["html"] = html_out
     return f
 

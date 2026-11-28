@@ -76,7 +76,7 @@
 {"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"permission","name":"android.permission.READ_CONTACTS","change":"granted","old":null,"new":"granted"}
 {"type":"perm_change","ts_ns":15485993600303,"package":"com.example.sample","category":"accessibility","name":"accessibility","change":"granted","old":null,"new":"com.example.sample/com.example.sample.svc.HelperService"}
 {"type":"accessibility_detect","pid":14557,"ts_ns":15486293600303,"comm":"sample.app","category":"global_action","method":"performGlobalAction","code":12,"granted":false}
-{"type":"accessibility_detect","pid":14988,"ts_ns":15489693600303,"comm":"sample.app","category":"screen_read","method":"findAccessibilityNodeInfoByAccessibilityId","code":3,"granted":false}
+{"type":"accessibility_detect","pid":14557,"ts_ns":15489693600303,"comm":"sample.app","category":"screen_read","method":"findAccessibilityNodeInfoByAccessibilityId","code":3,"granted":false}
 {"type":"coverage","engine":"net","clean":true}
 {"type":"coverage","engine":"dexload-detect","clean":true}
 {"type":"coverage","engine":"binder-api","clean":true}

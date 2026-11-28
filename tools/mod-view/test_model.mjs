@@ -357,7 +357,9 @@ test('APK wording needs a static match; "not mapped" states what was checked', (
   const recs = [dex('drop', 1), dex('load', 2, { saved: { sha256: 'ab', size: 100 } })];
   const plain = desc(recs, 'payload_packed');
   assert.ok(!/APK|decoded|hidden/i.test(plain.plain + plain.glance), plain.plain);
-  assert.match(plain.plain, /before going online/);
+  assert.match(plain.plain, /with no network connection before it/);
+  const later = desc([...recs, netOpenAt(30)], 'payload_packed');
+  assert.match(later.plain, /before going online/);
   assert.ok(plain.evidence.some((e) => e[0] === 'Not mapped' && /120 s/.test(e[1])));
   const withApk = desc(recs, 'payload_packed', [], { staticApk: [{ name: 'blob', size: 100 }] });
   assert.match(withApk.plain, /decoded code hidden inside its APK/i);
@@ -443,7 +445,8 @@ test('singular counts and sub-10 s intervals read correctly', () => {
   assert.match(p.facts, /^1 alarm( |$)/);
   const recs = [0, 0.4, 0.8, 1.2, 1.6, 2.0].map((s) => ({ ...netOpenAt(s), ts_ns: T0 + s * 1e9 }));
   const c = desc(recs, 'c2_beacon');
-  assert.match(c.facts, /about every 0\.4 s/);
+  assert.match(c.facts, /about every 400 ms/);
+  assert.ok(!/every 0 s/.test(c.facts));
   const one1 = desc([{ type: 'accessibility_detect', pid: 1, ts_ns: T0 + 60e9, category: 'global_action', method: 'm' },
     { type: 'accessibility_detect_summary', processes: [{ pid: 1, calls: { global_action: 1 } }] }], 'a11y_abuse');
   assert.match(one1.facts, /^1 button press · /);
@@ -453,4 +456,67 @@ test('evidence times use one decimal below 100 s and the C2 label says suspected
   const a = d('a11y_abuse').evidence.find((e) => e[0] === 'Reads');
   assert.match(a[1], /first at 54\.6 s/);
   assert.ok(d('c2_beacon').evidence.some((e) => e[0] === 'Why "suspected C2"'));
+});
+
+// ---- round 2: plurals, delete-only, drop evidence, dns, evidence text ----
+const evText = (o) => o.evidence.map((e) => e.join(': ')).join(' | ');
+const BAD = /[{}]|undefined|null|NaN|\bnone\b|\bunknown\b|\b1 (calls|times|processes|respawns|alarms|connections|AlarmManager\.set calls)\b|\b0 s\b.*every|every 0 s/i;
+
+test('evidence text is singular at a count of 1 and never prints placeholders', () => {
+  const alarm = { type: 'binder_api', pid: 1, ts_ns: T0 + 1e9, interface: 'android.app.IAlarmManager', method: 'set' };
+  const fgc = { type: 'binder_api', pid: 1, ts_ns: T0 + 2e9, interface: 'android.app.IActivityManager', method: 'setServiceForeground' };
+  const sum = { type: 'binder_api_summary', processes: [{ pid: 1, calls: [
+    { interface: 'android.app.IAlarmManager', method: 'set', count: 1 },
+    { interface: 'android.app.IActivityManager', method: 'setServiceForeground', count: 1 }] }] };
+  const p = desc([alarm, fgc, sum], 'persistence');
+  assert.match(evText(p), /1 AlarmManager\.set call, first at 0 s/);
+  assert.match(evText(p), /setServiceForeground: 1 call in 1 process/);
+  const a = desc([{ type: 'accessibility_detect', pid: 1, ts_ns: T0 + 60e9, category: 'global_action', method: 'm' },
+    { type: 'accessibility_detect_summary', processes: [{ pid: 1, calls: { global_action: 1 } }] }], 'a11y_abuse');
+  assert.match(evText(a), /Presses: 1 call, first at 0 s/);
+  [p, a].forEach((o) => assert.ok(!BAD.test(evText(o)), evText(o)));
+  steps.forEach((s) => { const o = M.describe(s, ctx, T); assert.ok(!BAD.test(evText(o)), s.template + ': ' + evText(o)); });
+});
+
+test('permission evidence omits a missing old value instead of printing a filler', () => {
+  const o = d('lab_grant');
+  assert.ok(o.evidence.some((e) => e[1] === 'android.permission.READ_SMS: now granted'));
+  assert.ok(o.evidence.some((e) => e[1] === 'SYSTEM_ALERT_WINDOW: default to allow'));
+});
+
+test('beat intervals below one second are milliseconds, never "0 s"', () => {
+  const recs = [0, 0.04, 0.08, 0.12, 0.16, 0.2].map((s) => ({ ...netOpenAt(s), ts_ns: T0 + Math.round(s * 1e9) }));
+  assert.match(desc(recs, 'c2_beacon').facts, /about every 40 ms/);
+});
+
+test('a drop with no network record anywhere says there was no connection before it, not "before going online"', () => {
+  const o = desc([dex('drop', 1), dex('load', 2)], 'payload_packed');
+  assert.match(o.plain, /with no network connection before it/);
+  assert.ok(!/going online/.test(o.plain));
+});
+
+test('a delete-only payload is a deletion, not a packed payload', () => {
+  const o = desc([dex('delete', 1)], 'payload_packed', [], { staticApk: [] });
+  assert.deepEqual(o.techniques, []);
+  assert.equal(o.tactic, null);
+  assert.equal(o.plain, 'Deleted a code file.');
+  assert.ok(o.evidence.some((e) => e[0] === 'Deleted file'));
+  assert.ok(!o.evidence.some((e) => e[0] === 'Loaded file' || e[0] === 'Not mapped'));
+  assert.ok(!/unpacked|loaded|afterwards/i.test(allWords(o)), allWords(o));
+});
+
+test('a load-only payload gets no packing tag and a neutral short', () => {
+  const o = desc([dex('load', 1)], 'payload_packed');
+  assert.deepEqual(o.techniques, []);
+  assert.equal(o.short, 'Second-stage payload loaded');
+});
+
+test('a DNS lookup alone does not make a payload "downloaded"', () => {
+  const dns = { type: 'net', pid: 1, ts_ns: T0 + 1e9, event: 'dns', host: 'example.test', host_source: 'netd' };
+  const recs = [dns, dex('drop', 5)];
+  assert.equal(one(recs).st.some((x) => x.template === 'payload_downloaded'), false);
+  assert.deepEqual(desc(recs, 'payload_packed').techniques.map((t) => t.id), ['T1406.002']);
+  assert.ok(desc(recs, 'payload_packed').evidence.some((e) => /no network (traffic|connection)/.test(e[1])));
+  const withOpen = [netOpenAt(1), dex('drop', 5)];
+  assert.equal(one(withOpen).st.some((x) => x.template === 'payload_downloaded'), true);
 });

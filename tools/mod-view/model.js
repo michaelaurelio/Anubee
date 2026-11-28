@@ -286,7 +286,7 @@ var AnubeeModView = (function () {
       var k = recordKey(r, pkg);
       if (k === null || isNoise(profile, k[0], k[1])) return;
       var sec = k[0], key = k[1];
-      if (sec === 'net') opens.push(r);
+      if (sec === 'net' && r.event === 'open') opens.push(r);
       if (sec === 'dexload') {
         if (r.stage === 'memload') memloads.push(r);
         else {
@@ -532,7 +532,9 @@ var AnubeeModView = (function () {
     v.noDomain = fixed ? W.noDomain : null;
     if (d.beacon && b.end !== null) {
       var bw = d.beacon;
-      v.interval = bw.intervalS < 10 ? Math.round(bw.intervalS * 10) / 10 : Math.round(bw.intervalS);
+      v.every = bw.intervalS >= 10 ? Math.round(bw.intervalS) + ' s'
+        : bw.intervalS >= 1 ? (Math.round(bw.intervalS * 10) / 10) + ' s'
+        : Math.max(1, Math.round(bw.intervalS * 1000)) + ' ms';
       v.minutes = plural(Math.max(1, Math.round((b.end - bw.fromTs) / (60 * NS))), W.minute);
       v.from = fmtAt(bw.fromTs, b.start);
       v.to = fmtAt(bw.toTs, b.start);
@@ -590,16 +592,21 @@ var AnubeeModView = (function () {
       vars.deleted = d.deleted ? W.deleted : null;
       var dropTs = firstTsWhere(step.recs, function (r) { return r.stage === 'drop'; });
       var apk = (ctx.staticApk || []).filter(function (a) { return typeof d.size === 'number' && a.size === d.size; })[0];
-      var netBefore = dropTs !== null && (ctx.records || []).some(function (r) {
-        return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && r.ts_ns < dropTs;
-      });
-      ev1(d.dropped ? E.path : E.pathLoaded, d.path);
+      var netOpen = function (before) {
+        return dropTs !== null && (ctx.records || []).some(function (r) {
+          return r.type === 'net' && r.event === 'open' && typeof r.ts_ns === 'number' && (before ? r.ts_ns < dropTs : r.ts_ns > dropTs);
+        });
+      };
+      var netBefore = netOpen(true), netAfter = netOpen(false);
+      var deleteOnly = !d.dropped && !d.loaded;
+      if (deleteOnly) vars.deleted = W.deletedOnly;
+      ev1(d.dropped ? E.path : d.loaded ? E.pathLoaded : E.pathDeleted, d.path);
       ev1(E.sha, d.sha256);
       if (step.template === 'payload_packed') {
-        vars.decodedClause = apk ? W.decoded : null;
-        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !netBefore ? W.wroteEarly : W.wroteCode) : null;
+        vars.decodedClause = apk && d.dropped ? W.decoded : null;
+        vars.wroteClause = d.dropped ? (apk ? W.wroteIt : dropTs !== null && !netBefore ? (netAfter ? W.wroteEarly : W.wroteNoNet) : W.wroteCode) : null;
         vars.ranClause = d.loaded ? (d.dropped || apk ? W.ranIt : W.ranCode) : null;
-        ids.push('T1406.002');
+        if (d.dropped) ids.push('T1406.002');
         if (dropTs !== null) {
           ev1(E.why, netBefore ? E.whyNoNet : E.whyNoNetAtAll);
           ev1(E.notMapped, E.notMappedText);
@@ -608,7 +615,7 @@ var AnubeeModView = (function () {
       } else {
         vars.wroteClause = d.dropped ? W.wroteCode : null;
         vars.ranClause = d.loaded ? (d.dropped ? W.ranIt : W.ranCode) : null;
-        ids.push('T1407');
+        if (d.dropped) ids.push('T1407');
         vars.gap = d.netBeforeTs !== null && dropTs !== null ? Math.round((dropTs - d.netBeforeTs) / NS) : null;
         ev1(E.why, fill(E.whyText, vars));
       }
@@ -642,12 +649,12 @@ var AnubeeModView = (function () {
       vars.from = d.respawns ? at(firstTsWhere(step.recs, function (r) { return r.type === 'proc_exit'; })) : null;
       if (anyAlarm) {
         ids.push('T1603');
-        ev1(E.alarms, alarmSum ? fill(E.alarmsText, { n: alarmSum.count, at: atp(firstCall('set')) })
+        ev1(E.alarms, alarmSum ? fill(E.alarmsText, { n: plural(alarmSum.count, 'AlarmManager.set call'), at: atp(firstCall('set')) })
           : fill(E.alarmsSeenText, { p: alarmProcs, at: atp(firstCall('set')) }));
       }
       if (anyFg) {
         ids.push('T1541');
-        ev1(E.foreground, fgSum ? fill(E.foregroundText, { n: fgSum.count, p: plural(fgSum.procs, 'process', 'processes'), at: atp(firstCall('setServiceForeground')) })
+        ev1(E.foreground, fgSum ? fill(E.foregroundText, { n: plural(fgSum.count, 'call'), p: plural(fgSum.procs, 'process', 'processes'), at: atp(firstCall('setServiceForeground')) })
           : fill(E.foregroundSeenText, { p: fgProcs, at: atp(firstCall('setServiceForeground')) }));
       }
       if (d.respawns) {
@@ -669,7 +676,7 @@ var AnubeeModView = (function () {
       approx = true;
       var granted = [], others = [], a11y = false;
       d.perms.forEach(function (p) {
-        ev1(E.changes, fill(E.changeText, { name: p.name, old: present(p.old) ? p.old : 'none', new: p.new }));
+        ev1(E.changes, present(p.old) ? fill(E.changeText, { name: p.name, old: p.old, new: p.new }) : fill(E.changeNew, { name: p.name, new: p.new }));
         if (p.category === 'accessibility' && present(p.new)) { a11y = true; return; }
         var ok = p.new === 'granted' || p.new === 'allow';
         var label = ok && has(T.permissionWords, p.name) ? T.permissionWords[p.name] : p.name;
@@ -712,7 +719,7 @@ var AnubeeModView = (function () {
       vars.glanceClauses = joinList(gl, { sep: ', ', twoSep: ' and ', lastSep: ', and ' });
       [['global_action', E.presses], ['action', E.actions], ['gesture', E.gestures],
         ['screen_read', E.reads], ['screenshot', E.shots]].forEach(function (o) {
-        if (c[o[0]]) ev1(o[1], fill(c.total ? E.text : E.textSeen, { n: c[o[0]], at: atp(firstTsWhere(step.recs, function (r) { return r.category === o[0]; })) }));
+        if (c[o[0]]) ev1(o[1], fill(c.total ? E.text : E.textSeen, { n: plural(c[o[0]], 'call'), at: atp(firstTsWhere(step.recs, function (r) { return r.category === o[0]; })) }));
       });
       if (labA11y.length) ev1(E.depends, fill(E.dependsText, { at: at(minTs(labA11y)) }));
       ev1(E.notKnown, E.notKnownText);

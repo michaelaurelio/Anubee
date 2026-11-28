@@ -93,7 +93,7 @@
           "both": "Second-stage payload unpacked and loaded",
           "dropOnly": "Second-stage payload unpacked and written, not seen loaded",
           "loadOnly": "Second-stage payload loaded",
-          "neither": "Payload file activity"
+          "neither": "Payload file deleted"
         }
       },
       "glance": {
@@ -101,10 +101,17 @@
           "both": "Wrote code to a file and ran it",
           "dropOnly": "Wrote code to a file",
           "loadOnly": "Ran code from a file",
-          "neither": "Touched a payload file"
+          "neither": "Deleted a code file"
         }
       },
-      "short": "Payload unpacked",
+      "short": {
+        "variants": {
+          "both": "Payload unpacked",
+          "dropOnly": "Payload unpacked",
+          "loadOnly": "Second-stage payload loaded",
+          "neither": "Payload file deleted"
+        }
+      },
       "plain": {
         "list": [
           "{decodedClause}",
@@ -121,7 +128,7 @@
           "both": "Code written to a file, then run",
           "dropOnly": "Code written to a file",
           "loadOnly": "Code run from a file",
-          "neither": "Payload file touched"
+          "neither": "Code file deleted"
         }
       },
       "facts": [
@@ -138,7 +145,9 @@
         "wroteEarly": "wrote code to a file before going online",
         "wroteCode": "wrote code to a file",
         "ranIt": "ran it",
-        "ranCode": "ran code from a file"
+        "ranCode": "ran code from a file",
+        "wroteNoNet": "wrote code to a file with no network connection before it",
+        "deletedOnly": "deleted a code file"
       },
       "evidence": {
         "path": "Dropped file",
@@ -150,9 +159,9 @@
         "notMapped": "Not mapped",
         "notMappedText": "T1407 Download New Code at Runtime, because no network connection opened in the 120 s before the drop",
         "pathLoaded": "Loaded file",
-        "whyNoNetAtAll": "no network traffic before the drop in this trace"
-      },
-      "plainNone": "Recorded activity on a payload file."
+        "whyNoNetAtAll": "no network traffic before the drop in this trace",
+        "pathDeleted": "Deleted file"
+      }
     },
     "payload_downloaded": {
       "title": {
@@ -160,7 +169,7 @@
           "both": "Second-stage payload written after network contact and loaded",
           "dropOnly": "Payload written after network contact, not seen loaded",
           "loadOnly": "Payload loaded",
-          "neither": "Payload file activity"
+          "neither": "Payload file deleted"
         }
       },
       "glance": {
@@ -168,10 +177,17 @@
           "both": "Wrote code to a file soon after going online and ran it",
           "dropOnly": "Wrote code to a file soon after going online",
           "loadOnly": "Ran code from a file",
-          "neither": "Touched a payload file"
+          "neither": "Deleted a code file"
         }
       },
-      "short": "Payload after network contact",
+      "short": {
+        "variants": {
+          "both": "Payload after network contact",
+          "dropOnly": "Payload after network contact",
+          "loadOnly": "Payload loaded",
+          "neither": "Payload file deleted"
+        }
+      },
       "plain": {
         "list": [
           "{wroteClause}",
@@ -187,7 +203,7 @@
           "both": "Code written after network contact, then run",
           "dropOnly": "Code written after network contact",
           "loadOnly": "Code run from a file",
-          "neither": "Payload file touched"
+          "neither": "Code file deleted"
         }
       },
       "facts": [
@@ -202,16 +218,17 @@
         "saved": "copy saved",
         "wroteCode": "wrote code to a file soon after a network connection opened",
         "ranIt": "ran it",
-        "ranCode": "ran code from a file"
+        "ranCode": "ran code from a file",
+        "deletedOnly": "deleted a code file"
       },
       "evidence": {
         "path": "Dropped file",
         "why": "Why \"downloaded\"",
         "whyText": "a network connection opened {gap} s before the file was written",
         "sha": "SHA-256",
-        "pathLoaded": "Loaded file"
-      },
-      "plainNone": "Recorded activity on a payload file."
+        "pathLoaded": "Loaded file",
+        "pathDeleted": "Deleted file"
+      }
     },
     "payload_memload": {
       "title": "Code loaded straight from memory",
@@ -273,9 +290,9 @@
       },
       "evidence": {
         "alarms": "Alarms",
-        "alarmsText": "{n} AlarmManager.set calls, first at {at}",
+        "alarmsText": "{n}, first at {at}",
         "foreground": "Foreground",
-        "foregroundText": "setServiceForeground called {n} times in {p}, first at {at}",
+        "foregroundText": "setServiceForeground: {n} in {p}, first at {at}",
         "respawns": "Respawns",
         "respawnsText": "{n}, process exits: {exits}{sigPart}",
         "alarmsSeenText": "AlarmManager.set seen in {p}, first at {at}",
@@ -310,8 +327,8 @@
         "{beat}"
       ],
       "words": {
-        "beatLast": "about every {interval} s in the last {minutes}",
-        "beatBetween": "about every {interval} s between {from} and {to}",
+        "beatLast": "about every {every} in the last {minutes}",
+        "beatBetween": "about every {every} between {from} and {to}",
         "minute": "minute",
         "minutes": "minutes",
         "noDomain": "no domain name looked up",
@@ -393,7 +410,8 @@
       ],
       "evidence": {
         "changes": "Changes",
-        "changeText": "{name}: {old} to {new}"
+        "changeText": "{name}: {old} to {new}",
+        "changeNew": "{name}: now {new}"
       },
       "words": {
         "a11yClause": "enabled the accessibility service"
@@ -410,7 +428,8 @@
       ],
       "evidence": {
         "changes": "Changes",
-        "changeText": "{name}: {old} to {new}"
+        "changeText": "{name}: {old} to {new}",
+        "changeNew": "{name}: now {new}"
       }
     },
     "a11y_abuse": {
@@ -462,7 +481,7 @@
         "gestures": "Gestures",
         "reads": "Reads",
         "shots": "Screenshots",
-        "text": "{n} calls, first at {at}",
+        "text": "{n}, first at {at}",
         "depends": "Depends on",
         "dependsText": "the lab enabling accessibility at about {at}",
         "notKnown": "Not known",

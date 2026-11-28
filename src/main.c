@@ -16,6 +16,7 @@ int cmd_dump(int argc, char **argv);       // src/dump/dump.c
 int cmd_correlate(int argc, char **argv);  // src/correlate/correlate.c
 int cmd_trace(int argc, char **argv);      // src/trace/trace.c
 int cmd_mod(int argc, char **argv);        // src/modules/mod.c
+int cmd_mark(int argc, char **argv);       // src/common/lab_mark.c
 
 static void usage(const char *argv0)
 {
@@ -42,6 +43,7 @@ static void usage(const char *argv0)
 		"  mod             run a named analyzer: specialized tracing package with its own\n"
 		"                  BPF object. Stealthy or loud depending on the analyzer.\n"
 		"                  `anubee mod --list` lists available analyzers.\n"
+		"  mark            write a timestamped lab-action marker (same clock as the tracers) to a file\n"
 		"\n"
 		"Run '%s <command> --help' for command-specific options.\n",
 		argv0, argv0);
@@ -70,7 +72,7 @@ int main(int argc, char **argv)
 	// argp_program_version, leaving glibc's weak NULL fallback and a broken
 	// --version. Print "anubee <subcommand>" and exit; guard on the known-name set
 	// so "anubee bogus --version" still falls through to the "unknown command" error.
-	static const char *known[] = { "syscalls","funcs","lib","dump","correlate","trace","mod" };
+	static const char *known[] = { "syscalls","funcs","lib","dump","correlate","trace","mod","mark" };
 	for (int k = 0; k < (int)(sizeof(known)/sizeof(known[0])); k++) {
 		if (strcmp(cmd, known[k])) continue;
 		for (int i = 2; i < argc; i++) {
@@ -98,6 +100,8 @@ int main(int argc, char **argv)
 		return cmd_trace(argc - 1, argv + 1);
 	if (!strcmp(cmd, "mod"))
 		return cmd_mod(argc - 1, argv + 1);
+	if (!strcmp(cmd, "mark"))
+		return cmd_mark(argc - 1, argv + 1);
 
 	fprintf(stderr, "%s: unknown command '%s'\n\n", argv[0], cmd);
 	usage(argv[0]);

@@ -1927,6 +1927,24 @@ Design points worth knowing:
 - **`-q` does not suppress it.** `-q` governs per-event *stdout*; this is
   operational status on *stderr*.
 
+### 7.7 Lab markers (`anubee mark`)
+
+`anubee mark <label> --file PATH` appends one JSON line to PATH (created 0644 if
+missing) and exits:
+
+```json
+{"type":"lab_mark","ts_ns":123456789,"label":"grant-begin:a11y"}
+```
+
+- **Clock.** `ts_ns` is `CLOCK_MONOTONIC`, the same base as `bpf_ktime_get_ns`
+  (and so every tracer record's `ts_ns`), so a mark lines up with tracer output
+  with no conversion.
+- **Quiet.** Userspace only, no BPF object, nothing written into any target.
+- **Label convention** (used by the lab harness): `launch`, `grant-begin:<kind>`,
+  `grant-end:<kind>`, `stop`. The label is JSON-escaped and otherwise opaque.
+- **Exit codes.** 0 written, 2 usage error (missing label/`--file`, or a label
+  too long for one line), 1 open/write failure (message on stderr).
+
 ## 8. MCP server (`tools/anubee-mcp`, host-side Python)
 
 - `trace_store.py` — two ingest paths. `load()` loads a `type:"syscall"` trace

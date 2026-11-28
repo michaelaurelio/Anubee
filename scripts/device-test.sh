@@ -5,7 +5,7 @@
 # text). Exits 0 on pass, non-zero on fail, so it drops into CI / `make` / loops.
 #
 # Usage:
-#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|all]  # default: all
+#   scripts/device-test.sh [lib|lib-records|syscalls|syscalls-argwarn|trace-syscalls|massdelete-detect|exfil-detect|accessibility-detect|fileless-detect|dexload-detect|net|screencapture-detect|correlate-returns|dump-now|mark|all]  # default: all
 #
 # Env overrides:
 #   ANUBEE_TEST_PKG=<package>    target app   (default: com.android.deskclock)
@@ -1448,6 +1448,24 @@ DRV
     fi
 }
 
+# mark: userspace-only lab-action marker. Two calls must append two well-formed
+# lines whose CLOCK_MONOTONIC ts_ns does not go backwards.
+test_mark() {
+    echo "=== mark (lab-action marker, no BPF) ==="
+    local f="/data/local/tmp/anubee_mark.jsonl" out
+    adb shell "su -c 'rm -f $f'" >/dev/null 2>&1
+    adb shell "su -c '$DEVICE_PATH mark launch --file $f'" >/dev/null 2>&1 || fail "mark: first call failed"
+    adb shell "su -c '$DEVICE_PATH mark launch --file $f'" >/dev/null 2>&1 || fail "mark: second call failed"
+    out="$(adb shell "su -c 'cat $f; rm -f $f'" | tr -d '\r')"
+    [ "$(grep -cE '^\{"type":"lab_mark","ts_ns":[0-9]+,"label":"launch"\}$' <<<"$out")" = "2" ] \
+        || { echo "$out" >&2; fail "mark: expected two lab_mark lines"; }
+    local t1 t2
+    t1="$(sed -n 1p <<<"$out" | sed -E 's/.*"ts_ns":([0-9]+).*/\1/')"
+    t2="$(sed -n 2p <<<"$out" | sed -E 's/.*"ts_ns":([0-9]+).*/\1/')"
+    [ "$t2" -ge "$t1" ] || fail "mark: ts_ns went backwards ($t1 -> $t2)"
+    info "mark OK - two lines, ts_ns $t1 -> $t2"
+}
+
 case "$WHAT" in
     lib)               test_lib ;;
     lib-records)       test_lib_records ;;
@@ -1478,8 +1496,9 @@ case "$WHAT" in
     screencapture-detect)   test_screencapture_detect ;;
     correlate-returns) test_correlate_returns ;;
     dump-now)          test_dump_now ;;
-    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now ;;
-    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | all)" ;;
+    mark)              test_mark ;;
+    all)               test_lib; test_lib_records; test_syscalls; test_syscalls_jit; test_syscalls_vdso; test_syscalls_regs; test_syscalls_cfi; test_syscalls_argwarn; test_trace_syscalls; test_funcs_structured; test_mod_file_access; test_mod_follow_fork; test_mod_execve; test_mod_prop_read; test_mod_proc_event; test_mod_pkg_inject; test_mod_perm_watch; test_mod_binder_api; test_mod_no_launch; test_mod_triage; test_massdelete_detect; test_exfil_detect; test_accessibility_detect; test_fileless_detect; test_dexload_detect; test_net; test_screencapture_detect; test_correlate_returns; test_dump_now; test_mark ;;
+    *)        fail "unknown target '$WHAT' (expected: lib | lib-records | syscalls | syscalls-jit | syscalls-vdso | syscalls-regs | syscalls-cfi | syscalls-argwarn | trace-syscalls | funcs-structured | mod-file-access | mod-follow-fork | mod-execve | mod-prop-read | mod-proc-event | mod-pkg-inject | mod-perm-watch | mod-binder-api | mod-no-launch | mod-triage | massdelete-detect | exfil-detect | accessibility-detect | fileless-detect | dexload-detect | net | screencapture-detect | correlate-returns | dump-now | mark | all)" ;;
 esac
 
 forcestop

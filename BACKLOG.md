@@ -640,6 +640,10 @@ is in DOCUMENTATION.md and the referenced specs.
 
 ### 2026-11-28
 
+- **`anubee mark` lab-action markers.** Userspace-only subcommand that appends
+  `{"type":"lab_mark","ts_ns":...,"label":...}` to a file on `CLOCK_MONOTONIC`
+  (the tracers' clock), so a harness can timestamp launch / grant / stop actions
+  for later correlation (DOCUMENTATION.md §7.7).
 - **Findings view counts each connection once.** `net` writes an `open` and a
   `close` record per connection, so net findings counted every connection
   twice; `close` records are now skipped (records without `event`, from older
